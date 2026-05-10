@@ -343,6 +343,7 @@ async def init_db():
             founder_attention_budget_minutes INTEGER,
             legacy_pre_premortem INTEGER DEFAULT 0,
             legacy_pre_spec_alive INTEGER DEFAULT 0,
+            legacy_pre_prior_art INTEGER DEFAULT 0,
             interview_skip_reason TEXT,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
@@ -759,10 +760,7 @@ async def init_db():
         "ON streaming_guard_log (task_id, created_at)"
     )
 
-    # Z1 Tier 6A (A7) — legacy_pre_idea_dedup column. Backfilled to 1 so
-    # the cross-mission idea-fingerprint dedup post-hook on step 0.1
-    # skips for missions that predate this work (their idea_brief was
-    # never indexed into the `mission_ideas` ChromaDB collection).
+    # Z1 Tier 6A (A7) — legacy_pre_idea_dedup column.
     try:
         await db.execute(
             "ALTER TABLE missions ADD COLUMN legacy_pre_idea_dedup INTEGER DEFAULT 0"
@@ -774,10 +772,7 @@ async def init_db():
     except Exception:
         pass
 
-    # Z1 Tier 6A (P9) — legacy_pre_inheritance column. Backfilled to 1
-    # so the cross-mission ADR/compliance inheritance post-hook on step
-    # 0.5 (and the phase-6-tail indexer) skips for missions that
-    # predate the mission_artifacts_index table.
+    # Z1 Tier 6A (P9) — legacy_pre_inheritance column.
     try:
         await db.execute(
             "ALTER TABLE missions ADD COLUMN legacy_pre_inheritance INTEGER DEFAULT 0"
@@ -789,12 +784,7 @@ async def init_db():
     except Exception:
         pass
 
-    # Z1 Tier 6A (P9) — cross-mission artifact index for ADR/compliance
-    # inheritance. One row per (mission_id, artifact_name); written by
-    # the phase-6-tail mechanical step `6.7z index_mission_artifacts`.
-    # `domain_keywords_json` is a JSON list (rule-based extraction from
-    # charter brand keywords + PRD problem statements); `founder_id` is
-    # currently always 'default' until founder profiles land.
+    # Z1 Tier 6A (P9) — cross-mission artifact index.
     await db.execute("""
         CREATE TABLE IF NOT EXISTS mission_artifacts_index (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -816,6 +806,31 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_mission_artifacts_index_founder "
         "ON mission_artifacts_index (founder_id, created_at)"
     )
+
+    # Z1 Tier 6B (P5) — prior_art_cache.
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prior_art_cache (
+            domain_keywords_hash TEXT PRIMARY KEY,
+            results_json TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            ttl_hours INTEGER NOT NULL DEFAULT 168
+        )
+        """
+    )
+
+    # Z1 Tier 6B (P5) — legacy_pre_prior_art column.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_prior_art INTEGER DEFAULT 0"
+        )
+        await db.execute("UPDATE missions SET legacy_pre_prior_art = 1")
+        logger.info(
+            "Z1 Tier 6B migration: legacy_pre_prior_art added + backfilled"
+        )
+    except Exception:
+        pass  # Column already exists
 
     # Tasks
     await db.execute("""

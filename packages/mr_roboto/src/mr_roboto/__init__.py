@@ -51,6 +51,7 @@ from mr_roboto import init_mission_github_repo as init_mission_github_repo_modul
 # Same submodule-import pattern for T6A (find_similar_missions + surface_prior_mission_hints).
 from mr_roboto import find_similar_missions as find_similar_missions_module  # noqa: F401
 from mr_roboto import surface_prior_mission_hints as surface_prior_mission_hints_module  # noqa: F401
+from mr_roboto.prior_art_min_coverage import prior_art_min_coverage
 # NOTE: do NOT `from mr_roboto.critic_gate import critic_gate` — that would
 # shadow the submodule on the mr_roboto package namespace and break
 # `patch("mr_roboto.critic_gate._persist")` style mocking. Import the
@@ -93,6 +94,7 @@ __all__ = [
     "write_deferred_question",
     "verify_premortem_shape",
     "spec_consistency_check",
+    "prior_art_min_coverage",
 ]
 
 
@@ -1440,9 +1442,6 @@ async def run(task: dict) -> Action:
 
     if action == "init_mission_github_repo":
         # Z1 Tier 6 (C18) — end-of-phase-6 GitHub repo init. Mechanical.
-        # Fail-soft when gh-cli missing/unauth so the mission still advances;
-        # status surfaces in `mission_<id>/github_init_status.md` and re-runs
-        # are allowed via Telegram `/github init <mission_id>`.
         from mr_roboto.init_mission_github_repo import (
             init_mission_github_repo as _init_gh,
         )
@@ -1458,18 +1457,12 @@ async def run(task: dict) -> Action:
                 workspace_path=payload.get("workspace_path"),
                 skip=bool(payload.get("skip_github", False)),
             )
-            # Per spec: action returns Action(status="completed", ...) even
-            # when pending — pending is a documented soft outcome, not a
-            # failure. Workflow advances; founder retries via Telegram.
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))
 
     if action == "find_similar_missions":
         # Z1 Tier 6A (A7) — idea fingerprint cross-mission dedup.
-        # Post-hook on step 0.1 product_charter. Returns needs_review
-        # with the comparison list when any prior mission similarity
-        # crosses the threshold (default 0.85).
         from mr_roboto.find_similar_missions import (
             find_similar_missions as _find_similar,
         )
@@ -1501,8 +1494,7 @@ async def run(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "index_idea_fingerprint":
-        # Z1 Tier 6A (A7) — embed + store idea fingerprint after
-        # founder confirms a new mission (or "Continue" on dedup).
+        # Z1 Tier 6A (A7) — embed + store idea fingerprint after confirm.
         from mr_roboto.find_similar_missions import (
             index_idea_fingerprint as _idx_idea,
         )
@@ -1527,8 +1519,6 @@ async def run(task: dict) -> Action:
 
     if action == "surface_prior_mission_hints":
         # Z1 Tier 6A (P9) — cross-mission ADR + compliance inheritance.
-        # Advisory; always returns completed with hints[] (possibly
-        # empty). Founder reviews via Telegram reuse/diverge buttons.
         from mr_roboto.surface_prior_mission_hints import (
             surface_prior_mission_hints as _surface_hints,
         )
@@ -1548,8 +1538,7 @@ async def run(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "index_mission_artifacts":
-        # Z1 Tier 6A (P9) — phase-6-tail mechanical step. Walks
-        # phase-≤6 artifacts and writes mission_artifacts_index rows.
+        # Z1 Tier 6A (P9) — phase-6-tail mechanical step.
         from mr_roboto.surface_prior_mission_hints import (
             index_mission_artifacts as _idx_artifacts,
         )
@@ -1564,6 +1553,30 @@ async def run(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=f"index_mission_artifacts: {res.get('reason')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "prior_art_min_coverage":
+        # Z1 Tier 6B (P5) — post-hook on step 1.0 prior_art_search.
+        from mr_roboto.prior_art_min_coverage import (
+            prior_art_min_coverage as _pa_check,
+        )
+        try:
+            res = _pa_check(
+                report=payload.get("report"),
+                report_path=payload.get("report_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"prior_art_min_coverage: problems={res.get('problems')} "
+                        f"verdict={res.get('verdict')!r} "
+                        f"attempted={res.get('attempted')}"
+                    ),
                     result=res,
                 )
             return Action(status="completed", result=res)

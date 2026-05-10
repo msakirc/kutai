@@ -1269,6 +1269,40 @@
       "context": {}
     },
     {
+      "id": "1.0",
+      "phase": "phase_1",
+      "name": "prior_art_search",
+      "agent": "researcher",
+      "difficulty": "medium",
+      "tools_hint": ["find_prior_art", "web_search", "extract_url"],
+      "depends_on": ["0.6"],
+      "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_prior_art == '1'",
+      "input_artifacts": ["idea_brief_final"],
+      "output_artifacts": ["prior_art_report"],
+      "produces": [
+        "mission_{mission_id}/.research/prior_art_report.json"
+      ],
+      "post_hooks": ["prior_art_min_coverage"],
+      "instruction": "Call find_prior_art(idea_summary=idea_brief_final.summary, domain_keywords=<comma-separated tags from idea_brief_final.domain_tags or Vision keywords>, k=10, ambition_tier=context.ambition_tier or 'private_beta'). Inspect the returned report. If verdict='blue_ocean_validated' but you suspect the agent missed adjacent solutions, broaden domain_keywords once and re-call. Save the final report JSON to the produces path verbatim. Surface dead/dormant entries with Wayback timestamps when present.",
+      "done_when": "prior_art_report exists at the produces path and prior_art_min_coverage post-hook returns ok=true.",
+      "artifact_schema": {
+        "prior_art_report": {
+          "type": "object",
+          "required_fields": [
+            "search_summary",
+            "attempted_solutions",
+            "key_lessons",
+            "verdict"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 3000
+      }
+    },
+    {
       "id": "1.1",
       "phase": "phase_1",
       "name": "market_existence_research",
@@ -2002,12 +2036,13 @@
         "market_research_report",
         "research_review_result",
         "research_summary",
-        "indirect_competitors_list_summary"
+        "indirect_competitors_list_summary",
+        "prior_art_report"
       ],
       "output_artifacts": [
         "go_no_go_decision"
       ],
-      "instruction": "Evaluate all research to produce a Go/No-Go recommendation. Score 1-10: market_attractiveness, competitive_feasibility, technical_feasibility, differentiation_potential, regulatory_risk. Compute weighted_score. Wire indirect_competitors_list into the feasibility assessment. If score > 6: Go. If 4-6: Conditional â€” trigger needs_clarification. If < 4: No-Go.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.",
+      "instruction": "Evaluate all research to produce a Go/No-Go recommendation. Score 1-10: market_attractiveness, competitive_feasibility, technical_feasibility, differentiation_potential, regulatory_risk. Compute weighted_score. Wire indirect_competitors_list into the feasibility assessment. If score > 6: Go. If 4-6: Conditional â€” trigger needs_clarification. If < 4: No-Go.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nZ1 P5 — If `prior_art_report.verdict == 'graveyard_well_populated'`, weight the kill-decision higher; surface `prior_art_report.key_lessons` as additional risks in your reasoning and cite at least one lesson_id explicitly.",
       "done_when": "go_no_go_decision exists with scored assessment and clear recommendation.",
       "artifact_schema": {
         "go_no_go_decision": {
@@ -2044,13 +2079,14 @@
       "input_artifacts": [
         "idea_brief_final",
         "market_research_report",
-        "go_no_go_decision"
+        "go_no_go_decision",
+        "prior_art_report"
       ],
       "output_artifacts": [
         "product_vision",
         "product_mission"
       ],
-      "instruction": "Craft a product vision statement: 'For [target audience] who [need], [product name] is a [category] that [key benefit]. Unlike [competitors], we [key differentiator].' Also write a tagline under 10 words. Then craft a product mission statement: 'We help [specific audience] [achieve specific outcome] by [how the product does it].' Under 30 words. Self-review for alignment with go_no_go_decision and market_research_report.",
+      "instruction": "Craft a product vision statement: 'For [target audience] who [need], [product name] is a [category] that [key benefit]. Unlike [competitors], we [key differentiator].' Also write a tagline under 10 words. Then craft a product mission statement: 'We help [specific audience] [achieve specific outcome] by [how the product does it].' Under 30 words. Self-review for alignment with go_no_go_decision and market_research_report.\n\nZ1 P5 — Prior art report's `key_lessons` are positioning constraints — explicitly reference at least one lesson_id in the positioning rationale (justify how this product's differentiator avoids the cited failure mode).",
       "done_when": "product_vision and product_mission exist with vision statement, tagline, and mission.",
       "artifact_schema": {
         "product_vision": {

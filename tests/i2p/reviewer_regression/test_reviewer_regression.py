@@ -85,6 +85,24 @@ def _discover_fixtures() -> list[tuple[str, str, Path]]:
         "bad_design_tokens",
         "good_taste_emphasis",
         "bad_taste_emphasis",
+        # Z1 Tier 3 (T3B) — surfaces / user_flow / screen_inventory /
+        # shared_shell fixtures. Loaded by tests/i2p/test_user_flow.py
+        # + test_surfaces.py + test_screen_inventory.py + test_shared_shell.py.
+        "good_surfaces",
+        "bad_surfaces",
+        "good_user_flow",
+        "bad_user_flow",
+        "good_screen_inventory",
+        "bad_screen_inventory",
+        "good_shared_shell",
+        "bad_shared_shell",
+        # Z1 Tier 3 (T3C) — per-screen plans / HTML prototypes / consistency.
+        "good_screen_plan",
+        "bad_screen_plan",
+        "good_html_prototype",
+        "bad_html_prototype",
+        "good_screen_consistency",
+        "bad_screen_consistency",
     }
     for vdir in sorted(_FIXTURES_ROOT.iterdir()):
         if not vdir.is_dir() or not vdir.name.startswith("v"):

@@ -269,6 +269,23 @@ async def init_db():
         await db.execute("UPDATE missions SET legacy_pre_design_tokens = 1")
     except Exception:
         pass  # Column already exists; skip backfill on subsequent boots.
+    # Z1 T3B migration: gate the new phase-5 user-flow steps for older missions
+    # by tagging existing rows as legacy_pre_user_flow=1; new missions default
+    # to 0 so they receive 5.0b/5.0c/5.0d.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN legacy_pre_user_flow INTEGER DEFAULT 0"
+        )
+        # Backfill: every mission that existed before this column was added is
+        # legacy. Rows inserted after this point use the column default of 0.
+        await db.execute(
+            "UPDATE missions SET legacy_pre_user_flow = 1 "
+            "WHERE legacy_pre_user_flow IS NULL OR legacy_pre_user_flow = 0"
+        )
+        await db.commit()
+        logger.info("Z1 T3B: added missions.legacy_pre_user_flow column and backfilled")
+    except Exception:
+        pass  # Column already exists
 
     # Migrate project data into missions (if projects table exists)
     try:

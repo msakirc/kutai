@@ -945,8 +945,12 @@
       "name": "interview_script_generation",
       "agent": "analyst",
       "difficulty": "medium",
-      "tools_hint": ["write_file"],
-      "depends_on": ["0.3"],
+      "tools_hint": [
+        "write_file"
+      ],
+      "depends_on": [
+        "0.3"
+      ],
       "may_need_clarification": false,
       "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
@@ -965,7 +969,10 @@
       "artifact_schema": {
         "interview_script": {
           "type": "markdown",
-          "required_sections": ["Logistics", "Questions"],
+          "required_sections": [
+            "Logistics",
+            "Questions"
+          ],
           "_schema_version": "1"
         }
       },
@@ -981,13 +988,21 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["0.0c"],
+      "depends_on": [
+        "0.0c"
+      ],
       "skip_when": "mission.legacy_pre_charter == '1'",
-      "input_artifacts": ["interview_script"],
-      "output_artifacts": ["interview_script_shape_result"],
+      "input_artifacts": [
+        "interview_script"
+      ],
+      "output_artifacts": [
+        "interview_script_shape_result"
+      ],
       "payload": {
         "action": "verify_interview_script_shape",
-        "script_paths": ["mission_{mission_id}/.intake/interview_script.md"],
+        "script_paths": [
+          "mission_{mission_id}/.intake/interview_script.md"
+        ],
         "min_questions": 5,
         "max_questions": 7
       },
@@ -1003,11 +1018,17 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["0.0c.verify"],
+      "depends_on": [
+        "0.0c.verify"
+      ],
       "may_need_clarification": true,
       "skip_when": "mission.legacy_pre_charter == '1'",
-      "input_artifacts": ["interview_script"],
-      "output_artifacts": ["interview_request_ack"],
+      "input_artifacts": [
+        "interview_script"
+      ],
+      "output_artifacts": [
+        "interview_request_ack"
+      ],
       "payload": {
         "action": "request_interview_data",
         "script_path": "mission_{mission_id}/.intake/interview_script.md"
@@ -1140,7 +1161,9 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["0.1"],
+      "depends_on": [
+        "0.1"
+      ],
       "may_need_clarification": true,
       "skip_when": "mission.legacy_pre_non_goals == '1'",
       "input_artifacts": [
@@ -1180,13 +1203,21 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["0.6a"],
+      "depends_on": [
+        "0.6a"
+      ],
       "skip_when": "mission.legacy_pre_non_goals == '1'",
-      "input_artifacts": ["non_goals"],
-      "output_artifacts": ["non_goals_shape_result"],
+      "input_artifacts": [
+        "non_goals"
+      ],
+      "output_artifacts": [
+        "non_goals_shape_result"
+      ],
       "payload": {
         "action": "verify_non_goals_shape",
-        "non_goals_paths": ["mission_{mission_id}/.charter/non_goals.md"],
+        "non_goals_paths": [
+          "mission_{mission_id}/.charter/non_goals.md"
+        ],
         "min_items": 3,
         "max_items": 7
       },
@@ -1195,7 +1226,9 @@
       "artifact_schema": {
         "non_goals_shape_result": {
           "type": "object",
-          "required_fields": ["ok"],
+          "required_fields": [
+            "ok"
+          ],
           "_schema_version": "1"
         }
       },
@@ -1369,8 +1402,13 @@
       "name": "competitive_positioning_lock",
       "agent": "analyst",
       "difficulty": "hard",
-      "tools_hint": ["write_file"],
-      "depends_on": ["1.3", "1.4"],
+      "tools_hint": [
+        "write_file"
+      ],
+      "depends_on": [
+        "1.3",
+        "1.4"
+      ],
       "may_need_clarification": false,
       "skip_when": "mission.legacy_pre_competitive_positioning == '1'",
       "input_artifacts": [
@@ -1412,13 +1450,21 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["1.4a"],
+      "depends_on": [
+        "1.4a"
+      ],
       "skip_when": "mission.legacy_pre_competitive_positioning == '1'",
-      "input_artifacts": ["competitive_positioning"],
-      "output_artifacts": ["competitive_positioning_shape_result"],
+      "input_artifacts": [
+        "competitive_positioning"
+      ],
+      "output_artifacts": [
+        "competitive_positioning_shape_result"
+      ],
       "payload": {
         "action": "verify_competitive_positioning_shape",
-        "positioning_paths": ["mission_{mission_id}/.prd/competitive_positioning.md"]
+        "positioning_paths": [
+          "mission_{mission_id}/.prd/competitive_positioning.md"
+        ]
       },
       "instruction": "Mechanical post-check that 1.4a produced a paraflow-PRD-§6-shape positioning doc (Z1 C2). No LLM. Asserts front matter (_schema_version=1, mission_id, named_competitors non-empty), six required sections present and non-empty, no placeholders. Failure forces 1.4a to regenerate.",
       "done_when": "verify_competitive_positioning_shape returns ok=true.",
@@ -2469,7 +2515,9 @@
       },
       "instruction": "Extract functional requirements from prd_final. Each requirement object MUST have EXACTLY these fields: req_id (FR-001, FR-002...), title (short name), description (one-paragraph spec, under 80 words), source_story_ids (array of story id strings), priority (High|Medium|Low), category (auth|data|ui|api|integration|notification|search|admin|billing).\n\nZ1 Tier 2 (P4) — falsification triple REQUIRED on every item:\n- risk_if_wrong: one of \"low\" | \"medium\" | \"high\" | \"critical\" — what's the cost if this requirement is wrong?\n- validation_method: how would we know it's wrong? Concrete check (e.g., \"user interview with N>=3 reseller archetype users\", \"monitor latency p95 < 500ms over 7d\", \"fact-check against TR e-commerce regulation\"). When risk_if_wrong=critical, validation_method MUST name a measurable / specific check (numbers OR keywords like interview / monitor / test / audit / benchmark).\n- falsification_signal: specific observable that would cause us to revisit this requirement.\n\nOUTPUT FORMAT: Return ONLY a JSON array starting with `[` and ending with `]`. No wrapping object, no prose, no extra fields. 8-20 requirements total. Every user story must map to at least one requirement.",
       "done_when": "functional_requirements is a JSON array with 8-20 items, each carrying req_id/title/description/source_story_ids/priority/category PLUS risk_if_wrong, validation_method, falsification_signal (Z1 P4 triple).",
-      "post_hooks": ["verify_falsification_present"],
+      "post_hooks": [
+        "verify_falsification_present"
+      ],
       "artifact_schema": {
         "functional_requirements": {
           "type": "array",
@@ -2497,20 +2545,30 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["3.1"],
+      "depends_on": [
+        "3.1"
+      ],
       "skip_when": "mission.legacy_pre_falsification == '1'",
-      "input_artifacts": ["functional_requirements"],
-      "output_artifacts": ["functional_requirements_falsification_result"],
+      "input_artifacts": [
+        "functional_requirements"
+      ],
+      "output_artifacts": [
+        "functional_requirements_falsification_result"
+      ],
       "payload": {
         "action": "verify_falsification_present",
-        "artifacts_from_blackboard": ["functional_requirements"]
+        "artifacts_from_blackboard": [
+          "functional_requirements"
+        ]
       },
       "instruction": "Mechanical verifier (Z1 P4): asserts every functional_requirement carries risk_if_wrong + validation_method + falsification_signal, and that risk_if_wrong=critical items name a measurable validation_method.",
       "done_when": "verify_falsification_present returns ok=true.",
       "artifact_schema": {
         "functional_requirements_falsification_result": {
           "type": "object",
-          "required_fields": ["ok"],
+          "required_fields": [
+            "ok"
+          ],
           "_schema_version": "1"
         }
       },
@@ -2538,7 +2596,9 @@
       ],
       "instruction": "Define performance NFRs: api_response_time (p50, p95, p99), page_load_time, time_to_interactive, LCP, FID, CLS, throughput, database_query_time. Adjust targets based on product type and audience. Then define scalability NFRs: concurrent_users, data_volume, file_storage, api_request_volume, background_job_volume, notification_volume. Include current, 6-month, and 12-month projections with 10x burst headroom.\n\nZ1 Tier 2 (P4) — wrap each top-level NFR object with an `items` array where each entry carries: name, target, AND the falsification triple (risk_if_wrong [low|medium|high|critical], validation_method, falsification_signal). When risk_if_wrong=critical, validation_method MUST be measurable (e.g., 'monitor p95 < 500ms over 7d') not vague ('users will tell us').",
       "done_when": "nfr_performance and nfr_scalability exist with measurable targets AND each item carries the falsification triple (Z1 P4).",
-      "post_hooks": ["verify_falsification_present"],
+      "post_hooks": [
+        "verify_falsification_present"
+      ],
       "artifact_schema": {
         "nfr_performance": {
           "type": "object",
@@ -2571,20 +2631,32 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["3.2"],
+      "depends_on": [
+        "3.2"
+      ],
       "skip_when": "mission.legacy_pre_falsification == '1'",
-      "input_artifacts": ["nfr_performance", "nfr_scalability"],
-      "output_artifacts": ["nfr_perf_scale_falsification_result"],
+      "input_artifacts": [
+        "nfr_performance",
+        "nfr_scalability"
+      ],
+      "output_artifacts": [
+        "nfr_perf_scale_falsification_result"
+      ],
       "payload": {
         "action": "verify_falsification_present",
-        "artifacts_from_blackboard": ["nfr_performance", "nfr_scalability"]
+        "artifacts_from_blackboard": [
+          "nfr_performance",
+          "nfr_scalability"
+        ]
       },
       "instruction": "Mechanical verifier (Z1 P4): asserts every NFR item under nfr_performance.items and nfr_scalability.items carries the falsification triple.",
       "done_when": "verify_falsification_present returns ok=true.",
       "artifact_schema": {
         "nfr_perf_scale_falsification_result": {
           "type": "object",
-          "required_fields": ["ok"],
+          "required_fields": [
+            "ok"
+          ],
           "_schema_version": "1"
         }
       },
@@ -2612,7 +2684,9 @@
       ],
       "instruction": "Define availability NFRs: uptime_target, maintenance_windows, maximum_unplanned_downtime, RTO, RPO, degraded_mode_behavior per dependency. Then define security requirements covering: authentication, authorization, data_protection, api_security, infrastructure, audit, compliance. Map each regulatory_requirement to specific technical controls.\n\nZ1 Tier 2 (P4) — both artifacts must include an `items` array where each entry has: name, target, AND the falsification triple (risk_if_wrong [low|medium|high|critical], validation_method, falsification_signal). Security items where risk_if_wrong=critical (e.g., authentication, data_protection) MUST name a measurable validation_method (e.g., 'pen-test against OWASP top-10 quarterly').",
       "done_when": "nfr_availability and security_requirements exist with measurable targets, traceable security controls, AND every item carries the falsification triple (Z1 P4).",
-      "post_hooks": ["verify_falsification_present"],
+      "post_hooks": [
+        "verify_falsification_present"
+      ],
       "artifact_schema": {
         "nfr_availability": {
           "type": "object",
@@ -2645,20 +2719,32 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["3.3"],
+      "depends_on": [
+        "3.3"
+      ],
       "skip_when": "mission.legacy_pre_falsification == '1'",
-      "input_artifacts": ["nfr_availability", "security_requirements"],
-      "output_artifacts": ["nfr_availability_security_falsification_result"],
+      "input_artifacts": [
+        "nfr_availability",
+        "security_requirements"
+      ],
+      "output_artifacts": [
+        "nfr_availability_security_falsification_result"
+      ],
       "payload": {
         "action": "verify_falsification_present",
-        "artifacts_from_blackboard": ["nfr_availability", "security_requirements"]
+        "artifacts_from_blackboard": [
+          "nfr_availability",
+          "security_requirements"
+        ]
       },
       "instruction": "Mechanical verifier (Z1 P4): asserts every nfr_availability.items and security_requirements.items entry carries the falsification triple.",
       "done_when": "verify_falsification_present returns ok=true.",
       "artifact_schema": {
         "nfr_availability_security_falsification_result": {
           "type": "object",
-          "required_fields": ["ok"],
+          "required_fields": [
+            "ok"
+          ],
           "_schema_version": "1"
         }
       },
@@ -2874,7 +2960,9 @@
       ],
       "instruction": "Extract every business rule: rule_id (BR-001...), title, rule_statement ('IF condition THEN consequence'), category, source, affected_features, testable_assertion.\n\nZ1 Tier 2 (P4) — falsification triple REQUIRED on every BR:\n- risk_if_wrong: one of \"low\" | \"medium\" | \"high\" | \"critical\".\n- validation_method: how would we know this rule is wrong? (e.g., 'fact-check against TR e-commerce regulation', 'A/B against control cohort over 14d').\n- falsification_signal: specific observable that would cause us to revisit the rule.\n\nWhen risk_if_wrong=critical, validation_method MUST name a measurable / specific check.",
       "done_when": "business_rules exists as a numbered list of precise, testable business rule statements, each carrying the Z1 P4 falsification triple.",
-      "post_hooks": ["verify_falsification_present"],
+      "post_hooks": [
+        "verify_falsification_present"
+      ],
       "artifact_schema": {
         "business_rules": {
           "type": "array",
@@ -2901,20 +2989,30 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["3.7"],
+      "depends_on": [
+        "3.7"
+      ],
       "skip_when": "mission.legacy_pre_falsification == '1'",
-      "input_artifacts": ["business_rules"],
-      "output_artifacts": ["business_rules_falsification_result"],
+      "input_artifacts": [
+        "business_rules"
+      ],
+      "output_artifacts": [
+        "business_rules_falsification_result"
+      ],
       "payload": {
         "action": "verify_falsification_present",
-        "artifacts_from_blackboard": ["business_rules"]
+        "artifacts_from_blackboard": [
+          "business_rules"
+        ]
       },
       "instruction": "Mechanical verifier (Z1 P4): asserts every business_rule carries risk_if_wrong + validation_method + falsification_signal, with measurable validation when risk_if_wrong=critical.",
       "done_when": "verify_falsification_present returns ok=true.",
       "artifact_schema": {
         "business_rules_falsification_result": {
           "type": "object",
-          "required_fields": ["ok"],
+          "required_fields": [
+            "ok"
+          ],
           "_schema_version": "1"
         }
       },
@@ -4290,6 +4388,235 @@
       },
       "instruction": "Mechanical shape verification of design_tokens.json (light + dark present, all required token blocks, no placeholder hex, font_family non-empty, tag_signature present).",
       "done_when": "Verifier returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "5.0b",
+      "phase": "phase_5",
+      "name": "surfaces_lock",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "2.11b"
+      ],
+      "may_need_clarification": true,
+      "input_artifacts": [
+        "prd_final_summary"
+      ],
+      "output_artifacts": [
+        "surfaces_config"
+      ],
+      "instruction": "Ask founder which surfaces this product targets. Reply keyboard options: 'mobile only', 'web only', 'mobile + web', 'mobile + web + desktop', 'mobile + web + admin'. Persist the decision to mission_{mission_id}/.charter/surfaces.json with schema {_schema_version, mission_id, surfaces, primary_surface, founder_confirmed_at}. primary_surface defaults to first item; founder may override.",
+      "done_when": "surfaces_config exists with founder confirmation.",
+      "produces": [
+        "mission_{mission_id}/.charter/surfaces.json"
+      ],
+      "executor": "clarify",
+      "payload": {
+        "action": "clarify",
+        "kind": "surface_choice",
+        "options": [
+          "mobile only",
+          "web only",
+          "mobile + web",
+          "mobile + web + desktop",
+          "mobile + web + admin"
+        ],
+        "persist_to": "mission_{mission_id}/.charter/surfaces.json"
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0b.verify",
+      "phase": "phase_5",
+      "name": "surfaces_verify",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0b"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "surfaces_config"
+      ],
+      "output_artifacts": [
+        "surfaces_verify_result"
+      ],
+      "instruction": "Mechanical verify of surfaces.json shape. Asserts non-empty surfaces array, valid surface tokens, primary_surface in list.",
+      "done_when": "surfaces_verify_result.ok == true",
+      "executor": "verify_surfaces_shape",
+      "payload": {
+        "action": "verify_surfaces_shape",
+        "path": ".charter/surfaces.json"
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0c",
+      "phase": "phase_5",
+      "name": "user_flow_lock",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0b.verify"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "surfaces_config",
+        "product_charter",
+        "prd_final_summary"
+      ],
+      "output_artifacts": [
+        "user_flow"
+      ],
+      "instruction": "Read surfaces.json + product_charter (especially Solutions and persona references). Emit mission_{mission_id}/.flow/user_flow.md with YAML frontmatter (_schema_version='1', mission_id, surfaces) and one ```mermaid graph TD``` block per declared surface. Each node must follow the pattern: Name[\"Screen Name<br/>/route\"]. Match the paraflow shape: per-surface H2 sections with persona name in parentheses; Mobile may split into Authentication/Onboarding + Main App.",
+      "done_when": "user_flow.md exists with one mermaid block per surface.",
+      "produces": [
+        "mission_{mission_id}/.flow/user_flow.md"
+      ],
+      "artifact_schema": {
+        "user_flow": {
+          "type": "object",
+          "required_fields": [
+            "surfaces",
+            "mermaid_per_surface"
+          ]
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 4000
+      }
+    },
+    {
+      "id": "5.0c.verify",
+      "phase": "phase_5",
+      "name": "user_flow_verify",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0c"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "user_flow"
+      ],
+      "output_artifacts": [
+        "user_flow_verify_result"
+      ],
+      "instruction": "Mechanical verify of user_flow.md shape. Asserts YAML frontmatter and at least one ```mermaid block per declared surface.",
+      "done_when": "user_flow_verify_result.ok == true",
+      "executor": "verify_user_flow_shape",
+      "payload": {
+        "action": "verify_user_flow_shape",
+        "path": ".flow/user_flow.md"
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0d",
+      "phase": "phase_5",
+      "name": "screen_inventory_and_shell",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0c.verify"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "user_flow",
+        "surfaces_config"
+      ],
+      "output_artifacts": [
+        "screen_inventory",
+        "shared_shell"
+      ],
+      "instruction": "Read user_flow.md. Extract every unique screen by parsing mermaid node labels (Name[\"Screen Name<br/>/route\"]). Emit two artifacts:\n1. mission_{mission_id}/.flow/screen_inventory.md — YAML frontmatter with total_screens, chunk_size=4 (B8 cohesion ceiling), chunks (list of lists, each <= chunk_size). Body groups screens by surface (## Mobile / ## Web / etc.). Each screen line: '- Screen Name (`/route`)'.\n2. mission_{mission_id}/.flow/shared_shell.md — YAML frontmatter with shared_components dict + applicable_to_surfaces. Body has H2 sections for at minimum: Header, EmptyState, ErrorState, LoadingState (TabBar/Footer optional but recommended). Each section describes the invariant pattern.",
+      "done_when": "screen_inventory and shared_shell both exist.",
+      "produces": [
+        "mission_{mission_id}/.flow/screen_inventory.md",
+        "mission_{mission_id}/.flow/shared_shell.md"
+      ],
+      "artifact_schema": {
+        "screen_inventory": {
+          "type": "object",
+          "required_fields": [
+            "total_screens",
+            "chunk_size",
+            "chunks"
+          ]
+        },
+        "shared_shell": {
+          "type": "object",
+          "required_fields": [
+            "shared_components",
+            "applicable_to_surfaces"
+          ]
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 6000
+      }
+    },
+    {
+      "id": "5.0d.verify",
+      "phase": "phase_5",
+      "name": "screen_inventory_and_shell_verify",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0d"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "screen_inventory",
+        "shared_shell"
+      ],
+      "output_artifacts": [
+        "screen_inventory_verify_result"
+      ],
+      "instruction": "Mechanical verify of screen_inventory.md (chunks math, every screen has route) AND shared_shell.md (header + empty + error + loading present).",
+      "done_when": "both verifies pass",
+      "executor": "verify_screen_inventory_shape",
+      "payload": {
+        "action": "verify_screen_inventory_shape",
+        "path": ".flow/screen_inventory.md",
+        "follow_up": {
+          "action": "verify_shared_shell_shape",
+          "path": ".flow/shared_shell.md"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0d.verify_shell",
+      "phase": "phase_5",
+      "name": "shared_shell_verify",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0d"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "shared_shell"
+      ],
+      "output_artifacts": [
+        "shared_shell_verify_result"
+      ],
+      "instruction": "Mechanical verify of shared_shell.md shape (frontmatter + header/empty/error/loading sections present).",
+      "done_when": "shared_shell_verify_result.ok == true",
+      "executor": "verify_shared_shell_shape",
+      "payload": {
+        "action": "verify_shared_shell_shape",
+        "path": ".flow/shared_shell.md"
+      },
       "context": {}
     },
     {

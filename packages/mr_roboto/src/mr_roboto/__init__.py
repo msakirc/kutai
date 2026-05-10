@@ -506,6 +506,81 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "verify_surfaces_shape":
+        from mr_roboto.verify_surfaces_shape import verify_surfaces_shape
+        try:
+            res = await verify_surfaces_shape(
+                mission_id=task.get("mission_id"),
+                path=payload.get("path"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"verify_surfaces_shape: {res.get('errors')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_user_flow_shape":
+        from mr_roboto.verify_user_flow_shape import verify_user_flow_shape
+        try:
+            res = await verify_user_flow_shape(
+                mission_id=task.get("mission_id"),
+                path=payload.get("path"),
+                surfaces=payload.get("surfaces"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"verify_user_flow_shape: {res.get('errors')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_screen_inventory_shape":
+        from mr_roboto.verify_screen_inventory_shape import (
+            verify_screen_inventory_shape,
+        )
+        try:
+            res = await verify_screen_inventory_shape(
+                mission_id=task.get("mission_id"),
+                path=payload.get("path"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"verify_screen_inventory_shape: {res.get('errors')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_shared_shell_shape":
+        from mr_roboto.verify_shared_shell_shape import verify_shared_shell_shape
+        try:
+            res = await verify_shared_shell_shape(
+                mission_id=task.get("mission_id"),
+                path=payload.get("path"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"verify_shared_shell_shape: {res.get('errors')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "generate_intake_todo":
         # Z1 Tier 1 (B1) — agent-generated todo as the only structured
         # intake gate. Returns needs_clarification with keyboard_sent so

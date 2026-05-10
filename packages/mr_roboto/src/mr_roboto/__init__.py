@@ -6,6 +6,9 @@ from mr_roboto.workspace_snapshot import snapshot_workspace
 from mr_roboto.git_commit import auto_commit
 from mr_roboto.verify_artifacts import verify_artifacts
 from mr_roboto.verify_schema_version import verify_schema_version
+from mr_roboto.verify_charter_shape import verify_charter_shape
+from mr_roboto.verify_reverse_pitch_shape import verify_reverse_pitch_shape
+from mr_roboto.generate_intake_todo import generate_intake_todo
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
 from mr_roboto.parse_og_tags import parse_og_tags
@@ -18,6 +21,9 @@ __all__ = [
     "auto_commit",
     "verify_artifacts",
     "verify_schema_version",
+    "verify_charter_shape",
+    "verify_reverse_pitch_shape",
+    "generate_intake_todo",
     "run_cmd",
     "run_pytest",
     "parse_og_tags",
@@ -139,6 +145,79 @@ async def run(task: dict) -> Action:
                     ),
                     result=res,
                 )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_charter_shape":
+        # Z1 Tier 1 — paraflow-shape product_charter.md validator.
+        # Auto-wired as post-hook on the charter-producing step (0.1).
+        from mr_roboto.verify_charter_shape import (
+            verify_charter_shape as _verify_charter,
+        )
+        try:
+            res = _verify_charter(
+                charter_text=payload.get("charter_text"),
+                charter_paths=payload.get("charter_paths"),
+                min_solutions=int(payload.get("min_solutions", 3)),
+                max_solutions=int(payload.get("max_solutions", 7)),
+                min_brand_keywords=int(payload.get("min_brand_keywords", 5)),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_charter_shape: missing_sections={res.get('missing_sections')} "
+                        f"solution_count={res.get('solution_count')} "
+                        f"solution_problems={res.get('solution_problems')} "
+                        f"placeholders={res.get('placeholders')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_reverse_pitch_shape":
+        # Z1 Tier 1 — Amazon working-backwards reverse_pitch.md validator.
+        from mr_roboto.verify_reverse_pitch_shape import (
+            verify_reverse_pitch_shape as _verify_rp,
+        )
+        try:
+            res = _verify_rp(
+                pitch_text=payload.get("pitch_text"),
+                pitch_paths=payload.get("pitch_paths"),
+                ambition_tier=str(payload.get("ambition_tier", "private_beta")),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_reverse_pitch_shape: missing={res.get('missing_sections')} "
+                        f"placeholders={res.get('placeholders')} "
+                        f"ack={res.get('acknowledged_no_users')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "generate_intake_todo":
+        # Z1 Tier 1 (B1) — agent-generated todo as the only structured
+        # intake gate. Returns needs_clarification with keyboard_sent so
+        # general_beckman.result_router keeps the row waiting_human until
+        # the founder confirms via Telegram.
+        from mr_roboto.generate_intake_todo import (
+            generate_intake_todo as _gen_intake,
+        )
+        try:
+            res = await _gen_intake(task)
+            if res.get("status") == "failed":
+                return Action(status="failed", error=str(res.get("error", "")))
+            if (res.get("status") == "needs_clarification"
+                    and res.get("keyboard_sent")):
+                return Action(status="needs_clarification", result=res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

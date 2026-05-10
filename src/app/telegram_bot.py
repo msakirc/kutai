@@ -1879,6 +1879,10 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("budget", self.cmd_budget))
         # Z1 Tier 6 (C18): per-mission GitHub repo (init / view / visibility)
         self.app.add_handler(CommandHandler("github", self.cmd_github))
+        # Z1 Tier 7B (C21): bundle-quality regression vs Paraflow goldens
+        self.app.add_handler(
+            CommandHandler("paraflow_check", self.cmd_paraflow_check)
+        )
         self.app.add_handler(CommandHandler("retry", self.cmd_retry))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
@@ -4037,6 +4041,67 @@ class TelegramInterface:
                 f"Use `/github init {mid}` to create one.",
                 parse_mode="Markdown",
             )
+
+    async def cmd_paraflow_check(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Z1 Tier 7B (C21) — bundle-quality regression vs Paraflow goldens.
+
+        Usage:
+          /paraflow_check <mission_id> [archetype]
+
+        Default archetype is ``truthrate``. Replies with verdict, score,
+        and a compact gap summary.
+        """
+        args = context.args or []
+        if not args:
+            await self._reply(
+                update,
+                "Usage: /paraflow_check <mission_id> [archetype]\n"
+                "Default archetype: truthrate",
+            )
+            return
+        try:
+            mid = int(args[0])
+        except (ValueError, TypeError):
+            await self._reply(update, "Mission id must be an integer.")
+            return
+        archetype = args[1] if len(args) > 1 else "truthrate"
+        try:
+            from mr_roboto.verify_against_paraflow_goldens import (
+                verify_against_paraflow_goldens,
+            )
+            res = await verify_against_paraflow_goldens(
+                mission_id=mid, archetype=archetype
+            )
+        except Exception as e:
+            await self._reply(update, f"paraflow_check failed: {e}")
+            return
+        if res.get("error"):
+            await self._reply(
+                update,
+                f"paraflow_check error for mission #{mid}: "
+                f"{res.get('error')}",
+            )
+            return
+        verdict = res.get("verdict") or "unknown"
+        score = res.get("score")
+        gaps = res.get("gaps") or []
+        emoji = {
+            "paraflow_par": "✅",
+            "paraflow_partial": "⚠️",
+            "paraflow_gap": "❌",
+        }.get(verdict, "❓")
+        gaps_str = "\n".join(f"  - {g}" for g in gaps[:15]) or "  (none)"
+        if len(gaps) > 15:
+            gaps_str += f"\n  ... +{len(gaps) - 15} more"
+        await self._reply(
+            update,
+            f"{emoji} Paraflow check — mission #{mid}\n"
+            f"archetype: {archetype}\n"
+            f"verdict: {verdict}  (score {score})\n"
+            f"gaps:\n{gaps_str}",
+        )
 
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Dead-letter queue management: /dlq [retry <task_id> | discard <task_id>]."""

@@ -1,0 +1,358 @@
+<!DOCTYPE html><html><head>
+    <style>@layer theme, base, paraflow, components, utilities;</style><meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    
+    
+    
+    <style id="moxt-styled">@layer paraflow{@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500;700;900&family=Open+Sans:wght@300;400;500;600;700;800&family=Montserrat:wght@100;200;300;400;500;600;700;800;900&family=Inter:wght@100;200;300;400;500;600;700;800;900&family=Poppins:wght@100;200;300;400;500;600;700;800;900&family=Roboto+Condensed:wght@100;200;300;400;500;600;700;800;900&family=Roboto+Mono:wght@100;200;300;400;500;600;700&family=PT+Serif:wght@400;700&family=Arimo:wght@400;500;600;700&family=Raleway:wght@100;200;300;400;500;600;700;800;900&family=Nunito:wght@200;300;400;500;600;700&;800;900&family=Rubik:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@400;500;600;700;800;900&family=Ubuntu:wght@300;400;500;700&family=Merriweather:wght@300;400;500;600;700;800;900&family=Roboto+Slab:wght@100;200;300;400;500;600;700&family=Libre+Baskerville:wght@400;700&family=Inconsolata:wght@200;300;400;500;600;700;800;900&family=Dancing+Script:wght@400;500;600;700&family=Kanit:wght@100;200;300;400;500;600;700;800;900&display=swap')
+}</style>
+<!--FontAwesome version: 6.7.2--><link rel="stylesheet" href="https://static.paraflowcontent.com/public/css/font-awesome/font-awesome.672.css"><!--Tailwind version: 4.0.17--><script src="https://static.paraflowcontent.com/public/js/tailwind/tailwind.js"></script><!--iconify-icon version: 3.0.0--><script src="https://static.paraflowcontent.com/public/js/iconify/iconify-icon-3.0.0.js"></script></head>
+<body id="40:1" title="search.html" orderindex="80" relativetransform="5450, 125" style="background-color: rgba(250, 249, 247, 1); font-family: &quot;-apple-system&quot;, &quot;BlinkMacSystemFont&quot;, &quot;Segoe UI&quot;, &quot;Helvetica Neue&quot;, &quot;Arial&quot;, sans-serif; line-height: 1.5;" class="w-[390px] min-h-[844px]">
+
+<div id="40:2" orderindex="80" style="background-color: rgba(255, 255, 255, 1); top: 0; box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 1px 3px rgba(0, 0, 0, 0.08);" class="fixed w-full z-10">
+<div id="40:3" orderindex="80" style="height: env(safe-area-inset-top);"></div>
+<header id="40:4" orderindex="81" class="flex justify-between items-center h-14 pr-4 pl-4">
+<span id="40:5" orderindex="80" style="color: rgba(26, 26, 26, 1);" class="text-base font-semibold">Search</span>
+<button id="40:6" orderindex="81" class="flex justify-center items-center w-6 h-6">
+<iconify-icon id="40:7" orderindex="80" style="color: rgba(26, 26, 26, 1);" icon="lucide:bell" class="text-xl"></iconify-icon>
+</button>
+</header>
+</div>
+
+<div id="40:8" orderindex="81">
+<div id="40:9" orderindex="80" style="height: env(safe-area-inset-top);"></div>
+<div id="40:10" orderindex="81" class="h-14"></div>
+</div>
+
+<main id="40:11" orderindex="82" class="pb-4">
+
+<section id="40:12" orderindex="80" class="mb-6 pr-4 pl-4">
+<div id="40:13" orderindex="80" class="flex items-center gap-y-3 gap-x-3">
+<div id="40:14" orderindex="80" style="background-color: rgba(240, 237, 232, 1); flex-basis: 0%; padding: 0.75rem 1rem;" class="flex grow shrink items-center gap-y-3 gap-x-3 rounded-xl">
+<div id="40:15" orderindex="80" class="flex justify-center items-center w-5 h-5">
+<iconify-icon id="40:16" orderindex="80" style="color: rgba(117, 117, 117, 1);" icon="lucide:search" class="text-base"></iconify-icon>
+</div>
+<input id="40:17" orderindex="81" style="flex-basis: 0%; color: rgba(26, 26, 26, 1); border-width: 0;" type="text" placeholder="Search anything..." class="text-base bg-transparent grow shrink outline-none border-solid">
+</div>
+<button id="40:18" orderindex="81" style="background-color: rgba(27, 77, 62, 1);" class="flex justify-center items-center w-10 h-10 rounded-xl">
+<iconify-icon id="40:19" orderindex="80" style="color: rgba(255, 255, 255, 1);" icon="lucide:filter" class="text-base"></iconify-icon>
+</button>
+</div>
+</section>
+
+<section id="40:20" orderindex="81" class="mb-6 pr-4 pl-4">
+<h2 id="40:21" orderindex="80" style="color: rgba(26, 26, 26, 1);" class="text-base mb-3 font-semibold">Recently Searched</h2>
+<div id="40:22" orderindex="81">
+
+<div id="40:23" orderindex="80" class="hover:bg-[#F5F3F0] flex items-center gap-y-3 gap-x-3 mb-2 rounded-lg" style="margin-top: 0; padding: 0.75rem 0.5rem;">
+<div id="40:24" orderindex="80" class="flex justify-center items-center w-5 h-5">
+<iconify-icon id="40:25" orderindex="80" style="color: rgba(117, 117, 117, 1);" icon="lucide:clock" class="text-base"></iconify-icon>
+</div>
+<span id="40:26" orderindex="81" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink">Blue Moon Cafe</span>
+<button id="40:27" orderindex="82" class="flex justify-center items-center w-5 h-5">
+<iconify-icon id="40:28" orderindex="80" style="color: rgba(163, 163, 163, 1);" icon="lucide:x" class="text-sm"></iconify-icon>
+</button>
+</div>
+
+<div id="40:29" orderindex="81" class="hover:bg-[#F5F3F0] flex items-center gap-y-3 gap-x-3 rounded-lg" style="padding: 0.75rem 0.5rem;">
+<div id="40:30" orderindex="80" class="flex justify-center items-center w-5 h-5">
+<iconify-icon id="40:31" orderindex="80" style="color: rgba(117, 117, 117, 1);" icon="lucide:clock" class="text-base"></iconify-icon>
+</div>
+<span id="40:32" orderindex="81" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink">Central Market</span>
+<button id="40:33" orderindex="82" class="flex justify-center items-center w-5 h-5">
+<iconify-icon id="40:34" orderindex="80" style="color: rgba(163, 163, 163, 1);" icon="lucide:x" class="text-sm"></iconify-icon>
+</button>
+</div>
+</div>
+</section>
+
+<section id="40:35" orderindex="82" class="mb-6 pr-4 pl-4">
+<h2 id="40:36" orderindex="80" style="color: rgba(26, 26, 26, 1);" class="text-base mb-3 font-semibold">Popular Searches</h2>
+<div id="40:37" orderindex="81">
+
+<div id="40:38" orderindex="80" class="hover:bg-[#F5F3F0] flex items-center gap-y-3 gap-x-3 mb-2 rounded-lg" style="margin-top: 0; padding: 0.75rem 0.5rem;">
+<div id="40:39" orderindex="80" class="flex justify-center items-center w-5 h-5">
+<iconify-icon id="40:40" orderindex="80" style="color: rgba(27, 77, 62, 1);" icon="lucide:trending-up" class="text-base"></iconify-icon>
+</div>
+<span id="40:41" orderindex="81" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink">Best coffee shops downtown</span>
+</div>
+
+<div id="40:42" orderindex="81" class="hover:bg-[#F5F3F0] flex items-center gap-y-3 gap-x-3 mb-2 rounded-lg" style="margin-top: 0; padding: 0.75rem 0.5rem;">
+<div id="40:43" orderindex="80" class="flex justify-center items-center w-5 h-5">
+<iconify-icon id="40:44" orderindex="80" style="color: rgba(27, 77, 62, 1);" icon="lucide:trending-up" class="text-base"></iconify-icon>
+</div>
+<span id="40:45" orderindex="81" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink">Organic grocery stores</span>
+</div>
+
+<div id="40:46" orderindex="82" class="hover:bg-[#F5F3F0] flex items-center gap-y-3 gap-x-3 rounded-lg" style="padding: 0.75rem 0.5rem;">
+<div id="40:47" orderindex="80" class="flex justify-center items-center w-5 h-5">
+<iconify-icon id="40:48" orderindex="80" style="color: rgba(27, 77, 62, 1);" icon="lucide:trending-up" class="text-base"></iconify-icon>
+</div>
+<span id="40:49" orderindex="81" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink">Yoga studios near me</span>
+</div>
+</div>
+</section>
+
+<section id="40:50" orderindex="83" class="mb-6 pr-4 pl-4">
+<h2 id="40:51" orderindex="80" style="color: rgba(26, 26, 26, 1);" class="text-base mb-3 font-semibold">Browse Categories</h2>
+<div id="40:52" orderindex="81" class="overflow-x-auto flex gap-y-2 gap-x-2">
+
+<button id="40:53" orderindex="80" class="hover:bg-[#1B4D3E] hover:text-white text-sm whitespace-nowrap font-medium rounded-full" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.5rem 1rem;">
+<div id="40:54" orderindex="80" class="flex items-center gap-y-2 gap-x-2">
+<iconify-icon id="40:55" orderindex="80" icon="lucide:utensils" class="text-sm"></iconify-icon>
+<span id="40:56" orderindex="81">Restaurants</span>
+</div>
+</button>
+
+<button id="40:57" orderindex="81" class="hover:bg-[#1B4D3E] hover:text-white text-sm whitespace-nowrap font-medium rounded-full" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.5rem 1rem;">
+<div id="40:58" orderindex="80" class="flex items-center gap-y-2 gap-x-2">
+<iconify-icon id="40:59" orderindex="80" icon="lucide:shopping-bag" class="text-sm"></iconify-icon>
+<span id="40:60" orderindex="81">Products</span>
+</div>
+</button>
+
+<button id="40:61" orderindex="82" class="hover:bg-[#1B4D3E] hover:text-white text-sm whitespace-nowrap font-medium rounded-full" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.5rem 1rem;">
+<div id="40:62" orderindex="80" class="flex items-center gap-y-2 gap-x-2">
+<iconify-icon id="40:63" orderindex="80" icon="lucide:wrench" class="text-sm"></iconify-icon>
+<span id="40:64" orderindex="81">Services</span>
+</div>
+</button>
+
+<button id="40:65" orderindex="83" class="hover:bg-[#1B4D3E] hover:text-white text-sm whitespace-nowrap font-medium rounded-full" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.5rem 1rem;">
+<div id="40:66" orderindex="80" class="flex items-center gap-y-2 gap-x-2">
+<iconify-icon id="40:67" orderindex="80" icon="lucide:heart" class="text-sm"></iconify-icon>
+<span id="40:68" orderindex="81">Health</span>
+</div>
+</button>
+
+<button id="40:69" orderindex="84" class="hover:bg-[#1B4D3E] hover:text-white text-sm whitespace-nowrap font-medium rounded-full" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.5rem 1rem;">
+<div id="40:70" orderindex="80" class="flex items-center gap-y-2 gap-x-2">
+<iconify-icon id="40:71" orderindex="80" icon="lucide:sparkles" class="text-sm"></iconify-icon>
+<span id="40:72" orderindex="81">Beauty</span>
+</div>
+</button>
+</div>
+</section>
+
+<section id="40:73" orderindex="84" class="mb-6 pr-4 pl-4">
+<div id="40:74" orderindex="80" class="flex justify-between items-center mb-4">
+<h2 id="40:75" orderindex="80" style="color: rgba(26, 26, 26, 1);" class="text-base font-semibold">Results for "coffee shops"</h2>
+<span id="40:76" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-sm">5 results</span>
+</div>
+
+<div id="40:77" orderindex="81" style="background-color: rgba(255, 255, 255, 1); box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 1px 3px rgba(0, 0, 0, 0.08);" class="overflow-x-hidden overflow-y-hidden flex flex-col gap-y-3 gap-x-3 mb-4 rounded-2xl">
+<img id="40:78" orderindex="80" alt="Cozy coffee shop interior with wooden furniture and warm lighting" src="https://static.paraflowcontent.com/public/resource/image/ef18f8e6-9f32-4c24-b123-9745c43cdcf2.jpeg" class="w-full h-40 object-cover">
+<div id="40:79" orderindex="81" class="flex flex-col gap-y-2 gap-x-2 p-4">
+<div id="40:80" orderindex="80" class="flex justify-between items-start">
+<h3 id="40:81" orderindex="80" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink mr-2 font-semibold">Blue Moon Cafe</h3>
+<span id="40:82" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-xs">0.2 mi</span>
+</div>
+<div id="40:83" orderindex="81" class="flex gap-y-2 gap-x-2 mb-2">
+<span id="40:84" orderindex="80" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Coffee Shop</span>
+<span id="40:85" orderindex="81" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Cafe</span>
+</div>
+<div id="40:86" orderindex="82" class="flex items-center gap-y-2 gap-x-2 mb-2">
+<div id="40:87" orderindex="80" class="flex gap-y-1 gap-x-1">
+<iconify-icon id="40:88" orderindex="80" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:89" orderindex="81" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:90" orderindex="82" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:91" orderindex="83" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:92" orderindex="84" style="color: rgba(229, 229, 229, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+</div>
+<span id="40:93" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-bold">4.5</span>
+<span id="40:94" orderindex="82" style="color: rgba(117, 117, 117, 1);" class="text-sm">(127 reviews)</span>
+</div>
+<div id="40:95" orderindex="83" style="background-color: rgba(255, 244, 230, 1);" class="p-3 rounded-lg">
+<div id="40:96" orderindex="80" class="flex items-center gap-y-2 gap-x-2 mb-1">
+<div id="40:97" orderindex="80" style="background-color: rgba(16, 185, 129, 1); color: rgba(255, 255, 255, 1); padding: 0.25rem 0.5rem;" class="text-xs w-fit font-bold rounded-full">VERIFIED</div>
+</div>
+<p id="40:98" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-medium">Uses organic fair-trade beans</p>
+</div>
+</div>
+</div>
+
+<div id="40:99" orderindex="82" style="background-color: rgba(255, 255, 255, 1); box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 1px 3px rgba(0, 0, 0, 0.08);" class="overflow-x-hidden overflow-y-hidden flex flex-col gap-y-3 gap-x-3 mb-4 rounded-2xl">
+<img id="40:100" orderindex="80" alt="Modern coffee shop with industrial design and exposed brick walls" src="https://static.paraflowcontent.com/public/resource/image/b2fa4c1b-d5ac-41ca-a3d0-ebe80cf230ae.jpeg" class="w-full h-40 object-cover">
+<div id="40:101" orderindex="81" class="flex flex-col gap-y-2 gap-x-2 p-4">
+<div id="40:102" orderindex="80" class="flex justify-between items-start">
+<h3 id="40:103" orderindex="80" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink mr-2 font-semibold">Roasted Grounds</h3>
+<span id="40:104" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-xs">0.5 mi</span>
+</div>
+<div id="40:105" orderindex="81" class="flex gap-y-2 gap-x-2 mb-2">
+<span id="40:106" orderindex="80" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Coffee Roastery</span>
+<span id="40:107" orderindex="81" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Specialty Coffee</span>
+</div>
+<div id="40:108" orderindex="82" class="flex items-center gap-y-2 gap-x-2 mb-2">
+<div id="40:109" orderindex="80" class="flex gap-y-1 gap-x-1">
+<iconify-icon id="40:110" orderindex="80" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:111" orderindex="81" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:112" orderindex="82" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:113" orderindex="83" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:114" orderindex="84" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+</div>
+<span id="40:115" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-bold">4.8</span>
+<span id="40:116" orderindex="82" style="color: rgba(117, 117, 117, 1);" class="text-sm">(89 reviews)</span>
+</div>
+<div id="40:117" orderindex="83" style="background-color: rgba(240, 244, 248, 1);" class="p-3 rounded-lg">
+<div id="40:118" orderindex="80" class="flex items-center gap-y-2 gap-x-2 mb-1">
+<div id="40:119" orderindex="80" style="background-color: rgba(16, 185, 129, 1); color: rgba(255, 255, 255, 1); padding: 0.25rem 0.5rem;" class="text-xs w-fit font-bold rounded-full">VERIFIED</div>
+</div>
+<p id="40:120" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-medium">Roasts beans daily on-site</p>
+</div>
+</div>
+</div>
+
+<div id="40:121" orderindex="83" style="background-color: rgba(255, 255, 255, 1); box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 1px 3px rgba(0, 0, 0, 0.08);" class="overflow-x-hidden overflow-y-hidden flex flex-col gap-y-3 gap-x-3 mb-4 rounded-2xl">
+<img id="40:122" orderindex="80" alt="Vintage coffee shop with antique furniture and old-world charm" src="https://static.paraflowcontent.com/public/resource/image/0db742e0-a46e-4ad2-bcdc-b80620020067.jpeg" class="w-full h-40 object-cover">
+<div id="40:123" orderindex="81" class="flex flex-col gap-y-2 gap-x-2 p-4">
+<div id="40:124" orderindex="80" class="flex justify-between items-start">
+<h3 id="40:125" orderindex="80" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink mr-2 font-semibold">The Daily Grind</h3>
+<span id="40:126" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-xs">0.8 mi</span>
+</div>
+<div id="40:127" orderindex="81" class="flex gap-y-2 gap-x-2 mb-2">
+<span id="40:128" orderindex="80" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Coffee House</span>
+<span id="40:129" orderindex="81" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Study Spot</span>
+</div>
+<div id="40:130" orderindex="82" class="flex items-center gap-y-2 gap-x-2 mb-2">
+<div id="40:131" orderindex="80" class="flex gap-y-1 gap-x-1">
+<iconify-icon id="40:132" orderindex="80" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:133" orderindex="81" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:134" orderindex="82" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:135" orderindex="83" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:136" orderindex="84" style="color: rgba(229, 229, 229, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+</div>
+<span id="40:137" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-bold">4.2</span>
+<span id="40:138" orderindex="82" style="color: rgba(117, 117, 117, 1);" class="text-sm">(203 reviews)</span>
+</div>
+<div id="40:139" orderindex="83" style="background-color: rgba(240, 244, 248, 1);" class="p-3 rounded-lg">
+<div id="40:140" orderindex="80" class="flex items-center gap-y-2 gap-x-2 mb-1">
+<div id="40:141" orderindex="80" style="background-color: rgba(16, 185, 129, 1); color: rgba(255, 255, 255, 1); padding: 0.25rem 0.5rem;" class="text-xs w-fit font-bold rounded-full">VERIFIED</div>
+</div>
+<p id="40:142" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-medium">Free WiFi, 24/7 study-friendly</p>
+</div>
+</div>
+</div>
+
+<div id="40:143" orderindex="84" style="background-color: rgba(255, 255, 255, 1); box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 1px 3px rgba(0, 0, 0, 0.08);" class="overflow-x-hidden overflow-y-hidden flex flex-col gap-y-3 gap-x-3 mb-4 rounded-2xl">
+<img id="40:144" orderindex="80" alt="Premium coffee subscription box with various coffee beans and brewing equipment" src="https://static.paraflowcontent.com/public/resource/image/6aecef20-2daa-41d4-afe2-f2504f790536.jpeg" class="w-full h-40 object-cover">
+<div id="40:145" orderindex="81" class="flex flex-col gap-y-2 gap-x-2 p-4">
+<div id="40:146" orderindex="80" class="flex items-center gap-y-2 gap-x-2 mb-1">
+<span id="40:147" orderindex="80" style="background-color: rgba(245, 243, 240, 1); color: rgba(163, 163, 163, 1); padding: 0.25rem 0.5rem;" class="text-xs rounded-sm">Sponsored</span>
+</div>
+<h3 id="40:148" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-base font-semibold">Premium Coffee Delivered Monthly</h3>
+<p id="40:149" orderindex="82" style="color: rgba(74, 74, 74, 1);" class="text-sm">Discover the world's finest coffee beans, delivered fresh to your door every month.</p>
+<button id="40:150" orderindex="83" class="hover:bg-[#0F3329] flex justify-center items-center gap-y-2 gap-x-2 mt-2 rounded-xl" style="background-color: rgba(27, 77, 62, 1); color: rgba(255, 255, 255, 1); padding: 0.5rem 1rem;">
+<span id="40:151" orderindex="80" class="text-sm font-semibold">Learn More</span>
+</button>
+</div>
+</div>
+
+<div id="40:152" orderindex="85" style="background-color: rgba(255, 255, 255, 1); box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 1px 3px rgba(0, 0, 0, 0.08);" class="overflow-x-hidden overflow-y-hidden flex flex-col gap-y-3 gap-x-3 mb-4 rounded-2xl">
+<img id="40:153" orderindex="80" alt="Bright coffee shop with large windows and minimalist decor" src="https://static.paraflowcontent.com/public/resource/image/61871437-e812-427c-899d-1ebeabe9e01d.jpeg" class="w-full h-40 object-cover">
+<div id="40:154" orderindex="81" class="flex flex-col gap-y-2 gap-x-2 p-4">
+<div id="40:155" orderindex="80" class="flex justify-between items-start">
+<h3 id="40:156" orderindex="80" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink mr-2 font-semibold">Sunrise Coffee Co.</h3>
+<span id="40:157" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-xs">1.1 mi</span>
+</div>
+<div id="40:158" orderindex="81" class="flex gap-y-2 gap-x-2 mb-2">
+<span id="40:159" orderindex="80" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Breakfast Spot</span>
+<span id="40:160" orderindex="81" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Coffee</span>
+</div>
+<div id="40:161" orderindex="82" class="flex items-center gap-y-2 gap-x-2 mb-2">
+<div id="40:162" orderindex="80" class="flex gap-y-1 gap-x-1">
+<iconify-icon id="40:163" orderindex="80" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:164" orderindex="81" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:165" orderindex="82" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:166" orderindex="83" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:167" orderindex="84" style="color: rgba(229, 229, 229, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+</div>
+<span id="40:168" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-bold">4.3</span>
+<span id="40:169" orderindex="82" style="color: rgba(117, 117, 117, 1);" class="text-sm">(156 reviews)</span>
+</div>
+<div id="40:170" orderindex="83" style="background-color: rgba(240, 244, 248, 1);" class="p-3 rounded-lg">
+<div id="40:171" orderindex="80" class="flex items-center gap-y-2 gap-x-2 mb-1">
+<div id="40:172" orderindex="80" style="background-color: rgba(16, 185, 129, 1); color: rgba(255, 255, 255, 1); padding: 0.25rem 0.5rem;" class="text-xs w-fit font-bold rounded-full">VERIFIED</div>
+</div>
+<p id="40:173" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-medium">Opens 5:30 AM, fresh pastries daily</p>
+</div>
+</div>
+</div>
+
+<div id="40:174" orderindex="86" style="background-color: rgba(255, 255, 255, 1); box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 1px 3px rgba(0, 0, 0, 0.08);" class="overflow-x-hidden overflow-y-hidden flex flex-col gap-y-3 gap-x-3 mb-4 rounded-2xl">
+<img id="40:175" orderindex="80" alt="Artisanal coffee shop with exposed beams and local art on walls" src="https://static.paraflowcontent.com/public/resource/image/eafdc6c5-ec60-422c-8249-84ba97418f91.jpeg" class="w-full h-40 object-cover">
+<div id="40:176" orderindex="81" class="flex flex-col gap-y-2 gap-x-2 p-4">
+<div id="40:177" orderindex="80" class="flex justify-between items-start">
+<h3 id="40:178" orderindex="80" style="flex-basis: 0%; color: rgba(26, 26, 26, 1);" class="text-base grow shrink mr-2 font-semibold">Local Bean Artisan</h3>
+<span id="40:179" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-xs">1.3 mi</span>
+</div>
+<div id="40:180" orderindex="81" class="flex gap-y-2 gap-x-2 mb-2">
+<span id="40:181" orderindex="80" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Artisan Coffee</span>
+<span id="40:182" orderindex="81" style="background-color: rgba(245, 243, 240, 1); color: rgba(74, 74, 74, 1); padding: 0.25rem 0.75rem;" class="text-xs font-medium rounded-full">Local Art</span>
+</div>
+<div id="40:183" orderindex="82" class="flex items-center gap-y-2 gap-x-2 mb-2">
+<div id="40:184" orderindex="80" class="flex gap-y-1 gap-x-1">
+<iconify-icon id="40:185" orderindex="80" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:186" orderindex="81" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:187" orderindex="82" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:188" orderindex="83" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+<iconify-icon id="40:189" orderindex="84" style="color: rgba(245, 158, 11, 1);" icon="lucide:star" class="text-sm"></iconify-icon>
+</div>
+<span id="40:190" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-bold">4.9</span>
+<span id="40:191" orderindex="82" style="color: rgba(117, 117, 117, 1);" class="text-sm">(67 reviews)</span>
+</div>
+<div id="40:192" orderindex="83" style="background-color: rgba(255, 244, 230, 1);" class="p-3 rounded-lg">
+<div id="40:193" orderindex="80" class="flex items-center gap-y-2 gap-x-2 mb-1">
+<div id="40:194" orderindex="80" style="background-color: rgba(16, 185, 129, 1); color: rgba(255, 255, 255, 1); padding: 0.25rem 0.5rem;" class="text-xs w-fit font-bold rounded-full">VERIFIED</div>
+</div>
+<p id="40:195" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-sm font-medium">Single-origin beans, supports local artists</p>
+</div>
+</div>
+</div>
+</section>
+
+<section id="40:196" orderindex="85" class="mb-6 pr-4 pl-4">
+<div id="40:197" orderindex="80" style="background-color: rgba(255, 255, 255, 1); box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 1px 3px rgba(0, 0, 0, 0.08);" class="overflow-x-hidden overflow-y-hidden rounded-2xl">
+<img id="40:198" orderindex="80" alt="Food delivery app advertisement showing various restaurant meals and fast delivery" src="https://static.paraflowcontent.com/public/resource/image/b1de34cd-3ab9-4204-a185-828152bb5565.jpeg" class="w-full h-30 object-cover">
+</div>
+</section>
+</main>
+
+<div id="40:199" orderindex="83">
+<div id="40:200" orderindex="80" class="h-[72px] mt-[16px]"></div>
+<div id="40:201" orderindex="81" style="height: env(safe-area-inset-bottom);"></div>
+</div>
+
+<div id="40:202" orderindex="84" style="bottom: 0;" class="flex fixed flex-col w-full z-10">
+<div id="40:203" orderindex="80" style="background-color: rgba(255, 255, 255, 1); box-shadow: 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 0 rgba(0, 0, 0, 0), 0 -1px 3px rgba(0, 0, 0, 0.08);">
+<nav id="40:204" orderindex="80" style="padding: 0.75rem 0.25rem;" class="flex justify-around">
+<div id="40:205" orderindex="80" style="flex-basis: 0%;" class="flex flex-col grow shrink items-center gap-y-1 gap-x-1">
+<div id="40:206" orderindex="80" class="flex justify-center items-center w-6 h-6">
+<iconify-icon id="40:207" orderindex="80" style="color: rgba(117, 117, 117, 1);" icon="lucide:home" class="text-xl"></iconify-icon>
+</div>
+<span id="40:208" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-xs font-normal">Home</span>
+</div>
+<div id="40:209" orderindex="81" style="flex-basis: 0%;" class="flex flex-col grow shrink items-center gap-y-1 gap-x-1">
+<div id="40:210" orderindex="80" class="flex justify-center items-center w-6 h-6">
+<iconify-icon id="40:211" orderindex="80" style="color: rgba(26, 26, 26, 1);" icon="lucide:search" class="text-xl"></iconify-icon>
+</div>
+<span id="40:212" orderindex="81" style="color: rgba(26, 26, 26, 1);" class="text-xs font-normal">Search</span>
+</div>
+<div id="40:213" orderindex="82" style="flex-basis: 0%;" class="flex flex-col grow shrink items-center gap-y-1 gap-x-1">
+<div id="40:214" orderindex="80" class="flex justify-center items-center w-6 h-6">
+<iconify-icon id="40:215" orderindex="80" style="color: rgba(117, 117, 117, 1);" icon="lucide:activity" class="text-xl"></iconify-icon>
+</div>
+<span id="40:216" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-xs font-normal">My Activity</span>
+</div>
+<div id="40:217" orderindex="83" style="flex-basis: 0%;" class="flex flex-col grow shrink items-center gap-y-1 gap-x-1">
+<div id="40:218" orderindex="80" class="flex justify-center items-center w-6 h-6">
+<iconify-icon id="40:219" orderindex="80" style="color: rgba(117, 117, 117, 1);" icon="lucide:user" class="text-xl"></iconify-icon>
+</div>
+<span id="40:220" orderindex="81" style="color: rgba(117, 117, 117, 1);" class="text-xs font-normal">Profile</span>
+</div>
+</nav>
+<div id="40:221" orderindex="81" style="height: env(safe-area-inset-bottom);"></div>
+</div>
+</div>
+
+
+</body></html>

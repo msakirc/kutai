@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "c21_paraflow_diff"
+version = "0.1.0"
+description = "Z1 Tier 7B (C21) — bundle-quality regression vs Paraflow goldens"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]

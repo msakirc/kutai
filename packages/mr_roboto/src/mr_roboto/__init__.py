@@ -1592,4 +1592,23 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "verify_against_paraflow_goldens":
+        # Z1 Tier 7B (C21) — bundle-quality regression vs Paraflow goldens.
+        # NOT auto-wired into i2p; invoked manually via /paraflow_check
+        # or by a future standing audit job.
+        from mr_roboto.verify_against_paraflow_goldens import (
+            verify_against_paraflow_goldens as _verify_paraflow,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _verify_paraflow(
+                mission_id=int(mid) if mid is not None else 0,
+                archetype=str(payload.get("archetype") or "truthrate"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            # Always completed: paraflow_gap is information, not error.
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

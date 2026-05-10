@@ -832,6 +832,28 @@ async def init_db():
     except Exception:
         pass  # Column already exists
 
+    # Z1 Tier 7B (C21) — paraflow bundle-quality regression log.
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paraflow_diff_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id INTEGER NOT NULL,
+            archetype TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            score REAL,
+            gaps_json TEXT NOT NULL DEFAULT '[]',
+            coverage_json TEXT NOT NULL DEFAULT '{}',
+            coherence_json TEXT NOT NULL DEFAULT '{}',
+            design_fitness_json TEXT NOT NULL DEFAULT '{}',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_paraflow_diff_log_mission "
+        "ON paraflow_diff_log (mission_id, created_at DESC)"
+    )
+
     # Tasks
     await db.execute("""
         CREATE TABLE IF NOT EXISTS tasks (

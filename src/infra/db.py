@@ -2964,9 +2964,10 @@ async def add_subtasks_atomically(
                 # Z10 T3A: derive phase_id from context if present.
                 _sub_ctx = st.get("context") or {}
                 _sub_phase_id = (
-                    _sub_ctx.get("phase_id")
-                    or _sub_ctx.get("workflow_phase")
-                ) if isinstance(_sub_ctx, dict) else None
+                    (_sub_ctx.get("phase_id")
+                     or _sub_ctx.get("workflow_phase"))
+                    if isinstance(_sub_ctx, dict) else None
+                )
                 cursor = await db.execute(
                     """INSERT INTO tasks
                        (mission_id, parent_task_id, title, description, agent_type,
@@ -3069,8 +3070,9 @@ async def insert_tasks_atomically(
                 # Z10 T3A: derive phase_id from context if present.
                 _t_ctx = t.get("context") or {}
                 _t_phase_id = (
-                    _t_ctx.get("phase_id") or _t_ctx.get("workflow_phase")
-                ) if isinstance(_t_ctx, dict) else None
+                    (_t_ctx.get("phase_id") or _t_ctx.get("workflow_phase"))
+                    if isinstance(_t_ctx, dict) else None
+                )
                 cursor = await db.execute(
                     """INSERT INTO tasks
                        (mission_id, parent_task_id, title, description, agent_type,

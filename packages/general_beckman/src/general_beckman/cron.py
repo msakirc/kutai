@@ -46,6 +46,8 @@ async def fire_due() -> None:
                 await _file_locks_sweep()
             elif marker == "mission_budget_alerts":
                 await _mission_budget_alerts()
+            elif marker == "mission_pacing_check":
+                await _mission_pacing_check()
             else:
                 await _insert_scheduled_task(row, payload)
             await _advance_schedule(row, now)
@@ -150,6 +152,25 @@ async def _mission_budget_alerts() -> None:
             logger.info("mission_budget_alerts wrote rows", count=n)
     except Exception as e:
         logger.warning("mission_budget_alerts failed", error=str(e))
+
+
+async def _mission_pacing_check() -> None:
+    """Z10 T3A — pacing tradeoff prompt at 75% burn + 25% scope remaining.
+
+    For every mission with status in {active, processing} and a non-NULL
+    ``time_budget_hours``, compute pacing. If ``tradeoff_due`` is True
+    and no row exists for ``(mission_id, today)`` in
+    ``mission_tradeoff_prompts``, build a 30%-cut suggestion and post
+    a single ``[asking]`` event via ``post_event``. UNIQUE index keeps
+    it idempotent across cron ticks.
+    """
+    try:
+        from src.infra.mission_pacing_cron import check_and_post_tradeoff_prompts
+        n = await check_and_post_tradeoff_prompts()
+        if n:
+            logger.info("mission_pacing_check posted prompts", count=n)
+    except Exception as e:
+        logger.warning("mission_pacing_check failed", error=str(e))
 
 
 async def _btable_rollup() -> None:

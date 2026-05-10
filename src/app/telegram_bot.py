@@ -1978,11 +1978,32 @@ class TelegramInterface:
     # ─── Mission Commands ──────────────────────────────────────────────────────
 
     async def cmd_mission(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Create a new mission. /mission <description> or /mish <description>"""
+        """Create or view a mission.
+
+        Usage:
+          /mission                — prompt for description
+          /mission <id>           — show mission details + pacing (Z10 T3A)
+          /mission <description>  — create new mission
+        """
         if not context.args:
             chat_id = update.effective_chat.id
             self._pending_action[chat_id] = {"command": "mission"}
             await self._reply(update, "🎯 Describe your mission:")
+            return
+
+        # Z10 T3A: if single int arg, render the per-mission view with
+        # the Pacing block appended.
+        if len(context.args) == 1 and context.args[0].isdigit():
+            try:
+                from src.app.mission_view import format_mission_view
+                mid = int(context.args[0])
+                body = await format_mission_view(mid)
+                await self._reply(update, body, parse_mode="Markdown")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cmd_mission view failed", error=str(e))
+                await self._reply(
+                    update, f"❌ Could not show mission: {_friendly_error(str(e))}",
+                )
             return
 
         text_args = list(context.args)

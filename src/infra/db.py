@@ -1799,6 +1799,127 @@ async def init_db():
         ),
     )
 
+    # ── Z10 T3A: time awareness ─────────────────────────────────────
+    # 12. missions: target_launch + time_budget_hours + phase_budget_json
+    await apply_migration(
+        version="2026-05-10-missions-time-awareness",
+        sql=(
+            "ALTER TABLE missions ADD COLUMN target_launch DATE;\n"
+            "ALTER TABLE missions ADD COLUMN time_budget_hours REAL;\n"
+            "ALTER TABLE missions ADD COLUMN phase_budget_json TEXT;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE missions DROP COLUMN target_launch;\n"
+            "ALTER TABLE missions DROP COLUMN time_budget_hours;\n"
+            "ALTER TABLE missions DROP COLUMN phase_budget_json;\n"
+        ),
+        description=(
+            "T3A time awareness: missions.target_launch + time_budget_hours "
+            "+ phase_budget_json (per-phase hour budgets)"
+        ),
+    )
+
+    # 13. tasks: step_started_at + phase_id
+    await apply_migration(
+        version="2026-05-10-tasks-step-timing",
+        sql=(
+            "ALTER TABLE tasks ADD COLUMN step_started_at TIMESTAMP;\n"
+            "ALTER TABLE tasks ADD COLUMN phase_id TEXT;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE tasks DROP COLUMN step_started_at;\n"
+            "ALTER TABLE tasks DROP COLUMN phase_id;\n"
+        ),
+        description=(
+            "T3A time awareness: tasks.step_started_at + tasks.phase_id "
+            "(populated from workflow context at expansion time)"
+        ),
+    )
+
+    # 14. mission_pacing_snapshots
+    await apply_migration(
+        version="2026-05-10-mission-pacing-snapshots",
+        sql=(
+            "CREATE TABLE mission_pacing_snapshots ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER NOT NULL,"
+            " taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " elapsed_hours REAL,"
+            " remaining_budget_hours REAL,"
+            " projected_finish_at TIMESTAMP,"
+            " percent_burn REAL,"
+            " scope_remaining_pct REAL"
+            ");\n"
+            "CREATE INDEX idx_mission_pacing_snapshots_mt "
+            "ON mission_pacing_snapshots(mission_id, taken_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_mission_pacing_snapshots_mt;\n"
+            "DROP TABLE IF EXISTS mission_pacing_snapshots;\n"
+        ),
+        description=(
+            "T3A time awareness: mission_pacing_snapshots time-series for "
+            "elapsed / remaining / burn / projected finish"
+        ),
+    )
+
+    # 15. mission_tradeoff_prompts (idempotent guard for 75/25 cron)
+    await apply_migration(
+        version="2026-05-10-mission-tradeoff-prompts",
+        sql=(
+            "CREATE TABLE mission_tradeoff_prompts ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER NOT NULL,"
+            " posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " mission_event_id INTEGER,"
+            " resolution TEXT"
+            ");\n"
+            "CREATE UNIQUE INDEX idx_mission_tradeoff_prompts_md "
+            "ON mission_tradeoff_prompts(mission_id, DATE(posted_at));\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_mission_tradeoff_prompts_md;\n"
+            "DROP TABLE IF EXISTS mission_tradeoff_prompts;\n"
+        ),
+        description=(
+            "T3A time awareness: mission_tradeoff_prompts log "
+            "(UNIQUE(mission_id, DATE(posted_at)) → idempotent daily "
+            "tradeoff prompt at 75%/25%)"
+        ),
+    )
+
+    # ── Z10 T3B: sandboxing per mission ──────────────────────────────
+    # 16. missions.sandbox_resource_overrides_json
+    await apply_migration(
+        version="2026-05-10-missions-sandbox-overrides",
+        sql=(
+            "ALTER TABLE missions ADD COLUMN sandbox_resource_overrides_json TEXT;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE missions DROP COLUMN sandbox_resource_overrides_json;\n"
+        ),
+        description=(
+            "T3B per-mission container: optional JSON dict of resource caps "
+            "{memory, cpus, pids_limit} overriding env defaults"
+        ),
+    )
+
+    # 17. missions.sandbox_mode (per-mission docker/local opt-in)
+    await apply_migration(
+        version="2026-05-10-missions-sandbox-mode",
+        sql=(
+            "ALTER TABLE missions ADD COLUMN sandbox_mode TEXT DEFAULT 'docker';\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE missions DROP COLUMN sandbox_mode;\n"
+        ),
+        description=(
+            "T3B per-mission sandbox mode opt-in: docker (default) | local. "
+            "When mission requests local AND system default isn't local, "
+            "dispatcher opens a sandbox_local_mode confirmation."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.
@@ -2125,6 +2246,19 @@ async def add_mission(title, description, priority=5, context=None,
             )
     except Exception as e:
         logger.debug(f"ensure_mission_cost_row at add_mission skipped: {e}")
+    # Z10-T3B: provision the per-mission Docker container + network on
+    # mission creation. Best-effort — failures are warning-logged but
+    # don't block mission creation (e.g. docker daemon down → callers
+    # fall back to host-local execution when shell is invoked). Skip
+    # entirely when SANDBOX_MODE is ``none`` or ``local`` (no docker
+    # path is going to be taken anyway).
+    try:
+        if mission_id is not None:
+            from src.tools import shell as _shell_mod
+            if _shell_mod.SANDBOX_MODE not in ("none", "local"):
+                await _shell_mod.ensure_mission_container(int(mission_id))
+    except Exception as e:
+        logger.debug(f"ensure_mission_container at add_mission skipped: {e}")
     return mission_id
 
 async def get_mission(mission_id):
@@ -2323,16 +2457,26 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                     await db.execute("ROLLBACK")
                 return None
 
+            # Z10 T3A: derive phase_id from workflow context if present.
+            # Expander writes 'workflow_phase' (e.g. 'phase_5'); legacy
+            # callers may pass 'phase_id' directly. Either populates the
+            # new tasks.phase_id column for the pacing breakdown.
+            _phase_id = None
+            if isinstance(context, dict):
+                _phase_id = (
+                    context.get("phase_id")
+                    or context.get("workflow_phase")
+                )
             cursor = await db.execute(
                 """INSERT INTO tasks
                    (mission_id, parent_task_id, title, description, agent_type,
                     tier, priority, requires_approval, depends_on, context,
-                    task_hash, kind, runner)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    task_hash, kind, runner, phase_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (mission_id, parent_task_id, title, description, agent_type,
                  tier, priority, requires_approval,
                  json.dumps(depends_on or []), json.dumps(context or {}),
-                 task_hash, kind, runner)
+                 task_hash, kind, runner, _phase_id)
             )
             row_id = cursor.lastrowid
             if db._conn.in_transaction:
@@ -2751,10 +2895,14 @@ async def claim_task(task_id: int) -> bool:
     # comparisons in the watchdog work correctly.  isoformat() produces
     # a 'T' separator which breaks `started_at < datetime('now', ...)`.
     now_str = db_now()
+    # Z10 T3A: stamp step_started_at alongside started_at on transition to
+    # 'processing'. step_started_at is reset per attempt; started_at marks
+    # the first pickup. For the claim path the two are equal.
     cursor = await db.execute(
-        "UPDATE tasks SET status = 'processing', started_at = ? "
+        "UPDATE tasks SET status = 'processing', started_at = ?, "
+        "                  step_started_at = ? "
         "WHERE id = ? AND status = 'pending'",
-        (now_str, task_id)
+        (now_str, now_str, task_id)
     )
     await db.commit()
     return cursor.rowcount > 0
@@ -2813,17 +2961,23 @@ async def add_subtasks_atomically(
                     "mechanical" if agent_type == "mechanical" else "react"
                 )
 
+                # Z10 T3A: derive phase_id from context if present.
+                _sub_ctx = st.get("context") or {}
+                _sub_phase_id = (
+                    _sub_ctx.get("phase_id")
+                    or _sub_ctx.get("workflow_phase")
+                ) if isinstance(_sub_ctx, dict) else None
                 cursor = await db.execute(
                     """INSERT INTO tasks
                        (mission_id, parent_task_id, title, description, agent_type,
                         tier, priority, requires_approval, depends_on, context,
-                        task_hash, runner)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+                        task_hash, runner, phase_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)""",
                     (mission_id, parent_task_id, title, description, agent_type,
                      st.get("tier", "auto"), st.get("priority", 5),
                      json.dumps(st.get("depends_on", [])),
                      json.dumps(st.get("context", {})),
-                     task_hash, runner)
+                     task_hash, runner, _sub_phase_id)
                 )
                 created_ids.append(cursor.lastrowid)
 
@@ -2912,17 +3066,22 @@ async def insert_tasks_atomically(
                     "mechanical" if agent_type == "mechanical" else "react"
                 )
 
+                # Z10 T3A: derive phase_id from context if present.
+                _t_ctx = t.get("context") or {}
+                _t_phase_id = (
+                    _t_ctx.get("phase_id") or _t_ctx.get("workflow_phase")
+                ) if isinstance(_t_ctx, dict) else None
                 cursor = await db.execute(
                     """INSERT INTO tasks
                        (mission_id, parent_task_id, title, description, agent_type,
                         tier, priority, requires_approval, depends_on, context,
-                        task_hash, runner)
-                       VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+                        task_hash, runner, phase_id)
+                       VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)""",
                     (mission_id, title, description, agent_type,
                      t.get("tier", "auto"), t.get("priority", 5),
                      json.dumps(t.get("depends_on", [])),
                      json.dumps(t.get("context", {})),
-                     task_hash, runner)
+                     task_hash, runner, _t_phase_id)
                 )
                 created_ids.append(cursor.lastrowid)
 

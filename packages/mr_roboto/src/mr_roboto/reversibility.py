@@ -107,6 +107,9 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "emit_preview_url": "irreversible",  # tunneled URL discoverable by share
     "kill_preview_url": "partial",  # tears tunnel down; URL was already published
     "propose_spec_patch": "full",  # alias kept for compat with older payloads
+    # ---- Z10 T3B sandbox-gate verbs (caller-opened confirmation rows) -----
+    "sandbox_local_mode": "partial",  # mission requested host-mode shell
+    "broader_egress": "partial",  # shell wants to reach a host outside whitelist
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

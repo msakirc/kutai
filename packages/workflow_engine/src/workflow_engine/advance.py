@@ -162,6 +162,17 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
 
     await update_mission(mission_id, status="completed", completed_at=db_now())
 
+    # Z10-T3B: tear down the per-mission sandbox container + network.
+    # Best-effort — failures must not break the completion path.
+    try:
+        from src.tools.shell import teardown_mission_container
+        await teardown_mission_container(mission_id)
+    except Exception as e:
+        import logging
+        logging.getLogger("workflow_engine.advance").debug(
+            "mission container teardown failed (non-fatal): %s", e,
+        )
+
     # Best-effort Telegram delivery — get_telegram() may raise if the bot
     # isn't initialised yet; failing here must not break advance().
     try:

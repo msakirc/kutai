@@ -359,7 +359,7 @@ def _resolve_workspace(mission_id: int, workspace_path: str | None) -> str:
 
 async def init_mission_github_repo(
     mission_id: int,
-    repo_visibility: str = "private",
+    repo_visibility: str = "public",
     workspace_path: str | None = None,
     skip: bool = False,
 ) -> dict[str, Any]:
@@ -430,10 +430,10 @@ async def init_mission_github_repo(
     visibility = (
         os.environ.get("KUTAI_GITHUB_DEFAULT_VISIBILITY")
         or repo_visibility
-        or "private"
+        or "public"
     ).strip().lower()
     if visibility not in ("public", "private"):
-        visibility = "private"
+        visibility = "public"
     owner = os.environ.get("KUTAI_GITHUB_ORG", "").strip() or _gh_current_user()
     if not owner:
         status_path = _write_status(

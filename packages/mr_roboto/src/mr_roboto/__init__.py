@@ -48,6 +48,9 @@ from mr_roboto.spec_consistency_check import spec_consistency_check
 # `from mr_roboto.init_mission_github_repo import init_mission_github_repo`
 # at call time.
 from mr_roboto import init_mission_github_repo as init_mission_github_repo_module  # noqa: F401
+# Same submodule-import pattern for T6A (find_similar_missions + surface_prior_mission_hints).
+from mr_roboto import find_similar_missions as find_similar_missions_module  # noqa: F401
+from mr_roboto import surface_prior_mission_hints as surface_prior_mission_hints_module  # noqa: F401
 # NOTE: do NOT `from mr_roboto.critic_gate import critic_gate` — that would
 # shadow the submodule on the mr_roboto package namespace and break
 # `patch("mr_roboto.critic_gate._persist")` style mocking. Import the
@@ -1450,7 +1453,7 @@ async def run(task: dict) -> Action:
                 repo_visibility=str(
                     payload.get("repo_visibility")
                     or payload.get("visibility")
-                    or "private"
+                    or "public"
                 ),
                 workspace_path=payload.get("workspace_path"),
                 skip=bool(payload.get("skip_github", False)),
@@ -1458,6 +1461,111 @@ async def run(task: dict) -> Action:
             # Per spec: action returns Action(status="completed", ...) even
             # when pending — pending is a documented soft outcome, not a
             # failure. Workflow advances; founder retries via Telegram.
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "find_similar_missions":
+        # Z1 Tier 6A (A7) — idea fingerprint cross-mission dedup.
+        # Post-hook on step 0.1 product_charter. Returns needs_review
+        # with the comparison list when any prior mission similarity
+        # crosses the threshold (default 0.85).
+        from mr_roboto.find_similar_missions import (
+            find_similar_missions as _find_similar,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _find_similar(
+                mission_id=int(mid) if mid is not None else 0,
+                idea_summary=payload.get("idea_summary"),
+                workspace_path=payload.get("workspace_path"),
+                top_k=int(payload.get("top_k", 3)),
+                threshold=(
+                    float(payload["threshold"])
+                    if payload.get("threshold") is not None
+                    else None
+                ),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="needs_review",
+                    error=(
+                        f"find_similar_missions: matches="
+                        f"{len(res.get('matches') or [])} "
+                        f"report={res.get('report_path')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "index_idea_fingerprint":
+        # Z1 Tier 6A (A7) — embed + store idea fingerprint after
+        # founder confirms a new mission (or "Continue" on dedup).
+        from mr_roboto.find_similar_missions import (
+            index_idea_fingerprint as _idx_idea,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _idx_idea(
+                mission_id=int(mid) if mid is not None else 0,
+                idea_summary=payload.get("idea_summary"),
+                workspace_path=payload.get("workspace_path"),
+                title=str(payload.get("title") or ""),
+                final_status_note=str(payload.get("final_status_note") or ""),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"index_idea_fingerprint: {res.get('reason')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "surface_prior_mission_hints":
+        # Z1 Tier 6A (P9) — cross-mission ADR + compliance inheritance.
+        # Advisory; always returns completed with hints[] (possibly
+        # empty). Founder reviews via Telegram reuse/diverge buttons.
+        from mr_roboto.surface_prior_mission_hints import (
+            surface_prior_mission_hints as _surface_hints,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _surface_hints(
+                mission_id=int(mid) if mid is not None else 0,
+                workspace_path=payload.get("workspace_path"),
+                founder_id=str(payload.get("founder_id") or "default"),
+                top_k=int(payload.get("top_k", 3)),
+                jaccard_threshold=float(
+                    payload.get("jaccard_threshold", 0.3)
+                ),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "index_mission_artifacts":
+        # Z1 Tier 6A (P9) — phase-6-tail mechanical step. Walks
+        # phase-≤6 artifacts and writes mission_artifacts_index rows.
+        from mr_roboto.surface_prior_mission_hints import (
+            index_mission_artifacts as _idx_artifacts,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _idx_artifacts(
+                mission_id=int(mid) if mid is not None else 0,
+                workspace_path=payload.get("workspace_path"),
+                founder_id=str(payload.get("founder_id") or "default"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"index_mission_artifacts: {res.get('reason')}",
+                    result=res,
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

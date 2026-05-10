@@ -105,6 +105,15 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 300,
         "payload": {"_marker": "mission_budget_alerts"},
     },
+    # Z10 T3A — every 30 minutes: compute pacing for each running/pending
+    # mission; if >75% burn + >25% scope, post a single [asking] tradeoff
+    # event. Idempotent via UNIQUE(mission_id, DATE(posted_at)).
+    {
+        "title": "mission_pacing_check",
+        "description": "Compute pacing per mission; post tradeoff [asking] at 75/25",
+        "interval_seconds": 1800,
+        "payload": {"_marker": "mission_pacing_check"},
+    },
     # Z1 Tier 7A (B12) — quarterly bash-audit. Cron: first of Jan/Apr/Jul/Oct
     # at 09:00. cron_expression beats interval_seconds because quarterly
     # intervals don't fit 86400-second arithmetic cleanly across leap years

@@ -18,6 +18,21 @@
       "auth_model": "none",
       "data_at_rest_encrypted": false,
       "secrets_in_vault": false
+    },
+    "adr_register": {
+      "_schema_version": "1",
+      "adrs": [
+        {
+          "adr_id": "ADR-2026-05-10-001",
+          "title": "Use NextJS",
+          "status": "accepted",
+          "decision_domain": "frontend_framework"
+        }
+      ],
+      "completeness_check": {
+        "required_domains": ["frontend_framework", "database", "component_library"],
+        "missing": ["database", "component_library"]
+      }
     }
   },
   "expected_verdict": {
@@ -25,11 +40,17 @@
     "status": "fail",
     "issues": [
       "60% of requirements have no design coverage",
-      "interfaces undefined"
+      "interfaces undefined",
+      "missing component_library ADR (4.2a)",
+      "ADR cost_curve absent on tech_stack ADR"
     ],
     "security_findings": [
       "no auth model declared",
       "secrets not vaulted"
+    ],
+    "adr_findings": [
+      "missing component_library ADR",
+      "stack ADRs missing monthly_cost_curve"
     ]
   }
 }

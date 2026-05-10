@@ -8,6 +8,9 @@ from mr_roboto.verify_artifacts import verify_artifacts
 from mr_roboto.verify_schema_version import verify_schema_version
 from mr_roboto.verify_charter_shape import verify_charter_shape
 from mr_roboto.verify_reverse_pitch_shape import verify_reverse_pitch_shape
+from mr_roboto.verify_adr_shape import verify_adr_shape
+from mr_roboto.verify_adr_register import verify_adr_register
+from mr_roboto.verify_cost_curve_present import verify_cost_curve_present
 from mr_roboto.generate_intake_todo import generate_intake_todo
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
@@ -23,6 +26,9 @@ __all__ = [
     "verify_schema_version",
     "verify_charter_shape",
     "verify_reverse_pitch_shape",
+    "verify_adr_shape",
+    "verify_adr_register",
+    "verify_cost_curve_present",
     "generate_intake_todo",
     "run_cmd",
     "run_pytest",
@@ -196,6 +202,92 @@ async def run(task: dict) -> Action:
                         f"verify_reverse_pitch_shape: missing={res.get('missing_sections')} "
                         f"placeholders={res.get('placeholders')} "
                         f"ack={res.get('acknowledged_no_users')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_adr_shape":
+        # Z1 Tier 2 (P3) — universal Nygard-extended ADR validator.
+        # Auto-wired as sibling step `<step_id>.verify` after every
+        # phase-4 ADR-emitting step.
+        from mr_roboto.verify_adr_shape import (
+            verify_adr_shape as _verify_adr,
+        )
+        try:
+            res = _verify_adr(
+                adr_text=payload.get("adr_text"),
+                adr_obj=payload.get("adr_obj"),
+                adr_paths=payload.get("adr_paths"),
+                expected_schema_version=str(
+                    payload.get("expected_schema_version", "1")
+                ),
+                require_cost_curve=bool(payload.get("require_cost_curve", False)),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_adr_shape: adr_id={res.get('adr_id')} "
+                        f"missing={res.get('missing_fields')} "
+                        f"options_problems={res.get('options_problems')} "
+                        f"orphan_chosen={res.get('orphan_chosen_option_id')} "
+                        f"falsification_missing={res.get('falsification_missing')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_adr_register":
+        # Z1 Tier 2 (P3) — register.md vs on-disk ADR JSON consistency.
+        from mr_roboto.verify_adr_register import (
+            verify_adr_register as _verify_register,
+        )
+        try:
+            res = _verify_register(
+                register_text=payload.get("register_text"),
+                register_path=payload.get("register_path"),
+                adr_dir=payload.get("adr_dir"),
+                allow_empty_register=bool(
+                    payload.get("allow_empty_register", False)
+                ),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_adr_register: missing_files={res.get('missing_files')} "
+                        f"orphan_files={res.get('orphan_files')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_cost_curve_present":
+        # Z1 Tier 2 (A8) — stack-related ADR cost-curve presence guard.
+        from mr_roboto.verify_cost_curve_present import (
+            verify_cost_curve_present as _verify_curve,
+        )
+        try:
+            res = _verify_curve(
+                adr_text=payload.get("adr_text"),
+                adr_obj=payload.get("adr_obj"),
+                adr_paths=payload.get("adr_paths"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_cost_curve_present: adr_id={res.get('adr_id')} "
+                        f"options_missing_curve={res.get('options_missing_curve')} "
+                        f"cost_at_target_missing={res.get('cost_at_target_missing')} "
+                        f"cost_mitigation_field_missing={res.get('cost_mitigation_field_missing')}"
                     ),
                     result=res,
                 )

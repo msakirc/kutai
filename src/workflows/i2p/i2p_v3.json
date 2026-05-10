@@ -732,13 +732,21 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["0.0z"],
+      "depends_on": [
+        "0.0z"
+      ],
       "skip_when": "mission.legacy_pre_charter == '1'",
-      "input_artifacts": ["reverse_pitch"],
-      "output_artifacts": ["reverse_pitch_shape_result"],
+      "input_artifacts": [
+        "reverse_pitch"
+      ],
+      "output_artifacts": [
+        "reverse_pitch_shape_result"
+      ],
       "payload": {
         "action": "verify_reverse_pitch_shape",
-        "pitch_paths": ["mission_{mission_id}/.charter/reverse_pitch.md"]
+        "pitch_paths": [
+          "mission_{mission_id}/.charter/reverse_pitch.md"
+        ]
       },
       "instruction": "Mechanical post-check that 0.0z produced a paraflow-shape reverse pitch (Z1 A1). No LLM. Failure surfaces missing sections / placeholder text and forces a regenerate.",
       "done_when": "verify_reverse_pitch_shape returns ok=true.",
@@ -752,7 +760,9 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["0.0z"],
+      "depends_on": [
+        "0.0z"
+      ],
       "may_need_clarification": true,
       "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
@@ -792,7 +802,9 @@
       "tools_hint": [
         "write_file"
       ],
-      "depends_on": ["0.0a"],
+      "depends_on": [
+        "0.0a"
+      ],
       "may_need_clarification": false,
       "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
@@ -834,13 +846,21 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "tools_hint": [],
-      "depends_on": ["0.1"],
+      "depends_on": [
+        "0.1"
+      ],
       "skip_when": "mission.legacy_pre_charter == '1'",
-      "input_artifacts": ["product_charter"],
-      "output_artifacts": ["product_charter_shape_result"],
+      "input_artifacts": [
+        "product_charter"
+      ],
+      "output_artifacts": [
+        "product_charter_shape_result"
+      ],
       "payload": {
         "action": "verify_charter_shape",
-        "charter_paths": ["mission_{mission_id}/.charter/product_charter.md"],
+        "charter_paths": [
+          "mission_{mission_id}/.charter/product_charter.md"
+        ],
         "min_solutions": 3,
         "max_solutions": 7,
         "min_brand_keywords": 5
@@ -1622,7 +1642,12 @@
         "research_review_result": {
           "type": "object",
           "fields": {
-            "verdict": {"type": "string", "equals": ["pass"]},
+            "verdict": {
+              "type": "string",
+              "equals": [
+                "pass"
+              ]
+            },
             "issues": {}
           },
           "_schema_version": "1"
@@ -1658,7 +1683,13 @@
           "fields": {
             "scores": {},
             "weighted_score": {},
-            "recommendation": {"type": "string", "equals": ["Go", "go"]}
+            "recommendation": {
+              "type": "string",
+              "equals": [
+                "Go",
+                "go"
+              ]
+            }
           },
           "_schema_version": "1"
         }
@@ -1738,20 +1769,41 @@
             "customer_profile": {
               "type": "object",
               "fields": {
-                "jobs": {"type": "array", "min_items": 1},
-                "pains": {"type": "array", "min_items": 1},
-                "gains": {"type": "array", "min_items": 1}
+                "jobs": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "pains": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "gains": {
+                  "type": "array",
+                  "min_items": 1
+                }
               }
             },
             "value_map": {
               "type": "object",
               "fields": {
-                "products_and_services": {"type": "array", "min_items": 1},
-                "pain_relievers": {"type": "array", "min_items": 1},
-                "gain_creators": {"type": "array", "min_items": 1}
+                "products_and_services": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "pain_relievers": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "gain_creators": {
+                  "type": "array",
+                  "min_items": 1
+                }
               }
             },
-            "top_fits": {"type": "array", "min_items": 1}
+            "top_fits": {
+              "type": "array",
+              "min_items": 1
+            }
           },
           "_schema_version": "1"
         }
@@ -2030,19 +2082,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "name": {"type": "string"},
-                  "formula": {"type": "string"},
-                  "data_source": {"type": "string"},
-                  "target_value": {"type": "string"},
-                  "measurement_frequency": {"type": "string"}
+                  "name": {
+                    "type": "string"
+                  },
+                  "formula": {
+                    "type": "string"
+                  },
+                  "data_source": {
+                    "type": "string"
+                  },
+                  "target_value": {
+                    "type": "string"
+                  },
+                  "measurement_frequency": {
+                    "type": "string"
+                  }
                 }
               }
             },
             "north_star_metric": {
               "type": "object",
               "fields": {
-                "name": {"type": "string"},
-                "justification": {"type": "string"}
+                "name": {
+                  "type": "string"
+                },
+                "justification": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -2328,21 +2394,47 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "entity_name": {"type": "string"},
-                  "description": {"type": "string"},
-                  "data_fields": {"type": "array", "min_items": 1},
-                  "sensitivity_level": {"type": "string"},
-                  "volume_estimate": {"type": "string"},
-                  "retention_policy": {"type": "string"},
-                  "deletion_requirements": {"type": "string"},
-                  "backup_requirements": {"type": "string"}
+                  "entity_name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "data_fields": {
+                    "type": "array",
+                    "min_items": 1
+                  },
+                  "sensitivity_level": {
+                    "type": "string"
+                  },
+                  "volume_estimate": {
+                    "type": "string"
+                  },
+                  "retention_policy": {
+                    "type": "string"
+                  },
+                  "deletion_requirements": {
+                    "type": "string"
+                  },
+                  "backup_requirements": {
+                    "type": "string"
+                  }
                 }
               }
             },
-            "data_flows": {"type": "array", "min_items": 1},
-            "data_transformations": {"type": "array"},
-            "data_access_patterns": {"type": "array"},
-            "data_archival_strategy": {"type": "string"}
+            "data_flows": {
+              "type": "array",
+              "min_items": 1
+            },
+            "data_transformations": {
+              "type": "array"
+            },
+            "data_access_patterns": {
+              "type": "array"
+            },
+            "data_archival_strategy": {
+              "type": "string"
+            }
           },
           "_schema_version": "1"
         }
@@ -2724,7 +2816,12 @@
         "requirements_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass"
+              ]
+            },
             "issues": {}
           },
           "_schema_version": "1"
@@ -2756,20 +2853,33 @@
       "output_artifacts": [
         "architecture_pattern_decision"
       ],
-      "instruction": "Evaluate architecture patterns: monolith, modular_monolith, microservices, serverless, event_driven, hybrid. For each: pros/cons for our requirements, scale fit, team size fit, implementation/operational complexity, migration path. Recommend top 2. If top 2 have significantly different trade-offs, trigger needs_clarification. Output: selected_pattern, justification, constraints, migration_path.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
+      "instruction": "Evaluate architecture patterns: monolith, modular_monolith, microservices, serverless, event_driven, hybrid. For each: pros/cons for our requirements, scale fit, team size fit, implementation/operational complexity, migration path. Recommend top 2. If top 2 have significantly different trade-offs, trigger needs_clarification. Output: selected_pattern, justification, constraints, migration_path.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.",
       "done_when": "architecture_pattern_decision exists with pattern evaluation and selection.",
       "artifact_schema": {
         "architecture_pattern_decision": {
           "type": "object",
           "required_fields": [
-            "selected_pattern",
-            "justification",
-            "evaluation"
+            "adr_id",
+            "title",
+            "status",
+            "context",
+            "decision",
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id"
           ],
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "produces": [
+        "mission_{mission_id}/.adr/architecture_pattern_decision.json",
+        "mission_{mission_id}/.adr/register.md"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'"
     },
     {
       "id": "4.2",
@@ -2800,17 +2910,23 @@
       "output_artifacts": [
         "tech_stack_decision"
       ],
-      "instruction": "Research and select complete tech stack. For frontend: evaluate React/Next.js, Vue/Nuxt, Svelte/SvelteKit, Angular, Solid. For backend: evaluate Node.js (Express/Fastify/NestJS/Hono), Python (FastAPI/Django), Go, Rust. For database: evaluate PostgreSQL, MySQL, MongoDB, SQLite, PlanetScale, Supabase. For infra: evaluate AWS, GCP, Azure, Vercel, Railway, Render, Fly.io. Use recommend_stack tool if available. Weight AI-code-generation quality heavily. Include cost estimates. Trigger needs_clarification for human approval. Output complete tech_stack_decision.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
+      "instruction": "Research and select complete tech stack. For frontend: evaluate React/Next.js, Vue/Nuxt, Svelte/SvelteKit, Angular, Solid. For backend: evaluate Node.js (Express/Fastify/NestJS/Hono), Python (FastAPI/Django), Go, Rust. For database: evaluate PostgreSQL, MySQL, MongoDB, SQLite, PlanetScale, Supabase. For infra: evaluate AWS, GCP, Azure, Vercel, Railway, Render, Fly.io. Use recommend_stack tool if available. Weight AI-code-generation quality heavily. Include cost estimates. Trigger needs_clarification for human approval. Output complete tech_stack_decision.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.\n\nA8 — STACK ADR cost curve: because this is a stack-related decision, EVERY option in `options_considered` MUST also include `monthly_cost_curve: {at_mvp: \"$X\", at_1k_users: \"$Y\", at_100k_users: \"$Z\"}` AND the ADR top level MUST include `cost_at_target_users_usd` (number — picked from the curve based on z0's `expected_user_scale`) and `cost_mitigation_plan` (string or null when the curve fits z0's `cost_ceiling_monthly_usd`). The mechanical post-hook `verify_cost_curve_present` rejects missing curves; the reviewer at 4.16 rejects when `cost_at_target_users_usd > cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.",
       "done_when": "tech_stack_decision exists with all stack choices, justifications, and cost estimates.",
       "artifact_schema": {
         "tech_stack_decision": {
           "type": "object",
           "required_fields": [
-            "frontend",
-            "backend",
-            "database",
-            "infrastructure",
-            "justification"
+            "adr_id",
+            "title",
+            "status",
+            "context",
+            "decision",
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id"
           ],
           "_schema_version": "1"
         }
@@ -2818,7 +2934,12 @@
       "api_hints": [
         "github_trending"
       ],
-      "context": {}
+      "context": {},
+      "produces": [
+        "mission_{mission_id}/.adr/tech_stack_decision.json",
+        "mission_{mission_id}/.adr/register.md"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'"
     },
     {
       "id": "4.3",
@@ -2877,12 +2998,13 @@
         "functional_requirements"
       ],
       "output_artifacts": [
-        "database_schema"
+        "database_schema",
+        "database_schema_decision"
       ],
       "context": {
         "estimated_output_tokens": 12000
       },
-      "instruction": "Design the complete database schema (3NF minimum).\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys (emit in this order):\n\n{\n  \"tables\": [\n    {\n      \"name\": \"...\",\n      \"columns\": [{\"name\": \"...\", \"type\": \"...\", \"constraints\": \"PK|NOT NULL|UNIQUE|...\"}],\n      \"audit_columns\": true,\n      \"soft_delete\": false,\n      \"notes\": \"...\"\n    }\n  ],\n  \"relationships\": [\n    {\"from_table\": \"...\", \"from_column\": \"...\", \"to_table\": \"...\", \"to_column\": \"...\", \"on_delete\": \"CASCADE|RESTRICT|SET NULL\"}\n  ],\n  \"indexes\": [\n    {\"table\": \"...\", \"columns\": [\"...\"], \"unique\": false, \"purpose\": \"...\"}\n  ],\n  \"enums\": [\n    {\"name\": \"...\", \"values\": [\"...\"]}\n  ],\n  \"self_review_notes\": \"<short paragraph on normalization, N+1 risks, missing indexes, naming, business rules>\"\n}\n\nCap tables at 20, relationships at 30, indexes at 25. Each table covers core attributes only — no exhaustive column lists.",
+      "instruction": "Design the complete database schema (3NF minimum).\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys (emit in this order):\n\n{\n  \"tables\": [\n    {\n      \"name\": \"...\",\n      \"columns\": [{\"name\": \"...\", \"type\": \"...\", \"constraints\": \"PK|NOT NULL|UNIQUE|...\"}],\n      \"audit_columns\": true,\n      \"soft_delete\": false,\n      \"notes\": \"...\"\n    }\n  ],\n  \"relationships\": [\n    {\"from_table\": \"...\", \"from_column\": \"...\", \"to_table\": \"...\", \"to_column\": \"...\", \"on_delete\": \"CASCADE|RESTRICT|SET NULL\"}\n  ],\n  \"indexes\": [\n    {\"table\": \"...\", \"columns\": [\"...\"], \"unique\": false, \"purpose\": \"...\"}\n  ],\n  \"enums\": [\n    {\"name\": \"...\", \"values\": [\"...\"]}\n  ],\n  \"self_review_notes\": \"<short paragraph on normalization, N+1 risks, missing indexes, naming, business rules>\"\n}\n\nCap tables at 20, relationships at 30, indexes at 25. Each table covers core attributes only — no exhaustive column lists.\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.\n\nA8 — STACK ADR cost curve: because this is a stack-related decision, EVERY option in `options_considered` MUST also include `monthly_cost_curve: {at_mvp: \"$X\", at_1k_users: \"$Y\", at_100k_users: \"$Z\"}` AND the ADR top level MUST include `cost_at_target_users_usd` (number — picked from the curve based on z0's `expected_user_scale`) and `cost_mitigation_plan` (string or null when the curve fits z0's `cost_ceiling_monthly_usd`). The mechanical post-hook `verify_cost_curve_present` rejects missing curves; the reviewer at 4.16 rejects when `cost_at_target_users_usd > cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.",
       "done_when": "database_schema is a JSON object with populated `tables`, `relationships`, `indexes` keys.",
       "artifact_schema": {
         "database_schema": {
@@ -2893,8 +3015,30 @@
             "indexes"
           ],
           "_schema_version": "1"
+        },
+        "database_schema_decision": {
+          "type": "object",
+          "required_fields": [
+            "adr_id",
+            "title",
+            "status",
+            "context",
+            "decision",
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id"
+          ],
+          "_schema_version": "1"
         }
-      }
+      },
+      "produces": [
+        "mission_{mission_id}/.adr/database_schema_decision.json",
+        "mission_{mission_id}/.adr/register.md"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'"
     },
     {
       "id": "4.5a",
@@ -2967,20 +3111,34 @@
         "openapi_spec": {
           "type": "object",
           "fields": {
-            "openapi": {"type": "string"},
+            "openapi": {
+              "type": "string"
+            },
             "info": {
               "type": "object",
               "fields": {
-                "title": {"type": "string"},
-                "version": {"type": "string"},
-                "description": {"type": "string"}
+                "title": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
               }
             },
-            "paths": {"type": "object", "min_keys": 1},
+            "paths": {
+              "type": "object",
+              "min_keys": 1
+            },
             "components": {
               "type": "object",
               "fields": {
-                "schemas": {"type": "object", "min_keys": 1}
+                "schemas": {
+                  "type": "object",
+                  "min_keys": 1
+                }
               }
             }
           },
@@ -3013,9 +3171,10 @@
         "business_rules"
       ],
       "output_artifacts": [
-        "auth_design"
+        "auth_design",
+        "auth_design_decision"
       ],
-      "instruction": "Design complete auth system combining authentication and authorization. Authentication: registration, oauth, login, session/JWT strategy, refresh mechanism, logout, password reset, password hashing, MFA if required. Authorization: RBAC roles/permissions, resource ownership, enforcement points, super admin, permission checking logic. Output a unified auth_design document.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
+      "instruction": "Design complete auth system combining authentication and authorization. Authentication: registration, oauth, login, session/JWT strategy, refresh mechanism, logout, password reset, password hashing, MFA if required. Authorization: RBAC roles/permissions, resource ownership, enforcement points, super admin, permission checking logic. Output a unified auth_design document.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.\n\nA8 — STACK ADR cost curve: because this is a stack-related decision, EVERY option in `options_considered` MUST also include `monthly_cost_curve: {at_mvp: \"$X\", at_1k_users: \"$Y\", at_100k_users: \"$Z\"}` AND the ADR top level MUST include `cost_at_target_users_usd` (number — picked from the curve based on z0's `expected_user_scale`) and `cost_mitigation_plan` (string or null when the curve fits z0's `cost_ceiling_monthly_usd`). The mechanical post-hook `verify_cost_curve_present` rejects missing curves; the reviewer at 4.16 rejects when `cost_at_target_users_usd > cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.",
       "done_when": "auth_design exists with both authentication and authorization design.",
       "artifact_schema": {
         "auth_design": {
@@ -3027,9 +3186,31 @@
             "permissions"
           ],
           "_schema_version": "1"
+        },
+        "auth_design_decision": {
+          "type": "object",
+          "required_fields": [
+            "adr_id",
+            "title",
+            "status",
+            "context",
+            "decision",
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id"
+          ],
+          "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "produces": [
+        "mission_{mission_id}/.adr/auth_design_decision.json",
+        "mission_{mission_id}/.adr/register.md"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'"
     },
     {
       "id": "4.7",
@@ -3090,9 +3271,10 @@
         "tech_stack_decision"
       ],
       "output_artifacts": [
-        "third_party_selections"
+        "third_party_selections",
+        "third_party_selections_decision"
       ],
-      "instruction": "For each integration, recommend a vendor with pricing, setup complexity, SDK quality, lock-in risk. Calculate total monthly cost. Trigger needs_clarification if cost exceeds expectations.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
+      "instruction": "For each integration, recommend a vendor with pricing, setup complexity, SDK quality, lock-in risk. Calculate total monthly cost. Trigger needs_clarification if cost exceeds expectations.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.\n\nA8 — STACK ADR cost curve: because this is a stack-related decision, EVERY option in `options_considered` MUST also include `monthly_cost_curve: {at_mvp: \"$X\", at_1k_users: \"$Y\", at_100k_users: \"$Z\"}` AND the ADR top level MUST include `cost_at_target_users_usd` (number — picked from the curve based on z0's `expected_user_scale`) and `cost_mitigation_plan` (string or null when the curve fits z0's `cost_ceiling_monthly_usd`). The mechanical post-hook `verify_cost_curve_present` rejects missing curves; the reviewer at 4.16 rejects when `cost_at_target_users_usd > cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.",
       "done_when": "third_party_selections exists with vendor recommendations and total cost.",
       "artifact_schema": {
         "third_party_selections": {
@@ -3101,19 +3283,56 @@
           "items": {
             "type": "object",
             "fields": {
-              "integration_id": {"type": "string"},
-              "vendor": {"type": "string"},
-              "pricing": {"type": "string"},
-              "setup_complexity": {"type": "string"},
-              "sdk_quality": {"type": "string"},
-              "lock_in_risk": {"type": "string"}
+              "integration_id": {
+                "type": "string"
+              },
+              "vendor": {
+                "type": "string"
+              },
+              "pricing": {
+                "type": "string"
+              },
+              "setup_complexity": {
+                "type": "string"
+              },
+              "sdk_quality": {
+                "type": "string"
+              },
+              "lock_in_risk": {
+                "type": "string"
+              }
             }
           },
           "_schema_version": "1"
         },
-        "total_monthly_cost": {"type": "string", "_schema_version": "1"}
+        "total_monthly_cost": {
+          "type": "string",
+          "_schema_version": "1"
+        },
+        "third_party_selections_decision": {
+          "type": "object",
+          "required_fields": [
+            "adr_id",
+            "title",
+            "status",
+            "context",
+            "decision",
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id"
+          ],
+          "_schema_version": "1"
+        }
       },
-      "context": {}
+      "context": {},
+      "produces": [
+        "mission_{mission_id}/.adr/third_party_selections_decision.json",
+        "mission_{mission_id}/.adr/register.md"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'"
     },
     {
       "id": "4.9",
@@ -3137,9 +3356,10 @@
       "output_artifacts": [
         "caching_strategy",
         "background_job_design",
-        "file_storage_design"
+        "file_storage_design",
+        "infrastructure_designs_decision"
       ],
-      "instruction": "Design three infrastructure subsystems. Caching: technology, layers, per-endpoint decisions, patterns, invalidation, session cache, rate limit storage, cache warming, failure handling. Background jobs: technology, job types, queue config, retry strategy, dead letter handling, scheduled jobs, concurrency limits, monitoring. File storage: service, upload flow (presigned URLs), organization, validation, size limits, image processing, CDN delivery, cleanup, virus scanning.",
+      "instruction": "Design three infrastructure subsystems. Caching: technology, layers, per-endpoint decisions, patterns, invalidation, session cache, rate limit storage, cache warming, failure handling. Background jobs: technology, job types, queue config, retry strategy, dead letter handling, scheduled jobs, concurrency limits, monitoring. File storage: service, upload flow (presigned URLs), organization, validation, size limits, image processing, CDN delivery, cleanup, virus scanning.\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.\n\nA8 — STACK ADR cost curve: because this is a stack-related decision, EVERY option in `options_considered` MUST also include `monthly_cost_curve: {at_mvp: \"$X\", at_1k_users: \"$Y\", at_100k_users: \"$Z\"}` AND the ADR top level MUST include `cost_at_target_users_usd` (number — picked from the curve based on z0's `expected_user_scale`) and `cost_mitigation_plan` (string or null when the curve fits z0's `cost_ceiling_monthly_usd`). The mechanical post-hook `verify_cost_curve_present` rejects missing curves; the reviewer at 4.16 rejects when `cost_at_target_users_usd > cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.",
       "done_when": "caching_strategy, background_job_design, and file_storage_design exist.",
       "artifact_schema": {
         "caching_strategy": {
@@ -3168,9 +3388,31 @@
             "validation"
           ],
           "_schema_version": "1"
+        },
+        "infrastructure_designs_decision": {
+          "type": "object",
+          "required_fields": [
+            "adr_id",
+            "title",
+            "status",
+            "context",
+            "decision",
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id"
+          ],
+          "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "produces": [
+        "mission_{mission_id}/.adr/infrastructure_designs_decision.json",
+        "mission_{mission_id}/.adr/register.md"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'"
     },
     {
       "id": "4.10",
@@ -3192,9 +3434,10 @@
       "output_artifacts": [
         "email_system_design",
         "realtime_design",
-        "search_system_design"
+        "search_system_design",
+        "communication_designs_decision"
       ],
-      "instruction": "Design three communication subsystems. Email: service, email types, template system, sending architecture, delivery monitoring, preferences, dev mode, domain authentication. Realtime: if realtime features needed, design technology, connection management, channel model, event types, scaling, fallback. If not needed, document decision with future migration path. Search: technology choice matched to complexity level, indexed entities, sync strategy, search API design.",
+      "instruction": "Design three communication subsystems. Email: service, email types, template system, sending architecture, delivery monitoring, preferences, dev mode, domain authentication. Realtime: if realtime features needed, design technology, connection management, channel model, event types, scaling, fallback. If not needed, document decision with future migration path. Search: technology choice matched to complexity level, indexed entities, sync strategy, search API design.\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.\n\nA8 — STACK ADR cost curve: because this is a stack-related decision, EVERY option in `options_considered` MUST also include `monthly_cost_curve: {at_mvp: \"$X\", at_1k_users: \"$Y\", at_100k_users: \"$Z\"}` AND the ADR top level MUST include `cost_at_target_users_usd` (number — picked from the curve based on z0's `expected_user_scale`) and `cost_mitigation_plan` (string or null when the curve fits z0's `cost_ceiling_monthly_usd`). The mechanical post-hook `verify_cost_curve_present` rejects missing curves; the reviewer at 4.16 rejects when `cost_at_target_users_usd > cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.",
       "done_when": "email_system_design, realtime_design, and search_system_design exist.",
       "artifact_schema": {
         "email_system_design": {
@@ -3221,9 +3464,31 @@
             "indexed_entities"
           ],
           "_schema_version": "1"
+        },
+        "communication_designs_decision": {
+          "type": "object",
+          "required_fields": [
+            "adr_id",
+            "title",
+            "status",
+            "context",
+            "decision",
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id"
+          ],
+          "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "produces": [
+        "mission_{mission_id}/.adr/communication_designs_decision.json",
+        "mission_{mission_id}/.adr/register.md"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'"
     },
     {
       "id": "4.11",
@@ -3364,25 +3629,36 @@
         "third_party_selections"
       ],
       "output_artifacts": [
-        "adrs"
+        "adrs",
+        "adr_register"
       ],
-      "instruction": "Write Architecture Decision Records (ADRs) for every major decision: architecture pattern, frontend/backend framework, database, hosting, auth approach, each vendor. Each ADR: title, status, context, decision, consequences.",
+      "instruction": "Write Architecture Decision Records (ADRs) for every major decision: architecture pattern, frontend/backend framework, database, hosting, auth approach, each vendor, and the component library. Emit the universal-shape ADR fields (see suffix below). 4.14 also produces an `adr_register` summarizing every ADR collected from upstream steps.\n\nRead each ADR JSON file under `mission_{mission_id}/.adr/` produced by steps 4.1/4.2/4.2a/4.4/4.6/4.8/4.9/4.10. The register-only artifact `adr_register` is a list of {adr_id, title, status, decision_domain, summary, links_to, supersedes} per ADR plus a `completeness_check` block naming required_domains and any missing ones.\n\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.",
       "done_when": "adrs exists with ADRs for all major decisions.",
       "artifact_schema": {
         "adrs": {
           "type": "array",
           "min_items": 3,
           "item_fields": [
+            "adr_id",
             "title",
             "status",
             "context",
             "decision",
-            "consequences"
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id"
           ],
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "produces": [
+        "mission_{mission_id}/.adr/register.md"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'"
     },
     {
       "id": "4.15a1",
@@ -3535,13 +3811,19 @@
       "output_artifacts": [
         "architecture_review_result"
       ],
-      "instruction": "Review TDD for: every FR addressable, all NFRs have design elements, no SPOFs, security findings addressed, consistency, feasibility, over-engineering check. Also review auth design, file storage, and other security-sensitive areas specifically.",
+      "instruction": "Review TDD for: every FR addressable, all NFRs have design elements, no SPOFs, security findings addressed, consistency, feasibility, over-engineering check. Also review auth design, file storage, and other security-sensitive areas specifically.\n\nZ1 Tier 2 (P3+C7+A8) — ADR-aware checks:\n- For each ADR JSON under `mission_{mission_id}/.adr/`: the universal shape (adr_id, title, status, context, decision, consequences, options_considered ≥2, chosen_option_id, falsification_signal, reversal_cost, supersedes_adr_id, _schema_version) is fully populated.\n- `chosen_option_id` resolves into `options_considered` (no orphan picks).\n- `falsification_signal` is non-empty AND measurable (a concrete threshold or signal — not just \"if it doesn't work\").\n- `reversal_cost` is `low | medium | high`.\n- Each ADR cites which charter `solution.id` it serves (charter `Solutions We Own`).\n- For STACK ADRs (4.2, 4.4, 4.6, 4.8, 4.9, 4.10): every option has a populated `monthly_cost_curve`; the ADR has `cost_at_target_users_usd` (number); reject if `cost_at_target_users_usd > z0.cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.\n- The component-library ADR from step 4.2a is present and references the tech-stack ADR from 4.2 via `supersedes_adr_id` or an explicit `stack_adr_ref` field.\n- Reject the architecture_review_result with `status: fail` if any of the above checks miss; list each failure under `issues[]`.",
       "done_when": "architecture_review_result exists with comprehensive assessment.",
       "artifact_schema": {
         "architecture_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {},
             "security_findings": {}
           },
@@ -3788,7 +4070,13 @@
         "wireframe_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           },
           "_schema_version": "1"
@@ -3999,7 +4287,13 @@
         "design_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           },
           "_schema_version": "1"
@@ -4126,13 +4420,29 @@
           "items": {
             "type": "object",
             "fields": {
-              "epic_id": {"type": "string"},
-              "name": {"type": "string"},
-              "description": {"type": "string"},
-              "user_stories": {"type": "array", "min_items": 1},
-              "dependencies": {"type": "array", "optional": true},
-              "estimated_total_effort": {"type": "string"},
-              "priority_order": {"type": "number"}
+              "epic_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "user_stories": {
+                "type": "array",
+                "min_items": 1
+              },
+              "dependencies": {
+                "type": "array",
+                "optional": true
+              },
+              "estimated_total_effort": {
+                "type": "string"
+              },
+              "priority_order": {
+                "type": "number"
+              }
             }
           },
           "_schema_version": "1"
@@ -4146,12 +4456,25 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "task_id": {"type": "string"},
-                  "story_id": {"type": "string"},
-                  "epic_id": {"type": "string"},
-                  "agent": {"type": "string"},
-                  "dependencies": {"type": "array", "optional": true},
-                  "estimated_effort": {"type": "string"}
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "story_id": {
+                    "type": "string"
+                  },
+                  "epic_id": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "dependencies": {
+                    "type": "array",
+                    "optional": true
+                  },
+                  "estimated_effort": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -4282,15 +4605,28 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "task_id": {"type": "string"},
-                  "name": {"type": "string"},
-                  "category": {"type": "string"},
-                  "agent": {"type": "string"},
-                  "estimated_effort": {"type": "string"}
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "estimated_effort": {
+                    "type": "string"
+                  }
                 }
               }
             },
-            "order": {"type": "array", "min_items": 1}
+            "order": {
+              "type": "array",
+              "min_items": 1
+            }
           },
           "_schema_version": "1"
         },
@@ -4300,23 +4636,39 @@
           "items": {
             "type": "object",
             "fields": {
-              "sprint_id": {"type": "string"},
-              "name": {"type": "string"},
-              "goal": {"type": "string"},
+              "sprint_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "goal": {
+                "type": "string"
+              },
               "tasks": {
                 "type": "array",
                 "min_items": 1,
                 "items": {
                   "type": "object",
                   "fields": {
-                    "task_id": {"type": "string"},
-                    "story_id": {"type": "string"},
-                    "agent": {"type": "string"},
-                    "estimated_effort": {"type": "string"}
+                    "task_id": {
+                      "type": "string"
+                    },
+                    "story_id": {
+                      "type": "string"
+                    },
+                    "agent": {
+                      "type": "string"
+                    },
+                    "estimated_effort": {
+                      "type": "string"
+                    }
                   }
                 }
               },
-              "deliverable": {"type": "string"}
+              "deliverable": {
+                "type": "string"
+              }
             }
           },
           "_schema_version": "1"
@@ -4398,7 +4750,13 @@
         "project_plan_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           },
           "_schema_version": "1"
@@ -4554,7 +4912,10 @@
             "dependencies_installed",
             "health_check_verified"
           ],
-          "must_be_true": ["dependencies_installed", "health_check_verified"]
+          "must_be_true": [
+            "dependencies_installed",
+            "health_check_verified"
+          ]
         }
       }
     },
@@ -4602,8 +4963,18 @@
         "seed_script"
       ],
       "produces": [
-        ["migrations/**/*.py", "prisma/schema.prisma", "drizzle.config.ts", "drizzle.config.js"],
-        ["scripts/seed.py", "scripts/seed.ts", "prisma/seed.ts", "backend/seed.py"]
+        [
+          "migrations/**/*.py",
+          "prisma/schema.prisma",
+          "drizzle.config.ts",
+          "drizzle.config.js"
+        ],
+        [
+          "scripts/seed.py",
+          "scripts/seed.ts",
+          "prisma/seed.ts",
+          "backend/seed.py"
+        ]
       ],
       "post_hooks": [
         "verify_artifacts"
@@ -4620,7 +4991,9 @@
             "client_path",
             "connection_verified"
           ],
-          "must_be_true": ["connection_verified"]
+          "must_be_true": [
+            "connection_verified"
+          ]
         },
         "migration_system": {
           "type": "object",
@@ -4681,7 +5054,10 @@
             "dependencies_installed",
             "dev_server_verified"
           ],
-          "must_be_true": ["dependencies_installed", "dev_server_verified"]
+          "must_be_true": [
+            "dependencies_installed",
+            "dev_server_verified"
+          ]
         }
       }
     },
@@ -4728,8 +5104,21 @@
         "frontend_test_config"
       ],
       "produces": [
-        ["backend/tests/conftest.py", "backend/pytest.ini", "backend/pyproject.toml", "backend/jest.config.js", "backend/jest.config.ts", "backend/vitest.config.js", "backend/vitest.config.ts"],
-        ["frontend/vitest.config.ts", "frontend/vitest.config.js", "frontend/jest.config.ts", "frontend/jest.config.js"]
+        [
+          "backend/tests/conftest.py",
+          "backend/pytest.ini",
+          "backend/pyproject.toml",
+          "backend/jest.config.js",
+          "backend/jest.config.ts",
+          "backend/vitest.config.js",
+          "backend/vitest.config.ts"
+        ],
+        [
+          "frontend/vitest.config.ts",
+          "frontend/vitest.config.js",
+          "frontend/jest.config.ts",
+          "frontend/jest.config.js"
+        ]
       ],
       "post_hooks": [
         "verify_artifacts"
@@ -5101,7 +5490,9 @@
             "deployed",
             "health_check_passed"
           ],
-          "must_be_true": ["health_check_passed"]
+          "must_be_true": [
+            "health_check_passed"
+          ]
         }
       },
       "context": {}
@@ -5136,7 +5527,9 @@
             "checks",
             "all_passed"
           ],
-          "must_be_true": ["all_passed"]
+          "must_be_true": [
+            "all_passed"
+          ]
         }
       },
       "context": {}
@@ -5209,7 +5602,13 @@
         "sprint_0_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -5284,18 +5683,31 @@
         "implementation_backlog": {
           "type": "array",
           "min_items": 5,
-          "min_items_from": {"artifact": "mvp_scope", "path": "mvp_feature_list", "floor": 5},
+          "min_items_from": {
+            "artifact": "mvp_scope",
+            "path": "mvp_feature_list",
+            "floor": 5
+          },
           "unique_by": "feature_id",
           "items": {
             "type": "object",
             "fields": {
-              "feature_id": {"type": "string", "pattern": "^F-\\d{2,3}$"},
-              "feature_name": {"type": "string", "min_length": 3},
+              "feature_id": {
+                "type": "string",
+                "pattern": "^F-\\d{2,3}$"
+              },
+              "feature_name": {
+                "type": "string",
+                "min_length": 3
+              },
               "epic_id": {},
               "sprint_id": {},
               "status": {},
               "template_ref": {},
-              "depends_on_features": {"type": "array", "optional": true}
+              "depends_on_features": {
+                "type": "array",
+                "optional": true
+              }
             }
           }
         }
@@ -5395,7 +5807,10 @@
             "features_completed",
             "velocity_ratio"
           ],
-          "must_be_true": ["sprint_id_completed", "features_completed"]
+          "must_be_true": [
+            "sprint_id_completed",
+            "features_completed"
+          ]
         }
       },
       "context": {}
@@ -5433,13 +5848,21 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "classification": {"type": "string"},
-                  "description": {"type": "string"},
-                  "design_was_wrong": {"type": "boolean"}
+                  "classification": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "design_was_wrong": {
+                    "type": "boolean"
+                  }
                 }
               }
             },
-            "adrs_created": {"type": "array"}
+            "adrs_created": {
+              "type": "array"
+            }
           }
         }
       },
@@ -5731,7 +6154,9 @@
             "optimizations_applied",
             "before_after_metrics"
           ],
-          "must_be_true": ["optimizations_applied"]
+          "must_be_true": [
+            "optimizations_applied"
+          ]
         }
       },
       "context": {
@@ -5812,7 +6237,9 @@
             "fixes_applied",
             "verified"
           ],
-          "must_be_true": ["fixes_applied"]
+          "must_be_true": [
+            "fixes_applied"
+          ]
         }
       },
       "context": {
@@ -5972,15 +6399,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "category":    {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "category": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -6162,15 +6607,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "check":       {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "check": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -6184,15 +6647,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "check":       {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "check": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -6239,7 +6720,9 @@
           "required_fields": [
             "headers_configured"
           ],
-          "must_be_true": ["headers_configured"]
+          "must_be_true": [
+            "headers_configured"
+          ]
         }
       },
       "context": {
@@ -6359,7 +6842,9 @@
             "fixes_applied",
             "remaining_issues"
           ],
-          "must_be_true": ["fixes_applied"]
+          "must_be_true": [
+            "fixes_applied"
+          ]
         }
       },
       "context": {
@@ -6397,7 +6882,9 @@
             "critical_count",
             "all_resolved"
           ],
-          "must_be_true": ["all_resolved"]
+          "must_be_true": [
+            "all_resolved"
+          ]
         },
         "security_audit_report": {
           "type": "markdown",
@@ -6877,7 +7364,13 @@
         "legal_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {},
             "requires_legal_counsel": {}
           }
@@ -7221,7 +7714,9 @@
             "data_seeded",
             "verified"
           ],
-          "must_be_true": ["data_seeded"]
+          "must_be_true": [
+            "data_seeded"
+          ]
         }
       },
       "context": {}
@@ -7353,7 +7848,9 @@
             "headers_configured",
             "waf_active"
           ],
-          "must_be_true": ["headers_configured"]
+          "must_be_true": [
+            "headers_configured"
+          ]
         },
         "email_deliverability_results": {
           "type": "object",
@@ -7553,7 +8050,10 @@
           "type": "object",
           "fields": {
             "checklist": {},
-            "approved": {"type": "boolean", "equals": true},
+            "approved": {
+              "type": "boolean",
+              "equals": true
+            },
             "launch_date": {}
           }
         }
@@ -7625,7 +8125,13 @@
         "checklist_review": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -7671,7 +8177,10 @@
             "health_check_passed",
             "smoke_tests_passed"
           ],
-          "must_be_true": ["health_check_passed", "smoke_tests_passed"]
+          "must_be_true": [
+            "health_check_passed",
+            "smoke_tests_passed"
+          ]
         }
       },
       "context": {}
@@ -8339,7 +8848,9 @@
             "advisories_reviewed",
             "patches_applied"
           ],
-          "must_be_true": ["patches_applied"]
+          "must_be_true": [
+            "patches_applied"
+          ]
         }
       },
       "context": {}
@@ -8547,6 +9058,487 @@
           ]
         }
       },
+      "context": {}
+    },
+    {
+      "id": "4.2a",
+      "phase": "phase_4",
+      "name": "component_library_decision",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [
+        "smart_search",
+        "web_search",
+        "read_file",
+        "write_file"
+      ],
+      "depends_on": [
+        "4.2"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "product_charter",
+        "tech_stack_decision"
+      ],
+      "output_artifacts": [
+        "component_library_decision"
+      ],
+      "produces": [
+        "mission_{mission_id}/.adr/component_library_decision.json"
+      ],
+      "instruction": "Z1 Tier 2 (C7) — pick the component library for the frontend stack chosen in 4.2. Read the product_charter (Solutions We Own + Brand Keywords) and the tech_stack_decision ADR. Evaluate at least 3 candidates appropriate to the stack (e.g. for React: shadcn/ui, MUI, Mantine, Chakra, Ant Design, or custom). For each option include rationale_for / rationale_against / tech_maturity_score / novelty_benefit / reversal_cost / monthly_cost_curve (most are free OSS — express commercial-license gotchas in the cost field).\n\nEmit as a universal-shape ADR JSON at `mission_{mission_id}/.adr/component_library_decision.json` AND append the row to `mission_{mission_id}/.adr/register.md`. The ADR MUST include a `stack_adr_ref` field pointing at the tech_stack_decision ADR's `adr_id` so the reviewer can confirm the linkage. All universal-shape rules from steps 4.1/4.2 apply (see verify_adr_shape mechanical check). Phase 5 design steps will read this ADR by id.\n\nZ1 Tier 2 (P3+C7+A8): emit your decision as a universal-shape ADR JSON file at `mission_{mission_id}/.adr/<adr_id>.json` AND append a row to `mission_{mission_id}/.adr/register.md` (one line per ADR: `- ADR-YYYY-MM-DD-NNN — <title> — status:<status>`). The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.",
+      "done_when": "component_library_decision.json exists with universal ADR shape + stack_adr_ref + cost_curve per option.",
+      "artifact_schema": {
+        "component_library_decision": {
+          "type": "object",
+          "required_fields": [
+            "adr_id",
+            "title",
+            "status",
+            "context",
+            "decision",
+            "consequences",
+            "options_considered",
+            "chosen_option_id",
+            "falsification_signal",
+            "reversal_cost",
+            "supersedes_adr_id",
+            "stack_adr_ref"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 4000
+      }
+    },
+    {
+      "id": "4.1.verify",
+      "phase": "phase_4",
+      "name": "architecture_pattern_decision_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.1"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "architecture_pattern_decision"
+      ],
+      "output_artifacts": [
+        "architecture_pattern_decision_shape_result"
+      ],
+      "payload": {
+        "action": "verify_adr_shape",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/architecture_pattern_decision.json"
+        ],
+        "expected_schema_version": "1"
+      },
+      "instruction": "Mechanical post-check for step 4.1 (architecture_pattern): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
+      "done_when": "verify_adr_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.2.verify",
+      "phase": "phase_4",
+      "name": "tech_stack_decision_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.2"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "tech_stack_decision"
+      ],
+      "output_artifacts": [
+        "tech_stack_decision_shape_result"
+      ],
+      "payload": {
+        "action": "verify_adr_shape",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/tech_stack_decision.json"
+        ],
+        "expected_schema_version": "1"
+      },
+      "instruction": "Mechanical post-check for step 4.2 (tech_stack): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
+      "done_when": "verify_adr_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.2.verify_cost_curve",
+      "phase": "phase_4",
+      "name": "tech_stack_decision_cost_curve_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.2.verify"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "tech_stack_decision"
+      ],
+      "output_artifacts": [
+        "tech_stack_decision_cost_curve_result"
+      ],
+      "payload": {
+        "action": "verify_cost_curve_present",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/tech_stack_decision.json"
+        ]
+      },
+      "instruction": "Mechanical post-check (A8) for stack step 4.2: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
+      "done_when": "verify_cost_curve_present returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.4.verify",
+      "phase": "phase_4",
+      "name": "database_schema_decision_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.4"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "database_schema_decision"
+      ],
+      "output_artifacts": [
+        "database_schema_decision_shape_result"
+      ],
+      "payload": {
+        "action": "verify_adr_shape",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/database_schema_decision.json"
+        ],
+        "expected_schema_version": "1"
+      },
+      "instruction": "Mechanical post-check for step 4.4 (database): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
+      "done_when": "verify_adr_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.4.verify_cost_curve",
+      "phase": "phase_4",
+      "name": "database_schema_decision_cost_curve_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.4.verify"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "database_schema_decision"
+      ],
+      "output_artifacts": [
+        "database_schema_decision_cost_curve_result"
+      ],
+      "payload": {
+        "action": "verify_cost_curve_present",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/database_schema_decision.json"
+        ]
+      },
+      "instruction": "Mechanical post-check (A8) for stack step 4.4: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
+      "done_when": "verify_cost_curve_present returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.6.verify",
+      "phase": "phase_4",
+      "name": "auth_design_decision_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.6"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "auth_design_decision"
+      ],
+      "output_artifacts": [
+        "auth_design_decision_shape_result"
+      ],
+      "payload": {
+        "action": "verify_adr_shape",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/auth_design_decision.json"
+        ],
+        "expected_schema_version": "1"
+      },
+      "instruction": "Mechanical post-check for step 4.6 (auth): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
+      "done_when": "verify_adr_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.6.verify_cost_curve",
+      "phase": "phase_4",
+      "name": "auth_design_decision_cost_curve_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.6.verify"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "auth_design_decision"
+      ],
+      "output_artifacts": [
+        "auth_design_decision_cost_curve_result"
+      ],
+      "payload": {
+        "action": "verify_cost_curve_present",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/auth_design_decision.json"
+        ]
+      },
+      "instruction": "Mechanical post-check (A8) for stack step 4.6: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
+      "done_when": "verify_cost_curve_present returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.8.verify",
+      "phase": "phase_4",
+      "name": "third_party_selections_decision_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.8"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "third_party_selections_decision"
+      ],
+      "output_artifacts": [
+        "third_party_selections_decision_shape_result"
+      ],
+      "payload": {
+        "action": "verify_adr_shape",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/third_party_selections_decision.json"
+        ],
+        "expected_schema_version": "1"
+      },
+      "instruction": "Mechanical post-check for step 4.8 (third_party_services): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
+      "done_when": "verify_adr_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.8.verify_cost_curve",
+      "phase": "phase_4",
+      "name": "third_party_selections_decision_cost_curve_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.8.verify"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "third_party_selections_decision"
+      ],
+      "output_artifacts": [
+        "third_party_selections_decision_cost_curve_result"
+      ],
+      "payload": {
+        "action": "verify_cost_curve_present",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/third_party_selections_decision.json"
+        ]
+      },
+      "instruction": "Mechanical post-check (A8) for stack step 4.8: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
+      "done_when": "verify_cost_curve_present returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.9.verify",
+      "phase": "phase_4",
+      "name": "infrastructure_designs_decision_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.9"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "infrastructure_designs_decision"
+      ],
+      "output_artifacts": [
+        "infrastructure_designs_decision_shape_result"
+      ],
+      "payload": {
+        "action": "verify_adr_shape",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/infrastructure_designs_decision.json"
+        ],
+        "expected_schema_version": "1"
+      },
+      "instruction": "Mechanical post-check for step 4.9 (infrastructure): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
+      "done_when": "verify_adr_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.9.verify_cost_curve",
+      "phase": "phase_4",
+      "name": "infrastructure_designs_decision_cost_curve_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.9.verify"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "infrastructure_designs_decision"
+      ],
+      "output_artifacts": [
+        "infrastructure_designs_decision_cost_curve_result"
+      ],
+      "payload": {
+        "action": "verify_cost_curve_present",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/infrastructure_designs_decision.json"
+        ]
+      },
+      "instruction": "Mechanical post-check (A8) for stack step 4.9: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
+      "done_when": "verify_cost_curve_present returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.10.verify",
+      "phase": "phase_4",
+      "name": "communication_designs_decision_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.10"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "communication_designs_decision"
+      ],
+      "output_artifacts": [
+        "communication_designs_decision_shape_result"
+      ],
+      "payload": {
+        "action": "verify_adr_shape",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/communication_designs_decision.json"
+        ],
+        "expected_schema_version": "1"
+      },
+      "instruction": "Mechanical post-check for step 4.10 (communication): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
+      "done_when": "verify_adr_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.10.verify_cost_curve",
+      "phase": "phase_4",
+      "name": "communication_designs_decision_cost_curve_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.10.verify"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "communication_designs_decision"
+      ],
+      "output_artifacts": [
+        "communication_designs_decision_cost_curve_result"
+      ],
+      "payload": {
+        "action": "verify_cost_curve_present",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/communication_designs_decision.json"
+        ]
+      },
+      "instruction": "Mechanical post-check (A8) for stack step 4.10: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
+      "done_when": "verify_cost_curve_present returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.2a.verify",
+      "phase": "phase_4",
+      "name": "component_library_decision_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.2a"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "component_library_decision"
+      ],
+      "output_artifacts": [
+        "component_library_decision_shape_result"
+      ],
+      "payload": {
+        "action": "verify_adr_shape",
+        "adr_paths": [
+          "mission_{mission_id}/.adr/component_library_decision.json"
+        ],
+        "expected_schema_version": "1"
+      },
+      "instruction": "Mechanical post-check for step 4.2a (component_library): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
+      "done_when": "verify_adr_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "4.14.verify_register",
+      "phase": "phase_4",
+      "name": "adr_register_consistency_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.14"
+      ],
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "input_artifacts": [
+        "adrs",
+        "adr_register"
+      ],
+      "output_artifacts": [
+        "adr_register_consistency_result"
+      ],
+      "payload": {
+        "action": "verify_adr_register",
+        "register_path": "mission_{mission_id}/.adr/register.md",
+        "adr_dir": "mission_{mission_id}/.adr"
+      },
+      "instruction": "Mechanical post-check (P3): every ADR id in register.md resolves to a JSON file under mission_{mission_id}/.adr/, and there are no orphan ADR JSONs. Failure forces 4.14 to regenerate the register.",
+      "done_when": "verify_adr_register returns ok=true.",
       "context": {}
     }
   ],
@@ -8887,7 +9879,10 @@
               "type": "object",
               "fields": {
                 "page_files": {},
-                "states_implemented": {"type": "array", "optional": true}
+                "states_implemented": {
+                  "type": "array",
+                  "optional": true
+                }
               }
             }
           }

@@ -303,6 +303,7 @@ async def init_db():
             framework TEXT DEFAULT '',
             legacy_pre_p7 INTEGER DEFAULT 0,
             legacy_pre_charter INTEGER DEFAULT 0,
+            legacy_pre_adr INTEGER DEFAULT 0,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
     """)
@@ -348,6 +349,22 @@ async def init_db():
         await db.execute("UPDATE missions SET legacy_pre_charter = 1")
         logger.info(
             "Z1 migration: legacy_pre_charter added + existing rows backfilled to 1"
+        )
+    except Exception:
+        # Column already exists — no-op; new missions default to 0.
+        pass
+
+    # Z1 Tier 2 migration: add `legacy_pre_adr` column. Tier 2 reshapes
+    # phase 4 around universal-shape ADRs (P3 + C7 + A8); pre-existing
+    # missions emitted Nygard-5-field artifacts only and cannot be
+    # retroactively upgraded. Same idempotent pattern as P7/charter.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN legacy_pre_adr INTEGER DEFAULT 0"
+        )
+        await db.execute("UPDATE missions SET legacy_pre_adr = 1")
+        logger.info(
+            "Z1 Tier 2 migration: legacy_pre_adr added + existing rows backfilled to 1"
         )
     except Exception:
         # Column already exists — no-op; new missions default to 0.

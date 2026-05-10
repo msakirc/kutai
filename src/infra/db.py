@@ -257,6 +257,19 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
+    # Z1 Tier 3 design-tokens migration: gate the new phase 5.0 / 5.0a steps
+    # so existing in-flight missions are not retroactively required to emit
+    # taste_emphasis.json + design_tokens.json. New missions start at 0
+    # (default); legacy rows get backfilled to 1.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN legacy_pre_design_tokens INTEGER DEFAULT 0"
+        )
+        # Column was just added → every existing row predates the cluster.
+        await db.execute("UPDATE missions SET legacy_pre_design_tokens = 1")
+    except Exception:
+        pass  # Column already exists; skip backfill on subsequent boots.
+
     # Migrate project data into missions (if projects table exists)
     try:
         cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")

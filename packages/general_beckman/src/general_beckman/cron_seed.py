@@ -59,6 +59,14 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 21600,  # 6h
         "payload": {"_executor": "cloud_refresh"},
     },
+    # Z10 T1A — sweep orphan file_locks every 60s. Closes the
+    # task-crashed-without-release reversibility hole.
+    {
+        "title": "file_locks_sweep",
+        "description": "Release orphan file_locks (expired or owner-task-dead)",
+        "interval_seconds": 60,
+        "payload": {"_marker": "file_locks_sweep"},
+    },
     {
         "title": "kdv_persist",
         "description": "Persist KDV rate-limit state (adapted limits, 429 history, daily counters) to kutai.db",

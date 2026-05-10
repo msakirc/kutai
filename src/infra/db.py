@@ -1030,6 +1030,9 @@ async def init_db():
     """)
 
     # File locks (Phase 6)
+    # Z10 T1A: `expires_at` added so orphan locks (task crashed without
+    # explicit release) get reaped by sweep_file_locks(). Migration below
+    # adds the column on existing DBs.
     await db.execute("""
         CREATE TABLE IF NOT EXISTS file_locks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1038,9 +1041,37 @@ async def init_db():
             task_id INTEGER,
             agent_type TEXT,
             acquired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP,
             UNIQUE(filepath)
         )
     """)
+    # Migrate older databases that pre-date `expires_at`.
+    try:
+        await db.execute("BEGIN")
+        await db.execute(
+            "ALTER TABLE file_locks ADD COLUMN expires_at TIMESTAMP"
+        )
+        await db.execute("COMMIT")
+        # T1C will absorb this into schema_migrations; for now leave a
+        # filesystem breadcrumb that doesn't depend on the as-yet-unborn
+        # ledger table.
+        try:
+            import pathlib as _pl
+            _pl.Path("_migrations_pending.txt").open("a", encoding="utf-8").write(
+                "z10_t1a_file_locks_expires_at\t"
+                "ALTER TABLE file_locks ADD COLUMN expires_at TIMESTAMP\n"
+            )
+        except Exception:
+            pass
+        logger.info(
+            "Z10 T1A migration: file_locks.expires_at column added"
+        )
+    except Exception:
+        # Column already exists (or txn already rolled back) — best-effort.
+        try:
+            await db.execute("ROLLBACK")
+        except Exception:
+            pass
 
     # Approval requests (Resilience)
     await db.execute("""
@@ -3415,20 +3446,55 @@ async def acquire_file_lock(
     mission_id: int | None = None,
     task_id: int | None = None,
     agent_type: str | None = None,
+    ttl_seconds: int = 3600,
 ) -> bool:
-    """Acquire an advisory lock on a file. Returns True if acquired."""
+    """Acquire an advisory lock on a file. Returns True if acquired.
+
+    Z10 T1A: every acquire now stamps ``expires_at = now + ttl_seconds`` so
+    crashed-task orphans get reaped by :func:`sweep_file_locks`. Default
+    TTL is 1 hour, mirroring the original spec column default.
+    """
     db = await get_db()
     try:
         await db.execute(
-            "INSERT INTO file_locks (filepath, mission_id, task_id, agent_type) "
-            "VALUES (?, ?, ?, ?)",
-            (filepath, mission_id, task_id, agent_type),
+            "INSERT INTO file_locks "
+            "(filepath, mission_id, task_id, agent_type, expires_at) "
+            "VALUES (?, ?, ?, ?, datetime('now', ?))",
+            (filepath, mission_id, task_id, agent_type, f"+{int(ttl_seconds)} seconds"),
         )
         await db.commit()
         return True
     except Exception:
         # UNIQUE constraint violation → already locked
         return False
+
+
+async def sweep_file_locks() -> int:
+    """Release orphan file_locks. Z10 T1A.
+
+    A row is orphan if either:
+      * ``expires_at`` is in the past, OR
+      * its owning ``task_id`` is no longer pending or running (crashed,
+        cancelled, completed without explicit release).
+
+    Returns the number of rows released. Wired into Beckman's cron via the
+    ``file_locks_sweep`` internal cadence (60s).
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        "DELETE FROM file_locks "
+        "WHERE (expires_at IS NOT NULL AND expires_at < datetime('now')) "
+        "   OR (task_id IS NOT NULL "
+        "       AND task_id NOT IN ("
+        "           SELECT id FROM tasks WHERE status IN ('pending','running')"
+        "       )"
+        "   )"
+    )
+    released = cursor.rowcount or 0
+    await db.commit()
+    if released:
+        logger.info(f"sweep_file_locks: released {released} orphan lock(s)")
+    return int(released)
 
 
 async def release_file_lock(filepath: str) -> None:

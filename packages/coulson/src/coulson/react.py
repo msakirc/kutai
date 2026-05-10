@@ -877,21 +877,40 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 except Exception as exc:
                     logger.debug(f"Self-reflection error: {exc}")
 
-            # Confidence gating
+            # Confidence gating (Z10 T1A — gate now actually enforces)
             confidence = parsed.get("confidence")
             if (
                 profile.min_confidence > 0
                 and isinstance(confidence, (int, float))
                 and confidence < profile.min_confidence
             ):
-                return {
-                    "status":      "needs_review",
-                    "result":      result,
-                    "review_note": f"Agent confidence: {confidence}/5",
-                    "model":       used_model,
-                    "cost":        total_cost,
-                    "difficulty":  reqs.difficulty,
-                }
+                gate_mode = getattr(profile, "confidence_gate", "fail_closed")
+                if gate_mode == "warn":
+                    logger.warning(
+                        "confidence_gate_warn",
+                        agent=getattr(profile, "name", "unknown"),
+                        task_id=task.get("id"),
+                        confidence=confidence,
+                        min_confidence=profile.min_confidence,
+                    )
+                else:
+                    # "fail_closed" → escalate. Beckman's result_router maps
+                    # status="needs_review" to RequestReview (reviewer task).
+                    logger.info(
+                        "confidence_gate_block",
+                        agent=getattr(profile, "name", "unknown"),
+                        task_id=task.get("id"),
+                        confidence=confidence,
+                        min_confidence=profile.min_confidence,
+                    )
+                    return {
+                        "status":      "needs_review",
+                        "result":      result,
+                        "review_note": f"Agent confidence: {confidence}/5",
+                        "model":       used_model,
+                        "cost":        total_cost,
+                        "difficulty":  reqs.difficulty,
+                    }
 
             return {
                 "status":           "completed",

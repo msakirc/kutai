@@ -1,0 +1,13 @@
+{
+  "step_id": "5.10",
+  "step_name": "design_review",
+  "schema_version": "1",
+  "kind": "screen_consistency",
+  "description": "Bad: profile screen declares different inherits_shell with NO override comment.",
+  "shared_shell_components": ["header", "tab_bar", "side_drawer"],
+  "screen_plans": {
+    "home": "---\n_schema_version: \"1\"\nmission_id: 42\nscreen_id: home\nroute: \"/\"\nsurface: mobile\ninherits_shell: [\"header\", \"tab_bar\"]\n---\n\n# Home\n",
+    "search": "---\n_schema_version: \"1\"\nmission_id: 42\nscreen_id: search\nroute: \"/search\"\nsurface: mobile\ninherits_shell: [\"header\", \"tab_bar\"]\n---\n\n# Search\n",
+    "profile": "---\n_schema_version: \"1\"\nmission_id: 42\nscreen_id: profile\nroute: \"/me\"\nsurface: mobile\ninherits_shell: [\"side_drawer\"]\n---\n\n# Profile\n\nNo override comment present — this is the failure case.\n"
+  }
+}

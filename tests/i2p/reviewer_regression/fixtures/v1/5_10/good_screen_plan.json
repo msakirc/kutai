@@ -1,0 +1,8 @@
+{
+  "step_id": "5.10",
+  "step_name": "design_review",
+  "schema_version": "1",
+  "kind": "screen_plan",
+  "description": "Z1 Tier 3 (C3+A10+C14) — paraflow-shape per-screen plan with ALL FOUR ## States sub-sections.",
+  "screen_plan_md": "---\n_schema_version: \"1\"\nmission_id: 42\nscreen_id: home\nroute: \"/\"\nsurface: mobile\ninherits_shell: [\"header\", \"tab_bar\"]\n---\n\n# Home\n\nAllow users to discover popular businesses, trending reviews, and access personalized recommendations.\n\n## Search Bar\n- Search input field with placeholder \"Search anything...\"\n- Search icon button\n\n## Featured Content\n- Trending businesses cards with star ratings\n- Popular categories chips (Restaurants, Products, Services, Health)\n- Recent high-reputation reviews feed\n\n## Quick Actions\n- Single prominent button: \"Contribute\"\n- Subtext: \"Share your review or report a fact\"\n\n## TabBar\n- Home / Search / My Activity / Profile\n\n## States\n\n### Default\nFull rendering as described above.\n\n### Empty\n- Hero illustration: \"No reviews yet — be the first\"\n- CTA: \"Write a review\"\n\n### Loading\n- Skeleton: search bar shimmer + 3 card skeletons + empty tab bar\n\n### Error\n- Empty state with error tone\n- Retry button\n- \"Pull to refresh\" hint\n"
+}

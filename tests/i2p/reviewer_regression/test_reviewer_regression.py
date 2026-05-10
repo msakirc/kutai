@@ -76,6 +76,15 @@ def _discover_fixtures() -> list[tuple[str, str, Path]]:
         "bad_adr_set",
         "good_component_library",
         "bad_component_library",
+        # Z1 Tier 3 (C3+A10+C9+A11+C18) — shape fixtures, not reviewer
+        # verdict fixtures. Loaded by tests/i2p/test_screen_plan.py,
+        # test_html_prototype.py, test_screen_consistency.py.
+        "good_screen_plan",
+        "bad_screen_plan",
+        "good_html_prototype",
+        "bad_html_prototype",
+        "good_screen_consistency",
+        "bad_screen_consistency",
     }
     for vdir in sorted(_FIXTURES_ROOT.iterdir()):
         if not vdir.is_dir() or not vdir.name.startswith("v"):

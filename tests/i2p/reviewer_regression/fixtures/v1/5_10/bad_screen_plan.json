@@ -1,0 +1,8 @@
+{
+  "step_id": "5.10",
+  "step_name": "design_review",
+  "schema_version": "1",
+  "kind": "screen_plan",
+  "description": "Bad: missing Loading + Error states; missing route in frontmatter; missing description paragraph.",
+  "screen_plan_md": "---\n_schema_version: \"1\"\nmission_id: 42\nscreen_id: home\nsurface: mobile\ninherits_shell: [\"header\"]\n---\n\n# Home\n\n## Search Bar\n- Search input field\n\n## States\n\n### Default\nFull rendering.\n\n### Empty\n- No results yet\n"
+}

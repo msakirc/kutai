@@ -45,6 +45,27 @@ def _mechanical_context(action: str, **payload_fields) -> dict:
 logger = get_logger("beckman.apply")
 
 
+async def _record_and_resolve_confidence(
+    task_id: int, correct: bool, source: str,
+    reviewer_verdict_id: int | None = None,
+) -> None:
+    """Z10 T4B — record + immediately resolve a confidence claim.
+
+    Skips silently if the source task has no confidence signal (record
+    returns None) or already resolved. Safe in mechanical/skipped paths.
+    """
+    from src.infra.db import (
+        record_confidence_claim, resolve_confidence_outcome,
+    )
+    claim_id = await record_confidence_claim(task_id)
+    if claim_id is None:
+        return
+    await resolve_confidence_outcome(
+        claim_id, correct=correct, source=source,
+        reviewer_verdict_id=reviewer_verdict_id,
+    )
+
+
 def _task_phase_label(task: dict, ctx: dict | None = None) -> str:
     """Return a phase label for B10 rework telemetry.
 
@@ -1121,10 +1142,17 @@ async def _apply_code_review_verdict(
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
             except Exception:
                 pass
-        else:
-            await update_task(
-                verdict.source_task_id, context=_json.dumps(ctx),
+        # Z10 T4B — record + resolve confidence claim against this reviewer
+        # verdict. record+resolve in one go: the verdict IS the resolution
+        # signal, no need for a separate pending row.
+        try:
+            await _record_and_resolve_confidence(
+                task_id=verdict.source_task_id, correct=True,
+                source="reviewer_verdict",
             )
+        except Exception as _e:
+            logger.debug("confidence claim record failed",
+                         task_id=verdict.source_task_id, error=str(_e))
         return
 
     # Fail path
@@ -1193,6 +1221,16 @@ async def _apply_code_review_verdict(
         next_retry_at=None,
         context=_json.dumps(ctx),
     )
+
+    # Z10 T4B — reviewer rejection: confidence claim resolves as incorrect
+    try:
+        await _record_and_resolve_confidence(
+            task_id=verdict.source_task_id, correct=False,
+            source="reviewer_verdict",
+        )
+    except Exception as _e:
+        logger.debug("confidence claim record (reject) failed",
+                     task_id=verdict.source_task_id, error=str(_e))
 
     # B10 telemetry: code-reviewer rejection is a reviewer_reject rework
     # signal. See _retry_or_dlq for the same-step / cross-band rationale.

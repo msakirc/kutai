@@ -48,6 +48,8 @@ async def fire_due() -> None:
                 await _mission_budget_alerts()
             elif marker == "mission_pacing_check":
                 await _mission_pacing_check()
+            elif marker == "confidence_calibration_recompute":
+                await _confidence_calibration_recompute()
             else:
                 await _insert_scheduled_task(row, payload)
             await _advance_schedule(row, now)
@@ -171,6 +173,26 @@ async def _mission_pacing_check() -> None:
             logger.info("mission_pacing_check posted prompts", count=n)
     except Exception as e:
         logger.warning("mission_pacing_check failed", error=str(e))
+
+
+async def _confidence_calibration_recompute() -> None:
+    """Z10 T4B — aggregate confidence_outcomes → reliability_scores.
+
+    After the rollup, push the matrix into the coulson prompt-builder
+    cache so freshly-tuned scores influence the next prompt assembly
+    without waiting for a process restart.
+    """
+    try:
+        from src.infra.db import recompute_reliability_scores
+        n = await recompute_reliability_scores()
+        logger.info("confidence_calibration_recompute wrote rows", rows=n)
+        try:
+            from coulson.context import refresh_calibration_cache
+            await refresh_calibration_cache()
+        except Exception as e:
+            logger.debug("calibration cache refresh failed", error=str(e))
+    except Exception as e:
+        logger.warning("confidence_calibration_recompute failed", error=str(e))
 
 
 async def _btable_rollup() -> None:

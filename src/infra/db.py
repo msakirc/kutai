@@ -307,6 +307,7 @@ async def init_db():
             legacy_pre_falsification INTEGER DEFAULT 0,
             legacy_pre_non_goals INTEGER DEFAULT 0,
             legacy_pre_competitive_positioning INTEGER DEFAULT 0,
+            legacy_pre_per_screen_plans INTEGER DEFAULT 0,
             interview_skip_reason TEXT,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
@@ -422,6 +423,26 @@ async def init_db():
         )
         logger.info(
             "Z1 Tier 2 migration: legacy_pre_competitive_positioning added "
+            "+ existing rows backfilled to 1"
+        )
+    except Exception:
+        pass
+
+    # Z1 Tier 3 migration (C3+A10+C9+A11+C14): add
+    # `legacy_pre_per_screen_plans` column. Backfilled to 1 for existing
+    # missions — they predate the per-screen plan + HTML prototype reshape
+    # of phase 5 (steps `5.1 generate_per_screen_plans` and
+    # `5.2 generate_html_prototypes`).
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_per_screen_plans INTEGER DEFAULT 0"
+        )
+        await db.execute(
+            "UPDATE missions SET legacy_pre_per_screen_plans = 1"
+        )
+        logger.info(
+            "Z1 Tier 3 migration: legacy_pre_per_screen_plans added "
             "+ existing rows backfilled to 1"
         )
     except Exception:

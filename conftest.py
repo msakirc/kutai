@@ -37,6 +37,7 @@ _PACKAGE_SRCS = [
     _ROOT / "packages" / "yazbunu" / "src",
     _ROOT / "packages" / "mr_roboto" / "src",
     _ROOT / "packages" / "coulson" / "src",
+    _ROOT / "packages" / "sade_kalsin" / "src",
 ]
 for p in _PACKAGE_SRCS:
     if p.is_dir() and str(p) not in sys.path:
@@ -50,6 +51,6 @@ for _mod in list(sys.modules):
     if root in {
         "fatih_hoca", "nerd_herd", "kuleden_donen_var", "general_beckman",
         "hallederiz_kadir", "dallama", "dogru_mu_samet", "vecihi",
-        "yasar_usta", "yazbunu", "mr_roboto", "coulson",
+        "yasar_usta", "yazbunu", "mr_roboto", "coulson", "sade_kalsin",
     }:
         del sys.modules[_mod]

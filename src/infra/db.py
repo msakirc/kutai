@@ -1445,7 +1445,164 @@ async def init_db():
         "ON models(status, provider)"
     )
 
+    # ── Z10 T1C: schema_migrations ledger ─────────────────────────────────
+    # Records every DDL migration applied to this database. apply_migration()
+    # is the only sanctioned way to evolve the schema from this point on:
+    # all DDL in T1C (and future tiers) runs through it inside a single
+    # BEGIN/COMMIT so a partial failure leaves no half-applied state.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version       TEXT PRIMARY KEY,
+            applied_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            sql           TEXT NOT NULL,
+            reversal_sql  TEXT,
+            description   TEXT
+        )
+    """)
     await db.commit()
+
+    # Absorb the T1A breadcrumb (if present): the file_locks.expires_at
+    # ALTER ran before this ledger existed. Record-only (already applied).
+    try:
+        import pathlib as _pl
+        bc = _pl.Path("_migrations_pending.txt")
+        if bc.exists():
+            for line in bc.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t", 1)
+                version = parts[0]
+                sql_text = parts[1] if len(parts) > 1 else ""
+                cur = await db.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = ?",
+                    (version,),
+                )
+                exists = await cur.fetchone()
+                if not exists:
+                    await db.execute(
+                        "INSERT INTO schema_migrations "
+                        "(version, sql, reversal_sql, description) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            version,
+                            sql_text,
+                            None,
+                            "Absorbed from _migrations_pending.txt breadcrumb",
+                        ),
+                    )
+            await db.commit()
+            try:
+                bc.unlink()
+            except Exception:
+                pass
+            logger.info(
+                "Z10 T1C: absorbed _migrations_pending.txt into schema_migrations"
+            )
+    except Exception as e:
+        logger.debug(f"breadcrumb absorption skipped: {e}")
+
+    # ── Z10 T1C migrations ────────────────────────────────────────────────
+    # 1. tasks: confidence_categorical / confidence_numeric / reasoning / reversibility
+    await apply_migration(
+        version="2026-05-10-tasks-confidence-reversibility",
+        sql=(
+            "ALTER TABLE tasks ADD COLUMN confidence_categorical TEXT;\n"
+            "ALTER TABLE tasks ADD COLUMN confidence_numeric REAL;\n"
+            "ALTER TABLE tasks ADD COLUMN reasoning TEXT;\n"
+            "ALTER TABLE tasks ADD COLUMN reversibility TEXT;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE tasks DROP COLUMN confidence_categorical;\n"
+            "ALTER TABLE tasks DROP COLUMN confidence_numeric;\n"
+            "ALTER TABLE tasks DROP COLUMN reasoning;\n"
+            "ALTER TABLE tasks DROP COLUMN reversibility;\n"
+        ),
+        description=(
+            "T1C provenance: tasks confidence (categorical/numeric), "
+            "reasoning, reversibility columns"
+        ),
+    )
+
+    # 2. artifact_provenance table + indexes
+    await apply_migration(
+        version="2026-05-10-artifact-provenance",
+        sql=(
+            "CREATE TABLE artifact_provenance ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " path TEXT NOT NULL,"
+            " task_id INTEGER,"
+            " step_id TEXT,"
+            " model_id TEXT,"
+            " retry_n INTEGER DEFAULT 0,"
+            " reviewer_verdict_id INTEGER,"
+            " mission_id INTEGER,"
+            " written_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " FOREIGN KEY (task_id) REFERENCES tasks(id)"
+            ");\n"
+            "CREATE INDEX idx_artifact_provenance_path "
+            "ON artifact_provenance(path);\n"
+            "CREATE INDEX idx_artifact_provenance_mission "
+            "ON artifact_provenance(mission_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_artifact_provenance_mission;\n"
+            "DROP INDEX IF EXISTS idx_artifact_provenance_path;\n"
+            "DROP TABLE IF EXISTS artifact_provenance;\n"
+        ),
+        description=(
+            "T1C provenance: artifact_provenance table joining writes to "
+            "task/step/model/mission/reviewer"
+        ),
+    )
+
+    # 3. registry_events: per-action audit columns
+    await apply_migration(
+        version="2026-05-10-registry-events-action-scope",
+        sql=(
+            "ALTER TABLE registry_events ADD COLUMN mission_id INTEGER;\n"
+            "ALTER TABLE registry_events ADD COLUMN task_id INTEGER;\n"
+            "ALTER TABLE registry_events ADD COLUMN verb TEXT;\n"
+            "ALTER TABLE registry_events ADD COLUMN reversibility TEXT;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE registry_events DROP COLUMN mission_id;\n"
+            "ALTER TABLE registry_events DROP COLUMN task_id;\n"
+            "ALTER TABLE registry_events DROP COLUMN verb;\n"
+            "ALTER TABLE registry_events DROP COLUMN reversibility;\n"
+        ),
+        description=(
+            "T1C provenance: registry_events extended for scope='action' "
+            "audit rows (mission_id/task_id/verb/reversibility)"
+        ),
+    )
+
+    # 4. action_confirmations table + index
+    await apply_migration(
+        version="2026-05-10-action-confirmations",
+        sql=(
+            "CREATE TABLE action_confirmations ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " task_id INTEGER NOT NULL,"
+            " verb TEXT NOT NULL,"
+            " reversibility TEXT NOT NULL,"
+            " payload_summary TEXT,"
+            " requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " responded_at TIMESTAMP,"
+            " verdict TEXT"
+            ");\n"
+            "CREATE INDEX idx_action_confirmations_task "
+            "ON action_confirmations(task_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_action_confirmations_task;\n"
+            "DROP TABLE IF EXISTS action_confirmations;\n"
+        ),
+        description=(
+            "T1C confirmation flow: action_confirmations skeleton table "
+            "(Telegram wire deferred to T2B)"
+        ),
+    )
 
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
@@ -4282,5 +4439,220 @@ async def unsuspend_api(api_name: str):
     await db.execute(
         "UPDATE api_reliability SET status = 'active', success_count = 0, failure_count = 0, consecutive_failures = 0 WHERE api_name = ?",
         (api_name,),
+    )
+    await db.commit()
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Z10 T1C — schema migration ledger + provenance + audit + confirmation APIs
+# ───────────────────────────────────────────────────────────────────────────
+
+
+async def apply_migration(
+    version: str,
+    sql: str,
+    reversal_sql: str | None,
+    description: str,
+) -> bool:
+    """Apply a DDL migration inside a single transaction and record it.
+
+    Idempotent: if ``version`` is already in ``schema_migrations`` this is a
+    no-op and returns False. On a fresh apply, runs ``sql`` and inserts the
+    ledger row inside one BEGIN/COMMIT block — any failure rolls back the
+    DDL *and* the ledger insert so the next call retries cleanly.
+
+    ``sql`` may contain multiple statements separated by ``;`` — they are
+    executed via ``executescript`` after BEGIN.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
+    )
+    if await cur.fetchone():
+        return False
+
+    try:
+        await db.execute("BEGIN")
+        # Execute each statement individually so the transaction is honoured
+        # (executescript() issues its own COMMIT mid-flight).
+        for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+            await db.execute(stmt)
+        await db.execute(
+            "INSERT INTO schema_migrations "
+            "(version, sql, reversal_sql, description) "
+            "VALUES (?, ?, ?, ?)",
+            (version, sql, reversal_sql, description),
+        )
+        await db.execute("COMMIT")
+        logger.info(f"Applied migration {version}: {description}")
+        return True
+    except Exception as e:
+        try:
+            await db.execute("ROLLBACK")
+        except Exception:
+            pass
+        logger.error(f"Migration {version} failed (rolled back): {e}")
+        raise
+
+
+async def record_artifact_write(
+    path: str,
+    task_id: int | None = None,
+    step_id: str | None = None,
+    model_id: str | None = None,
+    retry_n: int = 0,
+    reviewer_verdict_id: int | None = None,
+    mission_id: int | None = None,
+) -> int:
+    """Insert a row into ``artifact_provenance``. Returns the new row id."""
+    db = await get_db()
+    cur = await db.execute(
+        "INSERT INTO artifact_provenance "
+        "(path, task_id, step_id, model_id, retry_n, "
+        " reviewer_verdict_id, mission_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            path,
+            task_id,
+            step_id,
+            model_id,
+            retry_n,
+            reviewer_verdict_id,
+            mission_id,
+        ),
+    )
+    await db.commit()
+    return cur.lastrowid or 0
+
+
+async def get_artifact_provenance(path: str) -> list[dict]:
+    """Return chronological writes to ``path`` (most recent first).
+
+    Each row carries the provenance core plus, when available, the owning
+    task's ``agent_type`` and the summed token counts from
+    ``model_call_tokens`` for that task.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT
+            ap.written_at,
+            ap.task_id,
+            ap.step_id,
+            ap.model_id,
+            ap.retry_n,
+            ap.mission_id,
+            ap.reviewer_verdict_id,
+            t.agent_type AS agent_type,
+            (SELECT COALESCE(SUM(mct.prompt_tokens), 0)
+             FROM model_call_tokens mct
+             WHERE mct.task_id = ap.task_id) AS prompt_tokens,
+            (SELECT COALESCE(SUM(mct.completion_tokens), 0)
+             FROM model_call_tokens mct
+             WHERE mct.task_id = ap.task_id) AS completion_tokens
+        FROM artifact_provenance ap
+        LEFT JOIN tasks t ON t.id = ap.task_id
+        WHERE ap.path = ?
+        ORDER BY ap.written_at DESC, ap.id DESC
+        """,
+        (path,),
+    )
+    rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+async def record_action_event(
+    verb: str,
+    reversibility: str,
+    mission_id: int | None,
+    task_id: int | None,
+    payload: dict | None,
+    status: str,
+) -> int:
+    """Append a per-action audit row to ``registry_events`` (scope='action').
+
+    The existing ``event`` column carries the verb (mirrors ``verb`` for
+    backward-compatible target/event scans); ``payload_json`` carries the
+    JSON-serialized payload + status. Returns the new row id.
+    """
+    db = await get_db()
+    try:
+        payload_json = json.dumps(
+            {"payload": payload or {}, "status": status},
+            default=str,
+        )
+    except Exception:
+        payload_json = json.dumps(
+            {"payload": str(payload), "status": status}
+        )
+    cur = await db.execute(
+        "INSERT INTO registry_events "
+        "(scope, target, event, payload_json, "
+        " mission_id, task_id, verb, reversibility) "
+        "VALUES ('action', ?, ?, ?, ?, ?, ?, ?)",
+        (
+            verb,
+            verb,
+            payload_json,
+            mission_id,
+            task_id,
+            verb,
+            reversibility,
+        ),
+    )
+    await db.commit()
+    return cur.lastrowid or 0
+
+
+async def request_confirmation(
+    task_id: int,
+    verb: str,
+    reversibility: str,
+    payload_summary: str | None = None,
+) -> int:
+    """Open a confirmation request. Returns id with verdict='pending'."""
+    db = await get_db()
+    cur = await db.execute(
+        "INSERT INTO action_confirmations "
+        "(task_id, verb, reversibility, payload_summary, verdict) "
+        "VALUES (?, ?, ?, ?, 'pending')",
+        (task_id, verb, reversibility, payload_summary),
+    )
+    await db.commit()
+    return cur.lastrowid or 0
+
+
+async def check_confirmation(confirmation_id: int) -> dict:
+    """Return ``{'verdict': str, 'responded_at': ts | None}`` for a request.
+
+    Verdict is one of ``pending`` / ``approved`` / ``rejected``. If the row
+    does not exist returns ``{'verdict': 'missing', 'responded_at': None}``.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT verdict, responded_at FROM action_confirmations WHERE id = ?",
+        (confirmation_id,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return {"verdict": "missing", "responded_at": None}
+    return {"verdict": row[0], "responded_at": row[1]}
+
+
+async def resolve_confirmation(
+    confirmation_id: int, verdict: str
+) -> None:
+    """Stamp a confirmation as ``approved`` or ``rejected`` with now()."""
+    if verdict not in ("approved", "rejected"):
+        raise ValueError(
+            f"verdict must be 'approved' or 'rejected', got {verdict!r}"
+        )
+    db = await get_db()
+    await db.execute(
+        "UPDATE action_confirmations "
+        "SET verdict = ?, responded_at = CURRENT_TIMESTAMP "
+        "WHERE id = ?",
+        (verdict, confirmation_id),
     )
     await db.commit()

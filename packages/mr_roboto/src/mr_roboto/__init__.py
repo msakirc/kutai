@@ -122,15 +122,155 @@ async def run(task: dict) -> Action:
     Z10-T1B: every returned Action carries a ``reversibility`` tag from
     :data:`VERB_REVERSIBILITY`, with per-invocation override via
     ``payload["reversibility_override"]``.
+
+    Z10-T1C: every dispatch lands a row in ``registry_events``
+    (scope='action') with verb + reversibility + mission/task ids. When
+    ``payload['require_confirmation']`` is True AND the resolved
+    reversibility is ``partial`` / ``irreversible``, the dispatcher opens
+    a confirmation row and polls until the founder responds (or the 60s
+    skeleton timeout fires — T2B will replace polling with the Telegram
+    reactor).
     """
-    action_obj = await _run_dispatch(task)
     payload = task.get("payload") or {}
     verb = payload.get("action") or ""
     override = payload.get("reversibility_override")
     if override not in ("full", "partial", "irreversible", None):
         override = None
-    action_obj.reversibility = get_reversibility(str(verb), override=override)
+    resolved_reversibility = get_reversibility(str(verb), override=override)
+
+    # Skeleton confirmation gate. Default off; only the explicit caller
+    # flag arms it for T1C. T2B will wire auto-arm + Telegram surface.
+    require_confirmation = bool(payload.get("require_confirmation", False))
+    if require_confirmation and resolved_reversibility in (
+        "partial", "irreversible"
+    ):
+        gate_action = await _await_confirmation(
+            task_id=task.get("id"),
+            verb=str(verb),
+            reversibility=resolved_reversibility,
+            payload=payload,
+        )
+        if gate_action is not None:
+            gate_action.reversibility = resolved_reversibility
+            await _log_action_event(
+                verb=str(verb),
+                reversibility=resolved_reversibility,
+                task=task,
+                payload=payload,
+                status=gate_action.status,
+            )
+            return gate_action
+
+    action_obj = await _run_dispatch(task)
+    action_obj.reversibility = resolved_reversibility
+
+    await _log_action_event(
+        verb=str(verb),
+        reversibility=resolved_reversibility,
+        task=task,
+        payload=payload,
+        status=action_obj.status,
+    )
     return action_obj
+
+
+async def _log_action_event(
+    *,
+    verb: str,
+    reversibility: str,
+    task: dict,
+    payload: dict,
+    status: str,
+) -> None:
+    """Best-effort audit-log writer. Never raises into the dispatch path."""
+    try:
+        from src.infra.db import record_action_event
+        # Strip well-known noisy fields from the payload snapshot so the
+        # audit row stays compact and JSON-serializable.
+        snap = {
+            k: v for k, v in (payload or {}).items()
+            if k not in ("result",) and not callable(v)
+        }
+        await record_action_event(
+            verb=verb,
+            reversibility=reversibility,
+            mission_id=task.get("mission_id"),
+            task_id=task.get("id"),
+            payload=snap,
+            status=status,
+        )
+    except Exception:
+        # Audit failures must never block the action itself.
+        import logging
+        logging.getLogger("mr_roboto.audit").debug(
+            "record_action_event failed", exc_info=True
+        )
+
+
+async def _await_confirmation(
+    *,
+    task_id,
+    verb: str,
+    reversibility: str,
+    payload: dict,
+    max_wait_s: float = 60.0,
+    poll_interval_s: float = 0.5,
+) -> Action | None:
+    """Open a confirmation request and poll for verdict.
+
+    Returns:
+        ``None`` when verdict='approved' — caller proceeds with dispatch.
+        ``Action(status='rejected')`` when verdict='rejected'.
+        ``Action(status='failed', error='confirmation_timeout')`` when the
+        skeleton timeout fires (T2B replaces this with reactor delivery).
+    """
+    import asyncio
+    try:
+        from src.infra.db import (
+            request_confirmation,
+            check_confirmation,
+        )
+    except Exception as e:
+        # If the DB isn't available we can't gate — fail closed.
+        return Action(
+            status="failed",
+            error=f"confirmation_unavailable: {e}",
+        )
+
+    try:
+        summary = payload.get("payload_summary") or payload.get("message") or ""
+        summary = str(summary)[:500]
+        confirmation_id = await request_confirmation(
+            task_id=int(task_id) if task_id is not None else 0,
+            verb=verb,
+            reversibility=reversibility,
+            payload_summary=summary,
+        )
+    except Exception as e:
+        return Action(
+            status="failed", error=f"confirmation_open_failed: {e}"
+        )
+
+    elapsed = 0.0
+    while elapsed < max_wait_s:
+        res = await check_confirmation(confirmation_id)
+        verdict = res.get("verdict")
+        if verdict == "approved":
+            return None
+        if verdict == "rejected":
+            return Action(
+                status="rejected",
+                error="action rejected by confirmation gate",
+                result={"confirmation_id": confirmation_id},
+            )
+        await asyncio.sleep(poll_interval_s)
+        elapsed += poll_interval_s
+
+    return Action(
+        status="failed",
+        error="confirmation_timeout",
+        result={"confirmation_id": confirmation_id},
+    )
 
 
 async def _run_dispatch(task: dict) -> Action:
@@ -215,6 +355,66 @@ async def _run_dispatch(task: dict) -> Action:
         commit_info = await auto_commit(task, payload.get("result") or {})
         if gate_result is not None:
             (commit_info or {}).setdefault("critic", gate_result)
+
+        # Z10 T1C: provenance — record each file changed by this commit.
+        # Best-effort; failures must not break the commit action.
+        try:
+            if (commit_info or {}).get("committed") and (commit_info or {}).get("commit_sha"):
+                from src.tools.git_ops import _run_git, _resolve_repo
+                mid = task.get("mission_id")
+                repo_path = (
+                    get_mission_workspace_relative(mid) if mid else ""
+                )
+                target = _resolve_repo(repo_path) or ""
+                if target:
+                    _, names_out, _ = await _run_git(
+                        [
+                            "show",
+                            "--no-renames",
+                            "--pretty=",
+                            "--name-only",
+                            commit_info["commit_sha"],
+                        ],
+                        cwd=target,
+                    )
+                    changed = [
+                        line.strip()
+                        for line in (names_out or "").splitlines()
+                        if line.strip()
+                    ]
+                    if changed:
+                        from src.infra.db import record_artifact_write
+                        retry_n = int(payload.get("retry_n") or 0)
+                        model_id = (
+                            payload.get("model_id")
+                            or payload.get("model")
+                            or None
+                        )
+                        step_id = (
+                            payload.get("step_id")
+                            or task.get("workflow_step_id")
+                        )
+                        for p in changed:
+                            try:
+                                await record_artifact_write(
+                                    path=p,
+                                    task_id=task.get("id"),
+                                    step_id=step_id,
+                                    model_id=model_id,
+                                    retry_n=retry_n,
+                                    reviewer_verdict_id=payload.get(
+                                        "reviewer_verdict_id"
+                                    ),
+                                    mission_id=task.get("mission_id"),
+                                )
+                            except Exception:
+                                pass
+        except Exception:
+            import logging
+            logging.getLogger("mr_roboto.provenance").debug(
+                "record_artifact_write failed", exc_info=True
+            )
+
         # Backwards-compatible default: empty diff is OK (no-op success).
         # Opt-in: when payload.require_diff is true, an empty diff is a
         # hard failure — surfaces the "step claimed file changes but

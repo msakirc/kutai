@@ -1464,7 +1464,12 @@
         "research_review_result": {
           "type": "object",
           "fields": {
-            "verdict": {"type": "string", "equals": ["pass"]},
+            "verdict": {
+              "type": "string",
+              "equals": [
+                "pass"
+              ]
+            },
             "issues": {}
           }
         }
@@ -1499,7 +1504,13 @@
           "fields": {
             "scores": {},
             "weighted_score": {},
-            "recommendation": {"type": "string", "equals": ["Go", "go"]}
+            "recommendation": {
+              "type": "string",
+              "equals": [
+                "Go",
+                "go"
+              ]
+            }
           }
         }
       },
@@ -1576,20 +1587,41 @@
             "customer_profile": {
               "type": "object",
               "fields": {
-                "jobs": {"type": "array", "min_items": 1},
-                "pains": {"type": "array", "min_items": 1},
-                "gains": {"type": "array", "min_items": 1}
+                "jobs": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "pains": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "gains": {
+                  "type": "array",
+                  "min_items": 1
+                }
               }
             },
             "value_map": {
               "type": "object",
               "fields": {
-                "products_and_services": {"type": "array", "min_items": 1},
-                "pain_relievers": {"type": "array", "min_items": 1},
-                "gain_creators": {"type": "array", "min_items": 1}
+                "products_and_services": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "pain_relievers": {
+                  "type": "array",
+                  "min_items": 1
+                },
+                "gain_creators": {
+                  "type": "array",
+                  "min_items": 1
+                }
               }
             },
-            "top_fits": {"type": "array", "min_items": 1}
+            "top_fits": {
+              "type": "array",
+              "min_items": 1
+            }
           }
         }
       },
@@ -1860,19 +1892,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "name": {"type": "string"},
-                  "formula": {"type": "string"},
-                  "data_source": {"type": "string"},
-                  "target_value": {"type": "string"},
-                  "measurement_frequency": {"type": "string"}
+                  "name": {
+                    "type": "string"
+                  },
+                  "formula": {
+                    "type": "string"
+                  },
+                  "data_source": {
+                    "type": "string"
+                  },
+                  "target_value": {
+                    "type": "string"
+                  },
+                  "measurement_frequency": {
+                    "type": "string"
+                  }
                 }
               }
             },
             "north_star_metric": {
               "type": "object",
               "fields": {
-                "name": {"type": "string"},
-                "justification": {"type": "string"}
+                "name": {
+                  "type": "string"
+                },
+                "justification": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -2149,21 +2195,47 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "entity_name": {"type": "string"},
-                  "description": {"type": "string"},
-                  "data_fields": {"type": "array", "min_items": 1},
-                  "sensitivity_level": {"type": "string"},
-                  "volume_estimate": {"type": "string"},
-                  "retention_policy": {"type": "string"},
-                  "deletion_requirements": {"type": "string"},
-                  "backup_requirements": {"type": "string"}
+                  "entity_name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "data_fields": {
+                    "type": "array",
+                    "min_items": 1
+                  },
+                  "sensitivity_level": {
+                    "type": "string"
+                  },
+                  "volume_estimate": {
+                    "type": "string"
+                  },
+                  "retention_policy": {
+                    "type": "string"
+                  },
+                  "deletion_requirements": {
+                    "type": "string"
+                  },
+                  "backup_requirements": {
+                    "type": "string"
+                  }
                 }
               }
             },
-            "data_flows": {"type": "array", "min_items": 1},
-            "data_transformations": {"type": "array"},
-            "data_access_patterns": {"type": "array"},
-            "data_archival_strategy": {"type": "string"}
+            "data_flows": {
+              "type": "array",
+              "min_items": 1
+            },
+            "data_transformations": {
+              "type": "array"
+            },
+            "data_access_patterns": {
+              "type": "array"
+            },
+            "data_archival_strategy": {
+              "type": "string"
+            }
           }
         }
       },
@@ -2534,7 +2606,12 @@
         "requirements_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass"
+              ]
+            },
             "issues": {}
           }
         }
@@ -2771,20 +2848,34 @@
         "openapi_spec": {
           "type": "object",
           "fields": {
-            "openapi": {"type": "string"},
+            "openapi": {
+              "type": "string"
+            },
             "info": {
               "type": "object",
               "fields": {
-                "title": {"type": "string"},
-                "version": {"type": "string"},
-                "description": {"type": "string"}
+                "title": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
               }
             },
-            "paths": {"type": "object", "min_keys": 1},
+            "paths": {
+              "type": "object",
+              "min_keys": 1
+            },
             "components": {
               "type": "object",
               "fields": {
-                "schemas": {"type": "object", "min_keys": 1}
+                "schemas": {
+                  "type": "object",
+                  "min_keys": 1
+                }
               }
             }
           }
@@ -2902,16 +2993,30 @@
           "items": {
             "type": "object",
             "fields": {
-              "integration_id": {"type": "string"},
-              "vendor": {"type": "string"},
-              "pricing": {"type": "string"},
-              "setup_complexity": {"type": "string"},
-              "sdk_quality": {"type": "string"},
-              "lock_in_risk": {"type": "string"}
+              "integration_id": {
+                "type": "string"
+              },
+              "vendor": {
+                "type": "string"
+              },
+              "pricing": {
+                "type": "string"
+              },
+              "setup_complexity": {
+                "type": "string"
+              },
+              "sdk_quality": {
+                "type": "string"
+              },
+              "lock_in_risk": {
+                "type": "string"
+              }
             }
           }
         },
-        "total_monthly_cost": {"type": "string"}
+        "total_monthly_cost": {
+          "type": "string"
+        }
       },
       "context": {}
     },
@@ -3327,11 +3432,246 @@
         "architecture_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {},
             "security_findings": {}
           }
         }
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0b",
+      "phase": "phase_5",
+      "name": "surfaces_lock",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "2.11b"
+      ],
+      "may_need_clarification": true,
+      "input_artifacts": [
+        "prd_final_summary"
+      ],
+      "output_artifacts": [
+        "surfaces_config"
+      ],
+      "instruction": "Ask founder which surfaces this product targets. Reply keyboard options: 'mobile only', 'web only', 'mobile + web', 'mobile + web + desktop', 'mobile + web + admin'. Persist the decision to mission_{mission_id}/.charter/surfaces.json with schema {_schema_version, mission_id, surfaces, primary_surface, founder_confirmed_at}. primary_surface defaults to first item; founder may override.",
+      "done_when": "surfaces_config exists with founder confirmation.",
+      "produces": [
+        "mission_{mission_id}/.charter/surfaces.json"
+      ],
+      "executor": "clarify",
+      "payload": {
+        "action": "clarify",
+        "kind": "surface_choice",
+        "options": [
+          "mobile only",
+          "web only",
+          "mobile + web",
+          "mobile + web + desktop",
+          "mobile + web + admin"
+        ],
+        "persist_to": "mission_{mission_id}/.charter/surfaces.json"
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0b.verify",
+      "phase": "phase_5",
+      "name": "surfaces_verify",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0b"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "surfaces_config"
+      ],
+      "output_artifacts": [
+        "surfaces_verify_result"
+      ],
+      "instruction": "Mechanical verify of surfaces.json shape. Asserts non-empty surfaces array, valid surface tokens, primary_surface in list.",
+      "done_when": "surfaces_verify_result.ok == true",
+      "executor": "verify_surfaces_shape",
+      "payload": {
+        "action": "verify_surfaces_shape",
+        "path": ".charter/surfaces.json"
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0c",
+      "phase": "phase_5",
+      "name": "user_flow_lock",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0b.verify"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "surfaces_config",
+        "product_charter",
+        "prd_final_summary"
+      ],
+      "output_artifacts": [
+        "user_flow"
+      ],
+      "instruction": "Read surfaces.json + product_charter (especially Solutions and persona references). Emit mission_{mission_id}/.flow/user_flow.md with YAML frontmatter (_schema_version='1', mission_id, surfaces) and one ```mermaid graph TD``` block per declared surface. Each node must follow the pattern: Name[\"Screen Name<br/>/route\"]. Match the paraflow shape: per-surface H2 sections with persona name in parentheses; Mobile may split into Authentication/Onboarding + Main App.",
+      "done_when": "user_flow.md exists with one mermaid block per surface.",
+      "produces": [
+        "mission_{mission_id}/.flow/user_flow.md"
+      ],
+      "artifact_schema": {
+        "user_flow": {
+          "type": "object",
+          "required_fields": [
+            "surfaces",
+            "mermaid_per_surface"
+          ]
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 4000
+      }
+    },
+    {
+      "id": "5.0c.verify",
+      "phase": "phase_5",
+      "name": "user_flow_verify",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0c"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "user_flow"
+      ],
+      "output_artifacts": [
+        "user_flow_verify_result"
+      ],
+      "instruction": "Mechanical verify of user_flow.md shape. Asserts YAML frontmatter and at least one ```mermaid block per declared surface.",
+      "done_when": "user_flow_verify_result.ok == true",
+      "executor": "verify_user_flow_shape",
+      "payload": {
+        "action": "verify_user_flow_shape",
+        "path": ".flow/user_flow.md"
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0d",
+      "phase": "phase_5",
+      "name": "screen_inventory_and_shell",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0c.verify"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "user_flow",
+        "surfaces_config"
+      ],
+      "output_artifacts": [
+        "screen_inventory",
+        "shared_shell"
+      ],
+      "instruction": "Read user_flow.md. Extract every unique screen by parsing mermaid node labels (Name[\"Screen Name<br/>/route\"]). Emit two artifacts:\n1. mission_{mission_id}/.flow/screen_inventory.md — YAML frontmatter with total_screens, chunk_size=4 (B8 cohesion ceiling), chunks (list of lists, each <= chunk_size). Body groups screens by surface (## Mobile / ## Web / etc.). Each screen line: '- Screen Name (`/route`)'.\n2. mission_{mission_id}/.flow/shared_shell.md — YAML frontmatter with shared_components dict + applicable_to_surfaces. Body has H2 sections for at minimum: Header, EmptyState, ErrorState, LoadingState (TabBar/Footer optional but recommended). Each section describes the invariant pattern.",
+      "done_when": "screen_inventory and shared_shell both exist.",
+      "produces": [
+        "mission_{mission_id}/.flow/screen_inventory.md",
+        "mission_{mission_id}/.flow/shared_shell.md"
+      ],
+      "artifact_schema": {
+        "screen_inventory": {
+          "type": "object",
+          "required_fields": [
+            "total_screens",
+            "chunk_size",
+            "chunks"
+          ]
+        },
+        "shared_shell": {
+          "type": "object",
+          "required_fields": [
+            "shared_components",
+            "applicable_to_surfaces"
+          ]
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 6000
+      }
+    },
+    {
+      "id": "5.0d.verify",
+      "phase": "phase_5",
+      "name": "screen_inventory_and_shell_verify",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0d"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "screen_inventory",
+        "shared_shell"
+      ],
+      "output_artifacts": [
+        "screen_inventory_verify_result"
+      ],
+      "instruction": "Mechanical verify of screen_inventory.md (chunks math, every screen has route) AND shared_shell.md (header + empty + error + loading present).",
+      "done_when": "both verifies pass",
+      "executor": "verify_screen_inventory_shape",
+      "payload": {
+        "action": "verify_screen_inventory_shape",
+        "path": ".flow/screen_inventory.md",
+        "follow_up": {
+          "action": "verify_shared_shell_shape",
+          "path": ".flow/shared_shell.md"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "5.0d.verify_shell",
+      "phase": "phase_5",
+      "name": "shared_shell_verify",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0d"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "shared_shell"
+      ],
+      "output_artifacts": [
+        "shared_shell_verify_result"
+      ],
+      "instruction": "Mechanical verify of shared_shell.md shape (frontmatter + header/empty/error/loading sections present).",
+      "done_when": "shared_shell_verify_result.ok == true",
+      "executor": "verify_shared_shell_shape",
+      "payload": {
+        "action": "verify_shared_shell_shape",
+        "path": ".flow/shared_shell.md"
       },
       "context": {}
     },
@@ -3563,7 +3903,13 @@
         "wireframe_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -3759,13 +4105,19 @@
       "output_artifacts": [
         "design_review_result"
       ],
-      "instruction": "Review design specs for coverage, consistency, component reuse, accessibility completeness, responsive completeness, implementability, token compliance. Evaluate design token choices for color harmony, typography hierarchy, spacing consistency, competitive positioning, visual coherence.",
+      "instruction": "Review design specs for coverage, consistency, component reuse, accessibility completeness, responsive completeness, implementability, token compliance. Evaluate design token choices for color harmony, typography hierarchy, spacing consistency, competitive positioning, visual coherence. Additionally, verify Z1 T3B structural artifacts: (a) .charter/surfaces.json exists with primary_surface declared and in surfaces list; (b) .flow/user_flow.md has one mermaid diagram per declared surface (count match); (c) .flow/screen_inventory.md total_screens equals sum of chunks and every screen has a route; (d) .flow/shared_shell.md declares the minimum 4 shells (header / empty_state / error_state / loading_state); (e) per-screen plans referenced in inventory exist on disk.",
       "done_when": "design_review_result exists.",
       "artifact_schema": {
         "design_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -3889,13 +4241,29 @@
           "items": {
             "type": "object",
             "fields": {
-              "epic_id": {"type": "string"},
-              "name": {"type": "string"},
-              "description": {"type": "string"},
-              "user_stories": {"type": "array", "min_items": 1},
-              "dependencies": {"type": "array", "optional": true},
-              "estimated_total_effort": {"type": "string"},
-              "priority_order": {"type": "number"}
+              "epic_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "user_stories": {
+                "type": "array",
+                "min_items": 1
+              },
+              "dependencies": {
+                "type": "array",
+                "optional": true
+              },
+              "estimated_total_effort": {
+                "type": "string"
+              },
+              "priority_order": {
+                "type": "number"
+              }
             }
           }
         },
@@ -3908,12 +4276,25 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "task_id": {"type": "string"},
-                  "story_id": {"type": "string"},
-                  "epic_id": {"type": "string"},
-                  "agent": {"type": "string"},
-                  "dependencies": {"type": "array", "optional": true},
-                  "estimated_effort": {"type": "string"}
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "story_id": {
+                    "type": "string"
+                  },
+                  "epic_id": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "dependencies": {
+                    "type": "array",
+                    "optional": true
+                  },
+                  "estimated_effort": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -4040,15 +4421,28 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "task_id": {"type": "string"},
-                  "name": {"type": "string"},
-                  "category": {"type": "string"},
-                  "agent": {"type": "string"},
-                  "estimated_effort": {"type": "string"}
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "type": "string"
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "estimated_effort": {
+                    "type": "string"
+                  }
                 }
               }
             },
-            "order": {"type": "array", "min_items": 1}
+            "order": {
+              "type": "array",
+              "min_items": 1
+            }
           }
         },
         "sprint_plans": {
@@ -4057,23 +4451,39 @@
           "items": {
             "type": "object",
             "fields": {
-              "sprint_id": {"type": "string"},
-              "name": {"type": "string"},
-              "goal": {"type": "string"},
+              "sprint_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "goal": {
+                "type": "string"
+              },
               "tasks": {
                 "type": "array",
                 "min_items": 1,
                 "items": {
                   "type": "object",
                   "fields": {
-                    "task_id": {"type": "string"},
-                    "story_id": {"type": "string"},
-                    "agent": {"type": "string"},
-                    "estimated_effort": {"type": "string"}
+                    "task_id": {
+                      "type": "string"
+                    },
+                    "story_id": {
+                      "type": "string"
+                    },
+                    "agent": {
+                      "type": "string"
+                    },
+                    "estimated_effort": {
+                      "type": "string"
+                    }
                   }
                 }
               },
-              "deliverable": {"type": "string"}
+              "deliverable": {
+                "type": "string"
+              }
             }
           }
         }
@@ -4152,7 +4562,13 @@
         "project_plan_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -4307,7 +4723,10 @@
             "dependencies_installed",
             "health_check_verified"
           ],
-          "must_be_true": ["dependencies_installed", "health_check_verified"]
+          "must_be_true": [
+            "dependencies_installed",
+            "health_check_verified"
+          ]
         }
       }
     },
@@ -4355,8 +4774,18 @@
         "seed_script"
       ],
       "produces": [
-        ["migrations/**/*.py", "prisma/schema.prisma", "drizzle.config.ts", "drizzle.config.js"],
-        ["scripts/seed.py", "scripts/seed.ts", "prisma/seed.ts", "backend/seed.py"]
+        [
+          "migrations/**/*.py",
+          "prisma/schema.prisma",
+          "drizzle.config.ts",
+          "drizzle.config.js"
+        ],
+        [
+          "scripts/seed.py",
+          "scripts/seed.ts",
+          "prisma/seed.ts",
+          "backend/seed.py"
+        ]
       ],
       "post_hooks": [
         "verify_artifacts"
@@ -4373,7 +4802,9 @@
             "client_path",
             "connection_verified"
           ],
-          "must_be_true": ["connection_verified"]
+          "must_be_true": [
+            "connection_verified"
+          ]
         },
         "migration_system": {
           "type": "object",
@@ -4434,7 +4865,10 @@
             "dependencies_installed",
             "dev_server_verified"
           ],
-          "must_be_true": ["dependencies_installed", "dev_server_verified"]
+          "must_be_true": [
+            "dependencies_installed",
+            "dev_server_verified"
+          ]
         }
       }
     },
@@ -4481,8 +4915,21 @@
         "frontend_test_config"
       ],
       "produces": [
-        ["backend/tests/conftest.py", "backend/pytest.ini", "backend/pyproject.toml", "backend/jest.config.js", "backend/jest.config.ts", "backend/vitest.config.js", "backend/vitest.config.ts"],
-        ["frontend/vitest.config.ts", "frontend/vitest.config.js", "frontend/jest.config.ts", "frontend/jest.config.js"]
+        [
+          "backend/tests/conftest.py",
+          "backend/pytest.ini",
+          "backend/pyproject.toml",
+          "backend/jest.config.js",
+          "backend/jest.config.ts",
+          "backend/vitest.config.js",
+          "backend/vitest.config.ts"
+        ],
+        [
+          "frontend/vitest.config.ts",
+          "frontend/vitest.config.js",
+          "frontend/jest.config.ts",
+          "frontend/jest.config.js"
+        ]
       ],
       "post_hooks": [
         "verify_artifacts"
@@ -4854,7 +5301,9 @@
             "deployed",
             "health_check_passed"
           ],
-          "must_be_true": ["health_check_passed"]
+          "must_be_true": [
+            "health_check_passed"
+          ]
         }
       },
       "context": {}
@@ -4889,7 +5338,9 @@
             "checks",
             "all_passed"
           ],
-          "must_be_true": ["all_passed"]
+          "must_be_true": [
+            "all_passed"
+          ]
         }
       },
       "context": {}
@@ -4962,7 +5413,13 @@
         "sprint_0_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -5037,18 +5494,31 @@
         "implementation_backlog": {
           "type": "array",
           "min_items": 5,
-          "min_items_from": {"artifact": "mvp_scope", "path": "mvp_feature_list", "floor": 5},
+          "min_items_from": {
+            "artifact": "mvp_scope",
+            "path": "mvp_feature_list",
+            "floor": 5
+          },
           "unique_by": "feature_id",
           "items": {
             "type": "object",
             "fields": {
-              "feature_id": {"type": "string", "pattern": "^F-\\d{2,3}$"},
-              "feature_name": {"type": "string", "min_length": 3},
+              "feature_id": {
+                "type": "string",
+                "pattern": "^F-\\d{2,3}$"
+              },
+              "feature_name": {
+                "type": "string",
+                "min_length": 3
+              },
               "epic_id": {},
               "sprint_id": {},
               "status": {},
               "template_ref": {},
-              "depends_on_features": {"type": "array", "optional": true}
+              "depends_on_features": {
+                "type": "array",
+                "optional": true
+              }
             }
           }
         }
@@ -5148,7 +5618,10 @@
             "features_completed",
             "velocity_ratio"
           ],
-          "must_be_true": ["sprint_id_completed", "features_completed"]
+          "must_be_true": [
+            "sprint_id_completed",
+            "features_completed"
+          ]
         }
       },
       "context": {}
@@ -5186,13 +5659,21 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "classification": {"type": "string"},
-                  "description": {"type": "string"},
-                  "design_was_wrong": {"type": "boolean"}
+                  "classification": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "design_was_wrong": {
+                    "type": "boolean"
+                  }
                 }
               }
             },
-            "adrs_created": {"type": "array"}
+            "adrs_created": {
+              "type": "array"
+            }
           }
         }
       },
@@ -5484,7 +5965,9 @@
             "optimizations_applied",
             "before_after_metrics"
           ],
-          "must_be_true": ["optimizations_applied"]
+          "must_be_true": [
+            "optimizations_applied"
+          ]
         }
       },
       "context": {
@@ -5565,7 +6048,9 @@
             "fixes_applied",
             "verified"
           ],
-          "must_be_true": ["fixes_applied"]
+          "must_be_true": [
+            "fixes_applied"
+          ]
         }
       },
       "context": {
@@ -5725,15 +6210,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "category":    {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "category": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -5915,15 +6418,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "check":       {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "check": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -5937,15 +6458,33 @@
               "items": {
                 "type": "object",
                 "fields": {
-                  "check":       {"type": "string"},
-                  "severity":    {"type": "string", "equals": ["critical", "high", "medium", "low", "info"]},
-                  "description": {"type": "string"},
-                  "remediation": {"type": "string"}
+                  "check": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "equals": [
+                      "critical",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
                 }
               },
               "blockers": {
                 "field": "severity",
-                "levels": ["critical", "high"]
+                "levels": [
+                  "critical",
+                  "high"
+                ]
               }
             }
           }
@@ -5992,7 +6531,9 @@
           "required_fields": [
             "headers_configured"
           ],
-          "must_be_true": ["headers_configured"]
+          "must_be_true": [
+            "headers_configured"
+          ]
         }
       },
       "context": {
@@ -6112,7 +6653,9 @@
             "fixes_applied",
             "remaining_issues"
           ],
-          "must_be_true": ["fixes_applied"]
+          "must_be_true": [
+            "fixes_applied"
+          ]
         }
       },
       "context": {
@@ -6150,7 +6693,9 @@
             "critical_count",
             "all_resolved"
           ],
-          "must_be_true": ["all_resolved"]
+          "must_be_true": [
+            "all_resolved"
+          ]
         },
         "security_audit_report": {
           "type": "markdown",
@@ -6630,7 +7175,13 @@
         "legal_review_result": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {},
             "requires_legal_counsel": {}
           }
@@ -6974,7 +7525,9 @@
             "data_seeded",
             "verified"
           ],
-          "must_be_true": ["data_seeded"]
+          "must_be_true": [
+            "data_seeded"
+          ]
         }
       },
       "context": {}
@@ -7106,7 +7659,9 @@
             "headers_configured",
             "waf_active"
           ],
-          "must_be_true": ["headers_configured"]
+          "must_be_true": [
+            "headers_configured"
+          ]
         },
         "email_deliverability_results": {
           "type": "object",
@@ -7306,7 +7861,10 @@
           "type": "object",
           "fields": {
             "checklist": {},
-            "approved": {"type": "boolean", "equals": true},
+            "approved": {
+              "type": "boolean",
+              "equals": true
+            },
             "launch_date": {}
           }
         }
@@ -7378,7 +7936,13 @@
         "checklist_review": {
           "type": "object",
           "fields": {
-            "status": {"type": "string", "equals": ["pass", "approved"]},
+            "status": {
+              "type": "string",
+              "equals": [
+                "pass",
+                "approved"
+              ]
+            },
             "issues": {}
           }
         }
@@ -7424,7 +7988,10 @@
             "health_check_passed",
             "smoke_tests_passed"
           ],
-          "must_be_true": ["health_check_passed", "smoke_tests_passed"]
+          "must_be_true": [
+            "health_check_passed",
+            "smoke_tests_passed"
+          ]
         }
       },
       "context": {}
@@ -8092,7 +8659,9 @@
             "advisories_reviewed",
             "patches_applied"
           ],
-          "must_be_true": ["patches_applied"]
+          "must_be_true": [
+            "patches_applied"
+          ]
         }
       },
       "context": {}
@@ -8640,7 +9209,10 @@
               "type": "object",
               "fields": {
                 "page_files": {},
-                "states_implemented": {"type": "array", "optional": true}
+                "states_implemented": {
+                  "type": "array",
+                  "optional": true
+                }
               }
             }
           }

@@ -489,6 +489,30 @@ async def init_db():
     except Exception:
         pass
 
+    # Z1 Tier 4A migration (C11+A15+C19) — regen primitive telemetry.
+    # Idempotent CREATE; one row per artifact-level regen (artifact or
+    # bundle scope). The `prev_version` / `new_version` columns hold the
+    # absolute paths to the versioned `.v{N}` siblings on disk so the
+    # full lineage of an artifact can be reconstructed by walking
+    # `regen_log` for a (mission_id, artifact_path) pair.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS regen_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id INTEGER NOT NULL,
+            artifact_path TEXT NOT NULL,
+            change_description TEXT NOT NULL,
+            prev_version TEXT NOT NULL,
+            new_version TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'artifact',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (mission_id) REFERENCES missions(id)
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_regen_log_mission_artifact "
+        "ON regen_log (mission_id, artifact_path, created_at)"
+    )
+
     # Tasks
     await db.execute("""
         CREATE TABLE IF NOT EXISTS tasks (

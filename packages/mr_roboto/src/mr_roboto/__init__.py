@@ -63,6 +63,9 @@ from mr_roboto.prior_art_min_coverage import prior_art_min_coverage
 # `patch("mr_roboto.critic_gate._persist")` style mocking. Import the
 # submodule itself so `mr_roboto.critic_gate` keeps resolving to the module.
 from mr_roboto import critic_gate as critic_gate_module  # noqa: F401
+# Z10 T3C — reset-to-green primitives.
+from mr_roboto import mark_green as mark_green_module  # noqa: F401
+from mr_roboto import rollback_mission as rollback_mission_module  # noqa: F401
 
 __all__ = [
     "Action",
@@ -414,6 +417,33 @@ async def _run_dispatch(task: dict) -> Action:
             logging.getLogger("mr_roboto.provenance").debug(
                 "record_artifact_write failed", exc_info=True
             )
+
+        # Z10 T3C — optional green-tag capture. When the step sets
+        # `payload.mark_green=True`, snapshot workspace + DB + Chroma into
+        # `mission_green_tags` so /rollback_mission can restore here.
+        # Best-effort — failure does NOT fail the commit.
+        if (
+            payload.get("mark_green")
+            and (commit_info or {}).get("committed")
+            and task.get("mission_id") is not None
+        ):
+            try:
+                from mr_roboto.mark_green import run as _mark_green
+                _green = await _mark_green(
+                    mission_id=int(task["mission_id"]),
+                    task_id=int(task["id"]),
+                    summary=(
+                        f"{task.get('title', '')} | "
+                        f"{(commit_info or {}).get('commit_sha', '')[:12]}"
+                    ),
+                    repo_path=payload.get("repo_path"),
+                )
+                (commit_info or {}).setdefault("green_tag", _green)
+            except Exception as _green_exc:
+                from src.infra.logging_config import get_logger as _gl
+                _gl("mr_roboto.mark_green").warning(
+                    f"mark_green from git_commit failed: {_green_exc}"
+                )
 
         # Backwards-compatible default: empty diff is OK (no-op success).
         # Opt-in: when payload.require_diff is true, an empty diff is a
@@ -1842,6 +1872,53 @@ async def _run_dispatch(task: dict) -> Action:
                 workspace_path=payload.get("workspace_path"),
             )
             # Always completed: paraflow_gap is information, not error.
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "mark_green":
+        # Z10 T3C — capture paired green checkpoint (git tag + DB snapshot +
+        # Chroma snapshot + ledger row).
+        from mr_roboto.mark_green import run as _mark_green
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            tid = task.get("id") or payload.get("task_id")
+            if mid is None or tid is None:
+                return Action(
+                    status="failed",
+                    error="mark_green requires mission_id and task_id",
+                )
+            res = await _mark_green(
+                mission_id=int(mid),
+                task_id=int(tid),
+                summary=str(payload.get("summary") or task.get("title") or ""),
+                repo_path=payload.get("repo_path"),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "rollback_mission":
+        # Z10 T3C — restore workspace/git + mission DB rows + Chroma to a
+        # prior green-tag snapshot. Registered as `irreversible` in
+        # VERB_REVERSIBILITY so T1C confirmation flow auto-gates when the
+        # caller sets require_confirmation=True.
+        from mr_roboto.rollback_mission import run as _rollback
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            if mid is None:
+                return Action(
+                    status="failed",
+                    error="rollback_mission requires mission_id",
+                )
+            target = payload.get("target_task_id")
+            res = await _rollback(
+                mission_id=int(mid),
+                target_task_id=int(target) if target is not None else None,
+                repo_path=payload.get("repo_path"),
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error") or "rollback failed", result=res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

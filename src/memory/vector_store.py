@@ -68,6 +68,280 @@ _DB_DIR = os.path.join(
 )
 
 
+# ─── Z10 T3C: per-mission Chroma namespace ────────────────────────────────
+# Cross-mission interference: ``chroma_data`` is a single directory and
+# collections were shared across all missions, so concurrent embedding
+# writes from two missions interleave on the same HNSW index. T3C scopes
+# collection NAMES per-mission via ``mission_chroma_collection_name``:
+#
+#   mission_id=47, base="semantic"  → "mission_47__semantic"
+#   mission_id=None, base="semantic" → "global__semantic"
+#
+# Existing collections (no prefix) keep working — the global memory
+# (seed_skills, etc.) lands under the ``global__`` prefix; per-mission
+# storage gets isolated indexes. Migration script:
+# ``scripts/migrate_chroma_to_per_mission.py``.
+
+def mission_chroma_collection_name(
+    mission_id: "int | None",
+    base: str,
+) -> str:
+    """Return the per-mission (or global) Chroma collection name for ``base``.
+
+    - ``mission_id`` provided → ``f"mission_{mission_id}__{base}"``
+    - ``mission_id is None``  → ``f"global__{base}"`` (shared across all
+      missions — used for seed_skills and other always-global memory).
+
+    The base name is validated against the COLLECTIONS list to catch
+    typos at call time.
+    """
+    if base not in COLLECTIONS:
+        # Allow non-standard names too — vector_store callers occasionally
+        # use ad-hoc collection names — but raise a soft warning so typos
+        # surface in dev. Tests use ad-hoc names like "memory"/"test_col".
+        logger.debug(
+            f"mission_chroma_collection_name: base '{base}' not in "
+            f"COLLECTIONS; accepting anyway"
+        )
+    if mission_id is None:
+        return f"global__{base}"
+    return f"mission_{int(mission_id)}__{base}"
+
+
+# Lazy per-mission collection cache. Same shape as ``_collections`` but
+# keyed by namespaced name (e.g. ``mission_47__semantic``). Populated by
+# ``_get_or_create_namespaced_collection`` on first use.
+_namespaced_collections: dict = {}
+_namespace_lock = asyncio.Lock()
+
+
+async def _get_or_create_namespaced_collection(name: str):
+    """Lazy get-or-create for namespaced (mission_NN__X / global__X) collections.
+
+    Returns the Chroma collection object or ``None`` if init failed.
+    """
+    if not _initialized:
+        if not await init_store():
+            return None
+    cached = _namespaced_collections.get(name)
+    if cached is not None:
+        return cached
+    if _client is None:
+        return None
+
+    async with _namespace_lock:
+        cached = _namespaced_collections.get(name)
+        if cached is not None:
+            return cached
+        try:
+            expected_dim = _get_dimension_fn()()
+            from src.memory.embeddings import EMBEDDING_MODEL
+            from chromadb.api.types import EmbeddingFunction
+
+            class _RefuseEmbedFunction(EmbeddingFunction):
+                @staticmethod
+                def name() -> str:
+                    return "default"
+
+                def __call__(self, input):
+                    raise RuntimeError(
+                        "namespaced collections must receive pre-computed "
+                        "embeddings"
+                    )
+
+            col = await asyncio.to_thread(
+                _client.get_or_create_collection,
+                name=name,
+                embedding_function=_RefuseEmbedFunction(),
+                metadata={
+                    "hnsw:space": "cosine",
+                    "embedding_model": EMBEDDING_MODEL,
+                    "embedding_dimension": expected_dim,
+                },
+            )
+            _namespaced_collections[name] = col
+            return col
+        except Exception as e:
+            logger.error(
+                f"Failed to create namespaced collection '{name}': {e}"
+            )
+            return None
+
+
+async def embed_and_store_for_mission(
+    text: str,
+    metadata: dict,
+    base_collection: str,
+    mission_id: "int | None",
+    doc_id: "str | None" = None,
+) -> "str | None":
+    """Mission-aware wrapper around embed_and_store.
+
+    Routes the write to ``mission_chroma_collection_name(mission_id, base)``
+    instead of the shared collection. Tag ``mission_id`` into metadata too
+    so queries can filter even within a shared collection if needed.
+    """
+    name = mission_chroma_collection_name(mission_id, base_collection)
+    col = await _get_or_create_namespaced_collection(name)
+    if col is None:
+        return None
+
+    if not text or not text.strip():
+        return None
+
+    embedding = await _get_embed_fn()(text, is_query=False)
+    if embedding is None:
+        logger.warning(
+            f"Skip namespaced store in '{name}': embedder returned None"
+        )
+        return None
+
+    clean_meta = {}
+    for k, v in (metadata or {}).items():
+        if isinstance(v, (str, int, float, bool)):
+            clean_meta[k] = v
+        elif v is None:
+            clean_meta[k] = ""
+        else:
+            clean_meta[k] = str(v)
+    clean_meta["stored_at"] = time.time()
+    clean_meta.setdefault("access_count", 0)
+    clean_meta.setdefault("last_accessed", time.time())
+    if mission_id is not None:
+        clean_meta["mission_id"] = int(mission_id)
+
+    if not doc_id:
+        import hashlib
+        doc_id = hashlib.sha256(
+            f"{name}:{text[:200]}:{time.time()}".encode()
+        ).hexdigest()[:24]
+
+    add_kwargs = {
+        "ids": [doc_id],
+        "documents": [text],
+        "metadatas": [clean_meta],
+        "embeddings": [embedding],
+    }
+    try:
+        await asyncio.to_thread(col.upsert, **add_kwargs)
+        return doc_id
+    except Exception as e:
+        logger.error(f"Namespaced store failed on '{name}': {e}")
+        return None
+
+
+async def query_for_mission(
+    text: str,
+    base_collection: str,
+    mission_id: "int | None",
+    top_k: int = 5,
+    where: "dict | None" = None,
+) -> list:
+    """Mission-aware query against ``mission_chroma_collection_name(mission_id, base)``."""
+    name = mission_chroma_collection_name(mission_id, base_collection)
+    col = await _get_or_create_namespaced_collection(name)
+    if col is None:
+        return []
+    if not text or not text.strip():
+        return []
+    if await asyncio.to_thread(col.count) == 0:
+        return []
+    embedding = await _get_embed_fn()(text, is_query=True)
+    if embedding is None:
+        return []
+    try:
+        query_kwargs = {
+            "n_results": min(top_k, await asyncio.to_thread(col.count)),
+            "query_embeddings": [embedding],
+        }
+        if where:
+            query_kwargs["where"] = where
+        results = await asyncio.to_thread(lambda: col.query(**query_kwargs))
+        docs = []
+        if results and results.get("ids") and results["ids"][0]:
+            ids = results["ids"][0]
+            texts = results["documents"][0] if results.get("documents") else [None] * len(ids)
+            metas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(ids)
+            distances = results["distances"][0] if results.get("distances") else [0.0] * len(ids)
+            for i, doc_id in enumerate(ids):
+                docs.append({
+                    "id": doc_id,
+                    "text": texts[i] or "",
+                    "metadata": metas[i] or {},
+                    "distance": distances[i],
+                })
+        return docs
+    except Exception as e:
+        logger.error(f"Namespaced query failed on '{name}': {e}")
+        return []
+
+
+async def purge_mission_chroma_collections(mission_id: int) -> int:
+    """Delete every Chroma collection whose name starts with ``mission_{id}__``.
+
+    Returns the number of collections deleted. Used by mission archive and
+    by the T3C reset-to-green rollback verb. Idempotent.
+    """
+    if not _initialized:
+        if not await init_store():
+            return 0
+    if _client is None:
+        return 0
+
+    prefix = f"mission_{int(mission_id)}__"
+
+    def _list_and_delete() -> int:
+        deleted = 0
+        try:
+            cols = _client.list_collections()
+        except Exception as e:
+            logger.warning(f"purge: list_collections failed: {e}")
+            return 0
+        for c in cols:
+            cname = getattr(c, "name", None) or (c if isinstance(c, str) else None)
+            if not cname:
+                continue
+            if not cname.startswith(prefix):
+                continue
+            try:
+                _client.delete_collection(cname)
+                deleted += 1
+            except Exception as e:
+                logger.warning(f"purge: delete_collection('{cname}') failed: {e}")
+        return deleted
+
+    n = await asyncio.to_thread(_list_and_delete)
+    # Evict any cached handles.
+    stale = [k for k in _namespaced_collections if k.startswith(prefix)]
+    for k in stale:
+        _namespaced_collections.pop(k, None)
+    return n
+
+
+async def list_mission_chroma_collections(mission_id: int) -> list[str]:
+    """Return the names of Chroma collections belonging to ``mission_id``."""
+    if not _initialized:
+        if not await init_store():
+            return []
+    if _client is None:
+        return []
+    prefix = f"mission_{int(mission_id)}__"
+
+    def _enum() -> list[str]:
+        try:
+            cols = _client.list_collections()
+        except Exception:
+            return []
+        names = []
+        for c in cols:
+            cname = getattr(c, "name", None) or (c if isinstance(c, str) else None)
+            if cname and cname.startswith(prefix):
+                names.append(cname)
+        return names
+
+    return await asyncio.to_thread(_enum)
+
+
 # ─── ChromaDB Client ─────────────────────────────────────────────────────────
 
 _client = None

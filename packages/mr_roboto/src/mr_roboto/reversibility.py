@@ -110,6 +110,9 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z10 T3B sandbox-gate verbs (caller-opened confirmation rows) -----
     "sandbox_local_mode": "partial",  # mission requested host-mode shell
     "broader_egress": "partial",  # shell wants to reach a host outside whitelist
+    # ---- Z10 T3C reset-to-green primitives ------------------------------
+    "mark_green": "full",  # pure snapshot — git tag + DB+Chroma dump
+    "rollback_mission": "irreversible",  # rolls workspace/DB/Chroma back; no roll-forward
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

@@ -286,6 +286,19 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     # repetition / low-entropy degeneration during streaming.
     _should_abort = make_stream_callback(max_size=200_000, check_interval=2000)
 
+    # Z1 Tier 5C (B3) — streaming post-processor pipeline. Rule-based
+    # guards run on each content delta before it's accumulated. `fix`
+    # outcomes rewrite the delta in place; `warn` rows go to the
+    # default sink (logger.warning); `halt` aborts the stream. Opt-out
+    # via KUTAI_STREAMING_GUARDS=off. Pipeline is no-op if import fails
+    # so broken guards never block real LLM work.
+    _stream_pipeline = None
+    try:
+        from coulson.streaming_guards import StreamingGuardPipeline
+        _stream_pipeline = StreamingGuardPipeline()
+    except Exception:
+        _stream_pipeline = None
+
     # First-chunk wait covers prefill (10k-token prompts on 9B ≈ 50s).
     # Inter-chunk wait covers between-token silence (real stream that's
     # alive emits something — content or reasoning_content — every few
@@ -356,7 +369,23 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta:
             if delta.content:
-                accumulated += delta.content
+                content_token = delta.content
+                # Z1 Tier 5C (B3) — run guards before accumulating.
+                if _stream_pipeline is not None:
+                    try:
+                        outcome = _stream_pipeline.process(content_token)
+                        content_token = outcome.text
+                        if outcome.halt:
+                            _get_logger().warning(
+                                "stream aborted: streaming_guard halt"
+                            )
+                            finish_reason = "length"
+                            accumulated += content_token
+                            partial_content_ref[0] = accumulated
+                            break
+                    except Exception:  # never block on guard bugs
+                        content_token = delta.content
+                accumulated += content_token
                 partial_content_ref[0] = accumulated
             # Capture reasoning_content from thinking models (DeepSeek, etc.)
             rc = getattr(delta, "reasoning_content", None)
@@ -390,6 +419,17 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
             )
             finish_reason = "length"
             break
+
+    # Z1 Tier 5C (B3) — drain streaming-guard tail (typo carry-over,
+    # auto-closed fences) before reasoning rescue.
+    if _stream_pipeline is not None:
+        try:
+            tail = _stream_pipeline.finalize()
+            if tail.text:
+                accumulated += tail.text
+                partial_content_ref[0] = accumulated
+        except Exception:
+            pass
 
     # If content is empty but reasoning was captured, rescue it
     if not accumulated.strip() and accumulated_reasoning.strip():

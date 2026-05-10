@@ -1,0 +1,17 @@
+# Common code typos — one per line, format: wrong=>right
+# Used by streaming_guards.TypoGuard. Conservative: only fix unambiguous
+# typos (e.g. cosnole.log → console.log) where the wrong form is never
+# valid identifier in any reasonable language.
+cosnole.log=>console.log
+consoel.log=>console.log
+conosle.log=>console.log
+improt =>import
+form django=>from django
+retrun =>return
+fucntion =>function
+funciton =>function
+lenght=>length
+heigth=>height
+widht=>width
+recieve=>receive
+seperator=>separator

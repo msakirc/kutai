@@ -585,6 +585,59 @@ async def init_db():
         "ON regen_log (mission_id, artifact_path, created_at)"
     )
 
+    # Z1 Tier 5C (B4) — Critic gate audit trail. One row per critic call
+    # (pass or veto) on an irreversible action. `redacted_payload_hash`
+    # is a sha256[:16] of the SECRET-REDACTED payload — usable for
+    # de-dup/correlation without storing the payload itself.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS critic_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id INTEGER NOT NULL,
+            action_name TEXT NOT NULL,
+            verdict TEXT NOT NULL CHECK(verdict IN ('pass','veto')),
+            reasons_json TEXT NOT NULL DEFAULT '[]',
+            redacted_payload_hash TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_critic_log_mission "
+        "ON critic_log (mission_id, created_at)"
+    )
+
+    # Z1 Tier 5C (B4) — legacy_pre_critic_gate column on missions.
+    # Backfilled to 1 for existing rows so critic-gate post-hooks know
+    # the mission predates the gate (treat as legacy = no veto attempt).
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN legacy_pre_critic_gate INTEGER DEFAULT 0"
+        )
+        await db.execute("UPDATE missions SET legacy_pre_critic_gate = 1")
+        logger.info(
+            "Z1 T5C migration: legacy_pre_critic_gate added + backfilled"
+        )
+    except Exception:
+        pass
+
+    # Z1 Tier 5C (B3) — streaming-guard audit trail. One row per
+    # `warn` or `halt` outcome from the streaming-guards pipeline.
+    # `fix` outcomes are silent (token rewritten in place).
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS streaming_guard_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id INTEGER,
+            task_id INTEGER,
+            guard_name TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('warn','halt','fix')),
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_streaming_guard_log_task "
+        "ON streaming_guard_log (task_id, created_at)"
+    )
+
     # Tasks
     await db.execute("""
         CREATE TABLE IF NOT EXISTS tasks (

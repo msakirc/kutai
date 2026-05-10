@@ -1,0 +1,32 @@
+{
+  "schema_version": "1",
+  "captured_at": "2026-05-10",
+  "source_root": "C:/Users/sakir/Dropbox/Workspaces/Bilinc/main/paraflow/",
+  "archetypes": {
+    "truthrate": {
+      "archetype": "truthrate",
+      "path": "truthrate/",
+      "schema_version": "1",
+      "paraflow_source": "C:/Users/sakir/Dropbox/Workspaces/Bilinc/main/paraflow/",
+      "captured_at": "2026-05-10",
+      "fetched_live": true,
+      "artifacts": {
+        "charter": "truthrate/charter.md",
+        "personas": "truthrate/personas.md",
+        "prd": "truthrate/prd.md",
+        "user_flow": "truthrate/user_flow.md",
+        "screen_plans_dir": "truthrate/screen_plans/",
+        "screens_dir": "truthrate/screens/",
+        "style_guide_light": "truthrate/style_guide_light.md",
+        "style_guide_dark": "truthrate/style_guide_dark.md"
+      },
+      "screen_plans_subset": [
+        "home", "search", "sign_in", "profile", "write_review"
+      ],
+      "screens_subset": [
+        "home", "search", "sign_in", "profile", "write_review"
+      ],
+      "notes": "Subset: 5 of 24 screens. See paraflow_source for full set."
+    }
+  }
+}

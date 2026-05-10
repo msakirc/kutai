@@ -197,6 +197,53 @@ async def git_commit(
 
 
 # ---------------------------------------------------------------------------
+# Push  (Z10 T1A — paired with commit for atomic semantics)
+# ---------------------------------------------------------------------------
+async def git_push(path: str = "", remote: str = "origin", branch: str | None = None
+                   ) -> tuple[int, str, str]:
+    """Push HEAD (or *branch*) to *remote*. Returns (code, stdout, stderr).
+
+    Thin wrapper kept at this layer so the mr_roboto git_commit verb can
+    pair commit↔push atomically without re-implementing argv handling or
+    cwd resolution.
+    """
+    target = _resolve_repo(path)
+    if target is None:
+        return (1, "", "Access denied: path is outside workspace.")
+    args = ["push", remote]
+    if branch:
+        args.append(branch)
+    return await _run_git(args, cwd=target)
+
+
+async def git_reset_soft_one(path: str = "") -> tuple[int, str, str]:
+    """``git reset --soft HEAD~1`` — preserves staging.
+
+    Used by the atomic git_commit↔push verb to roll back the local commit
+    when ``git push`` fails. Staged changes survive so the next attempt
+    can retry without re-staging.
+    """
+    target = _resolve_repo(path)
+    if target is None:
+        return (1, "", "Access denied: path is outside workspace.")
+    return await _run_git(["reset", "--soft", "HEAD~1"], cwd=target)
+
+
+async def git_head_sha(path: str = "") -> str | None:
+    """Return the SHA of HEAD, or ``None`` if the repo can't be resolved."""
+    target = _resolve_repo(path)
+    if target is None:
+        return None
+    try:
+        code, out, _ = await _run_git(["rev-parse", "HEAD"], cwd=target)
+    except (FileNotFoundError, OSError):
+        return None
+    if code != 0 or not out:
+        return None
+    return out.strip()
+
+
+# ---------------------------------------------------------------------------
 # Branch
 # ---------------------------------------------------------------------------
 async def git_branch(

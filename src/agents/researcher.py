@@ -18,6 +18,9 @@ class ResearcherAgent(BaseAgent):
     max_iterations = 6
     enable_self_reflection = True
     min_confidence = 3
+    # Z10 T1A: researcher emits info for downstream filters; warn instead of
+    # blocking on low-confidence output.
+    confidence_gate = "warn"
 
     allowed_tools = [
         "web_search",

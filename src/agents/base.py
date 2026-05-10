@@ -84,6 +84,16 @@ class BaseAgent:
     # Minimum confidence (1-5) for final_answer. Below this → reviewer.
     min_confidence: int = 0  # 0 = disabled
 
+    # ── Z10 T1A: confidence-gate enforcement mode ──
+    # "fail_closed" (default): below-threshold output blocks the step and
+    #     escalates to reviewer (status="needs_review", routed by Beckman's
+    #     result_router → RequestReview).
+    # "warn"        : log a structured warning and proceed (use for info-
+    #     gathering agents whose downstream filters can compensate, e.g.
+    #     researcher).
+    # See docs/i2p-evolution/10-cross-cutting.md "Confidence gate is unplugged".
+    confidence_gate: str = "fail_closed"
+
     # ------------------------------------------------------------------ #
     #  System prompt — override in subclasses                             #
     #                                                                     #

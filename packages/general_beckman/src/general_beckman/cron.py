@@ -42,6 +42,8 @@ async def fire_due() -> None:
                 await _nerd_herd_health_alert()
             elif marker == "btable_rollup":
                 await _btable_rollup()
+            elif marker == "file_locks_sweep":
+                await _file_locks_sweep()
             else:
                 await _insert_scheduled_task(row, payload)
             await _advance_schedule(row, now)
@@ -116,6 +118,22 @@ async def _refresh_benchmarks_if_stale() -> None:
             await hoca()
     except Exception as e:
         logger.debug("hoca benchmark refresh skipped", error=str(e))
+
+
+async def _file_locks_sweep() -> None:
+    """Z10 T1A — release orphan file_locks rows.
+
+    Defensive: file_locks lives in src.infra.db, which is the same DB this
+    cron pump talks to. Failures are logged at warning, never crash the
+    pump.
+    """
+    try:
+        from src.infra.db import sweep_file_locks
+        n = await sweep_file_locks()
+        if n:
+            logger.info("file_locks_sweep released orphans", count=n)
+    except Exception as e:
+        logger.warning("file_locks_sweep failed", error=str(e))
 
 
 async def _btable_rollup() -> None:

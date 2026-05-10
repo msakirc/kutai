@@ -2,6 +2,12 @@
 from __future__ import annotations
 
 from mr_roboto.actions import Action
+from mr_roboto.reversibility import (
+    Reversibility,
+    VERB_REVERSIBILITY,
+    DEFAULT_REVERSIBILITY,
+    get_reversibility,
+)
 from mr_roboto.workspace_snapshot import snapshot_workspace
 from mr_roboto.git_commit import auto_commit
 from mr_roboto.verify_artifacts import verify_artifacts
@@ -60,6 +66,10 @@ from mr_roboto import critic_gate as critic_gate_module  # noqa: F401
 
 __all__ = [
     "Action",
+    "Reversibility",
+    "VERB_REVERSIBILITY",
+    "DEFAULT_REVERSIBILITY",
+    "get_reversibility",
     "run",
     "snapshot_workspace",
     "auto_commit",
@@ -108,7 +118,22 @@ async def run(task: dict) -> Action:
 
     Unknown actions return an ``Action(status="failed", error=...)``; the
     orchestrator is responsible for marking the task failed.
+
+    Z10-T1B: every returned Action carries a ``reversibility`` tag from
+    :data:`VERB_REVERSIBILITY`, with per-invocation override via
+    ``payload["reversibility_override"]``.
     """
+    action_obj = await _run_dispatch(task)
+    payload = task.get("payload") or {}
+    verb = payload.get("action") or ""
+    override = payload.get("reversibility_override")
+    if override not in ("full", "partial", "irreversible", None):
+        override = None
+    action_obj.reversibility = get_reversibility(str(verb), override=override)
+    return action_obj
+
+
+async def _run_dispatch(task: dict) -> Action:
     payload = task.get("payload") or {}
     action = payload.get("action")
 
@@ -926,6 +951,7 @@ async def run(task: dict) -> Action:
                 env=payload.get("env"),
                 require_exit_zero=bool(payload.get("require_exit_zero", False)),
                 workspace_path=payload.get("workspace_path"),
+                reversibility_intent=payload.get("reversibility_override"),
             )
             if not res.get("ok"):
                 return Action(

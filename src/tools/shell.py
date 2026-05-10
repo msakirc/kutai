@@ -6,9 +6,14 @@ The workspace directory is bind-mounted so file changes persist.
 
 import asyncio
 import os
-from typing import Optional
+from typing import Literal, Optional
 
 from src.infra.logging_config import get_logger
+
+# Z10-T1B: caller-intent reversibility tag passed through from
+# mr_roboto.run_cmd's payload["reversibility_override"]. Default None
+# means "use the registry default for run_cmd" (= "partial").
+ReversibilityIntent = Literal["full", "partial", "irreversible"]
 
 logger = get_logger("tools.shell")
 
@@ -454,6 +459,7 @@ async def run_shell(
     command: str,
     timeout: int = 60,
     workdir: Optional[str] = None,
+    reversibility_intent: Optional[ReversibilityIntent] = None,
 ) -> str:
     """
     Execute a shell command inside the Docker sandbox.
@@ -463,11 +469,21 @@ async def run_shell(
         timeout:  Max seconds to wait (default 60).
         workdir:  Working directory inside the container
                   (absolute under /app/workspace, or relative to it).
+        reversibility_intent: Z10-T1B caller intent tag. ``None`` (default)
+                  preserves prior behavior; mr_roboto's ``run_cmd``
+                  passes through ``payload["reversibility_override"]``
+                  so the shell log records whether the caller knew the
+                  command was destructive.
 
     Returns:
         Combined stdout + stderr with exit-code indicator,
         truncated to MAX_OUTPUT_CHARS.
     """
+    logger.info(
+        "shell invocation",
+        command=command[:120],
+        reversibility_intent=reversibility_intent,
+    )
     if _is_command_blocked(command):
         return "🚫 BLOCKED: This command matched a safety filter and was not executed."
 

@@ -58,7 +58,16 @@ def test_every_registry_verb_is_a_real_dispatcher_action() -> None:
     # ``propose_spec_patch_from_html_diff`` IS in dispatcher; the registry
     # uses the shorter alias too. ``git_push`` and ``propose_spec_patch``
     # are intentional non-dispatcher entries (see docstring).
-    EXEMPT = {"git_push", "propose_spec_patch"}
+    # ``sandbox_local_mode`` and ``broader_egress`` (Z10-T3B) are
+    # caller-opened confirmation verbs (src/tools/shell.py opens them
+    # directly via request_confirmation); they do not have dispatcher
+    # blocks. They share the tag taxonomy so live with the registry.
+    EXEMPT = {
+        "git_push",
+        "propose_spec_patch",
+        "sandbox_local_mode",
+        "broader_egress",
+    }
     for verb in VERB_REVERSIBILITY:
         if verb in EXEMPT:
             continue

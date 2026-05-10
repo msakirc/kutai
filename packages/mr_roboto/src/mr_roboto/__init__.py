@@ -445,6 +445,67 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "verify_taste_emphasis_shape":
+        from mr_roboto.verify_taste_emphasis_shape import (
+            verify_taste_emphasis_shape as _verify_taste,
+        )
+        try:
+            res = await _verify_taste(
+                mission_id=task.get("mission_id"),
+                path=payload.get("path", ".style/taste_emphasis.json"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"verify_taste_emphasis_shape: {res.get('error')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_design_tokens_shape":
+        from mr_roboto.verify_design_tokens_shape import (
+            verify_design_tokens_shape as _verify_tokens,
+        )
+        try:
+            res = await _verify_tokens(
+                mission_id=task.get("mission_id"),
+                path=payload.get("path", ".style/design_tokens.json"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"verify_design_tokens_shape: {res.get('error')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "derive_token_tag_signature":
+        from mr_roboto.derive_token_tag_signature import (
+            derive_token_tag_signature as _derive_tag,
+        )
+        try:
+            res = await _derive_tag(
+                mission_id=task.get("mission_id"),
+                path=payload.get("path", ".style/taste_emphasis.json"),
+                workspace_path=payload.get("workspace_path"),
+                payload=payload.get("taste_payload"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"derive_token_tag_signature: {res.get('error')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "generate_intake_todo":
         # Z1 Tier 1 (B1) — agent-generated todo as the only structured
         # intake gate. Returns needs_clarification with keyboard_sent so

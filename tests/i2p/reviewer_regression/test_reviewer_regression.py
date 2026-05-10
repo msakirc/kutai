@@ -76,6 +76,15 @@ def _discover_fixtures() -> list[tuple[str, str, Path]]:
         "bad_adr_set",
         "good_component_library",
         "bad_component_library",
+        # Z1 Tier 3 (T3A) — design-tokens / taste fixtures are loaded by
+        # tests/i2p/test_design_tokens.py + test_taste_emphasis.py and have
+        # a different shape than the reviewer-regression contract (they
+        # carry artifact bodies directly, not the {schema_version, payload}
+        # envelope the regression suite expects).
+        "good_design_tokens",
+        "bad_design_tokens",
+        "good_taste_emphasis",
+        "bad_taste_emphasis",
     }
     for vdir in sorted(_FIXTURES_ROOT.iterdir()):
         if not vdir.is_dir() or not vdir.name.startswith("v"):

@@ -1,0 +1,23 @@
+{
+  "_schema_version": "1",
+  "mission_id": 101,
+  "tag_signature": "fact_primary",
+  "variants": {
+    "light": {
+      "color": {
+        "primary": {"base": "#XXXXXX", "lighter": "TBD", "darker": "#0F3329"},
+        "background": {"page": "#FAF9F7", "container_primary": "#FFFFFF", "container_secondary": "#F5F3F0", "container_inset": "#F0EDE8"},
+        "text": {"primary": "#1A1A1A"}
+      },
+      "typography": {
+        "font_family_base": "",
+        "scale": {}
+      },
+      "border_radius": {"small": 6},
+      "spacing": {"base_unit": 4},
+      "borders": {"default": "1px solid #E5E5E5"},
+      "shadows": {"none": "none"},
+      "icon_library": "lucide"
+    }
+  }
+}

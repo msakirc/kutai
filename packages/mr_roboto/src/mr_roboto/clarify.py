@@ -64,6 +64,48 @@ async def clarify(task: dict) -> dict:
     payload = task.get("payload") or {}
     kind = payload.get("kind")
 
+    # Z1 Tier 5A (A5) — founder attention budget gate.
+    # When the mission has a budget set AND remaining < reserve_minutes
+    # (default 5), defer this clarify to deferred_questions.md instead of
+    # firing on Telegram. Budget is unset by default, so existing missions
+    # are unaffected.
+    if not bool(payload.get("attention_skip", False)):
+        try:
+            mission_id = task.get("mission_id")
+            if mission_id is not None:
+                from mr_roboto.attention_check import (
+                    attention_check, write_deferred_question,
+                )
+                reserve = int(payload.get("attention_reserve_minutes", 5))
+                check = await attention_check(
+                    mission_id=int(mission_id),
+                    reserve_minutes=reserve,
+                )
+                if not check.get("ok"):
+                    qtxt = (
+                        payload.get("question")
+                        or payload.get("kind")
+                        or task.get("title")
+                        or ""
+                    )
+                    step_id = (task.get("context") or {}).get(
+                        "workflow_step_id", str(task.get("id"))
+                    )
+                    deferred = await write_deferred_question(
+                        mission_id=int(mission_id),
+                        step_id=str(step_id),
+                        question_text=str(qtxt),
+                    )
+                    return {
+                        "status": "deferred",
+                        "reason": "attention_budget_exhausted",
+                        "remaining": check.get("remaining"),
+                        "deferred_path": deferred.get("path"),
+                    }
+        except Exception as exc:
+            # Never block clarify on a budget-check error — log and proceed.
+            logger.warning("clarify: attention_check failed: %s", exc)
+
     if kind == "variant_choice":
         payload_from = payload.get("payload_from", "gate_result")
         # Load the source artifact (gate_result) from the store. Task

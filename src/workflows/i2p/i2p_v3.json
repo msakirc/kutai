@@ -1077,6 +1077,33 @@
       "context": {}
     },
     {
+      "id": "0.4a",
+      "phase": "phase_0",
+      "name": "compliance_fingerprint_collection",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": [
+        "0.4"
+      ],
+      "may_need_clarification": true,
+      "input_artifacts": [],
+      "output_artifacts": [
+        "compliance_fingerprint"
+      ],
+      "produces": [
+        "mission_{mission_id}/compliance_fingerprint.json"
+      ],
+      "payload": {
+        "action": "compliance_fingerprint_collection"
+      },
+      "instruction": "Z1 Tier 5A (P6) — collect compliance fingerprint. Reads `mission_<id>/.preflight/compliance_fingerprint.json` from z0 when present and writes the merged fingerprint to `mission_<id>/compliance_fingerprint.json`. Telegram clarify deltas are fired only for fields the founder did not pre-declare at z0.",
+      "done_when": "compliance_fingerprint.json exists with _schema_version, jurisdictions, user_classes, data_categories_coarse fields populated (or empty arrays at prototype tier).",
+      "skip_when": "mission.legacy_pre_compliance == '1'",
+      "context": {
+        "estimated_output_tokens": 0
+      }
+    },
+    {
       "id": "0.5",
       "phase": "phase_0",
       "name": "human_clarification_request",
@@ -1126,7 +1153,8 @@
         "assumption_list",
         "clarification_request",
         "clarification_answers",
-        "intake_todo"
+        "intake_todo",
+        "compliance_fingerprint"
       ],
       "output_artifacts": [
         "idea_brief_final"
@@ -1755,7 +1783,8 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "idea_brief_final"
+        "idea_brief_final",
+        "compliance_fingerprint"
       ],
       "output_artifacts": [
         "regulatory_requirements"
@@ -1772,6 +1801,48 @@
             "summary_of_obligations",
             "compliance_effort",
             "consequence_of_non_compliance"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "1.11a",
+      "phase": "phase_1",
+      "name": "compliance_overlay",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [
+        "compliance_template_render"
+      ],
+      "depends_on": [
+        "1.11"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "compliance_fingerprint",
+        "regulatory_requirements"
+      ],
+      "output_artifacts": [
+        "compliance_overlay"
+      ],
+      "produces": [
+        "mission_{mission_id}/compliance_overlay.json"
+      ],
+      "post_hooks": [
+        "compliance_template_present"
+      ],
+      "skip_when": "mission.legacy_pre_compliance == '1'",
+      "instruction": "Z1 Tier 5A (P6) — for each <jurisdiction × data_category> combination in compliance_fingerprint, identify required_documents (privacy_policy, cookie_banner, dpa, tos, retention_policy, age_gate, accessibility_statement, data_processing_record). Call `compliance_template_render(fingerprint, doc_type, lang)` for each. Save rendered output to `generated_template_path` under `mission_<id>/.compliance/legal/<doc>.md`. Surface cross_jurisdiction_conflicts when present. Set requires_legal_review=true on every doc; founder_review_required=true on privacy_policy, dpa, tos. Emit the `compliance_overlay` JSON to `mission_<id>/compliance_overlay.json`.",
+      "done_when": "compliance_overlay.required_documents non-empty (or fingerprint declares jurisdictions=[]) and every generated_template_path file exists.",
+      "artifact_schema": {
+        "compliance_overlay": {
+          "type": "object",
+          "required_fields": [
+            "required_documents",
+            "monitoring_obligations",
+            "data_subject_rights_implementation"
           ],
           "_schema_version": "1"
         }
@@ -2676,7 +2747,9 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "prd_final_summary",
-        "regulatory_requirements_summary"
+        "regulatory_requirements_summary",
+        "compliance_fingerprint",
+        "compliance_overlay"
       ],
       "output_artifacts": [
         "nfr_availability",
@@ -2763,7 +2836,8 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "prd_final_summary",
-        "functional_requirements_summary"
+        "functional_requirements_summary",
+        "compliance_fingerprint"
       ],
       "output_artifacts": [
         "data_requirements"
@@ -5858,8 +5932,11 @@
       "output_artifacts": [
         "project_plan_review_result"
       ],
-      "instruction": "Review project plan: all stories assigned, dependencies respected, balanced loads, realistic milestones, risk mitigations as tasks, testing in every sprint, buffer exists. If timeline unrealistic, trigger needs_clarification.",
+      "instruction": "Review project plan: all stories assigned, dependencies respected, balanced loads, realistic milestones, risk mitigations as tasks, testing in every sprint, buffer exists. If timeline unrealistic, trigger needs_clarification. Z1 T5A (P6): also verify compliance_blocker_check did not surface pending docs for phase ≤6.",
       "done_when": "project_plan_review_result exists. Timeline is realistic or human has approved adjusted scope.",
+      "post_hooks": [
+        "compliance_blocker_check"
+      ],
       "artifact_schema": {
         "project_plan_review_result": {
           "type": "object",

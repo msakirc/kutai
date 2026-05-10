@@ -1,0 +1,56 @@
+# Privacy Policy (template — review with counsel before publishing)
+
+_Generated: {{ generated_at }}_
+_Jurisdictions in scope: {{ jurisdictions | join(", ") }}_
+_User classes: {{ user_classes | join(", ") }}_
+
+## 1. Data we collect
+
+{% if data_categories_coarse %}
+We collect the following categories of data:
+
+{% for cat in data_categories_coarse -%}
+- **{{ cat }}**
+{% endfor %}
+{% else %}
+_Data categories not yet declared. Founder must complete the
+compliance fingerprint before this section is binding._
+{% endif %}
+
+## 2. Retention
+
+{% if retention_max_days %}
+We retain personal data for a maximum of **{{ retention_max_days }} days**
+unless a longer retention is required by law.
+{% else %}
+_Retention period not declared._
+{% endif %}
+
+## 3. Data residency
+
+{% if data_residency_required %}
+Personal data is stored within the regions named in our jurisdictions list above.
+{% else %}
+We do not impose a data-residency requirement at this time.
+{% endif %}
+
+## 4. Third-party processors
+
+{% if third_party_processors_expected %}
+We share data with the following processors under DPA:
+
+{% for p in third_party_processors_expected -%}
+- {{ p }}
+{% endfor %}
+{% else %}
+We do not currently share personal data with third-party processors.
+{% endif %}
+
+## 5. Data subject rights
+
+You may request access, rectification, deletion, or portability of your
+personal data. Contact details: _founder to fill in_.
+
+---
+
+_This template is NOT legal advice. Engage counsel before deploying._

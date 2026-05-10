@@ -345,4 +345,27 @@ async def run(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "ingest_visual":
+        # B7+C16: founder-uploaded sketch/photo → structured visual_brief.md
+        from mr_roboto.ingest_visual import ingest_visual as _ingest_visual
+        try:
+            res = await _ingest_visual(
+                mission_id=int(task.get("mission_id") or payload.get("mission_id")),
+                file_paths=list(payload.get("file_paths") or []),
+                purpose=str(payload.get("purpose") or ""),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"ingest_visual: reason={res.get('reason')} "
+                        f"detail={res.get('detail') or ''}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

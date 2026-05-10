@@ -1898,6 +1898,8 @@ class TelegramInterface:
         ))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
+        # B7+C16: founder photo upload → mission .intake/visuals/ + clarify-shape
+        self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
             self.handle_reply
@@ -3104,6 +3106,90 @@ class TelegramInterface:
         except Exception as e:
             await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
+    # ── B7+C16: visual ingest (sketch / screenshot upload) ───────────────────
+    # Founder uploads a photo to the chat → save into the most-recent active
+    # mission's ``.intake/visuals/`` directory, then prompt for "what's this
+    # for?" and on the founder's next reply enqueue the ``ingest_visual``
+    # mechanical action via Beckman. Image GENERATION is Z2 work
+    # (``gorsel_ustasi``); this path is INGEST-only.
+
+    _VISUAL_PURPOSE_LABELS: dict[str, str] = {
+        "🖼 Rakip Ekran": "competitor_screenshot",
+        "🎨 Moodboard": "moodboard",
+        "✏️ Wireframe": "wireframe_sketch",
+        "💡 İlham": "inspiration",
+        "📱 Mevcut Ürün": "screenshot_of_existing_product",
+    }
+
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """B7+C16: route founder-uploaded photos into a mission's intake dir.
+
+        - Save the highest-resolution variant of the uploaded photo into
+          ``workspace/mission_{id}/.intake/visuals/``.
+        - Look up the most-recent active mission for context. If none, tell
+          the founder to start a mission first (we don't synthesize one — the
+          intent must be explicit).
+        - Stash a ``_pending_action`` of kind ``_visual_purpose`` carrying the
+          saved file path + mission_id, then prompt with a REPLY_KEYBOARD of
+          purpose buttons. The founder's next tap is consumed in
+          ``handle_message`` and turned into a ``ingest_visual`` Beckman task.
+        """
+        chat_id = update.message.chat_id
+        if not update.message.photo:
+            return
+
+        # Resolve target mission. We use the most-recent active mission (highest
+        # id). If the founder hasn't started one yet, surface that explicitly.
+        try:
+            missions = await get_active_missions()
+        except Exception as exc:
+            logger.error("handle_photo: get_active_missions failed", error=str(exc))
+            await self._reply(update,
+                "❌ Aktif görev listesi alınamadı. Tekrar dene.")
+            return
+        if not missions:
+            await self._reply(update,
+                "📷 Görsel aldım ama aktif bir görev yok.\n"
+                "Önce `/mission <açıklama>` ile bir görev başlat, sonra "
+                "görseli tekrar gönder.",
+                parse_mode="Markdown")
+            return
+        mission = max(missions, key=lambda m: int(m.get("id") or 0))
+        mission_id = int(mission["id"])
+
+        # Pick the largest variant — Telegram sends multiple sizes.
+        photo = update.message.photo[-1]
+        try:
+            from src.tools.workspace import get_mission_workspace
+            ws = get_mission_workspace(mission_id)
+            visuals_dir = Path(ws) / ".intake" / "visuals"
+            visuals_dir.mkdir(parents=True, exist_ok=True)
+            file_obj = await context.bot.get_file(photo.file_id)
+            # Telegram photos are JPEG. file_unique_id is a stable short slug.
+            filename = f"photo_{photo.file_unique_id}.jpg"
+            filepath = visuals_dir / filename
+            await file_obj.download_to_drive(str(filepath))
+        except Exception as exc:
+            logger.error("handle_photo: download failed",
+                         chat_id=chat_id, error=str(exc))
+            await self._reply(update, f"❌ Görsel kaydedilemedi: {_friendly_error(str(exc))}")
+            return
+
+        # Stash and prompt.
+        self._pending_action[chat_id] = {
+            "command": "_visual_purpose",
+            "mission_id": mission_id,
+            "file_path": str(filepath),
+            "ts": _time.time(),
+        }
+        labels = list(self._VISUAL_PURPOSE_LABELS.keys()) + ["❌ İptal"]
+        kb = _make_keyboard([labels[:3], labels[3:]])
+        await self._reply(update,
+            "📷 Görsel kaydedildi. Bu ne için?\n"
+            "(a) Rakip ekran  (b) Moodboard  (c) Wireframe\n"
+            "(d) İlham  (e) Mevcut ürün ekranı",
+            reply_markup=kb)
+
     async def cmd_ingest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Ingest a URL or file into the knowledge base."""
         if not context.args:
@@ -3727,6 +3813,74 @@ class TelegramInterface:
                 if cmd == "_todo_help":
                     self._last_todo_help = pending_action
                     await self.cmd__todo_help(update, context)
+                    return
+
+                # ── B7+C16: visual ingest purpose-tap → enqueue mechanical task ──
+                if cmd == "_visual_purpose":
+                    stripped = text.strip()
+                    if stripped == "❌ İptal":
+                        # Restore main keyboard, leave the saved file in place
+                        # (founder can re-trigger by uploading again).
+                        await self._reply(update,
+                            "❌ İptal edildi. Görsel kaydedildi ama "
+                            "işlenmedi.",
+                            reply_markup=REPLY_KEYBOARD)
+                        return
+                    purpose = self._VISUAL_PURPOSE_LABELS.get(stripped)
+                    if purpose is None:
+                        # Unknown tap — re-prompt with the same keyboard.
+                        self._pending_action[chat_id] = {
+                            **pending_action,
+                            "ts": _time.time(),
+                        }
+                        labels = list(self._VISUAL_PURPOSE_LABELS.keys()) + ["❌ İptal"]
+                        kb = _make_keyboard([labels[:3], labels[3:]])
+                        await self._reply(update,
+                            "Lütfen butonlardan birini seç.",
+                            reply_markup=kb)
+                        return
+                    mission_id = pending_action.get("mission_id")
+                    file_path = pending_action.get("file_path")
+                    if not mission_id or not file_path:
+                        await self._reply(update,
+                            "❌ Görsel bağlamı kayboldu. Tekrar yükle.",
+                            reply_markup=REPLY_KEYBOARD)
+                        return
+                    try:
+                        import general_beckman
+                        await general_beckman.enqueue({
+                            "title": f"ingest_visual:{purpose}",
+                            "description": (
+                                f"Founder uploaded a {purpose} for mission "
+                                f"{mission_id}; extract structural elements "
+                                f"into visual_brief.md."
+                            ),
+                            "agent_type": "mechanical",
+                            "kind": "main_work",
+                            "priority": 5,
+                            "mission_id": int(mission_id),
+                            "context": {
+                                "executor": "mechanical",
+                                "payload": {
+                                    "action": "ingest_visual",
+                                    "mission_id": int(mission_id),
+                                    "file_paths": [file_path],
+                                    "purpose": purpose,
+                                },
+                            },
+                        })
+                    except Exception as exc:
+                        logger.error("ingest_visual enqueue failed",
+                                     mission_id=mission_id, error=str(exc))
+                        await self._reply(update,
+                            f"❌ Görev kuyruğa eklenemedi: {_friendly_error(str(exc))}",
+                            reply_markup=REPLY_KEYBOARD)
+                        return
+                    await self._reply(update,
+                        f"✅ Görsel `{purpose}` olarak kuyruğa eklendi. "
+                        f"`visual_brief.md` üretildiğinde göreceksin.",
+                        parse_mode="Markdown",
+                        reply_markup=REPLY_KEYBOARD)
                     return
 
                 if cmd == "_todo_edit":

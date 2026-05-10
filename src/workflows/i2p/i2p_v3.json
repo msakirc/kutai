@@ -5480,6 +5480,27 @@
       "skip_when": "mission.legacy_pre_html_oids == '1'"
     },
     {
+      "id": "5.40",
+      "phase": "phase_5",
+      "name": "emit_preview_url",
+      "agent": "mechanical",
+      "depends_on": [
+        "5.30c"
+      ],
+      "executor": "emit_preview_url",
+      "payload": {
+        "action": "emit_preview_url"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "produces": [
+        "mission_{mission_id}/preview_url.txt"
+      ],
+      "instruction": "Z1 T4C (C10+A19) — emit a tunneled preview URL surface for the per-screen HTML prototypes. EMIT-ONLY: writes preview_url.txt with a live cloudflared URL when KUTAI_PREVIEW_PROVIDER=cloudflared and the binary is on PATH; otherwise writes a 'pending: hosting deferred to Z2' placeholder. Idempotent: any prior tunnel is terminated before re-emitting.",
+      "skip_when": "mission.legacy_pre_preview_url == '1'"
+    },
+    {
       "id": "6.1",
       "phase": "phase_6",
       "name": "epic_definition_and_work_breakdown",

@@ -27,6 +27,8 @@ from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
 from mr_roboto.parse_og_tags import parse_og_tags
 from mr_roboto.http_check import http_check
+from mr_roboto.emit_preview_url import emit_preview_url
+from mr_roboto.kill_preview_url import kill_preview_url
 
 __all__ = [
     "Action",
@@ -54,6 +56,8 @@ __all__ = [
     "run_pytest",
     "parse_og_tags",
     "http_check",
+    "emit_preview_url",
+    "kill_preview_url",
 ]
 
 
@@ -722,6 +726,47 @@ async def run(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=f"propose_spec_patch_from_html_diff: {res.get('error')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "emit_preview_url":
+        # Z1 Tier 4C (C10+A19) — emit a tunneled preview URL surface.
+        # EMIT-ONLY: Z2 owns hosting. Fail-soft when env unset / binary missing.
+        from mr_roboto.emit_preview_url import (
+            emit_preview_url as _emit_preview,
+        )
+        try:
+            res = await _emit_preview(
+                mission_id=int(task.get("mission_id") or payload.get("mission_id")),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"emit_preview_url: {res.get('error') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "kill_preview_url":
+        # Z1 Tier 4C (C10) — terminate the per-mission preview tunnel.
+        from mr_roboto.kill_preview_url import (
+            kill_preview_url as _kill_preview,
+        )
+        try:
+            res = await _kill_preview(
+                mission_id=int(task.get("mission_id") or payload.get("mission_id")),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"kill_preview_url: {res.get('error') or 'failed'}",
                     result=res,
                 )
             return Action(status="completed", result=res)

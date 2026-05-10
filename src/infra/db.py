@@ -304,6 +304,8 @@ async def init_db():
             legacy_pre_p7 INTEGER DEFAULT 0,
             legacy_pre_charter INTEGER DEFAULT 0,
             legacy_pre_adr INTEGER DEFAULT 0,
+            legacy_pre_falsification INTEGER DEFAULT 0,
+            legacy_pre_non_goals INTEGER DEFAULT 0,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
     """)
@@ -365,6 +367,41 @@ async def init_db():
         await db.execute("UPDATE missions SET legacy_pre_adr = 1")
         logger.info(
             "Z1 Tier 2 migration: legacy_pre_adr added + existing rows backfilled to 1"
+        )
+    except Exception:
+        # Column already exists — no-op; new missions default to 0.
+        pass
+
+    # Z1 Tier 2 migration (P4): add `legacy_pre_falsification` column.
+    # Backfilled to 1 for existing missions — they predate the falsification
+    # triple (risk_if_wrong / validation_method / falsification_signal) on
+    # phase-3 requirement-emitting steps (3.1 / 3.2 / 3.3 / 3.7).
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_falsification INTEGER DEFAULT 0"
+        )
+        await db.execute("UPDATE missions SET legacy_pre_falsification = 1")
+        logger.info(
+            "Z1 Tier 2 migration: legacy_pre_falsification added "
+            "+ existing rows backfilled to 1"
+        )
+    except Exception:
+        # Column already exists — no-op; new missions default to 0.
+        pass
+
+    # Z1 Tier 2 migration (A2): add `legacy_pre_non_goals` column.
+    # Backfilled to 1 for existing missions — they predate the 0.6a
+    # non_goals_lock mission-wide refusal artifact.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_non_goals INTEGER DEFAULT 0"
+        )
+        await db.execute("UPDATE missions SET legacy_pre_non_goals = 1")
+        logger.info(
+            "Z1 Tier 2 migration: legacy_pre_non_goals added "
+            "+ existing rows backfilled to 1"
         )
     except Exception:
         # Column already exists — no-op; new missions default to 0.

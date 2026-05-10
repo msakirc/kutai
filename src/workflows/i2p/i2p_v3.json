@@ -1056,6 +1056,75 @@
       }
     },
     {
+      "id": "0.6a",
+      "phase": "phase_0",
+      "name": "non_goals_lock",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.1"],
+      "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_non_goals == '1'",
+      "input_artifacts": [
+        "product_charter",
+        "raw_idea",
+        "strategic_context"
+      ],
+      "output_artifacts": [
+        "non_goals"
+      ],
+      "produces": [
+        "mission_{mission_id}/.charter/non_goals.md"
+      ],
+      "payload": {
+        "action": "clarify",
+        "kind": "non_goals_request",
+        "question": "List 3-7 mission-wide non-goals — explicit refusals that downstream phases must respect. Each one-line. Examples: 'No real-time multiplayer features.' / 'No mobile-app version (web-only at launch).' / 'No support for under-13 users.' / 'No vendor onboarding workflow this iteration.' Charter has per-solution boundaries; this is the higher-level cross-mission refusal set. Reply with markdown matching: `---\\n_schema_version: \"1\"\\nmission_id: <id>\\nnon_goals:\\n  - \"...\"\\n---\\n\\n# Non-goals\\n\\n- ...`"
+      },
+      "instruction": "Mission-wide non-goals lock (Z1 A2). Founder authors OR confirms an analyst-suggested list of 3-7 explicit refusals. Output is `mission_{mission_id}/.charter/non_goals.md` with YAML frontmatter (`_schema_version: \"1\"` + `non_goals:` array) and a `# Non-goals` body section mirroring the bullets. The charter (0.1) carries per-solution `boundaries`; this artifact captures the cross-mission refusals at the higher level. Reviewers at 3.11 / 4.16 / 5.10 reject any FR / architectural choice / feature design that maps to these non-goals.",
+      "done_when": "non_goals.md exists with YAML frontmatter (_schema_version=1, non_goals array of 3-7 entries), '# Non-goals' heading, and 3-7 body bullets. No placeholder text.",
+      "artifact_schema": {
+        "non_goals": {
+          "type": "markdown",
+          "required_sections": [
+            "Non-goals"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "0.6a.verify",
+      "phase": "phase_0",
+      "name": "non_goals_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.6a"],
+      "skip_when": "mission.legacy_pre_non_goals == '1'",
+      "input_artifacts": ["non_goals"],
+      "output_artifacts": ["non_goals_shape_result"],
+      "payload": {
+        "action": "verify_non_goals_shape",
+        "non_goals_paths": ["mission_{mission_id}/.charter/non_goals.md"],
+        "min_items": 3,
+        "max_items": 7
+      },
+      "instruction": "Mechanical verifier (Z1 A2): asserts non_goals.md has YAML frontmatter with _schema_version='1', a non_goals array (3-7), '# Non-goals' body heading, 3-7 body bullets, no placeholders.",
+      "done_when": "verify_non_goals_shape returns ok=true.",
+      "artifact_schema": {
+        "non_goals_shape_result": {
+          "type": "object",
+          "required_fields": ["ok"],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
+    },
+    {
       "id": "1.1",
       "phase": "phase_1",
       "name": "market_existence_research",
@@ -2258,8 +2327,9 @@
       "context": {
         "estimated_output_tokens": 8000
       },
-      "instruction": "Extract functional requirements from prd_final. Each requirement object MUST have EXACTLY these fields: req_id (FR-001, FR-002...), title (short name), description (one-paragraph spec, under 80 words), source_story_ids (array of story id strings), priority (High|Medium|Low), category (auth|data|ui|api|integration|notification|search|admin|billing).\n\nOUTPUT FORMAT: Return ONLY a JSON array starting with `[` and ending with `]`. No wrapping object, no prose, no extra fields. 8-20 requirements total. Every user story must map to at least one requirement.",
-      "done_when": "functional_requirements is a JSON array with 8-20 items, each carrying req_id/title/description/source_story_ids/priority/category.",
+      "instruction": "Extract functional requirements from prd_final. Each requirement object MUST have EXACTLY these fields: req_id (FR-001, FR-002...), title (short name), description (one-paragraph spec, under 80 words), source_story_ids (array of story id strings), priority (High|Medium|Low), category (auth|data|ui|api|integration|notification|search|admin|billing).\n\nZ1 Tier 2 (P4) — falsification triple REQUIRED on every item:\n- risk_if_wrong: one of \"low\" | \"medium\" | \"high\" | \"critical\" — what's the cost if this requirement is wrong?\n- validation_method: how would we know it's wrong? Concrete check (e.g., \"user interview with N>=3 reseller archetype users\", \"monitor latency p95 < 500ms over 7d\", \"fact-check against TR e-commerce regulation\"). When risk_if_wrong=critical, validation_method MUST name a measurable / specific check (numbers OR keywords like interview / monitor / test / audit / benchmark).\n- falsification_signal: specific observable that would cause us to revisit this requirement.\n\nOUTPUT FORMAT: Return ONLY a JSON array starting with `[` and ending with `]`. No wrapping object, no prose, no extra fields. 8-20 requirements total. Every user story must map to at least one requirement.",
+      "done_when": "functional_requirements is a JSON array with 8-20 items, each carrying req_id/title/description/source_story_ids/priority/category PLUS risk_if_wrong, validation_method, falsification_signal (Z1 P4 triple).",
+      "post_hooks": ["verify_falsification_present"],
       "artifact_schema": {
         "functional_requirements": {
           "type": "array",
@@ -2270,11 +2340,41 @@
             "description",
             "source_story_ids",
             "priority",
-            "category"
+            "category",
+            "risk_if_wrong",
+            "validation_method",
+            "falsification_signal"
           ],
           "_schema_version": "1"
         }
       }
+    },
+    {
+      "id": "3.1.verify",
+      "phase": "phase_3",
+      "name": "functional_requirements_falsification_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["3.1"],
+      "skip_when": "mission.legacy_pre_falsification == '1'",
+      "input_artifacts": ["functional_requirements"],
+      "output_artifacts": ["functional_requirements_falsification_result"],
+      "payload": {
+        "action": "verify_falsification_present",
+        "artifacts_from_blackboard": ["functional_requirements"]
+      },
+      "instruction": "Mechanical verifier (Z1 P4): asserts every functional_requirement carries risk_if_wrong + validation_method + falsification_signal, and that risk_if_wrong=critical items name a measurable validation_method.",
+      "done_when": "verify_falsification_present returns ok=true.",
+      "artifact_schema": {
+        "functional_requirements_falsification_result": {
+          "type": "object",
+          "required_fields": ["ok"],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
     },
     {
       "id": "3.2",
@@ -2296,15 +2396,17 @@
         "nfr_performance",
         "nfr_scalability"
       ],
-      "instruction": "Define performance NFRs: api_response_time (p50, p95, p99), page_load_time, time_to_interactive, LCP, FID, CLS, throughput, database_query_time. Adjust targets based on product type and audience. Then define scalability NFRs: concurrent_users, data_volume, file_storage, api_request_volume, background_job_volume, notification_volume. Include current, 6-month, and 12-month projections with 10x burst headroom.",
-      "done_when": "nfr_performance and nfr_scalability exist with measurable targets for all key metrics.",
+      "instruction": "Define performance NFRs: api_response_time (p50, p95, p99), page_load_time, time_to_interactive, LCP, FID, CLS, throughput, database_query_time. Adjust targets based on product type and audience. Then define scalability NFRs: concurrent_users, data_volume, file_storage, api_request_volume, background_job_volume, notification_volume. Include current, 6-month, and 12-month projections with 10x burst headroom.\n\nZ1 Tier 2 (P4) — wrap each top-level NFR object with an `items` array where each entry carries: name, target, AND the falsification triple (risk_if_wrong [low|medium|high|critical], validation_method, falsification_signal). When risk_if_wrong=critical, validation_method MUST be measurable (e.g., 'monitor p95 < 500ms over 7d') not vague ('users will tell us').",
+      "done_when": "nfr_performance and nfr_scalability exist with measurable targets AND each item carries the falsification triple (Z1 P4).",
+      "post_hooks": ["verify_falsification_present"],
       "artifact_schema": {
         "nfr_performance": {
           "type": "object",
           "required_fields": [
             "api_response_time",
             "page_load_time",
-            "throughput"
+            "throughput",
+            "items"
           ],
           "_schema_version": "1"
         },
@@ -2313,8 +2415,36 @@
           "required_fields": [
             "concurrent_users",
             "data_volume",
-            "projections"
+            "projections",
+            "items"
           ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "3.2.verify",
+      "phase": "phase_3",
+      "name": "nfr_perf_scale_falsification_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["3.2"],
+      "skip_when": "mission.legacy_pre_falsification == '1'",
+      "input_artifacts": ["nfr_performance", "nfr_scalability"],
+      "output_artifacts": ["nfr_perf_scale_falsification_result"],
+      "payload": {
+        "action": "verify_falsification_present",
+        "artifacts_from_blackboard": ["nfr_performance", "nfr_scalability"]
+      },
+      "instruction": "Mechanical verifier (Z1 P4): asserts every NFR item under nfr_performance.items and nfr_scalability.items carries the falsification triple.",
+      "done_when": "verify_falsification_present returns ok=true.",
+      "artifact_schema": {
+        "nfr_perf_scale_falsification_result": {
+          "type": "object",
+          "required_fields": ["ok"],
           "_schema_version": "1"
         }
       },
@@ -2340,15 +2470,17 @@
         "nfr_availability",
         "security_requirements"
       ],
-      "instruction": "Define availability NFRs: uptime_target, maintenance_windows, maximum_unplanned_downtime, RTO, RPO, degraded_mode_behavior per dependency. Then define security requirements covering: authentication, authorization, data_protection, api_security, infrastructure, audit, compliance. Map each regulatory_requirement to specific technical controls.",
-      "done_when": "nfr_availability and security_requirements exist with measurable targets and traceable security controls.",
+      "instruction": "Define availability NFRs: uptime_target, maintenance_windows, maximum_unplanned_downtime, RTO, RPO, degraded_mode_behavior per dependency. Then define security requirements covering: authentication, authorization, data_protection, api_security, infrastructure, audit, compliance. Map each regulatory_requirement to specific technical controls.\n\nZ1 Tier 2 (P4) — both artifacts must include an `items` array where each entry has: name, target, AND the falsification triple (risk_if_wrong [low|medium|high|critical], validation_method, falsification_signal). Security items where risk_if_wrong=critical (e.g., authentication, data_protection) MUST name a measurable validation_method (e.g., 'pen-test against OWASP top-10 quarterly').",
+      "done_when": "nfr_availability and security_requirements exist with measurable targets, traceable security controls, AND every item carries the falsification triple (Z1 P4).",
+      "post_hooks": ["verify_falsification_present"],
       "artifact_schema": {
         "nfr_availability": {
           "type": "object",
           "required_fields": [
             "uptime_target",
             "rto",
-            "rpo"
+            "rpo",
+            "items"
           ],
           "_schema_version": "1"
         },
@@ -2357,8 +2489,36 @@
           "required_fields": [
             "authentication",
             "authorization",
-            "data_protection"
+            "data_protection",
+            "items"
           ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "3.3.verify",
+      "phase": "phase_3",
+      "name": "nfr_availability_security_falsification_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["3.3"],
+      "skip_when": "mission.legacy_pre_falsification == '1'",
+      "input_artifacts": ["nfr_availability", "security_requirements"],
+      "output_artifacts": ["nfr_availability_security_falsification_result"],
+      "payload": {
+        "action": "verify_falsification_present",
+        "artifacts_from_blackboard": ["nfr_availability", "security_requirements"]
+      },
+      "instruction": "Mechanical verifier (Z1 P4): asserts every nfr_availability.items and security_requirements.items entry carries the falsification triple.",
+      "done_when": "verify_falsification_present returns ok=true.",
+      "artifact_schema": {
+        "nfr_availability_security_falsification_result": {
+          "type": "object",
+          "required_fields": ["ok"],
           "_schema_version": "1"
         }
       },
@@ -2572,8 +2732,9 @@
       "output_artifacts": [
         "business_rules"
       ],
-      "instruction": "Extract every business rule: rule_id (BR-001...), title, rule_statement ('IF condition THEN consequence'), category, source, affected_features, testable_assertion.",
-      "done_when": "business_rules exists as a numbered list of precise, testable business rule statements.",
+      "instruction": "Extract every business rule: rule_id (BR-001...), title, rule_statement ('IF condition THEN consequence'), category, source, affected_features, testable_assertion.\n\nZ1 Tier 2 (P4) — falsification triple REQUIRED on every BR:\n- risk_if_wrong: one of \"low\" | \"medium\" | \"high\" | \"critical\".\n- validation_method: how would we know this rule is wrong? (e.g., 'fact-check against TR e-commerce regulation', 'A/B against control cohort over 14d').\n- falsification_signal: specific observable that would cause us to revisit the rule.\n\nWhen risk_if_wrong=critical, validation_method MUST name a measurable / specific check.",
+      "done_when": "business_rules exists as a numbered list of precise, testable business rule statements, each carrying the Z1 P4 falsification triple.",
+      "post_hooks": ["verify_falsification_present"],
       "artifact_schema": {
         "business_rules": {
           "type": "array",
@@ -2582,8 +2743,38 @@
             "rule_id",
             "title",
             "rule_statement",
-            "testable_assertion"
+            "testable_assertion",
+            "risk_if_wrong",
+            "validation_method",
+            "falsification_signal"
           ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "3.7.verify",
+      "phase": "phase_3",
+      "name": "business_rules_falsification_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["3.7"],
+      "skip_when": "mission.legacy_pre_falsification == '1'",
+      "input_artifacts": ["business_rules"],
+      "output_artifacts": ["business_rules_falsification_result"],
+      "payload": {
+        "action": "verify_falsification_present",
+        "artifacts_from_blackboard": ["business_rules"]
+      },
+      "instruction": "Mechanical verifier (Z1 P4): asserts every business_rule carries risk_if_wrong + validation_method + falsification_signal, with measurable validation when risk_if_wrong=critical.",
+      "done_when": "verify_falsification_present returns ok=true.",
+      "artifact_schema": {
+        "business_rules_falsification_result": {
+          "type": "object",
+          "required_fields": ["ok"],
           "_schema_version": "1"
         }
       },
@@ -2802,7 +2993,12 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "requirements_spec_summary",
-        "prd_final_summary"
+        "prd_final_summary",
+        "non_goals",
+        "functional_requirements_falsification_result",
+        "nfr_perf_scale_falsification_result",
+        "nfr_availability_security_falsification_result",
+        "business_rules_falsification_result"
       ],
       "output_artifacts": [
         "requirements_review_result"
@@ -2810,7 +3006,7 @@
       "context": {
         "estimated_output_tokens": 6000
       },
-      "instruction": "Review requirements_spec against prd_final for completeness, consistency, testability, and feasibility. Check that every user story has traceable requirements, no orphaned requirements exist, NFR targets are realistic, and security requirements cover all sensitive areas.\n\nOUTPUT FORMAT: Return ONLY a JSON object with EXACTLY two top-level fields:\n{\n  \"status\": \"pass\" | \"fail\" | \"needs_revision\",\n  \"issues\": [ { \"severity\": \"...\", \"file\": \"...\", \"line\": <int|null>, \"description\": \"...\", \"suggested_fix\": \"...\" }, ... ]\n}\n\nIMPORTANT: emit `status` FIRST so it lands even when output is truncated. Cap issues at 12 entries — group similar findings into one issue rather than listing each occurrence.",
+      "instruction": "Review requirements_spec against prd_final for completeness, consistency, testability, and feasibility. Check that every user story has traceable requirements, no orphaned requirements exist, NFR targets are realistic, and security requirements cover all sensitive areas.\n\nZ1 Tier 2 (P4) — falsification rigor:\n- REJECT (status=fail) if any FR / NFR / BR / system_quality_attribute / persona is missing the falsification triple (risk_if_wrong, validation_method, falsification_signal).\n- REJECT when risk_if_wrong='critical' and validation_method is vague (e.g., 'users will tell us', 'we'll see how it goes'). Critical-risk items MUST name a measurable / specific check (numbers OR keywords like interview / monitor / test / audit / benchmark / fact-check).\n- REJECT items where falsification_signal is non-observable (e.g., 'something feels off' is not observable; 'p95 latency exceeds 800ms over 3 days' is observable).\n\nZ1 Tier 2 (A2) — non-goals contradiction check:\n- The mechanical sibling check_against_non_goals surfaces token-overlap matches between non_goals.md and this artifact body. CONSUME those matches as input — they pre-flag obvious contradictions.\n- REJECT (status=fail) any FR / NFR / BR that maps to a non-goal listed in mission_{mission_id}/.charter/non_goals.md (e.g., non-goal='No real-time multiplayer features' → reject any FR introducing WebSocket multiplayer).\n- Subtle contradictions are your judgment; the mechanical check only flags lexical overlap.\n\nOUTPUT FORMAT: Return ONLY a JSON object with EXACTLY two top-level fields:\n{\n  \"status\": \"pass\" | \"fail\" | \"needs_revision\",\n  \"issues\": [ { \"severity\": \"...\", \"file\": \"...\", \"line\": <int|null>, \"description\": \"...\", \"suggested_fix\": \"...\" }, ... ]\n}\n\nIMPORTANT: emit `status` FIRST so it lands even when output is truncated. Cap issues at 12 entries — group similar findings into one issue rather than listing each occurrence.",
       "done_when": "requirements_review_result is a JSON object with `status` (pass|fail|needs_revision) and `issues` array.",
       "artifact_schema": {
         "requirements_review_result": {
@@ -3811,7 +4007,7 @@
       "output_artifacts": [
         "architecture_review_result"
       ],
-      "instruction": "Review TDD for: every FR addressable, all NFRs have design elements, no SPOFs, security findings addressed, consistency, feasibility, over-engineering check. Also review auth design, file storage, and other security-sensitive areas specifically.\n\nZ1 Tier 2 (P3+C7+A8) — ADR-aware checks:\n- For each ADR JSON under `mission_{mission_id}/.adr/`: the universal shape (adr_id, title, status, context, decision, consequences, options_considered ≥2, chosen_option_id, falsification_signal, reversal_cost, supersedes_adr_id, _schema_version) is fully populated.\n- `chosen_option_id` resolves into `options_considered` (no orphan picks).\n- `falsification_signal` is non-empty AND measurable (a concrete threshold or signal — not just \"if it doesn't work\").\n- `reversal_cost` is `low | medium | high`.\n- Each ADR cites which charter `solution.id` it serves (charter `Solutions We Own`).\n- For STACK ADRs (4.2, 4.4, 4.6, 4.8, 4.9, 4.10): every option has a populated `monthly_cost_curve`; the ADR has `cost_at_target_users_usd` (number); reject if `cost_at_target_users_usd > z0.cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.\n- The component-library ADR from step 4.2a is present and references the tech-stack ADR from 4.2 via `supersedes_adr_id` or an explicit `stack_adr_ref` field.\n- Reject the architecture_review_result with `status: fail` if any of the above checks miss; list each failure under `issues[]`.",
+      "instruction": "Review TDD for: every FR addressable, all NFRs have design elements, no SPOFs, security findings addressed, consistency, feasibility, over-engineering check. Also review auth design, file storage, and other security-sensitive areas specifically.\n\nZ1 Tier 2 (P3+C7+A8) — ADR-aware checks:\n- For each ADR JSON under `mission_{mission_id}/.adr/`: the universal shape (adr_id, title, status, context, decision, consequences, options_considered ≥2, chosen_option_id, falsification_signal, reversal_cost, supersedes_adr_id, _schema_version) is fully populated.\n- `chosen_option_id` resolves into `options_considered` (no orphan picks).\n- `falsification_signal` is non-empty AND measurable (a concrete threshold or signal — not just \"if it doesn't work\").\n- `reversal_cost` is `low | medium | high`.\n- Each ADR cites which charter `solution.id` it serves (charter `Solutions We Own`).\n- For STACK ADRs (4.2, 4.4, 4.6, 4.8, 4.9, 4.10): every option has a populated `monthly_cost_curve`; the ADR has `cost_at_target_users_usd` (number); reject if `cost_at_target_users_usd > z0.cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.\n- The component-library ADR from step 4.2a is present and references the tech-stack ADR from 4.2 via `supersedes_adr_id` or an explicit `stack_adr_ref` field.\n- Reject the architecture_review_result with `status: fail` if any of the above checks miss; list each failure under `issues[]`.\n\nZ1 Tier 2 (A2) — non-goals contradiction check:\n- Read mission_{mission_id}/.charter/non_goals.md if present.\n- REJECT (status=fail) any architectural choice or ADR option that maps to a listed non-goal (e.g., non-goal='No real-time features' → reject WebSocket / SSE / event-bus stack picks; non-goal='No mobile-app version' → reject React Native / Flutter ADRs).\n- Surface the matching non-goal text in the issue description so the architect can revise.\n\nZ1 Tier 2 (P4) — falsification rigor:\n- REJECT ADR options whose chosen rationale lacks risk_if_wrong + validation_method + falsification_signal.\n- REJECT when risk_if_wrong='critical' but validation_method is vague.",
       "done_when": "architecture_review_result exists with comprehensive assessment.",
       "artifact_schema": {
         "architecture_review_result": {
@@ -4281,7 +4477,7 @@
       "output_artifacts": [
         "design_review_result"
       ],
-      "instruction": "Review design specs for coverage, consistency, component reuse, accessibility completeness, responsive completeness, implementability, token compliance. Evaluate design token choices for color harmony, typography hierarchy, spacing consistency, competitive positioning, visual coherence.",
+      "instruction": "Review design specs for coverage, consistency, component reuse, accessibility completeness, responsive completeness, implementability, token compliance. Evaluate design token choices for color harmony, typography hierarchy, spacing consistency, competitive positioning, visual coherence.\n\nZ1 Tier 2 (A2) — non-goals contradiction check:\n- Read mission_{mission_id}/.charter/non_goals.md if present.\n- REJECT (status=fail) any feature design that maps to a listed non-goal (e.g., non-goal='No mobile-app version' → reject mobile-only screen specs; non-goal='No support for under-13 users' → reject child-flavored UI patterns).\n- Surface the matching non-goal text in the issue description so the designer can revise.",
       "done_when": "design_review_result exists.",
       "artifact_schema": {
         "design_review_result": {

@@ -8,9 +8,9 @@ from mr_roboto.verify_artifacts import verify_artifacts
 from mr_roboto.verify_schema_version import verify_schema_version
 from mr_roboto.verify_charter_shape import verify_charter_shape
 from mr_roboto.verify_reverse_pitch_shape import verify_reverse_pitch_shape
-from mr_roboto.verify_adr_shape import verify_adr_shape
-from mr_roboto.verify_adr_register import verify_adr_register
-from mr_roboto.verify_cost_curve_present import verify_cost_curve_present
+from mr_roboto.verify_falsification_present import verify_falsification_present
+from mr_roboto.verify_non_goals_shape import verify_non_goals_shape
+from mr_roboto.check_against_non_goals import check_against_non_goals
 from mr_roboto.generate_intake_todo import generate_intake_todo
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
@@ -26,9 +26,9 @@ __all__ = [
     "verify_schema_version",
     "verify_charter_shape",
     "verify_reverse_pitch_shape",
-    "verify_adr_shape",
-    "verify_adr_register",
-    "verify_cost_curve_present",
+    "verify_falsification_present",
+    "verify_non_goals_shape",
+    "check_against_non_goals",
     "generate_intake_todo",
     "run_cmd",
     "run_pytest",
@@ -205,6 +205,82 @@ async def run(task: dict) -> Action:
                     ),
                     result=res,
                 )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_falsification_present":
+        # Z1 Tier 2 (P4) — assert every requirement-bundle item carries
+        # the falsification triple (risk_if_wrong / validation_method /
+        # falsification_signal). Auto-wired as sibling on phase-3 steps
+        # that produce commitment-shaped artifacts.
+        from mr_roboto.verify_falsification_present import (
+            verify_falsification_present as _verify_fals,
+        )
+        try:
+            res = _verify_fals(
+                artifacts=payload.get("artifacts") or {},
+                legacy_pre_falsification=bool(
+                    payload.get("legacy_pre_falsification", False)
+                ),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_falsification_present: missing={res.get('missing')} "
+                        f"critical_underspecified={res.get('critical_underspecified')} "
+                        f"empty={res.get('empty')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_non_goals_shape":
+        # Z1 Tier 2 (A2) — mission-wide non_goals.md shape validator.
+        from mr_roboto.verify_non_goals_shape import (
+            verify_non_goals_shape as _verify_ng,
+        )
+        try:
+            res = _verify_ng(
+                non_goals_text=payload.get("non_goals_text"),
+                non_goals_paths=payload.get("non_goals_paths"),
+                min_items=int(payload.get("min_items", 3)),
+                max_items=int(payload.get("max_items", 7)),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"verify_non_goals_shape: problems={res.get('problems')} "
+                        f"bullet_count={res.get('bullet_count')} "
+                        f"placeholders={res.get('placeholders')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "check_against_non_goals":
+        # Z1 Tier 2 (A2) — cheap heuristic pre-flag of non-goal overlap.
+        # NOT a substitute for LLM reviewer at 3.11 / 4.16 / 5.10; just a
+        # cheap signal the reviewer consumes as input.
+        from mr_roboto.check_against_non_goals import (
+            check_against_non_goals as _check_ng,
+        )
+        try:
+            res = _check_ng(
+                non_goals_text=payload.get("non_goals_text"),
+                non_goals_paths=payload.get("non_goals_paths"),
+                target_text=payload.get("target_text"),
+                target_paths=payload.get("target_paths"),
+                min_overlap_tokens=int(payload.get("min_overlap_tokens", 2)),
+            )
+            # This is a SOFT check — overlaps surface for the reviewer to
+            # judge. Always returns completed; matches list is the signal.
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

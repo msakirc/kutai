@@ -89,6 +89,16 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 86400,
         "payload": {"_executor": "vector_maint_snapshot"},
     },
+    # Z1 Tier 7A (B12) — quarterly bash-audit. Cron: first of Jan/Apr/Jul/Oct
+    # at 09:00. cron_expression beats interval_seconds because quarterly
+    # intervals don't fit 86400-second arithmetic cleanly across leap years
+    # and DST boundaries.
+    {
+        "title": "bash_audit",
+        "description": "sade_kalsin scaffolding audit (quarterly): what does each layer do that bash + Claude can't?",
+        "cron_expression": "0 9 1 jan,apr,jul,oct *",
+        "payload": {"_executor": "run_bash_audit"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.
@@ -137,15 +147,30 @@ async def seed_internal_cadences() -> None:
                 logger.debug("cron_seed: skipping existing row", title=cadence["title"])
                 continue
 
-            first_run = to_db(now + timedelta(seconds=cadence["interval_seconds"]))
+            interval = cadence.get("interval_seconds")
+            cron_expr = cadence.get("cron_expression")
+            if interval:
+                first_run = to_db(now + timedelta(seconds=interval))
+            elif cron_expr:
+                # croniter is optional; fall back to "fire in 1h" if absent
+                # so cron's _advance_schedule can compute the next real slot
+                # on the first tick.
+                try:
+                    from croniter import croniter
+                    first_run = to_db(croniter(cron_expr, now).get_next(type(now)))
+                except Exception:
+                    first_run = to_db(now + timedelta(hours=1))
+            else:
+                first_run = to_db(now + timedelta(hours=1))
             await db.execute(
                 """INSERT INTO scheduled_tasks
-                   (title, description, interval_seconds, kind, context, enabled, next_run)
-                   VALUES (?, ?, ?, 'internal', ?, 1, ?)""",
+                   (title, description, interval_seconds, cron_expression, kind, context, enabled, next_run)
+                   VALUES (?, ?, ?, ?, 'internal', ?, 1, ?)""",
                 (
                     cadence["title"],
                     cadence["description"],
-                    cadence["interval_seconds"],
+                    interval,
+                    cron_expr,
                     json.dumps(cadence["payload"]),
                     first_run,
                 ),

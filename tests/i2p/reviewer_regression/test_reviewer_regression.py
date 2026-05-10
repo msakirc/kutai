@@ -60,10 +60,23 @@ def _step_by_id(wf: dict, step_id: str) -> dict:
 
 
 def _discover_fixtures() -> list[tuple[str, str, Path]]:
-    """Return ``[(schema_version, step_id, fixture_path), ...]``."""
+    """Return ``[(schema_version, step_id, fixture_path), ...]``.
+
+    Skips fixtures whose stem looks like a Z1-Tier-2 ADR-shape companion
+    (``good_adr_set``, ``bad_adr_set``, ``good_component_library``,
+    ``bad_component_library``); those are loaded by
+    ``tests/i2p/test_adr_shape.py`` and have a different shape than the
+    reviewer-regression contract.
+    """
     out: list[tuple[str, str, Path]] = []
     if not _FIXTURES_ROOT.is_dir():
         return out
+    skip_stems = {
+        "good_adr_set",
+        "bad_adr_set",
+        "good_component_library",
+        "bad_component_library",
+    }
     for vdir in sorted(_FIXTURES_ROOT.iterdir()):
         if not vdir.is_dir() or not vdir.name.startswith("v"):
             continue
@@ -74,7 +87,33 @@ def _discover_fixtures() -> list[tuple[str, str, Path]]:
             # dir name is step id with `.` → `_`
             step_id = step_dir.name.replace("_", ".")
             for fx in sorted(step_dir.glob("*.json")):
+                if fx.stem in skip_stems:
+                    continue
                 out.append((ver, step_id, fx))
+    return out
+
+
+def _discover_adr_companion_fixtures() -> list[Path]:
+    """Return Z1-Tier-2 ADR/component-library fixtures discovered alongside
+    reviewer fixtures (loaded by tests/i2p/test_adr_shape.py)."""
+    out: list[Path] = []
+    if not _FIXTURES_ROOT.is_dir():
+        return out
+    for vdir in sorted(_FIXTURES_ROOT.iterdir()):
+        if not vdir.is_dir():
+            continue
+        for step_dir in sorted(vdir.iterdir()):
+            if not step_dir.is_dir():
+                continue
+            for stem in (
+                "good_adr_set",
+                "bad_adr_set",
+                "good_component_library",
+                "bad_component_library",
+            ):
+                p = step_dir / f"{stem}.json"
+                if p.exists():
+                    out.append(p)
     return out
 
 
@@ -101,6 +140,20 @@ def test_fixtures_cover_every_reviewer_step():
 def test_fixture_count_meets_minimum():
     """Acceptance criterion: at least 5 reviewer steps × 2 fixtures = 10."""
     assert len(_FIXTURES) >= 10, f"fixture count {len(_FIXTURES)} below 10"
+
+
+def test_z1_tier2_adr_companion_fixtures_present():
+    """Z1 Tier 2 (P3+C7) — verify the four ADR/component-library
+    companion fixtures are wired alongside reviewer 4.16."""
+    companions = _discover_adr_companion_fixtures()
+    stems = {p.stem for p in companions}
+    expected = {
+        "good_adr_set",
+        "bad_adr_set",
+        "good_component_library",
+        "bad_component_library",
+    }
+    assert expected.issubset(stems), f"missing ADR companions: {expected - stems}"
 
 
 # ────────────────────────────────────────────────────────────────────────────

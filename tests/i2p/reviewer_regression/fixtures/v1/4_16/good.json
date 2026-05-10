@@ -18,12 +18,35 @@
       "auth_model": "OAuth2",
       "data_at_rest_encrypted": true,
       "secrets_in_vault": true
+    },
+    "adr_register": {
+      "_schema_version": "1",
+      "adrs": [
+        {
+          "adr_id": "ADR-2026-05-10-001",
+          "title": "Use NextJS",
+          "status": "accepted",
+          "decision_domain": "frontend_framework"
+        },
+        {
+          "adr_id": "ADR-2026-05-10-002",
+          "title": "Use shadcn/ui",
+          "status": "accepted",
+          "decision_domain": "component_library",
+          "stack_adr_ref": "ADR-2026-05-10-001"
+        }
+      ],
+      "completeness_check": {
+        "required_domains": ["frontend_framework", "database", "component_library"],
+        "missing": []
+      }
     }
   },
   "expected_verdict": {
     "_schema_version": "1",
     "status": "approved",
     "issues": [],
-    "security_findings": []
+    "security_findings": [],
+    "adr_findings": []
   }
 }

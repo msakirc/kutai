@@ -1,0 +1,121 @@
+{
+  "step_id": "4.16",
+  "step_name": "architecture_review",
+  "schema_version": "1",
+  "comment": "ADR set with the three canonical failure modes the reviewer must catch: (1) missing falsification_signal, (2) missing monthly_cost_curve on a stack ADR, (3) orphan chosen_option_id (does not resolve into options_considered).",
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "fail"
+  },
+  "adrs": [
+    {
+      "_schema_version": "1",
+      "adr_id": "ADR-2026-05-10-101",
+      "title": "Use NextJS — falsification missing",
+      "status": "accepted",
+      "context": "Solo founder.",
+      "decision": "OPT-A NextJS.",
+      "consequences": "Lock-in.",
+      "options_considered": [
+        {
+          "id": "OPT-A",
+          "name": "NextJS",
+          "rationale_for": "ok",
+          "rationale_against": "lock-in",
+          "tech_maturity_score": 9,
+          "novelty_benefit": "low",
+          "reversal_cost": "high"
+        },
+        {
+          "id": "OPT-B",
+          "name": "Vite",
+          "rationale_for": "fast",
+          "rationale_against": "no SSR",
+          "tech_maturity_score": 8,
+          "novelty_benefit": "medium",
+          "reversal_cost": "high"
+        }
+      ],
+      "chosen_option_id": "OPT-A",
+      "falsification_signal": "",
+      "reversal_cost": "high",
+      "supersedes_adr_id": null
+    },
+    {
+      "_schema_version": "1",
+      "adr_id": "ADR-2026-05-10-102",
+      "title": "Use Postgres — cost curve missing on options",
+      "status": "accepted",
+      "context": "DB choice for stack ADR (4.4 — must include cost curve).",
+      "decision": "OPT-B Postgres + TimescaleDB.",
+      "consequences": "Self-host burden.",
+      "options_considered": [
+        {
+          "id": "OPT-A",
+          "name": "Postgres",
+          "rationale_for": "ok",
+          "rationale_against": "scaling",
+          "tech_maturity_score": 9,
+          "novelty_benefit": "low",
+          "reversal_cost": "low"
+        },
+        {
+          "id": "OPT-B",
+          "name": "Postgres+TimescaleDB",
+          "rationale_for": "auto-partitioning",
+          "rationale_against": "self-host",
+          "tech_maturity_score": 8,
+          "novelty_benefit": "medium",
+          "reversal_cost": "medium"
+        }
+      ],
+      "chosen_option_id": "OPT-B",
+      "falsification_signal": "Active SKU > 200 by week 4.",
+      "reversal_cost": "medium",
+      "supersedes_adr_id": null
+    },
+    {
+      "_schema_version": "1",
+      "adr_id": "ADR-2026-05-10-103",
+      "title": "Use Auth — orphan chosen_option_id",
+      "status": "accepted",
+      "context": "Auth approach.",
+      "decision": "OPT-Z Auth0 (does not appear in options_considered).",
+      "consequences": "external dep",
+      "options_considered": [
+        {
+          "id": "OPT-A",
+          "name": "NextAuth",
+          "rationale_for": "free",
+          "rationale_against": "DIY hardening",
+          "tech_maturity_score": 7,
+          "novelty_benefit": "low",
+          "reversal_cost": "medium",
+          "monthly_cost_curve": {
+            "at_mvp": "$0",
+            "at_1k_users": "$0",
+            "at_100k_users": "$0"
+          }
+        },
+        {
+          "id": "OPT-B",
+          "name": "Clerk",
+          "rationale_for": "fast",
+          "rationale_against": "vendor lock",
+          "tech_maturity_score": 8,
+          "novelty_benefit": "medium",
+          "reversal_cost": "high",
+          "monthly_cost_curve": {
+            "at_mvp": "$0",
+            "at_1k_users": "$25",
+            "at_100k_users": "$2500"
+          }
+        }
+      ],
+      "chosen_option_id": "OPT-Z",
+      "falsification_signal": "If MAU > 5000, switch.",
+      "reversal_cost": "high",
+      "supersedes_adr_id": null
+    }
+  ]
+}

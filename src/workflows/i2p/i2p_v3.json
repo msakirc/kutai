@@ -3336,6 +3336,130 @@
       "context": {}
     },
     {
+      "id": "5.0",
+      "phase": "phase_5",
+      "name": "taste_extraction_from_charter",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [
+        "read_file",
+        "write_file"
+      ],
+      "depends_on": [
+        "2.1"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "product_charter"
+      ],
+      "output_artifacts": [
+        "taste_emphasis"
+      ],
+      "produces": [
+        "mission_{mission_id}/.style/taste_emphasis.json"
+      ],
+      "instruction": "Read product_charter.md (Solutions, Brand Keywords, JTBD, Guiding Principles). Derive the dominant content-type emphasis the UI must serve and the tone the visual language should carry. Choose ONE primary_content_type from: fact_primary, community_primary, discovery_primary, transactional_primary, informational_primary, other. If 'other', secondary_emphasis MUST be populated. Emit mission_{mission_id}/.style/taste_emphasis.json with this exact shape: {\"_schema_version\": \"1\", \"mission_id\": <int>, \"primary_content_type\": <slug>, \"primary_content_type_rationale\": <str>, \"secondary_emphasis\": [<slug>...], \"tone_keywords\": [<word>...], \"tone_rationale\": <str>, \"key_visual_priorities\": [<word>...], \"anti_emphasis\": [<word>...]}. Tone keywords are short adjectives (e.g. clinical, playful, minimal, dense, warm, premium). Visual priorities call out what the design must serve (readability, ad-friendly, trust-cues, speed, delight). anti_emphasis lists what we explicitly are NOT (e.g. 'not gamified', 'not ornamental'). _schema_version must be the literal string \"1\".",
+      "done_when": "taste_emphasis.json exists at mission_{mission_id}/.style/taste_emphasis.json with all required fields and _schema_version '1'.",
+      "artifact_schema": {
+        "taste_emphasis": {
+          "type": "object",
+          "required_fields": [
+            "_schema_version",
+            "mission_id",
+            "primary_content_type",
+            "primary_content_type_rationale",
+            "secondary_emphasis",
+            "tone_keywords",
+            "tone_rationale",
+            "key_visual_priorities",
+            "anti_emphasis"
+          ]
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 3000
+      }
+    },
+    {
+      "id": "5.0.verify",
+      "phase": "phase_5",
+      "name": "taste_extraction_verify",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0"
+      ],
+      "payload": {
+        "action": "verify_taste_emphasis_shape",
+        "path": ".style/taste_emphasis.json"
+      },
+      "instruction": "Mechanical shape verification of taste_emphasis.json (required fields, _schema_version, primary_content_type whitelist, 'other' implies populated secondary_emphasis).",
+      "done_when": "Verifier returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "5.0a",
+      "phase": "phase_5",
+      "name": "design_tokens_generation",
+      "agent": "analyst",
+      "difficulty": "medium",
+      "tools_hint": [
+        "read_file",
+        "write_file"
+      ],
+      "depends_on": [
+        "5.0.verify"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "taste_emphasis",
+        "product_charter"
+      ],
+      "output_artifacts": [
+        "design_tokens"
+      ],
+      "produces": [
+        "mission_{mission_id}/.style/design_tokens.json"
+      ],
+      "instruction": "Read .style/taste_emphasis.json and the brand keywords + ambition tier from product_charter.md. Generate mission_{mission_id}/.style/design_tokens.json conditioned on the taste emphasis (NOT a generic palette). Required shape: {\"_schema_version\": \"1\", \"mission_id\": <int>, \"variants\": {\"light\": <variant>, \"dark\": <variant>}, \"tag_signature\": <primary_content_type slug, e.g. 'fact_primary'>}. Each <variant> MUST contain: color {primary {base, lighter, darker}, background {page, container_primary, container_secondary, container_inset}, text {primary, secondary, tertiary, quaternary, on_dark_primary, on_dark_secondary, link}, functional {urgent_default, urgent_light, neutral_default, neutral_light, opinion_default, opinion_light, success_default, success_light, warning_default, warning_light}, accent {amber|slate|coral or similar named accents}, data_viz [<6 hex colors>]}, typography {font_family_base (real CSS font stack), scale {caption, body_small, body_default, body_emphasized, fact_title, card_title, page_title, display each with size+weight}, line_height}, border_radius {small, medium, large, full}, spacing {base_unit, tight, compact, standard, relaxed}, borders {default, focused}, shadows {none, subtle, moderate, pronounced}, icon_library. All hex values must be real (#RRGGBB or #RRGGBBAA), no #XXXXXX, no 'TBD'. tag_signature MUST equal the primary_content_type slug from taste_emphasis. If ambition tier is private_beta or higher, ALSO emit 'compact' and 'comfortable' density variants in variants{}. _schema_version must be the literal string \"1\".",
+      "done_when": "design_tokens.json exists with light + dark variants, full token blocks, real hex codes, and tag_signature matching taste_emphasis.primary_content_type.",
+      "artifact_schema": {
+        "design_tokens": {
+          "type": "object",
+          "required_fields": [
+            "_schema_version",
+            "mission_id",
+            "variants",
+            "tag_signature"
+          ]
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 6000
+      }
+    },
+    {
+      "id": "5.0a.verify",
+      "phase": "phase_5",
+      "name": "design_tokens_verify",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0a"
+      ],
+      "payload": {
+        "action": "verify_design_tokens_shape",
+        "path": ".style/design_tokens.json"
+      },
+      "instruction": "Mechanical shape verification of design_tokens.json (light + dark present, all required token blocks, no placeholder hex, font_family non-empty, tag_signature present).",
+      "done_when": "Verifier returns ok=true.",
+      "context": {}
+    },
+    {
       "id": "5.1",
       "phase": "phase_5",
       "name": "information_architecture",
@@ -3759,7 +3883,7 @@
       "output_artifacts": [
         "design_review_result"
       ],
-      "instruction": "Review design specs for coverage, consistency, component reuse, accessibility completeness, responsive completeness, implementability, token compliance. Evaluate design token choices for color harmony, typography hierarchy, spacing consistency, competitive positioning, visual coherence.",
+      "instruction": "Review design specs for coverage, consistency, component reuse, accessibility completeness, responsive completeness, implementability, token compliance. Evaluate design token choices for color harmony, typography hierarchy, spacing consistency, competitive positioning, visual coherence. ALSO verify the Z1 Tier 3 design-tokens cluster: (a) mission_{mission_id}/.style/taste_emphasis.json exists and primary_content_type is populated (and if 'other', secondary_emphasis is non-empty); (b) mission_{mission_id}/.style/design_tokens.json exists with BOTH light and dark variants; (c) all token values reference real concrete values — reject any 'TBD', '#XXXXXX', or placeholder strings; (d) tag_signature field is present in design_tokens.json and matches taste_emphasis.primary_content_type. Reject if any of (a)-(d) fail.",
       "done_when": "design_review_result exists.",
       "artifact_schema": {
         "design_review_result": {

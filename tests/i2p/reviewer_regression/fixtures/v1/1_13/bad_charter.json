@@ -1,0 +1,40 @@
+{
+  "step_id": "1.13",
+  "step_name": "research_quality_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "market_research_report": {
+      "_schema_version": "1",
+      "summary": "Pricing data missing for 2 of 3 competitors; gap analysis absent.",
+      "citations": [],
+      "feature_matrix_complete": false,
+      "gap_analysis_present": false
+    },
+    "product_charter": {
+      "_schema_version": "1",
+      "sections": ["Product Positioning", "Brand Keywords"],
+      "solutions": [
+        {"name": "Onboarding", "boundaries": "TODO", "guiding_principles": "<fill in>"},
+        {"name": "Reputation"}
+      ],
+      "coherence_check": "failed: positioning contradicts solutions",
+      "no_placeholders": false
+    },
+    "reverse_pitch": {
+      "_schema_version": "1",
+      "sections": ["Headline"],
+      "headline": "TODO product name",
+      "alignment_with_charter": "contradicts"
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "verdict": "fail",
+    "issues": [
+      "Charter coherence (8): positioning paragraph contradicts solutions section.",
+      "Solutions completeness (9): solution 'Reputation' lacks boundaries and guiding_principles fields.",
+      "Solutions completeness (9): solution 'Onboarding' uses placeholder text (TODO, <fill in>).",
+      "Reverse-pitch alignment (10): headline references TODO; charter cannot support placeholder claim."
+    ]
+  }
+}

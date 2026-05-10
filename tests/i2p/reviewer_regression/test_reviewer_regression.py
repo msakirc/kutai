@@ -196,11 +196,18 @@ def test_reviewer_fixture(fixture):
     if verdict_field is not None:
         allowed = list(fields[verdict_field].get("equals") or [])
         actual = body.get(verdict_field)
-        if path.stem == "good":
+        # Stem convention: starts with "good" → pass-shape fixture; starts
+        # with "bad" → reject-shape fixture. Anything else is unclassified
+        # and skipped from the verdict-enum check (the schema-version path
+        # below still runs).
+        kind = "good" if path.stem.startswith("good") else (
+            "bad" if path.stem.startswith("bad") else None
+        )
+        if kind == "good":
             assert actual in allowed, (
                 f"good fixture {path.name} verdict {actual!r} not in allowed {allowed}"
             )
-        else:
+        elif kind == "bad":
             # Bad fixtures should NOT pretend to pass.
             assert actual not in allowed, (
                 f"bad fixture {path.name} masquerades as pass with verdict {actual!r}"

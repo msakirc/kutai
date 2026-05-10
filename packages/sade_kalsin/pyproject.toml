@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sade_kalsin"
+version = "0.1.0"
+description = "Sade Kalsin (stay simple) — quarterly bash-audit harness for KutAI scaffolding layers."
+requires-python = ">=3.10"
+# Zero runtime deps beyond stdlib (uses tomllib from 3.11+; 3.10 falls back
+# to tomli only when consumed, which we avoid by reading pyproject.toml as
+# plain text-grep instead of TOML where possible).
+
+[tool.setuptools.packages.find]
+where = ["src"]

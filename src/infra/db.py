@@ -343,6 +343,7 @@ async def init_db():
             founder_attention_budget_minutes INTEGER,
             legacy_pre_premortem INTEGER DEFAULT 0,
             legacy_pre_spec_alive INTEGER DEFAULT 0,
+            legacy_pre_prior_art INTEGER DEFAULT 0,
             interview_skip_reason TEXT,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
@@ -734,6 +735,36 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_streaming_guard_log_task "
         "ON streaming_guard_log (task_id, created_at)"
     )
+
+    # Z1 Tier 6B (P5) — prior_art_cache. Keyed by sha256 hash of the
+    # sorted-lowercased domain_keywords list. TTL 168h (7 days) by default;
+    # vecihi.prior_art falls back to cache when sources rate-limit or
+    # 3+ sources return zero results within 30s.
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prior_art_cache (
+            domain_keywords_hash TEXT PRIMARY KEY,
+            results_json TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            ttl_hours INTEGER NOT NULL DEFAULT 168
+        )
+        """
+    )
+
+    # Z1 Tier 6B (P5) — legacy_pre_prior_art column. Backfilled to 1 for
+    # existing rows so the new step 1.0 prior_art_search short-circuits on
+    # missions that predate the prior-art surface.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_prior_art INTEGER DEFAULT 0"
+        )
+        await db.execute("UPDATE missions SET legacy_pre_prior_art = 1")
+        logger.info(
+            "Z1 Tier 6B migration: legacy_pre_prior_art added + backfilled"
+        )
+    except Exception:
+        pass  # Column already exists
 
     # Tasks
     await db.execute("""

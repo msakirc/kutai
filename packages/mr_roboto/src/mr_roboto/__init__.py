@@ -41,6 +41,7 @@ from mr_roboto.attention_check import (
 )
 from mr_roboto.verify_premortem_shape import verify_premortem_shape
 from mr_roboto.spec_consistency_check import spec_consistency_check
+from mr_roboto.prior_art_min_coverage import prior_art_min_coverage
 # NOTE: do NOT `from mr_roboto.critic_gate import critic_gate` — that would
 # shadow the submodule on the mr_roboto package namespace and break
 # `patch("mr_roboto.critic_gate._persist")` style mocking. Import the
@@ -83,6 +84,7 @@ __all__ = [
     "write_deferred_question",
     "verify_premortem_shape",
     "spec_consistency_check",
+    "prior_art_min_coverage",
 ]
 
 
@@ -1421,6 +1423,32 @@ async def run(task: dict) -> Action:
                         f"spec_consistency_check: drift_count="
                         f"{len(res.get('drift_items') or [])} "
                         f"report={res.get('report_path')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "prior_art_min_coverage":
+        # Z1 Tier 6B (P5) — post-hook on step 1.0 prior_art_search.
+        # Validates attempted_solutions count, URL shape, key_lessons
+        # presence, and Wayback/HN evidence for dead entries.
+        from mr_roboto.prior_art_min_coverage import (
+            prior_art_min_coverage as _pa_check,
+        )
+        try:
+            res = _pa_check(
+                report=payload.get("report"),
+                report_path=payload.get("report_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"prior_art_min_coverage: problems={res.get('problems')} "
+                        f"verdict={res.get('verdict')!r} "
+                        f"attempted={res.get('attempted')}"
                     ),
                     result=res,
                 )

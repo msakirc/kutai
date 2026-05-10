@@ -8,12 +8,29 @@
       "functional_count": 3,
       "non_functional_count": 0,
       "every_requirement_has_acceptance_criteria": false,
-      "no_orphans": false
+      "no_orphans": false,
+      "every_item_has_falsification_triple": false
     },
     "prd_final_summary": {
       "_schema_version": "1",
       "named_competitors_section": false,
       "differentiation_clear": false
+    },
+    "non_goals": {
+      "_schema_version": "1",
+      "items": [
+        "No real-time multiplayer features.",
+        "No mobile-app version (web-only at launch)."
+      ]
+    },
+    "functional_requirements_falsification_result": {
+      "_schema_version": "1",
+      "ok": false,
+      "checked": 3,
+      "missing": [
+        {"artifact": "functional_requirements", "item_id": "FR-001",
+         "missing_fields": ["validation_method", "falsification_signal"]}
+      ]
     }
   },
   "expected_verdict": {
@@ -22,7 +39,8 @@
     "issues": [
       "non-functional requirements missing entirely",
       "acceptance criteria absent",
-      "PRD lacks named-competitor section"
+      "PRD lacks named-competitor section",
+      "FR-001 missing falsification triple (Z1 P4)"
     ]
   }
 }

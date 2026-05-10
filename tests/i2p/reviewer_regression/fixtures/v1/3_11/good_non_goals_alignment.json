@@ -5,8 +5,8 @@
   "input_artifacts": {
     "requirements_spec_summary": {
       "_schema_version": "1",
-      "functional_count": 24,
-      "non_functional_count": 8,
+      "functional_count": 10,
+      "non_functional_count": 5,
       "every_requirement_has_acceptance_criteria": true,
       "no_orphans": true,
       "every_item_has_falsification_triple": true
@@ -24,29 +24,15 @@
         "No support for under-13 users."
       ]
     },
+    "non_goals_overlap_check": {
+      "_schema_version": "1",
+      "matches": [],
+      "checked": 3
+    },
     "functional_requirements_falsification_result": {
       "_schema_version": "1",
       "ok": true,
-      "checked": 24,
-      "missing": []
-    },
-    "nfr_perf_scale_falsification_result": {
-      "_schema_version": "1",
-      "ok": true,
-      "checked": 8,
-      "missing": []
-    },
-    "nfr_availability_security_falsification_result": {
-      "_schema_version": "1",
-      "ok": true,
-      "checked": 6,
-      "missing": []
-    },
-    "business_rules_falsification_result": {
-      "_schema_version": "1",
-      "ok": true,
-      "checked": 5,
-      "missing": []
+      "checked": 10
     }
   },
   "expected_verdict": {

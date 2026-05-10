@@ -63,6 +63,13 @@ Z0 makes the contract explicit. Outputs feed every other zone.
 - Threshold alerts set up (50% / 75% / 90%).
 - Escalation contract: what happens at ceiling — pause + ask, hard stop, force-completion?
 
+**E2. Founder attention budget (Z1 Tier 5A — A5)**
+- z0 wizard asks the founder: _"How many minutes of your own attention do you want to spend on this mission's spec phase (clarifies, reviews, sign-offs)?"_
+- Defaults by ambition tier when the founder skips: prototype=120, private_beta=240, public_launch=480, revenue_product=NULL (unbounded).
+- Persisted to `missions.founder_attention_budget_minutes`. NULL = unbounded (legacy missions, opt-out).
+- Z1 mechanical action `attention_check(reserve_minutes)` reads `missions.founder_attention_budget_minutes` minus `SUM(founder_attention_log.minutes_debited)`. Pre-hook on every clarify-shape step. When `ok=False`, the clarify is deferred — written to `mission_<id>/deferred_questions.md` instead of firing on Telegram.
+- Telegram: `/budget` shows remaining; `/budget set <minutes>` updates the most-recent active mission.
+
 **F. North-star metric declaration**
 - Founder declares one north-star at preflight (or "TBD — will refine in Z1").
 - Sets the lens for [09-growth.md](09-growth.md) prioritization.

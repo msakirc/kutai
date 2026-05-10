@@ -89,6 +89,28 @@ from .codebase_index import (
 # Optional / pre-existing tools — degrade gracefully if absent
 _optional_tools: dict[str, dict[str, Any]] = {}
 
+# Z1 Tier 5A (P6) — compliance template renderer (Jinja2-backed).
+try:
+    from .compliance_templates import compliance_template_render
+
+    _optional_tools["compliance_template_render"] = {
+        "function": compliance_template_render,
+        "description": (
+            "Render a compliance template (Z1 P6). "
+            "Args: fingerprint (dict), doc_type (str: privacy_policy|tos|"
+            "dpa|cookie_banner|retention_policy|age_gate|"
+            "accessibility_statement|data_processing_record), "
+            "lang (str, default 'en')"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "compliance_template_render", '
+            '"args": {"fingerprint": {"jurisdictions": ["EU"], '
+            '"data_categories_coarse": ["pii"]}, "doc_type": "privacy_policy"}}'
+        ),
+    }
+except Exception:  # pragma: no cover — never block startup
+    pass
+
 try:
     from .web_search import web_search
 

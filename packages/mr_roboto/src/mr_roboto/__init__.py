@@ -29,6 +29,16 @@ from mr_roboto.parse_og_tags import parse_og_tags
 from mr_roboto.http_check import http_check
 from mr_roboto.emit_preview_url import emit_preview_url
 from mr_roboto.kill_preview_url import kill_preview_url
+from mr_roboto.compliance_fingerprint_collection import (
+    compliance_fingerprint_collection,
+)
+from mr_roboto.compliance_template_present import compliance_template_present
+from mr_roboto.compliance_blocker_check import compliance_blocker_check
+from mr_roboto.attention_check import (
+    attention_check,
+    attention_debit,
+    write_deferred_question,
+)
 
 __all__ = [
     "Action",
@@ -58,6 +68,12 @@ __all__ = [
     "http_check",
     "emit_preview_url",
     "kill_preview_url",
+    "compliance_fingerprint_collection",
+    "compliance_template_present",
+    "compliance_blocker_check",
+    "attention_check",
+    "attention_debit",
+    "write_deferred_question",
 ]
 
 
@@ -1116,6 +1132,108 @@ async def run(task: dict) -> Action:
                     ),
                     result=res,
                 )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "compliance_fingerprint_collection":
+        # Z1 Tier 5A (P6) — read z0 preflight + emit merged fingerprint.
+        from mr_roboto.compliance_fingerprint_collection import (
+            compliance_fingerprint_collection as _collect,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _collect(
+                mission_id=int(mid) if mid is not None else 0,
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"compliance_fingerprint_collection: {res.get('error')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "compliance_template_present":
+        # Z1 Tier 5A (P6) — post-hook on 1.11a; verify referenced templates
+        # exist on disk under compliance_templates/.
+        from mr_roboto.compliance_template_present import (
+            compliance_template_present as _check_present,
+        )
+        try:
+            res = _check_present(
+                template_ids=payload.get("template_ids"),
+                overlay_path=payload.get("overlay_path"),
+                overlay_obj=payload.get("overlay_obj"),
+                template_root=payload.get("template_root"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"compliance_template_present: missing={res.get('missing')} "
+                        f"checked={res.get('checked')} root={res.get('root')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "compliance_blocker_check":
+        # Z1 Tier 5A (P6) — phase-boundary blocker check post-hook on 6.6.
+        from mr_roboto.compliance_blocker_check import (
+            compliance_blocker_check as _blocker,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = _blocker(
+                mission_id=int(mid) if mid is not None else 0,
+                current_phase=int(payload.get("current_phase", 6)),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"compliance_blocker_check: pending={res.get('pending')} "
+                        f"phase={res.get('checked_phase')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "attention_check":
+        # Z1 Tier 5A (A5) — founder attention budget pre-hook for clarify-shape steps.
+        from mr_roboto.attention_check import attention_check as _att_check
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _att_check(
+                mission_id=int(mid) if mid is not None else 0,
+                reserve_minutes=int(payload.get("reserve_minutes", 5)),
+            )
+            # Never fail the dispatch — caller (orchestrator pre-hook) reads
+            # `ok` and decides whether to skip or proceed. Return result.
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "attention_debit":
+        # Z1 Tier 5A (A5) — record a debit row.
+        from mr_roboto.attention_check import attention_debit as _att_debit
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _att_debit(
+                mission_id=int(mid) if mid is not None else 0,
+                step_id=str(payload.get("step_id") or ""),
+                action=str(payload.get("debit_action") or "clarify"),
+                minutes_debited=int(payload.get("minutes_debited", 5)),
+            )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

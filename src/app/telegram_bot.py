@@ -1875,6 +1875,8 @@ class TelegramInterface:
         # Z1 Tier 4 (T4C): tunneled preview URL surface
         self.app.add_handler(CommandHandler("preview", self.cmd_preview))
         self.app.add_handler(CommandHandler("preview_off", self.cmd_preview_off))
+        # Z1 Tier 5A (A5): founder attention budget
+        self.app.add_handler(CommandHandler("budget", self.cmd_budget))
         self.app.add_handler(CommandHandler("retry", self.cmd_retry))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
@@ -3832,6 +3834,87 @@ class TelegramInterface:
                 f"No active preview tunnel for mission #{mission_id}; "
                 "surface files cleaned.",
             )
+
+    async def cmd_budget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z1 T5A (A5) — founder attention budget inspector / setter.
+
+        Usage:
+          /budget                  — show remaining minutes for the
+                                     most-recent active mission.
+          /budget set <minutes>    — set the budget for the most-recent
+                                     active mission.
+        """
+        from src.infra.db import get_db
+
+        args = context.args or []
+        db = await get_db()
+
+        # Find the most-recent active mission for this chat.
+        cur = await db.execute(
+            "SELECT id, status FROM missions "
+            "WHERE status IN ('active', 'pending') "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+        if not row:
+            # Fall back to any mission if nothing active.
+            cur = await db.execute(
+                "SELECT id, status FROM missions ORDER BY id DESC LIMIT 1"
+            )
+            row = await cur.fetchone()
+        if not row:
+            await self._reply(update, "No missions found.")
+            return
+        mission_id = int(row[0])
+
+        if args and args[0] == "set":
+            if len(args) < 2:
+                await self._reply(update, "Usage: /budget set <minutes>")
+                return
+            try:
+                minutes = int(args[1])
+            except (ValueError, TypeError):
+                await self._reply(update, "Minutes must be an integer.")
+                return
+            if minutes < 0:
+                await self._reply(update, "Minutes must be >= 0.")
+                return
+            await db.execute(
+                "UPDATE missions SET founder_attention_budget_minutes = ? "
+                "WHERE id = ?",
+                (minutes, mission_id),
+            )
+            await db.commit()
+            await self._reply(
+                update,
+                f"Budget set: mission #{mission_id} = {minutes} minutes.",
+            )
+            return
+
+        # Read-only view.
+        from mr_roboto.attention_check import attention_check
+        try:
+            res = await attention_check(mission_id=mission_id, reserve_minutes=0)
+        except Exception as e:
+            await self._reply(update, f"Budget check failed: {e}")
+            return
+        if not res.get("budget_set"):
+            await self._reply(
+                update,
+                f"Mission #{mission_id}: no attention budget set.\n"
+                f"Use `/budget set <minutes>` to declare one.",
+                parse_mode="Markdown",
+            )
+            return
+        await self._reply(
+            update,
+            (
+                f"Mission #{mission_id} attention budget\n"
+                f"  budget:    {res.get('budget')} min\n"
+                f"  spent:     {res.get('spent')} min\n"
+                f"  remaining: {res.get('remaining')} min"
+            ),
+        )
 
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Dead-letter queue management: /dlq [retry <task_id> | discard <task_id>]."""

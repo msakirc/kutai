@@ -339,6 +339,8 @@ async def init_db():
             legacy_pre_competitive_positioning INTEGER DEFAULT 0,
             legacy_pre_per_screen_plans INTEGER DEFAULT 0,
             legacy_pre_html_oids INTEGER DEFAULT 0,
+            legacy_pre_compliance INTEGER DEFAULT 0,
+            founder_attention_budget_minutes INTEGER,
             interview_skip_reason TEXT,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
@@ -584,6 +586,61 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_regen_log_mission_artifact "
         "ON regen_log (mission_id, artifact_path, created_at)"
     )
+
+    # Z1 Tier 5A migration (P6): legacy_pre_compliance column. Backfilled
+    # to 1 for existing missions — they predate the compliance fingerprint
+    # collection step (0.4a) and overlay (1.11a), so skip_when on those
+    # new steps reads this flag and lets old missions short-circuit.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_compliance INTEGER DEFAULT 0"
+        )
+        await db.execute(
+            "UPDATE missions SET legacy_pre_compliance = 1"
+        )
+        logger.info(
+            "Z1 Tier 5A migration: legacy_pre_compliance added "
+            "+ existing rows backfilled to 1"
+        )
+    except Exception:
+        pass  # Column already exists
+
+    # Z1 Tier 5A migration (A5): founder_attention_budget_minutes column.
+    # NULL for existing rows = unbounded (treated as ok=True by
+    # attention_check). z0 sets it on new missions.
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN founder_attention_budget_minutes INTEGER"
+        )
+        logger.info(
+            "Z1 Tier 5A migration: founder_attention_budget_minutes added"
+        )
+    except Exception:
+        pass  # Column already exists
+
+    # Z1 Tier 5A (A5): founder_attention_log — one row per debit. Used by
+    # attention_check to compute remaining budget.
+    try:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS founder_attention_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id INTEGER NOT NULL,
+                step_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                minutes_debited INTEGER NOT NULL,
+                ts TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_founder_attention_log_mission "
+            "ON founder_attention_log (mission_id, ts)"
+        )
+    except Exception:
+        pass
 
     # Tasks
     await db.execute("""

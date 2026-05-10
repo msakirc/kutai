@@ -716,6 +716,30 @@ async def init_db():
     except Exception:
         pass
 
+    # Z1 Tier 6 (C18) — github_repo_url + legacy_pre_github_init on missions.
+    # `github_repo_url` holds the live GitHub URL (NULL when not yet initialised
+    # or hosting deferred via fail-soft pending status). `legacy_pre_github_init`
+    # gates the new phase-6 `6.7 init_github_repo` step so existing missions
+    # don't retroactively try to push a repo for already-shipped specs.
+    try:
+        await db.execute(
+            "ALTER TABLE missions ADD COLUMN github_repo_url TEXT"
+        )
+        logger.info("Z1 T6C migration: github_repo_url column added")
+    except Exception:
+        pass
+    try:
+        await db.execute(
+            "ALTER TABLE missions "
+            "ADD COLUMN legacy_pre_github_init INTEGER DEFAULT 0"
+        )
+        await db.execute("UPDATE missions SET legacy_pre_github_init = 1")
+        logger.info(
+            "Z1 T6C migration: legacy_pre_github_init added + backfilled"
+        )
+    except Exception:
+        pass
+
     # Z1 Tier 5C (B3) — streaming-guard audit trail. One row per
     # `warn` or `halt` outcome from the streaming-guards pipeline.
     # `fix` outcomes are silent (token rewritten in place).

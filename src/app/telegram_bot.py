@@ -1877,6 +1877,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("preview_off", self.cmd_preview_off))
         # Z1 Tier 5A (A5): founder attention budget
         self.app.add_handler(CommandHandler("budget", self.cmd_budget))
+        # Z1 Tier 6 (C18): per-mission GitHub repo (init / view / visibility)
+        self.app.add_handler(CommandHandler("github", self.cmd_github))
         self.app.add_handler(CommandHandler("retry", self.cmd_retry))
         self.app.add_handler(CommandHandler("load", self.cmd_load))
         self.app.add_handler(CommandHandler("tune", self.cmd_tune))
@@ -3915,6 +3917,126 @@ class TelegramInterface:
                 f"  remaining: {res.get('remaining')} min"
             ),
         )
+
+    async def cmd_github(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z1 Tier 6 (C18) — per-mission GitHub repo surface.
+
+        Usage:
+          /github                                    — show repo URL for
+                                                       most-recent active mission
+          /github init <mission_id>                  — manually re-run init
+                                                       (for missions that hit
+                                                       fail-soft)
+          /github visibility <mission_id> <public|private>
+                                                     — flip repo visibility
+        """
+        from src.infra.db import get_db
+        args = context.args or []
+        db = await get_db()
+
+        # Subcommand: init <mission_id>
+        if args and args[0] == "init":
+            if len(args) < 2:
+                await self._reply(update, "Usage: /github init <mission_id>")
+                return
+            try:
+                mid = int(args[1])
+            except (ValueError, TypeError):
+                await self._reply(update, "Mission id must be an integer.")
+                return
+            try:
+                from mr_roboto.init_mission_github_repo import (
+                    init_mission_github_repo,
+                )
+                res = await init_mission_github_repo(mission_id=mid)
+            except Exception as e:
+                await self._reply(update, f"GitHub init failed: {e}")
+                return
+            if res.get("pending"):
+                await self._reply(
+                    update,
+                    f"GitHub init pending for mission #{mid}\n"
+                    f"reason: {res.get('reason')}\n"
+                    f"status: `{res.get('status_path')}`",
+                    parse_mode="Markdown",
+                )
+                return
+            await self._reply(
+                update,
+                f"✅ GitHub repo ready for mission #{mid}\n"
+                f"{res.get('repo_url')}\n"
+                f"commit: {res.get('commit_sha') or '(unknown)'}\n"
+                f"files: {len(res.get('files') or [])}",
+            )
+            return
+
+        # Subcommand: visibility <mission_id> <public|private>
+        if args and args[0] == "visibility":
+            if len(args) < 3:
+                await self._reply(
+                    update,
+                    "Usage: /github visibility <mission_id> <public|private>",
+                )
+                return
+            try:
+                mid = int(args[1])
+            except (ValueError, TypeError):
+                await self._reply(update, "Mission id must be an integer.")
+                return
+            vis = args[2].lower()
+            if vis not in ("public", "private"):
+                await self._reply(update, "Visibility must be public or private.")
+                return
+            try:
+                from mr_roboto.init_mission_github_repo import (
+                    set_repo_visibility,
+                )
+                res = await set_repo_visibility(mission_id=mid, visibility=vis)
+            except Exception as e:
+                await self._reply(update, f"GitHub visibility flip failed: {e}")
+                return
+            if not res.get("ok"):
+                await self._reply(
+                    update,
+                    f"GitHub visibility flip failed: {res.get('error')}",
+                )
+                return
+            await self._reply(
+                update,
+                f"✅ mission #{mid} visibility set to {vis}\n"
+                f"{res.get('repo_url')}",
+            )
+            return
+
+        # Default: show URL for most-recent active mission.
+        cur = await db.execute(
+            "SELECT id, github_repo_url FROM missions "
+            "WHERE status IN ('active', 'pending') "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+        if not row:
+            cur = await db.execute(
+                "SELECT id, github_repo_url FROM missions "
+                "ORDER BY id DESC LIMIT 1"
+            )
+            row = await cur.fetchone()
+        if not row:
+            await self._reply(update, "No missions found.")
+            return
+        mid, repo_url = int(row[0]), row[1]
+        if repo_url:
+            await self._reply(
+                update,
+                f"Mission #{mid}\n{repo_url}",
+            )
+        else:
+            await self._reply(
+                update,
+                f"Mission #{mid}: GitHub repo not initialised yet.\n"
+                f"Use `/github init {mid}` to create one.",
+                parse_mode="Markdown",
+            )
 
     async def cmd_dlq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Dead-letter queue management: /dlq [retry <task_id> | discard <task_id>]."""

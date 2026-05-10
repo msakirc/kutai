@@ -6018,6 +6018,28 @@
       "context": {}
     },
     {
+      "id": "6.7",
+      "phase": "phase_6",
+      "name": "init_github_repo",
+      "agent": "mechanical",
+      "depends_on": [
+        "6.6"
+      ],
+      "executor": "init_mission_github_repo",
+      "payload": {
+        "action": "init_mission_github_repo",
+        "repo_visibility": "private"
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "produces": [
+        "mission_{mission_id}/github_init_status.md"
+      ],
+      "instruction": "Z1 Tier 6 (C18) — at the end of phase 6 (after compliance_blocker_check on 6.6 has passed) initialise a GitHub repository for the mission via gh-cli and push the locked phase-≤6 spec artifacts as the initial commit. Fail-soft when gh-cli is missing or unauthenticated: writes `mission_{mission_id}/github_init_status.md` with `pending: <reason>` and the workflow continues — founder retries via Telegram `/github init <mission_id>`. Repo name: `kutai-mission-<id>-<charter_slug>` (kebab-case, ≤30 chars from charter title). Visibility default `private` (overridable via `KUTAI_GITHUB_DEFAULT_VISIBILITY`). Owner default = current `gh` user (overridable via `KUTAI_GITHUB_ORG`). The export uses a separate `mission_{mission_id}/.git_export/` repo so any mission-internal git history (created later in phase 7+) is not clobbered. Set `payload.skip_github=true` to opt out (still emits the status file). Persists `missions.github_repo_url`.",
+      "skip_when": "mission.legacy_pre_github_init == '1'"
+    },
+    {
       "id": "7.0z",
       "phase": "phase_7",
       "name": "spec_consistency_check_phase_7",

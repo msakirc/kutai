@@ -41,6 +41,13 @@ from mr_roboto.attention_check import (
 )
 from mr_roboto.verify_premortem_shape import verify_premortem_shape
 from mr_roboto.spec_consistency_check import spec_consistency_check
+# NOTE: do NOT `from mr_roboto.init_mission_github_repo import init_mission_github_repo`
+# here — that would shadow the submodule on the package namespace and break
+# `monkeypatch.setattr("mr_roboto.init_mission_github_repo._persist_repo_url", ...)`
+# style mocks. Import the submodule itself; consumers can do
+# `from mr_roboto.init_mission_github_repo import init_mission_github_repo`
+# at call time.
+from mr_roboto import init_mission_github_repo as init_mission_github_repo_module  # noqa: F401
 # NOTE: do NOT `from mr_roboto.critic_gate import critic_gate` — that would
 # shadow the submodule on the mr_roboto package namespace and break
 # `patch("mr_roboto.critic_gate._persist")` style mocking. Import the
@@ -1424,6 +1431,33 @@ async def run(task: dict) -> Action:
                     ),
                     result=res,
                 )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "init_mission_github_repo":
+        # Z1 Tier 6 (C18) — end-of-phase-6 GitHub repo init. Mechanical.
+        # Fail-soft when gh-cli missing/unauth so the mission still advances;
+        # status surfaces in `mission_<id>/github_init_status.md` and re-runs
+        # are allowed via Telegram `/github init <mission_id>`.
+        from mr_roboto.init_mission_github_repo import (
+            init_mission_github_repo as _init_gh,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _init_gh(
+                mission_id=int(mid) if mid is not None else 0,
+                repo_visibility=str(
+                    payload.get("repo_visibility")
+                    or payload.get("visibility")
+                    or "private"
+                ),
+                workspace_path=payload.get("workspace_path"),
+                skip=bool(payload.get("skip_github", False)),
+            )
+            # Per spec: action returns Action(status="completed", ...) even
+            # when pending — pending is a documented soft outcome, not a
+            # failure. Workflow advances; founder retries via Telegram.
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

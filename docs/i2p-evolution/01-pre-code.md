@@ -89,3 +89,48 @@ When picking up this doc:
 ## Updates
 
 - 2026-05-08 — initial doc.
+- 2026-05-08 — execution plan landed at [01-pre-code-plan.md](01-pre-code-plan.md):
+  audit table maps 7 gaps to specific i2p_v3 step IDs; six phased plans
+  (intake/taste/ADRs/falsification/prior-art/compliance) with new
+  artifacts + tools + post-hooks; 5 open questions resolved.
+- 2026-05-08 — deep-dive v2 at [01-pre-code-plan-v2.md](01-pre-code-plan-v2.md):
+  re-audits v1's step-ID claims; corrects 12 gaps (engine extension model,
+  step ID collision at 5.5a, vecihi interface mismatch, ADR scope
+  undercount, in-flight migration, reviewer prompt regression);
+  adds 3 new proposals (spec versioning, conflict surface,
+  cross-mission inheritance); concrete schemas + wiring file paths;
+  sequencing DAG + risks register.
+- 2026-05-09 — prototype-depth v3 at [01-pre-code-plan-v3.md](01-pre-code-plan-v3.md):
+  fixes 4 v2 errors (workspace path prefix `workspace/mission_<id>/`,
+  reviewer prompts inline in i2p_v3.json not src/agents/reviewer.py,
+  `request_review` action does not exist, no real i2p missions in DB);
+  inlines populated/empty/partial JSON, ~30 LOC mechanical-action sketches,
+  step JSON drafts, reviewer prompt diffs, and 6 risks beyond v2.
+- 2026-05-09 — Master synthesis post-competitor-research: [01-pre-code-master-synthesis.md](01-pre-code-master-synthesis.md).
+  10-cluster competitor research (~30 tools at `competitor-research/`)
+  rolled into final ranked roadmap. Confirms KutAI's 6 locked moats (none
+  of 30 competitors has all). Locks 3 category bets (spec-first /
+  async-Telegram / local-first). Adds 12 new propositions B1-B12 from
+  competitor patterns (paraflow todo-gate, v0 streaming guards, Devin
+  Critic split, Augment spec-stays-alive, etc.). Drops 4 items
+  (visual editor, hot-reload, real-time collab, marketing-site bias).
+  40-item stack across 8 tiers. 5 strategic questions for founder.
+  Bottom line: ship B1+C1+A9 together as biggest UX win.
+- 2026-05-09 — Paraflow + competitor landscape mapped to KutAI:
+  [01-pre-code-paraflow-and-competitors.md](01-pre-code-paraflow-and-competitors.md).
+  Ground truth from `Bilinc/main/paraflow/` (TruthRate output: 4-pillar
+  charter+PRD+screens+style+HTML). Surveyed 18+ competitors (v0, Lovable,
+  Bolt, Stitch, Uizard, Visily, Subframe, Magic Patterns, Tempo, Plasmic,
+  Onlook, Devin, etc.). 17-pattern × KutAI-fit matrix. 18 copy-targets
+  ranked C1-C18 across 4 tiers. 11 first-wave items (Tier 1+2) transform
+  phase 0-6 from text-spec to clickable mobile prototype + tunneled preview.
+  KutAI's unique edges: persistent multi-day missions, Telegram-always,
+  cross-mission memory, local GPU asset gen, Turkish vertical.
+- 2026-05-09 — original additions: [01-pre-code-additions-claude.md](01-pre-code-additions-claude.md).
+  8 proposals beyond doc's original six, breaking out of the source frame:
+  A1 reverse-pitch (Amazon press-release at phase 0), A2 non-goals artifact,
+  A3 boring-tech bias in stack ADRs, A4 interview-script generator (bridges
+  P1's evidence-absence problem), A5 founder attention budget as tracked
+  resource, A6 premortem step before phase-6 lock, A7 idea fingerprint +
+  cross-mission dedup at intake, A8 cost-curve ladder in stack ADRs.
+  Each represents a design axis v1/v2/v3 didn't capture.

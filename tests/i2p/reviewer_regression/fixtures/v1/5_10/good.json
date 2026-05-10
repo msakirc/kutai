@@ -1,0 +1,36 @@
+{
+  "step_id": "5.10",
+  "step_name": "design_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "screen_specifications": {
+      "_schema_version": "1",
+      "screens": ["home", "detail", "checkout"],
+      "every_screen_has_states": true
+    },
+    "interaction_spec": {
+      "_schema_version": "1",
+      "every_action_has_feedback": true
+    },
+    "responsive_spec": {
+      "_schema_version": "1",
+      "breakpoints": ["sm", "md", "lg"]
+    },
+    "accessibility_spec": {
+      "_schema_version": "1",
+      "wcag_level": "AA"
+    },
+    "prd_final_summary": {"_schema_version": "1"},
+    "design_tokens": {
+      "_schema_version": "1",
+      "color_count": 12,
+      "type_scale_present": true
+    },
+    "competitor_ux_evaluation_summary": {"_schema_version": "1"}
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "approved",
+    "issues": []
+  }
+}

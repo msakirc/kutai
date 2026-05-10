@@ -1,0 +1,28 @@
+{
+  "step_id": "3.11",
+  "step_name": "requirements_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "requirements_spec_summary": {
+      "_schema_version": "1",
+      "functional_count": 3,
+      "non_functional_count": 0,
+      "every_requirement_has_acceptance_criteria": false,
+      "no_orphans": false
+    },
+    "prd_final_summary": {
+      "_schema_version": "1",
+      "named_competitors_section": false,
+      "differentiation_clear": false
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "fail",
+    "issues": [
+      "non-functional requirements missing entirely",
+      "acceptance criteria absent",
+      "PRD lacks named-competitor section"
+    ]
+  }
+}

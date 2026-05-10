@@ -680,41 +680,174 @@
       "context": {}
     },
     {
-      "id": "0.1",
+      "id": "0.0z",
       "phase": "phase_0",
-      "name": "raw_idea_intake",
-      "agent": "writer",
+      "name": "reverse_pitch_draft",
+      "agent": "mechanical",
+      "executor": "mechanical",
       "difficulty": "easy",
-      "tools_hint": [
-        "write_file"
-      ],
+      "tools_hint": [],
       "depends_on": [],
-      "may_need_clarification": false,
+      "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "raw_idea",
-        "project_conventions",
         "strategic_context"
       ],
       "output_artifacts": [
-        "raw_idea_document"
+        "reverse_pitch"
       ],
-      "instruction": "The user's raw idea is provided in the Context Artifacts section below. Take it exactly as stated, preserving all details, aspirations, mentioned features, and constraints. Do not interpret, filter, or add anything. Structure the output as a document with sections: Original Statement, Mentioned Features, Mentioned Constraints, Mentioned Audience, Mentioned Goals. If any section has no content from the raw idea, mark it as 'Not specified'.\n\nOutput the complete document as your final answer in markdown format. Do NOT just write a file â€” your response text IS the artifact.",
-      "done_when": "A structured raw_idea_document exists that faithfully represents the original idea with zero interpretation added.",
+      "produces": [
+        "mission_{mission_id}/.charter/reverse_pitch.md"
+      ],
+      "payload": {
+        "action": "clarify",
+        "kind": "reverse_pitch_request",
+        "question": "Write a one-page launch press release for this product BEFORE we generate the charter. Include: (1) Headline (one line, customer-language), (2) Sub-head (one line clarifying who + outcome), (3) Customer quote (a real-feeling user quote about the value), (4) Founder quote (your one-line conviction), (5) FAQ (3-5 likely questions + answers). If you cannot write the customer quote, the product has no felt-need framing yet — reply with `acknowledgement: I am not building for users` only if this is a prototype-tier exploration; otherwise the mission self-aborts at $0."
+      },
+      "instruction": "Reverse-pitch / Amazon working-backwards artifact (Z1 A1). Founder authors a one-page press release: headline, sub-head, customer quote, founder quote, FAQ. Output is `mission_{mission_id}/.charter/reverse_pitch.md`. The charter (0.1) and the intake todo (0.0a) both consume it. If founder cannot write the customer quote, the mission is meant to abort cheaply.",
+      "done_when": "reverse_pitch.md exists with all required sections (headline / sub-head / customer quote / founder quote / FAQ) and no placeholder text.",
       "artifact_schema": {
-        "raw_idea_document": {
+        "reverse_pitch": {
           "type": "markdown",
           "required_sections": [
-            "Original Statement",
-            "Mentioned Features",
-            "Mentioned Constraints",
-            "Mentioned Audience",
-            "Mentioned Goals"
-          ]
+            "Headline",
+            "Sub-head",
+            "Customer Quote",
+            "Founder Quote",
+            "FAQ"
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
-        "estimated_output_tokens": 10000
+        "ambition_tier_aware": true
       }
+    },
+    {
+      "id": "0.0z.verify",
+      "phase": "phase_0",
+      "name": "reverse_pitch_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.0z"],
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": ["reverse_pitch"],
+      "output_artifacts": ["reverse_pitch_shape_result"],
+      "payload": {
+        "action": "verify_reverse_pitch_shape",
+        "pitch_paths": ["mission_{mission_id}/.charter/reverse_pitch.md"]
+      },
+      "instruction": "Mechanical post-check that 0.0z produced a paraflow-shape reverse pitch (Z1 A1). No LLM. Failure surfaces missing sections / placeholder text and forces a regenerate.",
+      "done_when": "verify_reverse_pitch_shape returns ok=true.",
+      "context": {}
+    },
+    {
+      "id": "0.0a",
+      "phase": "phase_0",
+      "name": "generate_intake_todo",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.0z"],
+      "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": [
+        "raw_idea",
+        "strategic_context",
+        "reverse_pitch"
+      ],
+      "output_artifacts": [
+        "intake_todo"
+      ],
+      "produces": [
+        "mission_{mission_id}/.intake/intake_todo.md"
+      ],
+      "payload": {
+        "action": "generate_intake_todo",
+        "use_llm": true
+      },
+      "instruction": "Generate the intake todo (Z1 B1) — the ONLY structured gate before charter generation. Replaces the per-question interrogation in legacy 0.4/0.5. Reads founder pitch + Z0 outputs + reverse_pitch.md and emits 10-15 todo items covering audience / problem / outcome / scope / differentiation / constraints / surfaces / brand / risk. Founder confirms via Telegram (status flips back to in_progress); founder edits the file → todo regenerates on next run.",
+      "done_when": "intake_todo.md exists with 10-15 items AND founder has confirmed via Telegram (clarify-shape).",
+      "artifact_schema": {
+        "intake_todo": {
+          "type": "markdown",
+          "required_sections": [
+            "Items"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {}
+    },
+    {
+      "id": "0.1",
+      "phase": "phase_0",
+      "name": "product_charter",
+      "agent": "writer",
+      "difficulty": "hard",
+      "tools_hint": [
+        "write_file"
+      ],
+      "depends_on": ["0.0a"],
+      "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": [
+        "raw_idea",
+        "strategic_context",
+        "reverse_pitch",
+        "intake_todo"
+      ],
+      "output_artifacts": [
+        "product_charter"
+      ],
+      "produces": [
+        "mission_{mission_id}/.charter/product_charter.md"
+      ],
+      "instruction": "Write the product charter as a SINGLE coherent document (paraflow shape, Z1 C1+A9+C6+A14). Output `mission_{mission_id}/.charter/product_charter.md` with EXACTLY these five top-level `## ` sections in order:\n\n1. **Product Positioning** — one paragraph naming the audience, the category, and the one-line bet vs. the alternatives.\n2. **Brand Keywords** — at least 5 bullets, each `**name** — one-line description`.\n3. **Core Problem / JTBD** — one paragraph naming the felt pain and the job-to-be-done.\n4. **Goals & Mission** — a `Mission:` line + a `Desired Outcomes` sub-header with 4-7 outcome bullets.\n5. **Solutions We Own** — 3 to 7 solutions, each as a `### <Solution Name>` block with ALL of these labeled fields (every solution, no exceptions): `What it solves`, `Typical path`, `Outcome for the user`, `Boundaries`, `Guiding principles`.\n\nThe document must read as one mind, not five disjoint LLM passes. The reverse pitch headline should be defensible from the charter; the intake-todo confirmations must be reflected. Do NOT use placeholder text (TODO, TBD, <fill in>, lorem ipsum); the mechanical post-hook verify_charter_shape rejects them.\n\nAlso emit a JSON envelope alongside the markdown for schema-version tracking:\n```json\n{\"_schema_version\": \"1\", \"path\": \"mission_{mission_id}/.charter/product_charter.md\"}\n```",
+      "done_when": "product_charter.md exists at `mission_{mission_id}/.charter/product_charter.md`, passes verify_charter_shape (5 sections present, 3-7 solutions each with full sub-shape, no placeholders), and is referenced as the mission's charter for downstream phases.",
+      "artifact_schema": {
+        "product_charter": {
+          "type": "markdown",
+          "required_sections": [
+            "Product Positioning",
+            "Brand Keywords",
+            "Core Problem",
+            "Goals & Mission",
+            "Solutions We Own"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 8000
+      }
+    },
+    {
+      "id": "0.1.verify",
+      "phase": "phase_0",
+      "name": "product_charter_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": ["0.1"],
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": ["product_charter"],
+      "output_artifacts": ["product_charter_shape_result"],
+      "payload": {
+        "action": "verify_charter_shape",
+        "charter_paths": ["mission_{mission_id}/.charter/product_charter.md"],
+        "min_solutions": 3,
+        "max_solutions": 7,
+        "min_brand_keywords": 5
+      },
+      "instruction": "Mechanical post-check that 0.1 produced a paraflow-shape product charter (Z1 C1+A9+C6+A14). No LLM. Asserts 5 sections + 3-7 solutions each with full sub-shape (boundaries + guiding-principles required) + no placeholder text. Failure forces 0.1 to regenerate.",
+      "done_when": "verify_charter_shape returns ok=true.",
+      "context": {}
     },
     {
       "id": "0.2",
@@ -727,6 +860,7 @@
         "0.1"
       ],
       "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_charter == '0'",
       "input_artifacts": [
         "raw_idea_document"
       ],
@@ -744,7 +878,8 @@
             "current_alternatives",
             "severity",
             "frequency"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -778,7 +913,8 @@
             "category",
             "risk_if_wrong",
             "validation_method"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -796,6 +932,7 @@
         "0.3"
       ],
       "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_charter == '0'",
       "input_artifacts": [
         "raw_idea_document",
         "problem_statement",
@@ -815,7 +952,8 @@
             "category",
             "question",
             "why_it_matters"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -832,6 +970,7 @@
         "0.4"
       ],
       "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_charter == '0'",
       "input_artifacts": [
         "open_questions_list",
         "assumption_list"
@@ -844,7 +983,8 @@
       "artifact_schema": {
         "clarification_request": {
           "type": "array",
-          "min_items": 3
+          "min_items": 3,
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -858,22 +998,22 @@
       "tools_hint": [],
       "depends_on": [
         "0.1",
-        "0.2",
-        "0.3",
-        "0.5"
+        "0.3"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "raw_idea_document",
+        "product_charter",
         "problem_statement",
         "assumption_list",
         "clarification_request",
-        "clarification_answers"
+        "clarification_answers",
+        "intake_todo"
       ],
       "output_artifacts": [
         "idea_brief_final"
       ],
-      "instruction": "Compile all inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph describing the aspiration), 2) Problem Statement (from problem_statement, updated with clarifications), 3) Target Audience (specific, from clarifications), 4) Proposed Solution (high-level, what the product does), 5) Key Constraints (budget, timeline, tech, from clarifications), 6) Initial Scope Boundaries (what's in for v1, what's explicitly out), 7) Assumptions (updated list, marking which were validated by clarifications), 8) Open Risks (remaining unknowns). Write in clear, professional prose. Then self-review: check for internal contradictions between sections, anything from clarification_answers not reflected, anything from raw idea lost or misrepresented, vague language that should be specific, and missing information. Fix any issues found. Output the final versioned document as idea_brief_final with a version number and date.",
+      "instruction": "Compile inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph), 2) Problem Statement, 3) Target Audience, 4) Proposed Solution, 5) Key Constraints, 6) Initial Scope Boundaries, 7) Assumptions, 8) Open Risks. PREFERENCE ORDER for source data: when `product_charter` is present (modern Z1 missions), distill its Positioning + JTBD + Solutions into the brief and treat the charter as canonical. When the charter is absent (legacy missions), fall back to `problem_statement` + `clarification_answers` (the old phase-0 micro-artifacts). Write in clear, professional prose. Self-review: check for internal contradictions, anything from charter or clarifications not reflected, vague language. Output the final versioned document as idea_brief_final with a version number and date.",
       "done_when": "idea_brief_final exists as a clean, self-reviewed, internally consistent document with all 8 sections.",
       "artifact_schema": {
         "idea_brief_final": {
@@ -887,7 +1027,8 @@
             "Initial Scope Boundaries",
             "Assumptions",
             "Open Risks"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -925,7 +1066,8 @@
             "growth_trend",
             "investment_signals",
             "confidence_level"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -964,7 +1106,8 @@
             "psychographics",
             "pain_points",
             "current_tools"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1004,7 +1147,8 @@
             "one_line_description",
             "platforms",
             "status"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1044,7 +1188,8 @@
             "website_url",
             "how_they_relate",
             "threat_level"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1087,7 +1232,8 @@
             "description",
             "category",
             "tier_available"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "competitor_feature_matrix": {
           "type": "object",
@@ -1095,7 +1241,8 @@
             "features",
             "competitors",
             "matrix"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1133,7 +1280,8 @@
             "competitors",
             "market_standard_range",
             "pricing_gaps"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1176,7 +1324,8 @@
             "positive_themes",
             "negative_themes",
             "notable_quotes"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "competitor_sentiment_analysis": {
           "type": "object",
@@ -1185,7 +1334,8 @@
             "universal_praises",
             "universal_complaints",
             "differentiation_signals"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1225,7 +1375,8 @@
             "design_quality",
             "ux_weaknesses",
             "unique_ux_patterns"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1263,7 +1414,8 @@
           "required_fields": [
             "opportunities",
             "competitor_swots"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1305,7 +1457,8 @@
             "relevance_to_our_product",
             "maturity_level",
             "adoption_risk"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1346,7 +1499,8 @@
             "summary_of_obligations",
             "compliance_effort",
             "consequence_of_non_compliance"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1387,7 +1541,8 @@
             "Target Audience Profile",
             "Competitive Landscape",
             "Key Risks"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1431,7 +1586,8 @@
             "Market Overview",
             "Competitive Landscape",
             "Recommendations"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -1453,12 +1609,14 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "market_research_report"
+        "market_research_report",
+        "product_charter",
+        "reverse_pitch"
       ],
       "output_artifacts": [
         "research_review_result"
       ],
-      "instruction": "Review market_research_report for: 1) Claims without evidence, 2) Logical gaps, 3) Missing data, 4) Bias, 5) Internal contradictions, 6) Feature matrix and pricing completeness, 7) Gap analysis quality. Output: verdict (pass/fail/needs_minor_fixes), issues list.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.",
+      "instruction": "Review market_research_report AND (when present, modern Z1 missions) product_charter + reverse_pitch for:\n\nResearch quality:\n1) Claims without evidence,\n2) Logical gaps,\n3) Missing data,\n4) Bias,\n5) Internal contradictions,\n6) Feature matrix and pricing completeness,\n7) Gap analysis quality.\n\nCharter coherence (Z1 Tier 1 — only when product_charter is present):\n8) Charter coherence — do Positioning, Brand Keywords, JTBD, Mission, and Solutions read as one mind, or as 5 disjoint LLM passes? Flag inconsistencies.\n9) Solutions completeness — every Solution must carry a populated `Boundaries` field AND a `Guiding principles` field. Reject if any solution lacks either, or if the section uses placeholder text.\n10) Reverse-pitch alignment — does the charter support the press-release headline, sub-head, customer quote, and founder quote? Flag any contradiction (e.g. headline promises 'free forever' but charter has a paid tier).\n\nReject (verdict != pass) if any section uses placeholder text (TODO, TBD, <fill in>, lorem ipsum) or if any solution lacks `boundaries` / `guiding_principles`. Output: verdict (pass/fail/needs_minor_fixes), issues list — each issue tagged by which check (1-10) it failed.\n\nIMPORTANT: produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
       "done_when": "research_review_result exists with clear quality assessment.",
       "artifact_schema": {
         "research_review_result": {
@@ -1466,7 +1624,8 @@
           "fields": {
             "verdict": {"type": "string", "equals": ["pass"]},
             "issues": {}
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1500,7 +1659,8 @@
             "scores": {},
             "weighted_score": {},
             "recommendation": {"type": "string", "equals": ["Go", "go"]}
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -1535,13 +1695,15 @@
           "required_fields": [
             "vision_statement",
             "tagline"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "product_mission": {
           "type": "object",
           "required_fields": [
             "mission_statement"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1590,7 +1752,8 @@
               }
             },
             "top_fits": {"type": "array", "min_items": 1}
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1623,7 +1786,8 @@
             "usp_statement",
             "evidence",
             "competitor_weakness_exploited"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1667,14 +1831,16 @@
             "quote",
             "primary_pain",
             "is_primary"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "user_journey_map": {
           "type": "object",
           "required_fields": [
             "stages",
             "aha_moment"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1714,7 +1880,8 @@
             "description",
             "source",
             "category"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -1754,7 +1921,8 @@
             "should_have",
             "could_have",
             "wont_have"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -1786,7 +1954,8 @@
             "mvp_feature_list",
             "excluded_features_rationale",
             "mvp_value_statement"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1825,7 +1994,8 @@
             "story",
             "acceptance_criteria",
             "priority"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -1875,7 +2045,8 @@
                 "justification": {"type": "string"}
               }
             }
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1910,7 +2081,8 @@
             "pricing_model",
             "tiers",
             "revenue_projections"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -1947,7 +2119,8 @@
             "Vision",
             "Value Proposition",
             "Monetization"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -1991,7 +2164,8 @@
             "MVP Scope",
             "User Stories",
             "Success Metrics"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -2031,7 +2205,8 @@
             "source_story_ids",
             "priority",
             "category"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -2064,7 +2239,8 @@
             "api_response_time",
             "page_load_time",
             "throughput"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "nfr_scalability": {
           "type": "object",
@@ -2072,7 +2248,8 @@
             "concurrent_users",
             "data_volume",
             "projections"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2106,7 +2283,8 @@
             "uptime_target",
             "rto",
             "rpo"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "security_requirements": {
           "type": "object",
@@ -2114,7 +2292,8 @@
             "authentication",
             "authorization",
             "data_protection"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2164,7 +2343,8 @@
             "data_transformations": {"type": "array"},
             "data_access_patterns": {"type": "array"},
             "data_archival_strategy": {"type": "string"}
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2210,7 +2390,8 @@
             "latency_expectation",
             "failure_mode",
             "alternatives"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -2256,21 +2437,24 @@
             "screen_sizes",
             "os_versions",
             "device_types"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "accessibility_requirements": {
           "type": "object",
           "required_fields": [
             "target_level",
             "requirements"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "i18n_requirements": {
           "type": "object",
           "required_fields": [
             "initial_languages",
             "rtl_support"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -2307,7 +2491,8 @@
             "title",
             "rule_statement",
             "testable_assertion"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2345,7 +2530,8 @@
             "story",
             "acceptance_criteria",
             "priority"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2381,7 +2567,8 @@
           "required_fields": [
             "mappings",
             "orphans"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2420,7 +2607,8 @@
             "requirement_ids",
             "resolution",
             "trade_off"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2458,7 +2646,8 @@
             "User Stories",
             "Business Rules",
             "Data Requirements"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -2503,7 +2692,8 @@
             "Security Requirements",
             "User Stories",
             "Traceability Matrix"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -2536,7 +2726,8 @@
           "fields": {
             "status": {"type": "string", "equals": ["pass"]},
             "issues": {}
-          }
+          },
+          "_schema_version": "1"
         }
       }
     },
@@ -2574,7 +2765,8 @@
             "selected_pattern",
             "justification",
             "evaluation"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2619,7 +2811,8 @@
             "database",
             "infrastructure",
             "justification"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "api_hints": [
@@ -2659,7 +2852,8 @@
             "databases",
             "communication_patterns",
             "environments"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -2697,7 +2891,8 @@
             "tables",
             "relationships",
             "indexes"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -2738,7 +2933,8 @@
             "Identifiers",
             "Error Codes",
             "Rate Limits"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -2787,7 +2983,8 @@
                 "schemas": {"type": "object", "min_keys": 1}
               }
             }
-          }
+          },
+          "_schema_version": "1"
         }
       }
     },
@@ -2828,7 +3025,8 @@
             "authorization",
             "roles",
             "permissions"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2864,7 +3062,8 @@
             "component_hierarchy",
             "state_management",
             "routing"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -2909,9 +3108,10 @@
               "sdk_quality": {"type": "string"},
               "lock_in_risk": {"type": "string"}
             }
-          }
+          },
+          "_schema_version": "1"
         },
-        "total_monthly_cost": {"type": "string"}
+        "total_monthly_cost": {"type": "string", "_schema_version": "1"}
       },
       "context": {}
     },
@@ -2948,7 +3148,8 @@
             "technology",
             "layers",
             "invalidation"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "background_job_design": {
           "type": "object",
@@ -2956,7 +3157,8 @@
             "technology",
             "job_types",
             "retry_strategy"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "file_storage_design": {
           "type": "object",
@@ -2964,7 +3166,8 @@
             "service",
             "upload_flow",
             "validation"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3000,21 +3203,24 @@
             "service",
             "email_types",
             "template_system"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "realtime_design": {
           "type": "object",
           "required_fields": [
             "needed",
             "technology"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "search_system_design": {
           "type": "object",
           "required_fields": [
             "technology",
             "indexed_entities"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3047,7 +3253,8 @@
             "error_handling",
             "logging",
             "monitoring"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3082,7 +3289,8 @@
           "required_fields": [
             "per_component_scaling",
             "milestones"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "disaster_recovery_plan": {
           "type": "object",
@@ -3091,7 +3299,8 @@
             "restore_procedure",
             "rto",
             "rpo"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3124,7 +3333,8 @@
           "type": "object",
           "required_fields": [
             "flows"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3168,7 +3378,8 @@
             "context",
             "decision",
             "consequences"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3207,7 +3418,8 @@
             "Database",
             "API Design",
             "Auth"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -3251,7 +3463,8 @@
             "Auth",
             "Caching Strategy",
             "File Storage"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -3295,7 +3508,8 @@
             "Frontend Architecture",
             "Observability",
             "Scalability"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -3330,7 +3544,8 @@
             "status": {"type": "string", "equals": ["pass", "approved"]},
             "issues": {},
             "security_findings": {}
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3362,7 +3577,8 @@
             "sitemap",
             "navigation_model",
             "page_types"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3393,7 +3609,8 @@
             "primary_nav",
             "secondary_nav",
             "mobile_nav"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3430,26 +3647,30 @@
           "type": "object",
           "required_fields": [
             "flows"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "user_flow_onboarding": {
           "type": "object",
           "required_fields": [
             "steps",
             "time_to_value"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "user_flow_core_features": {
           "type": "object",
           "required_fields": [
             "features"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "user_flow_settings": {
           "type": "object",
           "required_fields": [
             "flows"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3484,13 +3705,15 @@
             "grid_system",
             "breakpoints",
             "spacing_scale"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "wireframe_specs": {
           "type": "object",
           "required_fields": [
             "screens"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3522,14 +3745,16 @@
           "type": "object",
           "required_fields": [
             "forms"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "empty_error_state_specs": {
           "type": "object",
           "required_fields": [
             "empty_states",
             "error_states"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {
@@ -3565,7 +3790,8 @@
           "fields": {
             "status": {"type": "string", "equals": ["pass", "approved"]},
             "issues": {}
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3601,7 +3827,8 @@
             "tone_of_voice",
             "color_direction",
             "typography_direction"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "design_tokens": {
           "type": "object",
@@ -3611,7 +3838,8 @@
             "spacing",
             "borders",
             "shadows"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3641,13 +3869,15 @@
           "type": "object",
           "required_fields": [
             "components"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "component_spec_composite": {
           "type": "object",
           "required_fields": [
             "components"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3680,7 +3910,8 @@
           "type": "object",
           "required_fields": [
             "screens"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3717,20 +3948,23 @@
             "transitions",
             "feedback",
             "reduced_motion"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "responsive_spec": {
           "type": "object",
           "required_fields": [
             "breakpoints",
             "per_screen"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "accessibility_spec": {
           "type": "object",
           "required_fields": [
             "per_screen"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3767,7 +4001,8 @@
           "fields": {
             "status": {"type": "string", "equals": ["pass", "approved"]},
             "issues": {}
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3806,7 +4041,8 @@
             "Design Tokens",
             "Primitive Components",
             "Composite Components"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -3851,7 +4087,8 @@
             "Interaction Guide",
             "Responsive Guide",
             "Accessibility Guide"
-          ]
+          ],
+          "_schema_version": "1"
         }
       }
     },
@@ -3897,7 +4134,8 @@
               "estimated_total_effort": {"type": "string"},
               "priority_order": {"type": "number"}
             }
-          }
+          },
+          "_schema_version": "1"
         },
         "work_breakdown": {
           "type": "object",
@@ -3917,7 +4155,8 @@
                 }
               }
             }
-          }
+          },
+          "_schema_version": "1"
         }
       }
     },
@@ -3949,14 +4188,16 @@
             "tasks",
             "critical_path",
             "parallel_groups"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "effort_estimates": {
           "type": "object",
           "required_fields": [
             "per_task",
             "total"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -3997,7 +4238,8 @@
             "early_warning_signs",
             "mitigation_strategy",
             "contingency_plan"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -4049,7 +4291,8 @@
               }
             },
             "order": {"type": "array", "min_items": 1}
-          }
+          },
+          "_schema_version": "1"
         },
         "sprint_plans": {
           "type": "array",
@@ -4075,7 +4318,8 @@
               },
               "deliverable": {"type": "string"}
             }
-          }
+          },
+          "_schema_version": "1"
         }
       }
     },
@@ -4109,7 +4353,8 @@
             "target_sprint",
             "entry_criteria",
             "exit_criteria"
-          ]
+          ],
+          "_schema_version": "1"
         },
         "definition_of_done": {
           "type": "object",
@@ -4118,7 +4363,8 @@
             "story",
             "sprint",
             "release"
-          ]
+          ],
+          "_schema_version": "1"
         }
       },
       "context": {}
@@ -4154,7 +4400,8 @@
           "fields": {
             "status": {"type": "string", "equals": ["pass", "approved"]},
             "issues": {}
-          }
+          },
+          "_schema_version": "1"
         }
       },
       "context": {}

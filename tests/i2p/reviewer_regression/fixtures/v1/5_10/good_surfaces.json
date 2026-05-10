@@ -1,0 +1,7 @@
+{
+  "_schema_version": "1",
+  "mission_id": 99,
+  "surfaces": ["mobile", "web", "admin"],
+  "primary_surface": "mobile",
+  "founder_confirmed_at": "2026-05-08T12:00:00Z"
+}

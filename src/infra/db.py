@@ -1604,6 +1604,136 @@ async def init_db():
         ),
     )
 
+    # ── Z10 T2A migrations (cost transparency wiring) ─────────────────────
+    # 5. cost_budgets: add budget_ceiling_usd + helpful index
+    await apply_migration(
+        version="2026-05-10-cost-budgets-mission-scope",
+        sql=(
+            "ALTER TABLE cost_budgets ADD COLUMN budget_ceiling_usd REAL;\n"
+            "CREATE INDEX IF NOT EXISTS idx_cost_budgets_scope "
+            "ON cost_budgets(scope, scope_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_cost_budgets_scope;\n"
+            "ALTER TABLE cost_budgets DROP COLUMN budget_ceiling_usd;\n"
+        ),
+        description=(
+            "T2A cost wiring: cost_budgets.budget_ceiling_usd + scope index"
+        ),
+    )
+
+    # 6. model_call_tokens: add cost_usd column for per-call cost capture
+    await apply_migration(
+        version="2026-05-10-model-call-tokens-cost-column",
+        sql=(
+            "ALTER TABLE model_call_tokens ADD COLUMN cost_usd REAL;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE model_call_tokens DROP COLUMN cost_usd;\n"
+        ),
+        description=(
+            "T2A cost wiring: model_call_tokens.cost_usd for per-call USD"
+        ),
+    )
+
+    # 7. cost_by_iteration view
+    await apply_migration(
+        version="2026-05-10-cost-by-iteration-view",
+        sql=(
+            "DROP VIEW IF EXISTS cost_by_iteration;\n"
+            "CREATE VIEW cost_by_iteration AS\n"
+            "SELECT\n"
+            "  t.mission_id AS mission_id,\n"
+            "  mct.iteration_n AS iteration_n,\n"
+            "  SUM(COALESCE(mct.prompt_tokens, 0)) AS prompt_tokens,\n"
+            "  SUM(COALESCE(mct.completion_tokens, 0)) AS completion_tokens,\n"
+            "  SUM(COALESCE(mct.total_tokens, 0)) AS total_tokens,\n"
+            "  SUM(COALESCE(mct.cost_usd, 0)) AS cost_usd,\n"
+            "  COUNT(*) AS calls\n"
+            "FROM model_call_tokens mct\n"
+            "JOIN tasks t ON t.id = mct.task_id\n"
+            "GROUP BY t.mission_id, mct.iteration_n;\n"
+        ),
+        reversal_sql=(
+            "DROP VIEW IF EXISTS cost_by_iteration;\n"
+        ),
+        description=(
+            "T2A cost wiring: cost_by_iteration view aggregating per-mission "
+            "× iteration_n token + cost"
+        ),
+    )
+
+    # 8. mission_budget_alerts table (cron writes; T2B drains)
+    await apply_migration(
+        version="2026-05-10-mission-budget-alerts",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS mission_budget_alerts ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER NOT NULL,"
+            " threshold REAL NOT NULL,"
+            " total_usd REAL NOT NULL,"
+            " posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " drained_at TIMESTAMP"
+            ");\n"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_budget_alerts_mt "
+            "ON mission_budget_alerts(mission_id, threshold);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_mission_budget_alerts_mt;\n"
+            "DROP TABLE IF EXISTS mission_budget_alerts;\n"
+        ),
+        description=(
+            "T2A cost wiring: mission_budget_alerts (50/75/90% threshold "
+            "rows; UNIQUE per mission+threshold = idempotent cron writes)"
+        ),
+    )
+
+    # 9. tasks.estimated_cost_usd + actual_cost_usd
+    await apply_migration(
+        version="2026-05-10-tasks-estimated-cost",
+        sql=(
+            "ALTER TABLE tasks ADD COLUMN estimated_cost_usd REAL;\n"
+            "ALTER TABLE tasks ADD COLUMN actual_cost_usd REAL;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE tasks DROP COLUMN estimated_cost_usd;\n"
+            "ALTER TABLE tasks DROP COLUMN actual_cost_usd;\n"
+        ),
+        description=(
+            "T2A cost wiring: tasks.estimated_cost_usd + actual_cost_usd"
+        ),
+    )
+
+    # 10. missions.cost_decision_threshold_usd
+    await apply_migration(
+        version="2026-05-10-missions-cost-threshold",
+        sql=(
+            "ALTER TABLE missions ADD COLUMN cost_decision_threshold_usd REAL;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE missions DROP COLUMN cost_decision_threshold_usd;\n"
+        ),
+        description=(
+            "T2A cost wiring: missions.cost_decision_threshold_usd "
+            "(per-mission cost-at-decision floor; NULL → $1.00 default)"
+        ),
+    )
+
+    # 11. missions.quality_mode (quick / balanced / thorough)
+    await apply_migration(
+        version="2026-05-10-missions-quality-mode",
+        sql=(
+            "ALTER TABLE missions ADD COLUMN quality_mode TEXT DEFAULT 'balanced';\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE missions DROP COLUMN quality_mode;\n"
+        ),
+        description=(
+            "T2A cost wiring: missions.quality_mode dial "
+            "(quick|balanced|thorough)"
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.
@@ -1909,7 +2039,8 @@ async def _migrate_task_lifecycle(db) -> None:
 # --- Mission Operations ---
 
 async def add_mission(title, description, priority=5, context=None,
-                      workflow=None, repo_path=None, language=None, framework=None):
+                      workflow=None, repo_path=None, language=None, framework=None,
+                      budget_ceiling_usd: float | None = None):
     db = await get_db()
     cursor = await db.execute(
         """INSERT INTO missions (title, description, priority, context, workflow, repo_path, language, framework)
@@ -1918,7 +2049,18 @@ async def add_mission(title, description, priority=5, context=None,
          workflow or "", repo_path or "", language or "", framework or "")
     )
     await db.commit()
-    return cursor.lastrowid
+    mission_id = cursor.lastrowid
+    # Z10 T2A: seed the per-mission cost_budgets row so token accounting
+    # has a target to increment into. budget_ceiling_usd remains NULL
+    # (= unlimited) unless the caller supplies one.
+    try:
+        if mission_id is not None:
+            await ensure_mission_cost_row(
+                int(mission_id), budget_ceiling_usd=budget_ceiling_usd
+            )
+    except Exception as e:
+        logger.debug(f"ensure_mission_cost_row at add_mission skipped: {e}")
+    return mission_id
 
 async def get_mission(mission_id):
     """Fetch a single mission by ID."""
@@ -4654,5 +4796,455 @@ async def resolve_confirmation(
         "SET verdict = ?, responded_at = CURRENT_TIMESTAMP "
         "WHERE id = ?",
         (verdict, confirmation_id),
+    )
+    await db.commit()
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Z10 T2A — cost transparency wiring
+# ───────────────────────────────────────────────────────────────────────────
+#
+# Layout:
+#   D1 — ensure_mission_cost_row + token-write hook (record_call_cost)
+#   D2 — get_cost_by_iteration, get_mission_cost_breakdown
+#   D4 — get_pending_cost_alerts + check_and_write_mission_budget_alerts
+#   D5 — estimate_task_cost, finalize_task_actual_cost
+#   D8 — record_vendor_cost
+# D3/D6/D7 wire from helpers in cost_wiring.py + coulson + beckman cron.
+
+
+# Conservative per-task-kind cost fallbacks (USD) when <5 historical samples.
+_TASK_KIND_DEFAULT_COST_USD: dict[str, float] = {
+    "coder": 0.05,
+    "implementer": 0.05,
+    "fixer": 0.04,
+    "test_generator": 0.04,
+    "reviewer": 0.03,
+    "code_reviewer": 0.03,
+    "visual_reviewer": 0.03,
+    "planner": 0.04,
+    "architect": 0.05,
+    "researcher": 0.03,
+    "analyst": 0.03,
+    "shopping_advisor": 0.02,
+    "product_researcher": 0.02,
+    "deal_analyst": 0.02,
+    "classifier": 0.005,
+    "grader": 0.005,
+    "mechanical": 0.0,
+}
+_TASK_KIND_DEFAULT_FALLBACK_USD = 0.02
+
+
+async def ensure_mission_cost_row(
+    mission_id: int,
+    budget_ceiling_usd: float | None = None,
+) -> None:
+    """Idempotent: insert/update the mission's row in ``cost_budgets``.
+
+    Inserts ``scope='mission', scope_id=str(mission_id)`` if absent.
+    When ``budget_ceiling_usd`` is provided, the ceiling is set/updated.
+    """
+    db = await get_db()
+    scope_id = str(mission_id)
+    today = utc_now().strftime("%Y-%m-%d")
+    cur = await db.execute(
+        "SELECT id FROM cost_budgets WHERE scope = ? AND scope_id = ?",
+        ("mission", scope_id),
+    )
+    existing = await cur.fetchone()
+    if existing is None:
+        await db.execute(
+            "INSERT INTO cost_budgets "
+            "(scope, scope_id, daily_limit, total_limit, "
+            " spent_today, spent_total, last_reset_date, "
+            " budget_ceiling_usd) "
+            "VALUES (?, ?, 0, 0, 0, 0, ?, ?)",
+            ("mission", scope_id, today, budget_ceiling_usd),
+        )
+    elif budget_ceiling_usd is not None:
+        await db.execute(
+            "UPDATE cost_budgets SET budget_ceiling_usd = ? "
+            "WHERE scope = ? AND scope_id = ?",
+            (budget_ceiling_usd, "mission", scope_id),
+        )
+    await db.commit()
+
+
+async def record_call_cost(
+    task_id: int | None,
+    cost_usd: float,
+) -> None:
+    """Stamp ``cost_usd`` onto the most recent ``model_call_tokens`` row
+    for ``task_id`` AND increment the matching mission's ``cost_budgets``.
+
+    Called from the token-accounting writer right after
+    ``record_call_tokens``. Best-effort: any failure leaves accounting
+    silent rather than blocking the LLM hot path.
+    """
+    if not task_id or cost_usd <= 0:
+        return
+    db = await get_db()
+    # Stamp cost on the most-recent matching token row.
+    try:
+        await db.execute(
+            "UPDATE model_call_tokens SET cost_usd = ? "
+            "WHERE id = (SELECT id FROM model_call_tokens "
+            "            WHERE task_id = ? "
+            "            ORDER BY id DESC LIMIT 1)",
+            (cost_usd, task_id),
+        )
+    except Exception:
+        pass
+
+    # Resolve mission_id for this task and increment the mission budget.
+    try:
+        cur = await db.execute(
+            "SELECT mission_id FROM tasks WHERE id = ?", (task_id,)
+        )
+        row = await cur.fetchone()
+        mission_id = row[0] if row else None
+        if mission_id is None:
+            await db.commit()
+            return
+        await ensure_mission_cost_row(int(mission_id))
+        today = utc_now().strftime("%Y-%m-%d")
+        scope_id = str(int(mission_id))
+        cur = await db.execute(
+            "SELECT last_reset_date FROM cost_budgets "
+            "WHERE scope = ? AND scope_id = ?",
+            ("mission", scope_id),
+        )
+        row = await cur.fetchone()
+        last_reset = row[0] if row else None
+        if last_reset != today:
+            await db.execute(
+                "UPDATE cost_budgets "
+                "SET spent_today = ?, spent_total = spent_total + ?, "
+                "    last_reset_date = ? "
+                "WHERE scope = ? AND scope_id = ?",
+                (cost_usd, cost_usd, today, "mission", scope_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE cost_budgets "
+                "SET spent_today = spent_today + ?, "
+                "    spent_total = spent_total + ? "
+                "WHERE scope = ? AND scope_id = ?",
+                (cost_usd, cost_usd, "mission", scope_id),
+            )
+        await db.commit()
+    except Exception as e:
+        logger.debug(f"record_call_cost mission rollup skipped: {e}")
+        try:
+            await db.commit()
+        except Exception:
+            pass
+
+
+async def get_cost_by_iteration(mission_id: int) -> list[dict]:
+    """Return per-iteration breakdown for a mission.
+
+    Rows ordered by ``iteration_n`` ascending. Each row carries
+    ``iteration_n``, ``prompt_tokens``, ``completion_tokens``,
+    ``total_tokens``, ``cost_usd`` and ``calls``.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT iteration_n, prompt_tokens, completion_tokens, "
+        "       total_tokens, cost_usd, calls "
+        "FROM cost_by_iteration "
+        "WHERE mission_id = ? "
+        "ORDER BY iteration_n ASC",
+        (mission_id,),
+    )
+    rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+async def get_mission_cost_breakdown(mission_id: int) -> dict:
+    """Return ``{first_pass_usd, retry_usd, vendor_usd, total_usd}``.
+
+    ``first_pass = iteration_n == 0``, ``retry = iteration_n >= 1``.
+    ``vendor`` sums ``cost_budgets`` rows scoped ``vendor:<name>`` for
+    this mission.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT iteration_n, COALESCE(SUM(cost_usd), 0) AS c "
+        "FROM cost_by_iteration "
+        "WHERE mission_id = ? "
+        "GROUP BY (iteration_n == 0)",
+        (mission_id,),
+    )
+    rows = await cur.fetchall()
+    first_pass = 0.0
+    retry = 0.0
+    for r in rows:
+        iter_n = r[0]
+        c = float(r[1] or 0.0)
+        if iter_n == 0:
+            first_pass += c
+        else:
+            retry += c
+
+    # Sum vendor:* scopes for this mission.
+    cur = await db.execute(
+        "SELECT COALESCE(SUM(spent_total), 0) AS c "
+        "FROM cost_budgets "
+        "WHERE scope LIKE 'vendor:%' AND scope_id = ?",
+        (str(mission_id),),
+    )
+    row = await cur.fetchone()
+    vendor = float(row[0] or 0.0)
+
+    total = first_pass + retry + vendor
+    return {
+        "first_pass_usd": first_pass,
+        "retry_usd": retry,
+        "vendor_usd": vendor,
+        "total_usd": total,
+    }
+
+
+async def get_pending_cost_alerts() -> list[dict]:
+    """Return rows in ``mission_budget_alerts`` with ``drained_at IS NULL``."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT id, mission_id, threshold, total_usd, posted_at "
+        "FROM mission_budget_alerts "
+        "WHERE drained_at IS NULL "
+        "ORDER BY posted_at ASC"
+    )
+    rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+async def mark_cost_alert_drained(alert_id: int) -> None:
+    """Stamp an alert as drained (T2B drain hook)."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE mission_budget_alerts SET drained_at = CURRENT_TIMESTAMP "
+        "WHERE id = ?",
+        (alert_id,),
+    )
+    await db.commit()
+
+
+async def check_and_write_mission_budget_alerts() -> int:
+    """Sweep missions with a ceiling; insert threshold rows.
+
+    Returns number of new alert rows written. Idempotent: the
+    ``UNIQUE(mission_id, threshold)`` index prevents duplicates so callers
+    can run this every 5 minutes without flooding.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT id, status FROM missions "
+        "WHERE status IN ('running', 'pending', 'active')"
+    )
+    missions = [(int(r[0]), r[1]) for r in await cur.fetchall()]
+
+    written = 0
+    THRESHOLDS = (0.5, 0.75, 0.9)
+    for mission_id, _status in missions:
+        # Find ceiling for this mission.
+        cur = await db.execute(
+            "SELECT budget_ceiling_usd FROM cost_budgets "
+            "WHERE scope = ? AND scope_id = ?",
+            ("mission", str(mission_id)),
+        )
+        row = await cur.fetchone()
+        if not row or row[0] is None or row[0] <= 0:
+            continue
+        ceiling = float(row[0])
+        breakdown = await get_mission_cost_breakdown(mission_id)
+        total = breakdown["total_usd"]
+        if total <= 0:
+            continue
+        ratio = total / ceiling
+        for t in THRESHOLDS:
+            if ratio >= t:
+                try:
+                    await db.execute(
+                        "INSERT INTO mission_budget_alerts "
+                        "(mission_id, threshold, total_usd) "
+                        "VALUES (?, ?, ?)",
+                        (mission_id, t, total),
+                    )
+                    written += 1
+                except Exception:
+                    # UNIQUE constraint hit — already alerted at this threshold.
+                    pass
+    if written:
+        await db.commit()
+    return written
+
+
+async def estimate_task_cost(
+    model_id: str | None,
+    task_kind: str | None,
+) -> float:
+    """Return an estimated USD cost for a task on a model+kind.
+
+    Methodology: average historical ``cost_usd`` from
+    ``model_call_tokens × tasks`` where ``model = model_id`` and
+    ``tasks.agent_type = task_kind``. Requires >=5 samples; otherwise
+    falls back to ``_TASK_KIND_DEFAULT_COST_USD``.
+    """
+    if not task_kind:
+        return _TASK_KIND_DEFAULT_FALLBACK_USD
+    if not model_id:
+        return _TASK_KIND_DEFAULT_COST_USD.get(
+            task_kind, _TASK_KIND_DEFAULT_FALLBACK_USD
+        )
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT COUNT(*) AS n, AVG(COALESCE(mct.cost_usd, 0)) AS avg_c "
+        "FROM model_call_tokens mct "
+        "JOIN tasks t ON t.id = mct.task_id "
+        "WHERE mct.model = ? AND t.agent_type = ? "
+        "  AND mct.cost_usd IS NOT NULL AND mct.cost_usd > 0",
+        (model_id, task_kind),
+    )
+    row = await cur.fetchone()
+    n = int(row[0] or 0) if row else 0
+    avg_c = float(row[1] or 0.0) if row else 0.0
+    if n >= 5 and avg_c > 0:
+        return avg_c
+    return _TASK_KIND_DEFAULT_COST_USD.get(
+        task_kind, _TASK_KIND_DEFAULT_FALLBACK_USD
+    )
+
+
+async def set_task_estimated_cost(task_id: int, cost_usd: float) -> None:
+    """Stamp ``estimated_cost_usd`` on a task row."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE tasks SET estimated_cost_usd = ? WHERE id = ?",
+        (cost_usd, task_id),
+    )
+    await db.commit()
+
+
+async def finalize_task_actual_cost(task_id: int) -> float:
+    """Sum ``model_call_tokens.cost_usd`` for a task → ``tasks.actual_cost_usd``.
+
+    Returns the computed actual cost.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM model_call_tokens "
+        "WHERE task_id = ?",
+        (task_id,),
+    )
+    row = await cur.fetchone()
+    actual = float(row[0] or 0.0)
+    await db.execute(
+        "UPDATE tasks SET actual_cost_usd = ? WHERE id = ?",
+        (actual, task_id),
+    )
+    await db.commit()
+    return actual
+
+
+async def record_vendor_cost(
+    mission_id: int,
+    vendor: str,
+    usd: float,
+    line_item: str,
+) -> None:
+    """Append vendor cost to ``cost_budgets`` row ``scope='vendor:{vendor}'``.
+
+    Increments ``spent_today`` + ``spent_total``. Idempotently creates the
+    row on first call. ``line_item`` is currently recorded only via the
+    audit log helper (best-effort) — schema-wise the row carries totals.
+    """
+    if usd < 0:
+        raise ValueError("usd must be non-negative")
+    db = await get_db()
+    scope = f"vendor:{vendor}"
+    scope_id = str(mission_id)
+    today = utc_now().strftime("%Y-%m-%d")
+    cur = await db.execute(
+        "SELECT id, last_reset_date FROM cost_budgets "
+        "WHERE scope = ? AND scope_id = ?",
+        (scope, scope_id),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        await db.execute(
+            "INSERT INTO cost_budgets "
+            "(scope, scope_id, daily_limit, total_limit, "
+            " spent_today, spent_total, last_reset_date) "
+            "VALUES (?, ?, 0, 0, ?, ?, ?)",
+            (scope, scope_id, usd, usd, today),
+        )
+    else:
+        last_reset = row[1]
+        if last_reset != today:
+            await db.execute(
+                "UPDATE cost_budgets "
+                "SET spent_today = ?, spent_total = spent_total + ?, "
+                "    last_reset_date = ? "
+                "WHERE scope = ? AND scope_id = ?",
+                (usd, usd, today, scope, scope_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE cost_budgets "
+                "SET spent_today = spent_today + ?, "
+                "    spent_total = spent_total + ? "
+                "WHERE scope = ? AND scope_id = ?",
+                (usd, usd, scope, scope_id),
+            )
+    await db.commit()
+    # Lightweight audit breadcrumb; best-effort.
+    try:
+        await record_action_event(
+            verb="record_vendor_cost",
+            reversibility="irreversible",
+            mission_id=mission_id,
+            task_id=None,
+            payload={"vendor": vendor, "usd": usd, "line_item": line_item},
+            status="ok",
+        )
+    except Exception:
+        pass
+
+
+async def get_mission_quality_mode(mission_id: int) -> str:
+    """Return the mission's ``quality_mode`` (``quick``/``balanced``/``thorough``).
+
+    Defaults to ``balanced`` when the row is missing or the column is NULL.
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT quality_mode FROM missions WHERE id = ?", (mission_id,)
+        )
+        row = await cur.fetchone()
+        if row is None or row[0] is None:
+            return "balanced"
+        mode = str(row[0]).strip().lower()
+        if mode in ("quick", "balanced", "thorough"):
+            return mode
+    except Exception:
+        pass
+    return "balanced"
+
+
+async def set_mission_quality_mode(mission_id: int, mode: str) -> None:
+    """Set ``missions.quality_mode``. Raises on invalid mode."""
+    if mode not in ("quick", "balanced", "thorough"):
+        raise ValueError(
+            f"quality_mode must be quick/balanced/thorough, got {mode!r}"
+        )
+    db = await get_db()
+    await db.execute(
+        "UPDATE missions SET quality_mode = ? WHERE id = ?",
+        (mode, mission_id),
     )
     await db.commit()

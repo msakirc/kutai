@@ -446,6 +446,18 @@ async def next_task():
         task["preselected_pick"] = pick
         task["status"] = "processing"
 
+        # Z10 T2A: stamp estimated_cost_usd on the task. Pulls historical
+        # avg cost for (model, agent_type) or falls back to per-kind
+        # defaults. Best-effort — never blocks admission.
+        try:
+            from src.infra.db import estimate_task_cost, set_task_estimated_cost
+            _kind = task.get("agent_type")
+            _model_id = pick.model.name if pick and getattr(pick, "model", None) else None
+            _est = await estimate_task_cost(_model_id, _kind)
+            await set_task_estimated_cost(int(task["id"]), float(_est))
+        except Exception as _e:
+            _log.debug(f"admission: estimate_task_cost skipped #{task['id']}: {_e}")
+
         # Write selected_model into the in-memory context so the orchestrator
         # can forward it to dispatcher.dispatch() without a DB round-trip.
         # dispatcher.dispatch() reads it back as preselected_pick → skip re-select.
@@ -490,6 +502,14 @@ async def on_task_finished(task_id: int, result: dict) -> None:
         log.warning("on_task_finished: missing task", task_id=task_id)
         return
     task_ctx = parse_context(task)
+
+    # Z10 T2A: stamp actual_cost_usd from accumulated model_call_tokens.
+    # Run before route_result so downstream readers see the final number.
+    try:
+        from src.infra.db import finalize_task_actual_cost
+        await finalize_task_actual_cost(task_id)
+    except Exception as _e:
+        log.debug("finalize_task_actual_cost skipped", task_id=task_id, error=str(_e))
 
     # Persist generating_model + accumulate failed_models. The retry-
     # recovery layers (model exclusion at attempts >= 3, difficulty

@@ -44,6 +44,8 @@ async def fire_due() -> None:
                 await _btable_rollup()
             elif marker == "file_locks_sweep":
                 await _file_locks_sweep()
+            elif marker == "mission_budget_alerts":
+                await _mission_budget_alerts()
             else:
                 await _insert_scheduled_task(row, payload)
             await _advance_schedule(row, now)
@@ -134,6 +136,20 @@ async def _file_locks_sweep() -> None:
             logger.info("file_locks_sweep released orphans", count=n)
     except Exception as e:
         logger.warning("file_locks_sweep failed", error=str(e))
+
+
+async def _mission_budget_alerts() -> None:
+    """Z10 T2A — write mission_budget_alerts rows at threshold breaches.
+
+    Idempotent via UNIQUE(mission_id, threshold). T2B drains.
+    """
+    try:
+        from src.infra.db import check_and_write_mission_budget_alerts
+        n = await check_and_write_mission_budget_alerts()
+        if n:
+            logger.info("mission_budget_alerts wrote rows", count=n)
+    except Exception as e:
+        logger.warning("mission_budget_alerts failed", error=str(e))
 
 
 async def _btable_rollup() -> None:

@@ -293,6 +293,29 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             f"{profile.max_iterations} → {effective_max_iterations}"
         )
 
+    # Z10 T2A D7 — quality_mode dial. quick caps retries at 1
+    # (effective_max_iterations = 1), thorough lifts it to 5.
+    # Mission-level setting; balanced (default) leaves machinery alone.
+    if mission_id is not None:
+        try:
+            from src.infra.db import get_mission_quality_mode
+            from src.infra.cost_wiring import quality_mode_profile
+            _qmode = await get_mission_quality_mode(int(mission_id))
+            _qprof = quality_mode_profile(_qmode)
+            _qmax = _qprof.get("max_retries")
+            if _qmax is not None:
+                _before = effective_max_iterations
+                effective_max_iterations = max(1, int(_qmax))
+                if _before != effective_max_iterations:
+                    logger.info(
+                        f"[Task #{task_id}] quality_mode={_qmode} "
+                        f"max_iterations {_before} → {effective_max_iterations}"
+                    )
+        except Exception as _qe:
+            logger.debug(
+                f"[Task #{task_id}] quality_mode lookup skipped: {_qe}"
+            )
+
     # Exhaustion tracking counters
     guard_burns = 0
     useful_iterations = 0

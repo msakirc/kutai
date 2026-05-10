@@ -51,6 +51,7 @@ async def run_cmd(
     env: dict[str, str] | None = None,
     require_exit_zero: bool = False,
     workspace_path: str | None = None,
+    reversibility_intent: str | None = None,
 ) -> dict[str, Any]:
     """Run ``cmd`` (argv list) under the mission workspace.
 
@@ -100,6 +101,16 @@ async def run_cmd(
     proc_env = None
     if env is not None:
         proc_env = {**os.environ, **{k: str(v) for k, v in env.items()}}
+
+    # Z10-T1B: record caller intent in the structured log line so the
+    # audit trail shows whether this invocation was self-declared as
+    # destructive (irreversible) or safe (full).
+    logger.info(
+        "run_cmd dispatch",
+        cmd0=(cmd[0] if cmd else ""),
+        argc=len(cmd),
+        reversibility_intent=reversibility_intent,
+    )
 
     loop = asyncio.get_event_loop()
     started = loop.time()

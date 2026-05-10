@@ -109,6 +109,14 @@ INTERNAL_CADENCES: list[dict] = [
     # at 09:00. cron_expression beats interval_seconds because quarterly
     # intervals don't fit 86400-second arithmetic cleanly across leap years
     # and DST boundaries.
+    # Z10 T2B — drain pending T1C confirmations + T2A budget alerts every
+    # 5s. Cheap mechanical executor; idempotent on every tick.
+    {
+        "title": "mission_event_drain",
+        "description": "Drain pending action_confirmations + mission_budget_alerts to Telegram mission_events",
+        "interval_seconds": 5,
+        "payload": {"_executor": "mission_event_drain"},
+    },
     {
         "title": "bash_audit",
         "description": "sade_kalsin scaffolding audit (quarterly): what does each layer do that bash + Claude can't?",

@@ -1353,6 +1353,15 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "mission_event_drain":
+        # Z10 T2B: drain T1C confirmations + T2A budget alerts → mission_events.
+        from mr_roboto.mission_event_drain import run as drain_run
+        try:
+            res = await drain_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "monitoring_check":
         from mr_roboto.executors.monitoring_check import run as monitoring_check_run
         try:

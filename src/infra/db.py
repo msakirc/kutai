@@ -1734,6 +1734,71 @@ async def init_db():
         ),
     )
 
+    # ── Z10 T2B: per-mission Telegram forum topics ───────────────────
+    await apply_migration(
+        version="2026-05-10-missions-telegram-thread",
+        sql=(
+            "ALTER TABLE missions ADD COLUMN telegram_thread_id INTEGER;\n"
+            "ALTER TABLE missions ADD COLUMN telegram_thread_archived "
+            "INTEGER DEFAULT 0;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE missions DROP COLUMN telegram_thread_id;\n"
+            "ALTER TABLE missions DROP COLUMN telegram_thread_archived;\n"
+        ),
+        description=(
+            "T2B per-mission forum topics: missions.telegram_thread_id "
+            "(NULL = unallocated / fallback-flat-mode) + archived flag"
+        ),
+    )
+
+    # ── Z10 T2B: mission_events typed event log ──────────────────────
+    await apply_migration(
+        version="2026-05-10-mission-events",
+        sql=(
+            "CREATE TABLE mission_events ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER NOT NULL,"
+            " kind TEXT NOT NULL,"
+            " payload TEXT NOT NULL,"
+            " telegram_message_id INTEGER,"
+            " posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " resolved_at TIMESTAMP,"
+            " resolution TEXT"
+            ");\n"
+            "CREATE INDEX idx_mission_events_mission "
+            "ON mission_events(mission_id);\n"
+            "CREATE INDEX idx_mission_events_msgid "
+            "ON mission_events(telegram_message_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_mission_events_msgid;\n"
+            "DROP INDEX IF EXISTS idx_mission_events_mission;\n"
+            "DROP TABLE IF EXISTS mission_events;\n"
+        ),
+        description=(
+            "T2B typed mission events: milestone/blocker/asking/"
+            "confirmation_required/cost_alert rendered to mission thread"
+        ),
+    )
+
+    # ── Z10 T2B: link action_confirmations to Telegram events ─────────
+    await apply_migration(
+        version="2026-05-10-action-confirmations-telegram",
+        sql=(
+            "ALTER TABLE action_confirmations "
+            "ADD COLUMN telegram_event_id INTEGER;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE action_confirmations "
+            "DROP COLUMN telegram_event_id;\n"
+        ),
+        description=(
+            "T2B confirmation drain: action_confirmations.telegram_event_id "
+            "links a pending confirmation to its posted mission_event row"
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

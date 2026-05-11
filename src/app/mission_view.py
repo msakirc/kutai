@@ -166,4 +166,23 @@ async def format_mission_view(mission_id: int) -> str:
     pacing = await compute_mission_pacing(mission_id)
     lines.extend(_render_pacing(pacing))
 
+    # Z6 T7B — surface pending founder_actions inline so the founder
+    # sees the wall while reading mission detail (instead of bouncing
+    # through /actions). Cap titles at 5; append "...and N-5 more" tail
+    # when over.
+    try:
+        import src.founder_actions as fa
+        pending = await fa.list_by_mission(
+            mission_id, status_filter=["pending", "in_progress"],
+        )
+    except Exception:
+        pending = []
+    if pending:
+        lines.append("")
+        lines.append(f"*Pending founder_actions: {len(pending)}*")
+        for r in pending[:5]:
+            lines.append(f"  ⚠ #{r.id} [{r.kind}] {r.title[:60]}")
+        if len(pending) > 5:
+            lines.append(f"  ...and {len(pending) - 5} more — /actions {mission_id}")
+
     return "\n".join(lines)

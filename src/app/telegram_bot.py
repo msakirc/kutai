@@ -2112,6 +2112,25 @@ class TelegramInterface:
             await self._reply(update,"No active missions.")
             return
 
+        # Z6 T7B — fetch pending founder_action counts per mission so we
+        # can surface a "⚠ N action(s) pending" badge inline. Best-effort:
+        # any failure just drops the badge silently.
+        action_counts: dict[int, int] = {}
+        try:
+            import src.founder_actions as fa
+            for m in missions:
+                try:
+                    rows = await fa.list_by_mission(
+                        int(m["id"]),
+                        status_filter=["pending", "in_progress"],
+                    )
+                    if rows:
+                        action_counts[int(m["id"])] = len(rows)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         lines = ["📋 *Active Missions:*\n"]
         for m in missions:
             mid = m["id"]
@@ -2128,7 +2147,13 @@ class TelegramInterface:
 
             badge = "🔄" if workflow else "🎯"
             wf_tag = f" \\[{workflow}]" if workflow else ""
-            lines.append(f"  {badge} #{mid} {title}{wf_tag}{task_info}")
+            action_n = action_counts.get(int(mid), 0)
+            action_suffix = (
+                f" · ⚠ {action_n} action(s) pending" if action_n else ""
+            )
+            lines.append(
+                f"  {badge} #{mid} {title}{wf_tag}{task_info}{action_suffix}"
+            )
 
         await self._reply(update,"\n".join(lines), parse_mode="Markdown")
 
@@ -7900,9 +7925,39 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             rows = await fa.list_pending()
 
         if not rows:
+            # Z6 T7B — show "last resolved" tail so the founder knows the
+            # surface is alive (vs. silent because the bot crashed).
+            tail = ""
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+                if mission_id is not None:
+                    cur = await db.execute(
+                        "SELECT title, resolved_at FROM founder_actions "
+                        "WHERE mission_id = ? AND status = 'done' "
+                        "AND resolved_at IS NOT NULL "
+                        "ORDER BY resolved_at DESC LIMIT 1",
+                        (mission_id,),
+                    )
+                else:
+                    cur = await db.execute(
+                        "SELECT title, resolved_at FROM founder_actions "
+                        "WHERE status = 'done' AND resolved_at IS NOT NULL "
+                        "ORDER BY resolved_at DESC LIMIT 1"
+                    )
+                row = await cur.fetchone()
+                if row:
+                    last_title = str(row[0])[:60]
+                    last_ts = str(row[1])
+                    tail = (
+                        f"\nLast resolved: _{last_title}_ at {last_ts}"
+                    )
+            except Exception:
+                pass
             await self._reply(
                 update,
-                "✅ All clear — no pending founder_actions.",
+                f"✅ All clear — no pending founder_actions.{tail}",
+                parse_mode="Markdown",
             )
             return
 

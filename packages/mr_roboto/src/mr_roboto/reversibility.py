@@ -126,6 +126,15 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "pick_recipe": "full",  # read-only: scans recipes/ dir, no writes
     # ---- Z2 T5C recipe instantiation ------------------------------------
     "instantiate_recipe": "partial",  # writes files to target_dir; git-reversible
+    # ---- Z6 T3A vendor-call mechanical ---------------------------------
+    "vendor_call": "partial",  # real-world API call; per-call adapter knows
+    # ---- Z6 T5 Stripe family --------------------------------------------
+    "stripe_scaffold": "full",  # local file writes only; git-reversible
+    "stripe_provision_products": "irreversible",  # creates real Stripe objects
+    "stripe_payment_flow_test": "partial",  # test-mode only; remnant test data
+    "stripe_dispute_check": "full",  # read-only API + local checkpoint file
+    "stripe_revenue_digest": "irreversible",  # posts to mission Telegram thread
+    "tax_export_ledger": "irreversible",  # surfaces founder_action visible to user
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

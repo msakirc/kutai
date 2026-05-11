@@ -1759,6 +1759,106 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "stripe_scaffold":
+        # Z6 T5A — emit Stripe checkout/webhook scaffolds under mission_<id>/api/.
+        from mr_roboto.executors.stripe_scaffold import run as _stripe_scaffold_run
+        try:
+            res = await _stripe_scaffold_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"stripe_scaffold: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "stripe_provision_products":
+        # Z6 T5B — provision Stripe products+prices from monetization_strategy.
+        from mr_roboto.executors.stripe_provision_products import (
+            run as _stripe_provision_run,
+        )
+        try:
+            res = await _stripe_provision_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"stripe_provision_products: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "stripe_payment_flow_test":
+        # Z6 T5C — exercise Stripe sandbox via vendor_call.
+        from mr_roboto.executors.stripe_payment_flow_test import (
+            run as _stripe_payment_run,
+        )
+        try:
+            res = await _stripe_payment_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"stripe_payment_flow_test: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "stripe_dispute_check":
+        # Z6 T5D — weekly Stripe dispute scan.
+        from mr_roboto.executors.stripe_dispute_check import (
+            run as _stripe_dispute_run,
+        )
+        try:
+            res = await _stripe_dispute_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"stripe_dispute_check: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "stripe_revenue_digest":
+        # Z6 T5D — weekly Stripe revenue digest.
+        from mr_roboto.executors.stripe_revenue_digest import (
+            run as _stripe_revenue_run,
+        )
+        try:
+            res = await _stripe_revenue_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"stripe_revenue_digest: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "tax_export_ledger":
+        # Z6 T5E — monthly Stripe Tax CSV export.
+        from mr_roboto.executors.tax_export_ledger import (
+            run as _tax_export_run,
+        )
+        try:
+            res = await _tax_export_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"tax_export_ledger: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "vendor_call":
         # Z6 T3A — drive a real-world vendor API via IntegrationRegistry.
         from mr_roboto.executors.vendor_call import run as _vendor_call_run

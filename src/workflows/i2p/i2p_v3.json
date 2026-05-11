@@ -4491,6 +4491,7 @@
       "name": "post_architecture_review_green",
       "agent": "mechanical",
       "executor": "mechanical",
+      "reversibility": "partial",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
@@ -7365,6 +7366,32 @@
       "reversibility": "full"
     },
     {
+      "id": "8.0b",
+      "phase": "phase_8",
+      "name": "instantiate_picked_recipes",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": [
+        "8.0a"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "mission/recipe_picks.json"
+      ],
+      "output_artifacts": [],
+      "produces": [
+        "mission/recipe_instantiations.json"
+      ],
+      "payload": {
+        "action": "instantiate_picked_recipes",
+        "recipe_picks_path": "mission/recipe_picks.json",
+        "manifest_path": "mission/recipe_instantiations.json"
+      },
+      "instruction": "Read recipe_picks.json; for each non-null pick, instantiate the recipe templates into the mission workspace under {feature_slug}/. Emit recipe_instantiations.json listing files written per feature.",
+      "done_when": "recipe_instantiations.json written; instantiation entries non-empty for every non-null pick.",
+      "reversibility": "partial"
+    },
+    {
       "id": "8.spike",
       "phase": "phase_8",
       "name": "feasibility_spike",
@@ -10018,6 +10045,7 @@
       "name": "launch_approval_green",
       "agent": "mechanical",
       "executor": "mechanical",
+      "reversibility": "partial",
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [

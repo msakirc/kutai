@@ -489,6 +489,16 @@ async def unblock_mission_if_clear(mission_id: int) -> bool:
         f"UPDATE missions SET {col} = ? WHERE id = ?",
         ("active", mission_id),
     )
+    # Also flip any tasks that beckman parked in
+    # 'blocked_on_founder_action' for this mission back to pending so
+    # the next pump tick re-evaluates them. Tasks that didn't go
+    # through Z6 admission won't have that status, so this is a
+    # narrow, idempotent UPDATE.
+    await db.execute(
+        "UPDATE tasks SET status = 'pending' "
+        "WHERE mission_id = ? AND status = 'blocked_on_founder_action'",
+        (mission_id,),
+    )
     await db.commit()
     logger.info(
         "mission unblocked — no pending actions",

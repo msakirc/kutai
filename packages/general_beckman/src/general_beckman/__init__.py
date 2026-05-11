@@ -319,6 +319,41 @@ async def next_task():
         agent_type = task.get("agent_type") or ""
         difficulty = task.get("difficulty", 5)
 
+        # ── Z6 T1C: real-world bridge admission gate ─────────────────────
+        # If the task is flagged needs_real_tools, check that its vendor
+        # adapter, credentials, and (for irreversible+cost) founder cost
+        # ack are all in place. Missing prereqs emit founder_action rows
+        # and park the task in 'blocked_on_founder_action'. T1E's
+        # unblock_mission_if_clear flips it back to pending when the
+        # founder resolves the action(s).
+        try:
+            from general_beckman.z6_admission import check_z6_admission
+            _mid = task.get("mission_id")
+            if _mid is not None:
+                _z6 = await check_z6_admission(task, int(_mid))
+                if not _z6.admit:
+                    try:
+                        from src.infra.db import update_task as _ut
+                        await _ut(
+                            int(task["id"]),
+                            status="blocked_on_founder_action",
+                        )
+                    except Exception as _e:
+                        _log.warning(
+                            f"z6 admission: failed to park task "
+                            f"#{task['id']}: {_e}"
+                        )
+                    _log.info(
+                        f"z6 admission: task #{task['id']} BLOCKED "
+                        f"({_z6.reason}); "
+                        f"emitted={_z6.founder_actions_emitted}"
+                    )
+                    continue
+        except Exception as _e:
+            _log.debug(
+                f"z6 admission skipped #{task.get('id')}: {_e}"
+            )
+
         # Mechanical tasks have no LLM, no Hoca pick, no pressure gate.
         # Per design: mechanical is unbounded — local-only backpressure
         # applies only to LLM tasks. Claim and return directly.

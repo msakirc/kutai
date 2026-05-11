@@ -149,6 +149,37 @@ async def _apply_complete(task: dict, a) -> None:
         failed_in_phase=None,
     )
 
+    # Z2 T5C — pin recipes from artifact when the completing task was a
+    # pick_recipe mechanical step with pin_recipes=true in its context.
+    # Best-effort: failure must never break the completion path.
+    try:
+        ctx = _parse_ctx(task)
+        payload = ctx.get("payload") or {}
+        if (
+            payload.get("action") == "pick_recipe"
+            and ctx.get("pin_recipes")
+        ):
+            recipe_picks_path = str(
+                payload.get("recipe_picks_path")
+                or ctx.get("recipe_picks_path")
+                or ""
+            )
+            mission_id = task.get("mission_id")
+            if recipe_picks_path and mission_id:
+                from src.infra.recipes import pin_recipes_from_artifact
+                count = await pin_recipes_from_artifact(
+                    mission_id=int(mission_id),
+                    recipe_picks_path=recipe_picks_path,
+                )
+                logger.info(
+                    "_apply_complete: pin_recipes_from_artifact: mission_id=%s count=%d",
+                    mission_id, count,
+                )
+    except Exception:
+        logger.debug(
+            "_apply_complete: pin_recipes_from_artifact failed", exc_info=True
+        )
+
 
 async def _apply_subtasks(task: dict, a: SpawnSubtasks) -> None:
     """Spawn N subtasks atomically.

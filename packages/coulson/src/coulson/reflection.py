@@ -24,6 +24,84 @@ logger = get_logger("coulson.reflection")
 # Per-agent reflection checklists
 # ────────────────────────────────────────────────────────────────────────────
 
+# ────────────────────────────────────────────────────────────────────────────
+# Stack-aware prompt fragments — Z2 T4C
+# ────────────────────────────────────────────────────────────────────────────
+
+STACK_BLOCKS: dict[str, str] = {
+    "fastapi": (
+        "## Stack-specific reminders (fastapi)\n"
+        "- Routes go in routers, not in `main.py`. Use `APIRouter` + `app.include_router`.\n"
+        "- Inject DB sessions / services via `Depends(get_db)` — never import globals.\n"
+        "- Pydantic v2: use `model_config = ConfigDict(...)`, NOT class `Config`. "
+        "Validators are `@field_validator` + `@model_validator`.\n"
+        "- Alembic: every migration has both `upgrade()` and `downgrade()`. "
+        "Generate with `alembic revision --autogenerate`; always review the diff.\n"
+        "- HTTP errors: raise `HTTPException(status_code=..., detail=...)` — don't return raw dicts for errors.\n"
+        "- Async routes: `async def` + `await` for I/O; sync routes block the event loop."
+    ),
+    "nextjs": (
+        "## Stack-specific reminders (nextjs)\n"
+        "- App Router (default since 13+): pages live under `app/`, not `pages/`.\n"
+        "- Server Components are the default — add `'use client'` only when you need\n"
+        "  browser APIs, hooks, or event handlers.\n"
+        "- Layouts: `app/layout.tsx` wraps every page. Nested layouts inherit.\n"
+        "- Data fetching in Server Components: `async` functions, `fetch()` with caching\n"
+        "  (`cache: 'force-cache'` / `no-store`). No `useEffect` for server data.\n"
+        "- Route handlers: `app/api/.../route.ts` — export named `GET`, `POST`, etc.\n"
+        "- Images: always `next/image`. Fonts: `next/font`. Links: `next/link`."
+    ),
+    "expo": (
+        "## Stack-specific reminders (expo)\n"
+        "- Use Expo Router (file-based routing under `app/`) for new projects.\n"
+        "- Style with `StyleSheet.create` or NativeWind — no raw CSS.\n"
+        "- Native modules: prefer Expo SDK equivalents before bare React Native modules.\n"
+        "- Permissions: request at runtime via `expo-permissions` / module-specific APIs.\n"
+        "- EAS Build: `eas build` for production — don't rely on `expo start` defaults.\n"
+        "- Platform guards: `Platform.OS === 'ios'` for divergent behaviour; "
+        "avoid `__DEV__`-only logic in production paths."
+    ),
+    "django": (
+        "## Stack-specific reminders (django)\n"
+        "- ORM: use `select_related` / `prefetch_related` to avoid N+1 queries.\n"
+        "- Views: class-based views (CBVs) for standard CRUD; `@login_required` + `@permission_required`.\n"
+        "- Migrations: always run `makemigrations` + `migrate`. Never edit generated migrations by hand.\n"
+        "- Settings: keep secrets in env vars (`django-environ` or `os.environ`); never commit `.env`.\n"
+        "- DRF: serializers validate input; use `serializer.validated_data`, not `request.data` directly.\n"
+        "- Signals: prefer explicit service calls over `post_save` signals — signals hide data flow."
+    ),
+    "rails": (
+        "## Stack-specific reminders (rails)\n"
+        "- Migrations: `rails generate migration`, keep `up`/`down` or use `change`. "
+        "Never remove columns without a deprecation migration first.\n"
+        "- ActiveRecord: `includes` to avoid N+1. Use scopes for reusable query segments.\n"
+        "- Strong params: always whitelist via `params.require(...).permit(...)` in controllers.\n"
+        "- Services: fat models → extract service objects under `app/services/`.\n"
+        "- Credentials: `rails credentials:edit` for secrets; never `ENV['KEY']` in db configs.\n"
+        "- Tests: RSpec + FactoryBot; avoid fixtures for complex associations."
+    ),
+    "vite": (
+        "## Stack-specific reminders (vite)\n"
+        "- Config: `vite.config.ts` — use `defineConfig`. Plugins via `plugins: [...]`.\n"
+        "- Aliases: `resolve.alias` for clean imports — `@/` → `src/`.\n"
+        "- Env vars: prefix with `VITE_` to expose to the browser; others are server-only.\n"
+        "- HMR: works out of the box; avoid side-effectful module-level code that breaks re-import.\n"
+        "- Build: `vite build` outputs to `dist/`; set `base` for sub-path deployments.\n"
+        "- CSS: PostCSS + Tailwind wired via `postcss.config.js`; no global CSS injection in components."
+    ),
+    "nestjs": (
+        "## Stack-specific reminders (nestjs)\n"
+        "- Architecture: Module → Controller → Service. Business logic lives in Services only.\n"
+        "- DI: inject via constructor params + `@Injectable()`. Never instantiate services manually.\n"
+        "- DTOs: validate with `class-validator` decorators + `ValidationPipe` globally registered.\n"
+        "- Guards / Interceptors / Pipes: register globally in `app.useGlobalGuards` or per-controller.\n"
+        "- TypeORM: `@Entity`, `@Column`, `@Repository`. Use `DataSource` for transactions.\n"
+        "- Config: `@nestjs/config` + `.env` — never hard-code secrets. "
+        "Use `ConfigService.get<string>('KEY')`."
+    ),
+}
+
+
 REFLECTION_BLOCKS: dict[str, str] = {
     "coder": (
         "Self-check before final_answer:\n"
@@ -64,15 +142,38 @@ _GENERIC_REFLECTION_BLOCK = (
 )
 
 
-def build_reflection_prompt(agent_name: str, iteration: int) -> str:
+def build_reflection_prompt(
+    agent_name: str,
+    iteration: int,
+    stack: str | None = None,
+) -> str:
     """Return a role-specific self-check checklist for *agent_name*.
 
     Falls back to a generic prompt for agents without a dedicated checklist
     so that all currently enabled agents (researcher, writer, shopping_advisor,
     deal_analyst, product_researcher) continue to work unchanged.
+
+    Parameters
+    ----------
+    stack:
+        Optional stack identifier (e.g. ``"fastapi"``) or ``+``-joined
+        multi-stack string (e.g. ``"fastapi+nextjs"``).  When set and the
+        stack key exists in :data:`STACK_BLOCKS`, the relevant fragment is
+        appended after the role block.  Multi-stack: each token is looked up
+        independently; matched blocks are deduplicated and concatenated.
     """
     block = REFLECTION_BLOCKS.get(agent_name, _GENERIC_REFLECTION_BLOCK)
-    return f"[iteration {iteration}] {block}"
+    parts = [f"[iteration {iteration}] {block}"]
+
+    if stack:
+        seen: set[str] = set()
+        for token in stack.split("+"):
+            token = token.strip().lower()
+            if token and token not in seen and token in STACK_BLOCKS:
+                parts.append(STACK_BLOCKS[token])
+                seen.add(token)
+
+    return "\n\n".join(parts)
 
 
 # ────────────────────────────────────────────────────────────────────────────

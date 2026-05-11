@@ -120,6 +120,8 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "record_demo": "full",  # additive artifact (data/missions/{id}/demo.mp4)
     "verify_demo_artifact": "full",  # pure check
     "mission_deliverable_bundle": "irreversible",  # posts to Telegram thread
+    # ---- Z2 T4C cross-mission lesson injector ---------------------------
+    "inject_lessons": "full",  # read-only query + writes to mission context JSON only
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

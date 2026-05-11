@@ -111,6 +111,8 @@ async def store_credential(
     service_name: str,
     data: dict,
     expires_at: str | None = None,
+    scope: str | None = None,
+    schema_id: str | None = None,
 ) -> None:
     """Encrypt and store a credential in the database.
 
@@ -122,7 +124,15 @@ async def store_credential(
         Credential payload to encrypt (e.g. {"token": "..."}).
     expires_at:
         Optional ISO-8601 expiration timestamp.  When set, ``get_credential``
-        will return ``None`` after this time and log a warning.
+        will return ``None`` after this time and log a warning. Stored both
+        inside the encrypted envelope (tamper-proof) and in the indexable
+        ``expires_at`` column (cheap pre-check).
+    scope:
+        Optional scope label (e.g. ``read_only``, ``read_write``, ``admin``).
+        Defaults to ``read_write`` at the column level.
+    schema_id:
+        Optional pointer to a ``credential_schemas/<service_name>.json`` entry
+        that the payload was validated against.
     """
     from ..infra.db import get_db
 
@@ -135,16 +145,45 @@ async def store_credential(
     now = datetime.now(timezone.utc).isoformat()
 
     db = await get_db()
+    # UPSERT: insert with full metadata; on conflict update only the fields
+    # the caller cared about so a partial update doesn't reset, e.g., scope
+    # back to the column default. ``rotated_at`` is bumped on every update
+    # since re-storing is effectively a rotation event.
+    # Pass scope as NULL into excluded when the caller omitted it so the
+    # ON CONFLICT branch can preserve any previously set scope via COALESCE.
+    # On a fresh INSERT, the column DEFAULT 'read_write' will fill NULLs.
     await db.execute(
-        """INSERT INTO credentials (service_name, encrypted_data, created_at, updated_at)
-           VALUES (?, ?, ?, ?)
+        """INSERT INTO credentials (
+               service_name, encrypted_data, created_at, updated_at,
+               scope, expires_at, schema_id
+           )
+           VALUES (?, ?, ?, ?, COALESCE(?, 'read_write'), ?, ?)
            ON CONFLICT(service_name) DO UPDATE SET
                encrypted_data = excluded.encrypted_data,
-               updated_at = excluded.updated_at""",
-        (service_name, encrypted, now, now),
+               updated_at = excluded.updated_at,
+               rotated_at = excluded.updated_at,
+               scope = COALESCE(?, credentials.scope),
+               expires_at = excluded.expires_at,
+               schema_id = COALESCE(?, credentials.schema_id)""",
+        (
+            service_name,
+            encrypted,
+            now,
+            now,
+            scope,
+            expires_at,
+            schema_id,
+            scope,
+            schema_id,
+        ),
     )
     await db.commit()
-    logger.info(f"Stored credential for service: {service_name}", service=service_name)
+    logger.info(
+        f"Stored credential for service: {service_name}",
+        service=service_name,
+        scope=scope or "read_write",
+        has_expires_at=bool(expires_at),
+    )
 
 
 async def get_credential(service_name: str) -> dict | None:
@@ -152,12 +191,17 @@ async def get_credential(service_name: str) -> dict | None:
 
     Returns ``None`` if the credential doesn't exist, can't be decrypted,
     or has expired.
+
+    Cheap path: the ``expires_at`` column is consulted before decryption.
+    Tamper-proof path: after decrypt, the envelope's ``_expires_at`` is also
+    checked (defends against an attacker tampering with the plaintext column).
     """
     from ..infra.db import get_db
 
     db = await get_db()
     cursor = await db.execute(
-        "SELECT encrypted_data FROM credentials WHERE service_name = ?",
+        "SELECT encrypted_data, expires_at FROM credentials "
+        "WHERE service_name = ?",
         (service_name,),
     )
     row = await cursor.fetchone()
@@ -165,25 +209,53 @@ async def get_credential(service_name: str) -> dict | None:
         return None
 
     try:
-        decrypted = _decrypt(row[0] if isinstance(row, tuple) else row["encrypted_data"])
+        encrypted_data = row[0] if isinstance(row, tuple) else row["encrypted_data"]
+        col_expires_at = row[1] if isinstance(row, tuple) else row["expires_at"]
+    except (IndexError, KeyError):
+        encrypted_data = row[0]
+        col_expires_at = None
+
+    # Cheap pre-check via the indexed column — skip decrypt entirely if expired
+    if col_expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(col_expires_at)
+            if exp_dt < datetime.now(timezone.utc):
+                logger.warning(
+                    f"Credential for '{service_name}' expired at "
+                    f"{col_expires_at} (column pre-check). "
+                    "Please refresh it with /credential add.",
+                    service=service_name,
+                    expires_at=col_expires_at,
+                )
+                return None
+        except (ValueError, TypeError):
+            pass
+
+    try:
+        decrypted = _decrypt(encrypted_data)
         payload = json.loads(decrypted)
     except Exception as e:
-        logger.error(f"Failed to decrypt credential for {service_name}: {e}", service=service_name, error=str(e))
+        logger.error(
+            f"Failed to decrypt credential for {service_name}: {e}",
+            service=service_name,
+            error=str(e),
+        )
         return None
 
     # Handle both new envelope format and legacy flat format
     if isinstance(payload, dict) and "_data" in payload:
-        # New envelope format: check expiration
-        expires_at = payload.get("_expires_at")
-        if expires_at:
+        # New envelope format: tamper-proof expiration recheck
+        env_expires_at = payload.get("_expires_at")
+        if env_expires_at:
             try:
-                exp_dt = datetime.fromisoformat(expires_at)
+                exp_dt = datetime.fromisoformat(env_expires_at)
                 if exp_dt < datetime.now(timezone.utc):
                     logger.warning(
-                        f"Credential for '{service_name}' expired at {expires_at}. "
+                        f"Credential for '{service_name}' expired at "
+                        f"{env_expires_at}. "
                         "Please refresh it with /credential add.",
                         service=service_name,
-                        expires_at=expires_at,
+                        expires_at=env_expires_at,
                     )
                     return None
             except (ValueError, TypeError):

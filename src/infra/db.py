@@ -2274,6 +2274,37 @@ async def init_db():
         ),
     )
 
+    # ── Z6 T2A: credentials hardening — scope, rotated_at, expires_at,
+    # key_version, schema_id columns. expires_at is promoted from inside the
+    # encrypted envelope to an indexable column (still also kept inside the
+    # envelope for tamper-proofing). scope defaults to 'read_write' for
+    # legacy rows so they remain usable. key_version=1 means the row was
+    # encrypted with KUTAY_MASTER_KEY (or KUTAY_MASTER_KEY_v1).
+    await apply_migration(
+        version="2026-05-11-credentials-hardening",
+        sql=(
+            "ALTER TABLE credentials "
+            "ADD COLUMN scope TEXT DEFAULT 'read_write';\n"
+            "ALTER TABLE credentials ADD COLUMN rotated_at TEXT;\n"
+            "ALTER TABLE credentials ADD COLUMN expires_at TEXT;\n"
+            "ALTER TABLE credentials "
+            "ADD COLUMN key_version INTEGER DEFAULT 1;\n"
+            "ALTER TABLE credentials ADD COLUMN schema_id TEXT;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE credentials DROP COLUMN schema_id;\n"
+            "ALTER TABLE credentials DROP COLUMN key_version;\n"
+            "ALTER TABLE credentials DROP COLUMN expires_at;\n"
+            "ALTER TABLE credentials DROP COLUMN rotated_at;\n"
+            "ALTER TABLE credentials DROP COLUMN scope;\n"
+        ),
+        description=(
+            "Z6 T2A: credentials.scope/rotated_at/expires_at/key_version/"
+            "schema_id columns hoisted from encrypted envelope so vault "
+            "metadata is queryable without decryption."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

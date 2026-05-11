@@ -1324,6 +1324,33 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "legal_document_render":
+        # Z6 T4A — render legal docs from compliance_overlay.required_documents[]
+        # at step 12.1. Mechanical predecessor to 12.1b's LLM placeholder-fill.
+        from mr_roboto.executors.legal_document_render import (
+            legal_document_render as _legal_render,
+        )
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _legal_render(
+                mission_id=int(mid) if mid is not None else 0,
+                workspace_path=payload.get("workspace_path"),
+                overlay_obj=payload.get("overlay_obj"),
+                lang=str(payload.get("lang") or "en"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"legal_document_render: reason={res.get('reason')} "
+                        f"errors={res.get('errors')} skipped={res.get('skipped')}"
+                    )[:500],
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "apply_migration":
         # Z2 T3A — migration_apply post-hook.
         from mr_roboto.apply_migration import apply_migration as _apply_migration

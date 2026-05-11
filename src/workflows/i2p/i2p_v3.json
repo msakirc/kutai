@@ -8661,13 +8661,10 @@
       "id": "12.1",
       "phase": "phase_12",
       "name": "legal_documents",
-      "agent": "writer",
-      "difficulty": "medium",
-      "tools_hint": [
-        "read_file",
-        "write_file",
-        "web_search"
-      ],
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
       "depends_on": [
         "9.10"
       ],
@@ -8676,6 +8673,7 @@
         "no_legal"
       ],
       "input_artifacts": [
+        "compliance_overlay",
         "prd_final_summary",
         "data_requirements",
         "integration_requirements"
@@ -8685,8 +8683,50 @@
         "privacy_policy",
         "cookie_policy"
       ],
-      "instruction": "Draft Terms of Service (service description, user eligibility, acceptable use, IP rights, liability limitation, dispute resolution, termination). Draft Privacy Policy (data collected, legal basis, storage/protection, third-party sharing, user rights, retention, cookies, children's privacy). Draft Cookie Policy (catalog every cookie, classify as essential/optional, explain management). Add [LEGAL REVIEW REQUIRED] placeholders for jurisdiction-specific clauses.",
-      "done_when": "terms_of_service, privacy_policy, and cookie_policy exist.",
+      "produces": [
+        "mission_{mission_id}/.compliance/legal/terms_of_service.md",
+        "mission_{mission_id}/.compliance/legal/privacy_policy.md",
+        "mission_{mission_id}/.compliance/legal/cookie_policy.md"
+      ],
+      "payload": {
+        "action": "legal_document_render",
+        "lang": "en"
+      },
+      "instruction": "Z6 T4A — render legal-doc drafts from compliance_overlay.required_documents[]. No LLM. Each writer-facing doc_type (tos / privacy_policy / cookie_banner) renders to mission_<id>/.compliance/legal/<artifact>.md via compliance_template_render. 12.1b (writer) then fills [LEGAL REVIEW REQUIRED] placeholders that can be filled from PRD + overlay context.",
+      "done_when": "terms_of_service, privacy_policy, and cookie_policy markdown files exist under mission_<id>/.compliance/legal/.",
+      "context": {}
+    },
+    {
+      "id": "12.1b",
+      "phase": "phase_12",
+      "name": "legal_documents_fill",
+      "agent": "writer",
+      "difficulty": "medium",
+      "tools_hint": [
+        "read_file",
+        "write_file"
+      ],
+      "depends_on": [
+        "12.1"
+      ],
+      "may_need_clarification": false,
+      "skip_when": [
+        "no_legal"
+      ],
+      "input_artifacts": [
+        "terms_of_service",
+        "privacy_policy",
+        "cookie_policy",
+        "compliance_overlay",
+        "prd_final_summary"
+      ],
+      "output_artifacts": [
+        "terms_of_service",
+        "privacy_policy",
+        "cookie_policy"
+      ],
+      "instruction": "Read the mechanical drafts at mission_<id>/.compliance/legal/{terms_of_service,privacy_policy,cookie_policy}.md and fill `[LEGAL REVIEW REQUIRED]` placeholders with project specifics drawn from the PRD final summary and compliance_overlay (service name, controller contact, data categories, retention period, declared lawful basis, listed sub-processors, etc.). Do NOT fill placeholders for items that require licensed counsel — keep `[LEGAL REVIEW REQUIRED]` markers on: jurisdiction-specific clauses (governing law, venue, dispute resolution, indemnification limits, liability caps), minimum-age threshold beyond what the overlay declares, WCAG conformance level, and any tax / regulator-specific obligations. Overwrite the three artifact files in place; do not move them.",
+      "done_when": "terms_of_service, privacy_policy, and cookie_policy reflect PRD/overlay specifics; [LEGAL REVIEW REQUIRED] markers remain only on counsel-required items.",
       "artifact_schema": {
         "terms_of_service": {
           "type": "markdown",
@@ -8765,7 +8805,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "12.1",
+        "12.1b",
         "12.2"
       ],
       "may_need_clarification": false,
@@ -8853,7 +8893,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "12.1",
+        "12.1b",
         "12.3",
         "12.4"
       ],

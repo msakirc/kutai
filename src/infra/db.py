@@ -2305,6 +2305,43 @@ async def init_db():
         ),
     )
 
+    # ── Z6 T2C: credential_access_log audit table ──────────────────────────
+    # One row per get/store/rotate/delete on credential_store. Captures
+    # mission/task/agent/model context via ContextVar so we can prove who
+    # pulled a secret when. `success=0` rows include `error` text.
+    await apply_migration(
+        version="2026-05-11-credential-access-log",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS credential_access_log ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " service_name TEXT NOT NULL,"
+            " mission_id INTEGER,"
+            " task_id INTEGER,"
+            " agent TEXT,"
+            " model_id TEXT,"
+            " action TEXT NOT NULL,"
+            " scope TEXT,"
+            " success INTEGER NOT NULL,"
+            " error TEXT,"
+            " accessed_at TEXT NOT NULL"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_cred_log_service "
+            "ON credential_access_log(service_name);\n"
+            "CREATE INDEX IF NOT EXISTS idx_cred_log_mission "
+            "ON credential_access_log(mission_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_cred_log_mission;\n"
+            "DROP INDEX IF EXISTS idx_cred_log_service;\n"
+            "DROP TABLE IF EXISTS credential_access_log;\n"
+        ),
+        description=(
+            "Z6 T2C: credential_access_log audit trail. "
+            "Every get/store/rotate/delete is logged with mission/task/"
+            "agent/model context from ContextVar."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

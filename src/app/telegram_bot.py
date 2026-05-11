@@ -3464,7 +3464,8 @@ class TelegramInterface:
                 "/credential list — Show stored services\n"
                 "/credential add <service> <json\\_data> \\[--unsafe\\] — Store credential\n"
                 "/credential remove <service> — Delete credential\n"
-                "/credential schema <service> — Show required/optional fields\n\n"
+                "/credential schema <service> — Show required/optional fields\n"
+                "/credential log <service> \\[N\\] — Show last N access events\n\n"
                 "Example:\n"
                 '/credential add github \\{"token": "ghp\\_xxx"\\}',
                 parse_mode="Markdown",
@@ -3566,6 +3567,46 @@ class TelegramInterface:
             except Exception as e:
                 await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
+        elif sub == "log":
+            # /credential log <service> [N]
+            if len(context.args) < 2:
+                await self._reply(update,
+                    "Usage: /credential log <service> \\[N\\]",
+                    parse_mode="Markdown",
+                )
+                return
+            service_name = context.args[1]
+            try:
+                limit = int(context.args[2]) if len(context.args) >= 3 else 20
+            except ValueError:
+                limit = 20
+            try:
+                from ..security.credential_audit import recent_events
+
+                events = await recent_events(service_name, limit=limit)
+                if not events:
+                    await self._reply(update,
+                        f"No access events for `{service_name}`.",
+                        parse_mode="Markdown",
+                    )
+                    return
+                lines = [f"*Access log: {service_name}* (last {len(events)})"]
+                for e in events:
+                    ok = "✓" if e["success"] else "✗"
+                    when = (e["accessed_at"] or "")[:19]
+                    actor = e.get("agent") or "—"
+                    err = f" err={e['error']}" if e.get("error") else ""
+                    lines.append(
+                        f"`{when}` {ok} {e['action']} "
+                        f"agent={actor} m={e.get('mission_id') or '—'}"
+                        f"{err}"
+                    )
+                await self._reply(update,
+                    "\n".join(lines), parse_mode="Markdown"
+                )
+            except Exception as e:
+                await self._reply(update, f"❌ {_friendly_error(str(e))}")
+
         elif sub == "schema":
             if len(context.args) < 2:
                 await self._reply(update,
@@ -3585,7 +3626,7 @@ class TelegramInterface:
 
         else:
             await self._reply(update,
-                "Unknown subcommand. Use: list, add, remove, or schema."
+                "Unknown subcommand. Use: list, add, remove, schema, or log."
             )
 
     # ─── Workflow Commands ──────────────────────────────────────────────

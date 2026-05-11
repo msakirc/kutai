@@ -173,6 +173,12 @@ async def store_credential(
     now = datetime.now(timezone.utc).isoformat()
 
     db = await get_db()
+    # Detect whether this is a fresh write or an in-place rotation so the
+    # audit log uses the right action verb.
+    pre_cur = await db.execute(
+        "SELECT 1 FROM credentials WHERE service_name = ?", (service_name,)
+    )
+    existed = await pre_cur.fetchone() is not None
     # UPSERT: insert with full metadata; on conflict update only the fields
     # the caller cared about so a partial update doesn't reset, e.g., scope
     # back to the column default. ``rotated_at`` is bumped on every update
@@ -212,6 +218,17 @@ async def store_credential(
         scope=scope or "read_write",
         has_expires_at=bool(expires_at),
     )
+    # Audit trail (T2C). First store is "write"; re-store is "rotate".
+    try:
+        from . import credential_audit
+        await credential_audit.log_access(
+            service_name,
+            "rotate" if existed else "write",
+            True,
+            scope=scope or "read_write",
+        )
+    except Exception:
+        pass
 
 
 async def get_credential(service_name: str) -> dict | None:
@@ -226,22 +243,34 @@ async def get_credential(service_name: str) -> dict | None:
     """
     from ..infra.db import get_db
 
+    async def _audit(success: bool, scope: str | None, error: str | None):
+        try:
+            from . import credential_audit
+            await credential_audit.log_access(
+                service_name, "read", success, scope=scope, error=error
+            )
+        except Exception:
+            pass
+
     db = await get_db()
     cursor = await db.execute(
-        "SELECT encrypted_data, expires_at FROM credentials "
+        "SELECT encrypted_data, expires_at, scope FROM credentials "
         "WHERE service_name = ?",
         (service_name,),
     )
     row = await cursor.fetchone()
     if row is None:
+        await _audit(False, None, "not_found")
         return None
 
     try:
         encrypted_data = row[0] if isinstance(row, tuple) else row["encrypted_data"]
         col_expires_at = row[1] if isinstance(row, tuple) else row["expires_at"]
+        row_scope = row[2] if isinstance(row, tuple) else row["scope"]
     except (IndexError, KeyError):
         encrypted_data = row[0]
         col_expires_at = None
+        row_scope = None
 
     # Cheap pre-check via the indexed column — skip decrypt entirely if expired
     if col_expires_at:
@@ -255,6 +284,7 @@ async def get_credential(service_name: str) -> dict | None:
                     service=service_name,
                     expires_at=col_expires_at,
                 )
+                await _audit(False, row_scope, "expired")
                 return None
         except (ValueError, TypeError):
             pass
@@ -268,6 +298,7 @@ async def get_credential(service_name: str) -> dict | None:
             service=service_name,
             error=str(e),
         )
+        await _audit(False, row_scope, f"decrypt_failed: {e}")
         return None
 
     # Handle both new envelope format and legacy flat format
@@ -285,12 +316,15 @@ async def get_credential(service_name: str) -> dict | None:
                         service=service_name,
                         expires_at=env_expires_at,
                     )
+                    await _audit(False, row_scope, "expired_envelope")
                     return None
             except (ValueError, TypeError):
                 pass  # malformed expiration — treat as non-expiring
+        await _audit(True, row_scope, None)
         return payload["_data"]
 
     # Legacy flat format (no envelope) — return as-is
+    await _audit(True, row_scope, None)
     return payload
 
 
@@ -307,6 +341,16 @@ async def delete_credential(service_name: str) -> bool:
     deleted = cursor.rowcount > 0
     if deleted:
         logger.info(f"Deleted credential for service: {service_name}", service=service_name)
+    try:
+        from . import credential_audit
+        await credential_audit.log_access(
+            service_name,
+            "delete",
+            deleted,
+            error=None if deleted else "not_found",
+        )
+    except Exception:
+        pass
     return deleted
 
 

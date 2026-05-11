@@ -7112,6 +7112,36 @@
       "context": {}
     },
     {
+      "id": "8.0a",
+      "phase": "phase_8",
+      "name": "recipe_pick_all",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": [
+        "8.0"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "implementation_backlog",
+        "tech_stack_detected"
+      ],
+      "output_artifacts": [],
+      "produces": [
+        "mission/recipe_picks.json"
+      ],
+      "payload": {
+        "action": "pick_recipe",
+        "feature_decl": "",
+        "stack": "{tech_stack_detected}",
+        "recipe_picks_path": "mission/recipe_picks.json"
+      },
+      "instruction": "Pick recipes for all features in implementation_backlog. For each backlog entry, call pick_recipe with the feature name and detected tech stack. Emit recipe_picks.json mapping feature_name to pick result.",
+      "done_when": "recipe_picks.json written with entries for all backlog features (null allowed for no match).",
+      "context": {
+        "pin_recipes": true
+      }
+    },
+    {
       "id": "8.spike",
       "phase": "phase_8",
       "name": "feasibility_spike",

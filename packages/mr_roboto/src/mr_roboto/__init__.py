@@ -33,6 +33,7 @@ from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
 from mr_roboto.run_jest import run_jest
 from mr_roboto.run_vitest import run_vitest
+from mr_roboto.run_semgrep import run_semgrep
 from mr_roboto.parse_og_tags import parse_og_tags
 from mr_roboto.http_check import http_check
 from mr_roboto.emit_preview_url import emit_preview_url
@@ -109,6 +110,7 @@ __all__ = [
     "run_pytest",
     "run_jest",
     "run_vitest",
+    "run_semgrep",
     "parse_og_tags",
     "http_check",
     "emit_preview_url",
@@ -1240,10 +1242,7 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "check_imports":
-        # Z2 T2B — static import checker. Verifies that every import in the
-        # produced files resolves against the project manifest (pyproject.toml /
-        # requirements*.txt for Python; package.json for TS/JS). Missing imports
-        # → blocker verdict; verdict feeds back to source task via posthook path.
+        # Z2 T2B — static import checker.
         from mr_roboto.check_imports import check_imports as _check_imports
         try:
             res = await _check_imports(
@@ -1262,6 +1261,30 @@ async def _run_dispatch(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=f"check_imports: missing={summary}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "run_semgrep":
+        # Z2 T2C — pattern_lint post-hook. Soft-skips when semgrep absent.
+        from mr_roboto.run_semgrep import run_semgrep as _run_semgrep
+        try:
+            res = await _run_semgrep(
+                mission_id=task.get("mission_id"),
+                target_files=payload.get("target_files"),
+                rule_pack_path=payload.get("rule_pack_path"),
+                workspace_path=payload.get("workspace_path"),
+                timeout_s=float(payload.get("timeout_s", 120.0)),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"run_semgrep: exit={res.get('exit')} "
+                        f"err={res.get('error') or ''}"
+                    ),
                     result=res,
                 )
             return Action(status="completed", result=res)

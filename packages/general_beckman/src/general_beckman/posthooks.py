@@ -122,9 +122,6 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         kind="imports_check",
         verb="check_imports",
         default_severity="blocker",
-        # Auto-wire on steps that produce Python or TypeScript/TSX files.
-        # Pure static analysis (ast + regex); no network, no runtime.
-        # Missing dep → blocker. Unused declared dep → deferred (noisy).
         auto_wire_triggers=["*.py", "*.ts", "*.tsx"],
         description=(
             "Verify imports resolve against project manifest "
@@ -133,12 +130,9 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         ),
     ),
     # Z2 T2A — test_run.
-    # Auto-wire when a step produces test files.  The mr_roboto dispatcher
-    # picks the right runner (run_pytest / run_jest / run_vitest) from the
-    # target file extensions + optional stack_hint in the payload.
     "test_run": PostHookSpec(
         kind="test_run",
-        verb="run_tests",  # logical key; actual runner picked at dispatch
+        verb="run_tests",
         default_severity="blocker",
         auto_wire_triggers=[
             "tests/*",
@@ -152,6 +146,17 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Run pytest/jest/vitest on produced test files; fail on red. "
             "Runner picked by file extension; slow suite (>120s) warns but "
             "does not block."
+        ),
+    ),
+    # Z2 T2C — pattern_lint via semgrep.
+    "pattern_lint": PostHookSpec(
+        kind="pattern_lint",
+        verb="run_semgrep",
+        default_severity="warning",
+        auto_wire_triggers=["*.py", "*.ts", "*.tsx", "*.js", "*.jsx"],
+        description=(
+            "Run semgrep with forbidden-patterns rule pack; warn on hits. "
+            "Soft-skipped when semgrep is not installed."
         ),
     ),
 }

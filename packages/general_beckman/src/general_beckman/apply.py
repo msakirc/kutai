@@ -754,6 +754,41 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
                        source_id=source_id, verifier_task_id=task["id"])
         return
 
+    if posthook_kind == "pattern_lint":
+        # Mechanical semgrep runner DLQ'd (e.g. workspace permission denied,
+        # unexpected semgrep crash).  pattern_lint is v1-warning-only so a
+        # DLQ here does NOT cascade the source to failed — we soft-drop the
+        # pending kind and let the source advance.  This mirrors the
+        # soft-skip path used when semgrep is not installed.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "pattern_lint"
+        ]
+        source_ctx["_pattern_lint_dlq_reason"] = error[:300]
+        new_pending = source_ctx["_pending_posthooks"]
+        if not new_pending:
+            await update_task(
+                source_id,
+                status="completed",
+                context=_json.dumps(source_ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning(
+            "pattern_lint DLQ soft-dropped (warning-only kind)",
+            source_id=source_id, linter_task_id=task["id"],
+        )
+        return
+
     if agent_type == "artifact_summarizer":
         artifact_name = ctx.get("artifact_name") or ""
         kind = f"summary:{artifact_name}"
@@ -868,7 +903,6 @@ def _posthook_agent_and_payload(
             "review_excluded_models": list(source_ctx.get("review_excluded_models") or []),
         })
     if a.kind == "imports_check":
-        # Z2 T2B — mechanical post-hook: static import checker.
         produces = list(source_ctx.get("produces") or [])
         workspace_path = source_ctx.get("workspace_path") or ""
         return ("mechanical", {
@@ -882,8 +916,6 @@ def _posthook_agent_and_payload(
             },
         })
     if a.kind == "test_run":
-        # Z2 T2A — mr_roboto picks runner (pytest/jest/vitest) from extension
-        # + optional stack_hint.
         produces = list(source_ctx.get("produces") or [])
         return ("mechanical", {
             "source_task_id": a.source_task_id,
@@ -893,6 +925,22 @@ def _posthook_agent_and_payload(
                 "action": "run_tests",
                 "target_files": produces,
                 "stack_hint": source_ctx.get("stack_hint") or "",
+            },
+        })
+    if a.kind == "pattern_lint":
+        # Z2 T2C — semgrep with forbidden-patterns rule pack. Warning-only
+        # in v1; soft-skips when semgrep not installed.
+        from mr_roboto.run_semgrep import DEFAULT_RULE_PACK
+        produces = list(source_ctx.get("produces") or [])
+        rule_pack = str(source_ctx.get("rule_pack_path") or DEFAULT_RULE_PACK)
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "pattern_lint",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_semgrep",
+                "target_files": produces,
+                "rule_pack_path": rule_pack,
             },
         })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
@@ -1282,15 +1330,7 @@ async def _apply_code_review_verdict(
 async def _apply_test_run_verdict(
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
 ) -> None:
-    """Apply a test_run post-hook verdict back to the source task.
-
-    Pass: drop ``test_run`` from pending; if no other post-hooks remain,
-    mark source completed.  Slow-suite warning (>120s) in ``verdict.raw``
-    is noted in ctx but does NOT block.
-    Fail: retry source with the test output as feedback.  Any red exit
-    (failed/errors > 0, timed_out, spawn error) is severity=blocker.
-    Import errors in the test file count as red — exit 1, total=0.
-    """
+    """Apply a test_run post-hook verdict back to the source task."""
     import json as _json
     from src.infra.db import update_task
 
@@ -1410,6 +1450,69 @@ async def _apply_test_run_verdict(
     )
 
 
+async def _apply_pattern_lint_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T2C — pattern_lint is warning-only in v1.
+
+    Findings surfaced in ctx as ``_pattern_lint_findings`` but never retry
+    or DLQ the source. Soft-skipped when semgrep not installed.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    findings = raw.get("findings") or []
+    skipped = bool(raw.get("skipped"))
+
+    if findings:
+        ctx["_pattern_lint_findings"] = findings[:50]
+        blocker_count = int(raw.get("blocker_count") or 0)
+        warning_count = int(raw.get("warning_count") or 0)
+        logger.info(
+            "pattern_lint: findings surfaced (warning-only, not retrying)",
+            source_id=verdict.source_task_id,
+            findings=len(findings),
+            blockers=blocker_count,
+            warnings=warning_count,
+            skipped=skipped,
+        )
+    elif skipped:
+        logger.debug(
+            "pattern_lint: semgrep not installed, soft-skipped",
+            source_id=verdict.source_task_id,
+        )
+
+    new_pending = [k for k in pending if k != "pattern_lint"]
+    ctx["_pending_posthooks"] = new_pending
+
+    if not new_pending:
+        await update_task(
+            verdict.source_task_id,
+            status="completed",
+            context=_json.dumps(ctx),
+            error=None,
+            error_category=None,
+            next_retry_at=None,
+            retry_reason=None,
+            failed_in_phase=None,
+        )
+        await _spawn_workflow_advance_if_mission(source, verdict.raw)
+        try:
+            from general_beckman import _send_step_progress
+            from src.infra.db import get_task
+            fresh = await get_task(verdict.source_task_id)
+            if fresh:
+                await _send_step_progress(fresh, "completed", verdict.raw or {})
+        except Exception:
+            pass
+    else:
+        await update_task(
+            verdict.source_task_id,
+            context=_json.dumps(ctx),
+        )
+
+
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind == "grade":
         return f"Grade task #{a.source_task_id}"
@@ -1424,6 +1527,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Grounding check for #{a.source_task_id}"
     if a.kind == "test_run":
         return f"Test run for #{a.source_task_id}"
+    if a.kind == "pattern_lint":
+        return f"Pattern lint for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -1590,6 +1695,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
 
     if a.kind == "test_run":
         await _apply_test_run_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "pattern_lint":
+        await _apply_pattern_lint_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return

@@ -220,10 +220,12 @@ async def legal_document_render(
         seen_artifacts.add(artifact_name)
 
     # Best-effort: register each rendered file as a named artifact so 12.1b
-    # can resolve it. Failure is logged but does not flip ok.
+    # can resolve it. Failure is logged but does not flip ok. Z6 T7D
+    # swapped the legacy ``src.infra.db.register_artifact`` (which never
+    # existed) for the dedicated helper in ``src.infra.artifacts_register``.
     if artifacts_to_register:
         try:
-            from src.infra.db import register_artifact  # type: ignore
+            from src.infra.artifacts_register import register_artifact
         except ImportError:  # pragma: no cover
             register_artifact = None  # type: ignore[assignment]
         if register_artifact is not None:
@@ -231,8 +233,9 @@ async def legal_document_render(
                 try:
                     await register_artifact(
                         mission_id=int(mission_id),
-                        name=name,
-                        path=path,
+                        artifact_name=name,
+                        artifact_path=path,
+                        domain_keywords=["compliance", "legal", name],
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.debug(

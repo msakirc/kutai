@@ -123,12 +123,25 @@ async def vendor_call_tool(
             "cap_usd": cap,
         })
 
-    # 3. Audit log. TODO(T2C): once the credential audit log lands, route
-    # via the shared audit channel. For now plain logger.info.
+    # 3. Audit context — Z6 T7D wires this through the shared
+    # credential_audit channel. Adapters pull credentials via
+    # get_credential(), which calls credential_audit.log_access() and
+    # reads mission/task/agent from the contextvar set here. No
+    # separate vendor_call_audit_log table needed; credential_access_log
+    # already captures the right context for every vendor_call.
+    try:
+        _mid = int(mission_id) if mission_id is not None else None
+    except (TypeError, ValueError):
+        _mid = None
+    try:
+        _tid = int(task_id) if task_id is not None else None
+    except (TypeError, ValueError):
+        _tid = None
+
     logger.info(
         "vendor_call invoked",
         agent=agent, service=service, action=action,
-        mission_id=mission_id, task_id=task_id, cost_estimate_usd=cost_f,
+        mission_id=_mid, task_id=_tid, cost_estimate_usd=cost_f,
     )
 
     # 4. Resolve adapter.
@@ -155,9 +168,41 @@ async def vendor_call_tool(
             "available": available,
         })
 
-    # 5. Execute.
+    # 5. Execute inside an audit_context so credential reads emitted by
+    # the adapter pick up the right (mission, task, agent) attribution.
     try:
-        result = await adapter.execute(action, params_dict)
+        from src.security._audit_context import audit_context
+    except ImportError:  # pragma: no cover
+        audit_context = None  # type: ignore[assignment]
+
+    try:
+        from src.security.credential_audit import log_access as _log_cred
+    except ImportError:  # pragma: no cover
+        _log_cred = None  # type: ignore[assignment]
+
+    async def _run():
+        return await adapter.execute(action, params_dict)
+
+    try:
+        if audit_context is not None:
+            async with audit_context(
+                mission_id=_mid, task_id=_tid, agent=agent,
+            ):
+                # Log the vendor_call invocation explicitly so a service
+                # whose adapter doesn't pull a fresh credential per call
+                # (e.g. cached client) still shows up in /credential log.
+                if _log_cred is not None:
+                    try:
+                        await _log_cred(
+                            service_name=service,
+                            action="read",
+                            success=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                result = await _run()
+        else:
+            result = await _run()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "vendor_call raised", service=service, action=action,

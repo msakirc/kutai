@@ -9748,27 +9748,70 @@
       "reversibility": "full"
     },
     {
-      "id": "13.12",
+      "id": "13.11b",
       "phase": "phase_13",
-      "name": "payment_flow_test",
-      "agent": "executor",
-      "difficulty": "medium",
-      "tools_hint": [
-        "shell",
-        "http_request"
-      ],
+      "name": "stripe_provision_products",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
       "depends_on": [
-        "13.6"
+        "13.6",
+        "7.0a"
       ],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
+      "skip_when": "monetization_strategy.billing.provider != 'stripe'",
       "input_artifacts": [
         "monetization_strategy"
       ],
       "output_artifacts": [
+        "stripe_provisioned"
+      ],
+      "payload": {
+        "action": "stripe_provision_products"
+      },
+      "instruction": "Z6 T5B — drive vendor_call(stripe, create_product/create_price) for every priced item in monetization_strategy.products[]. Idempotent via metadata.kutay_id (re-runs detect existing products and skip). Output artifact stripe_provisioned is consumed by 13.12 payment_flow_test.",
+      "done_when": "stripe_provisioned exists with one item per priced product (or skipped when no Stripe billing).",
+      "artifact_schema": {
+        "stripe_provisioned": {
+          "type": "object",
+          "required_fields": [
+            "items"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "context": {
+        "estimated_output_tokens": 0
+      },
+      "reversibility": "irreversible"
+    },
+    {
+      "id": "13.12",
+      "phase": "phase_13",
+      "name": "payment_flow_test",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "13.6",
+        "13.11b"
+      ],
+      "may_need_clarification": false,
+      "skip_when": "monetization_strategy.billing.provider != 'stripe'",
+      "input_artifacts": [
+        "monetization_strategy",
+        "stripe_provisioned"
+      ],
+      "output_artifacts": [
         "payment_flow_results"
       ],
-      "instruction": "Test complete payment flow end-to-end in sandbox mode: checkout, payment confirmation, subscription management, upgrade/downgrade, cancellation/refund, webhook processing, receipt generation.",
-      "done_when": "payment_flow_results exists.",
+      "payload": {
+        "action": "stripe_payment_flow_test"
+      },
+      "instruction": "Z6 T5C — exercise the real Stripe test API end-to-end via vendor_call: create test customer → checkout session for first provisioned price → confirm with test card 4242... → list_subscriptions → cancel → retrieve_balance. All vendor_call() — no direct HTTP. On dispute-related failure emit founder_action(kind='legal_counsel'); on generic failure emit kind='generic'.",
+      "done_when": "payment_flow_results exists with each step's pass/fail + stripe IDs + timestamps.",
       "artifact_schema": {
         "payment_flow_results": {
           "type": "object",
@@ -9779,7 +9822,7 @@
         }
       },
       "context": {},
-      "reversibility": "full"
+      "reversibility": "partial"
     },
     {
       "id": "13.13",

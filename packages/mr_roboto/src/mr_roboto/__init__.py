@@ -82,6 +82,7 @@ from mr_roboto.check_imports import check_imports
 from mr_roboto.regen_and_diff import regen_and_diff
 from mr_roboto.apply_migration import apply_migration
 from mr_roboto.inject_lessons import inject_lessons
+from mr_roboto.instantiate_recipe import instantiate_recipe_verb
 
 __all__ = [
     "Action",
@@ -132,6 +133,7 @@ __all__ = [
     "apply_migration",
     "inject_lessons",
     "pick_recipe",
+    "instantiate_recipe_verb",
 ]
 
 
@@ -2290,6 +2292,21 @@ async def _run_dispatch(task: dict) -> Action:
                 stack=str(payload.get("stack") or ""),
                 recipes_dir=str(payload.get("recipes_dir") or "recipes"),
                 min_fit=float(payload.get("min_fit", 0.7)),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "instantiate_recipe":
+        # Z2 T5C — instantiate recipe templates into target directory.
+        from mr_roboto.instantiate_recipe import instantiate_recipe_verb as _inst
+        try:
+            res = await _inst(
+                recipe_name=str(payload.get("recipe_name") or ""),
+                version=str(payload.get("version") or ""),
+                target_dir=str(payload.get("target_dir") or ""),
+                params=dict(payload.get("params") or {}),
+                recipes_dir=str(payload.get("recipes_dir") or "recipes"),
             )
             return Action(status="completed", result=res)
         except Exception as e:

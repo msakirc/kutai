@@ -37,7 +37,7 @@ from jose import jwt, JWTError  # type: ignore[import]
 # ---------------------------------------------------------------------------
 
 # RECIPE_PARAM:JWT_SECRET_ENV=AUTH_JWT_SECRET
-_JWT_SECRET_ENV = "AUTH_JWT_SECRET"  # noqa: S105 — this is an env var NAME, not a secret
+_JWT_SECRET_ENV = "<<JWT_SECRET_ENV>>"  # noqa: S105 — this is an env var NAME, not a secret
 JWT_SECRET = os.environ.get(_JWT_SECRET_ENV, "")
 if not JWT_SECRET:
     raise RuntimeError(
@@ -45,7 +45,7 @@ if not JWT_SECRET:
         "Set it before starting the server."
     )
 
-JWT_ALGO = "HS256"  # RECIPE_PARAM:JWT_ALGO=HS256
+JWT_ALGO = "<<JWT_ALGO>>"  # RECIPE_PARAM:JWT_ALGO=HS256
 JWT_TTL_MIN = 15    # RECIPE_PARAM:JWT_TTL_MIN=15
 REFRESH_TTL_DAYS = 7  # RECIPE_PARAM:REFRESH_TTL_DAYS=7
 
@@ -58,7 +58,9 @@ APP_NAME = "MyApp"  # RECIPE_PARAM:APP_NAME=MyApp
 # RECIPE_PARAM:BCRYPT_COST=12
 # Swap path for argon2id: replace schemes=["bcrypt"] with schemes=["argon2"]
 # and add argon2-cffi to requirements.txt. No other changes needed.
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_BCRYPT_ROUNDS_STR = "<<BCRYPT_COST>>"  # substituted by instantiate_recipe; used below
+_BCRYPT_ROUNDS = int(_BCRYPT_ROUNDS_STR)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=_BCRYPT_ROUNDS)
 
 
 def hash_password(plain: str) -> str:

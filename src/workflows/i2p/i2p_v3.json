@@ -9296,6 +9296,42 @@
       "reversibility": "full"
     },
     {
+      "id": "13.2.verify",
+      "phase": "phase_13",
+      "name": "network_and_security_infra_verify",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "13.2"
+      ],
+      "may_need_clarification": false,
+      "skip_when": "mission.skip_real_vendor_checks == '1'",
+      "input_artifacts": [
+        "dns_configuration"
+      ],
+      "output_artifacts": [
+        "dns_reachability_check"
+      ],
+      "payload": {
+        "action": "vendor_call",
+        "service": "cloudflare",
+        "action_name": "list_zones",
+        "params": {}
+      },
+      "context": {
+        "post_hook": {
+          "service": "cloudflare",
+          "action": "list_zones",
+          "params": {}
+        }
+      },
+      "instruction": "Z6 W3 — mechanical post-config verification: call cloudflare.list_zones() via vendor_call to confirm DNS provider is reachable with the credentials configured in 13.2. Failure emits founder_action(kind='generic') asking the founder to re-check the cloudflare API token. No LLM.",
+      "done_when": "vendor_call returns ok=true.",
+      "reversibility": "full"
+    },
+    {
       "id": "13.3",
       "phase": "phase_13",
       "name": "monitoring_setup",
@@ -9379,6 +9415,42 @@
       },
       "context": {},
       "reversibility": "irreversible"
+    },
+    {
+      "id": "13.3.verify",
+      "phase": "phase_13",
+      "name": "monitoring_setup_verify",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "13.3"
+      ],
+      "may_need_clarification": false,
+      "skip_when": "mission.skip_real_vendor_checks == '1'",
+      "input_artifacts": [
+        "error_tracking_setup"
+      ],
+      "output_artifacts": [
+        "monitoring_reachability_check"
+      ],
+      "payload": {
+        "action": "vendor_call",
+        "service": "sentry",
+        "action_name": "list_projects",
+        "params": {}
+      },
+      "context": {
+        "post_hook": {
+          "service": "sentry",
+          "action": "list_projects",
+          "params": {}
+        }
+      },
+      "instruction": "Z6 W3 — mechanical post-config verification: call sentry.list_projects() via vendor_call to confirm the error-tracking provider is reachable with the credentials wired in 13.3. Failure emits founder_action(kind='generic'). No LLM.",
+      "done_when": "vendor_call returns ok=true.",
+      "reversibility": "full"
     },
     {
       "id": "13.4",

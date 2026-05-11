@@ -2108,6 +2108,22 @@ class TelegramInterface:
     async def cmd_missions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List active missions."""
         missions = await get_active_missions()
+        # Z6 T7B — also surface missions parked in blocked_on_founder_action
+        # so the founder can see them and act. Without this, /missions
+        # showed an empty list every time T1E blocked a mission.
+        try:
+            from src.infra.db import get_db
+            db = await get_db()
+            cur = await db.execute(
+                "SELECT * FROM missions "
+                "WHERE status = 'blocked_on_founder_action' "
+                "ORDER BY priority DESC"
+            )
+            blocked = [dict(r) for r in await cur.fetchall()]
+            if blocked:
+                missions = list(missions) + blocked
+        except Exception:
+            pass
         if not missions:
             await self._reply(update,"No active missions.")
             return

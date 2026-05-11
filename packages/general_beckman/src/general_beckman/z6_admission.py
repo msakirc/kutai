@@ -238,21 +238,61 @@ async def check_z6_admission(
         logger.warning("credential lookup failed", service=matched_kind, error=str(e))
         cred = None
     if not cred:
-        if not await _has_pending_action(mission_id, "credential_paste", step_id):
+        # Z6 T6C: vendors with one-way enrollment (mobile stores) need a
+        # richer card because the founder has to enrol *before* they have
+        # anything to paste back. Pure-API services (vercel, stripe, ...)
+        # use the lighter credential_paste card.
+        enroll_kinds = {"apple_appstore", "google_play"}
+        if matched_kind in enroll_kinds:
+            kind = "vendor_enroll"
+            if matched_kind == "apple_appstore":
+                title = "Enroll in Apple Developer Program + paste App Store Connect API key"
+                instructions = [
+                    "Enroll in the Apple Developer Program at "
+                    "https://developer.apple.com/programs/ (KYC + $99/yr).",
+                    "Open App Store Connect → Users and Access → Integrations "
+                    "→ App Store Connect API. Generate a key with the role "
+                    "your mission needs (App Manager for submit_for_review).",
+                    "Download the AuthKey_<keyid>.p8 file. Copy its full "
+                    "contents (including BEGIN/END markers).",
+                    "Send `/credential add apple_appstore "
+                    "{\"team_id\": \"...\", \"key_id\": \"...\", "
+                    "\"private_key_pem\": \"-----BEGIN PRIVATE KEY-----...\"}` "
+                    "to the bot.",
+                ]
+            else:  # google_play
+                title = "Enroll Google Play developer + paste service account JSON"
+                instructions = [
+                    "Enroll in Google Play Console at "
+                    "https://play.google.com/console/signup ($25 one-time).",
+                    "In Google Cloud Console, create a service account, "
+                    "grant it the Google Play Android Developer role.",
+                    "Generate and download a JSON key for the service "
+                    "account.",
+                    "Send `/credential add google_play "
+                    "{\"service_account_json\": <paste full JSON object>}` "
+                    "to the bot.",
+                ]
+        else:
+            kind = "credential_paste"
+            title = f"Paste {matched_kind} credentials"
+            instructions = [
+                f"Open the {matched_kind} dashboard.",
+                "Generate or copy API credentials.",
+                f"Send `/credential add {matched_kind} "
+                f"{{\"token\": \"<value>\"}}` to the bot.",
+            ]
+
+        if not await _has_pending_action(mission_id, kind, step_id):
             a = await fa.create(
                 mission_id=mission_id,
-                kind="credential_paste",
-                title=f"Paste {matched_kind} credentials",
+                kind=kind,
+                title=title,
                 why=(
                     f"Step {step_id or '?'} needs to call {matched_kind} "
                     f"but no credentials are stored."
                 ),
-                instructions=[
-                    f"Open the {matched_kind} dashboard.",
-                    "Generate or copy API credentials.",
-                    f"Send `/credential add {matched_kind} "
-                    f"{{\"token\": \"<value>\"}}` to the bot.",
-                ],
+                instructions=instructions,
                 blocking_task_id=task_id,
                 blocking_step_id=step_id,
                 expected_output_kind="credential",

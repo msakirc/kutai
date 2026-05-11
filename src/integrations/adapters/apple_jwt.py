@@ -138,11 +138,12 @@ def auth_header_from_credential(cred: dict[str, Any]) -> str:
     """Convenience: build the Authorization header value from a stored
     credential. Used by ``HttpIntegration`` when ``auth_type=='jwt_p8'``.
     """
-    return f"Bearer {mint_apple_jwt(
-        cred['team_id'],
-        cred['key_id'],
-        cred['private_key_pem'],
-    )}"
+    tok = mint_apple_jwt(
+        cred["team_id"],
+        cred["key_id"],
+        cred["private_key_pem"],
+    )
+    return f"Bearer {tok}"
 
 
 __all__ = ["mint_apple_jwt", "auth_header_from_credential"]

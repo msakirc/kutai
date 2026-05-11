@@ -1,0 +1,15 @@
+{
+  "service_name": "apple_appstore",
+  "required_fields": ["team_id", "key_id", "private_key_pem"],
+  "optional_fields": ["bundle_id", "developer_account_email"],
+  "scopes": ["read_only", "read_write"],
+  "default_scope": "read_write",
+  "rotation_recommended_days": 365,
+  "test_endpoint": { "action": "list_apps", "expect_status": 200 },
+  "docs_url": "https://developer.apple.com/documentation/appstoreconnectapi/creating_api_keys_for_app_store_connect_api",
+  "enrollment_notes": [
+    "Apple Developer Program enrollment is one-way: KYC + $99/year.",
+    "After enrollment, mint an API key under Users and Access > Integrations > App Store Connect API.",
+    "The downloaded AuthKey_<keyid>.p8 file contains the private key — paste its entire contents into private_key_pem."
+  ]
+}

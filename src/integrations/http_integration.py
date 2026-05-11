@@ -290,14 +290,58 @@ class HttpIntegration(BaseIntegration):
         }
 
         query_params: dict[str, str] = {}
-        token = cred.get("token") or cred.get("api_key") or cred.get("key", "")
 
-        if self._auth_type == "bearer":
-            headers[self._auth_header] = f"Bearer {token}"
-        elif self._auth_type == "header":
-            headers[self._auth_header] = token
-        elif self._auth_type == "query":
-            query_params[self._auth_query_param] = token
+        # Z6 T6C: non-static auth flows (JWT mint, OAuth service account)
+        # synthesise an Authorization header from credential material each
+        # call. The other paths read a static token field.
+        if self._auth_type == "jwt_p8":
+            try:
+                from .adapters.apple_jwt import auth_header_from_credential
+                headers[self._auth_header] = auth_header_from_credential(cred)
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "error": f"apple jwt mint failed: {e}",
+                }
+        elif self._auth_type == "oauth_service_account":
+            try:
+                from .adapters.google_sa import auth_header_from_credential
+                headers[self._auth_header] = await auth_header_from_credential(
+                    {
+                        "service_account_json": (
+                            cred.get("service_account_json") or cred
+                        ),
+                        "scopes": (
+                            cred.get("scopes")
+                            or self._config.get("oauth_scopes")
+                        ),
+                    }
+                )
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "error": f"google oauth mint failed: {e}",
+                }
+        else:
+            # Static-token paths. Honour ``auth_token_field`` so configs can
+            # name their field explicitly (e.g. stripe ``secret_key``,
+            # sendgrid ``api_key``). Fall back to the historical guess.
+            token_field = self._config.get("auth_token_field")
+            if token_field and token_field != "_synthesized":
+                token = cred.get(token_field) or ""
+            else:
+                token = (
+                    cred.get("token")
+                    or cred.get("api_key")
+                    or cred.get("key", "")
+                )
+
+            if self._auth_type == "bearer":
+                headers[self._auth_header] = f"Bearer {token}"
+            elif self._auth_type == "header":
+                headers[self._auth_header] = token
+            elif self._auth_type == "query":
+                query_params[self._auth_query_param] = token
 
         # Separate body params from query params for GET
         body_params = None

@@ -117,6 +117,30 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "call per produces slot.  Fires before verify_artifacts."
         ),
     ),
+    # T2A: test_run ----------------------------------------------------------------
+    # Auto-wire when a step produces test files.  The mr_roboto dispatcher
+    # picks the right runner (run_pytest / run_jest / run_vitest) from the
+    # target file extensions + optional stack_hint in the payload.
+    # Idempotent: if the kind is already in post_hooks it is never added twice
+    # (enforced by _auto_wire_posthooks in expander.py).
+    "test_run": PostHookSpec(
+        kind="test_run",
+        verb="run_tests",  # logical key; actual runner picked at dispatch
+        default_severity="blocker",
+        auto_wire_triggers=[
+            "tests/*",
+            "test_*.py",
+            "*.test.ts",
+            "*.test.tsx",
+            "*.spec.ts",
+            "*.spec.tsx",
+        ],
+        description=(
+            "Run pytest/jest/vitest on produced test files; fail on red. "
+            "Runner picked by file extension; slow suite (>120s) warns but "
+            "does not block."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

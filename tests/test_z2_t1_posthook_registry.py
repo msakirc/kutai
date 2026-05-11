@@ -21,12 +21,11 @@ from general_beckman.posthooks import (
 # Registry shape
 # ---------------------------------------------------------------------------
 
-def test_registry_contains_exactly_three_starter_kinds():
-    assert set(POST_HOOK_REGISTRY.keys()) == {
-        "verify_artifacts",
-        "code_review",
-        "grounding",
-    }
+def test_registry_contains_starter_kinds():
+    # Starter set; T2/T3 agents extend this — assert superset, not equality.
+    assert {"verify_artifacts", "code_review", "grounding"}.issubset(
+        set(POST_HOOK_REGISTRY.keys())
+    )
 
 
 def test_registry_values_are_posthookspec():

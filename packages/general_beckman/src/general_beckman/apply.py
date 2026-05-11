@@ -867,6 +867,26 @@ def _posthook_agent_and_payload(
             "produces": produces,
             "review_excluded_models": list(source_ctx.get("review_excluded_models") or []),
         })
+    if a.kind == "imports_check":
+        # Z2 T2B — mechanical post-hook: static import checker.
+        # Passes the step's declared `produces` list as `target_files`;
+        # mr_roboto.check_imports analyses each file against the project
+        # manifest and returns missing imports as blockers.
+        # Verdict interpretation:
+        #   missing import present → blocker (action status="failed")
+        #   unused declared dep     → deferred (warn only; skipped in v1)
+        produces = list(source_ctx.get("produces") or [])
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "imports_check",
+            "executor": "mechanical",
+            "payload": {
+                "action": "check_imports",
+                "target_files": produces,
+                "workspace_path": workspace_path,
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 

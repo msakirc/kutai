@@ -2183,6 +2183,33 @@ async def init_db():
         ),
     )
 
+    # ── Z2 T5A: recipe_pin_log — recipe pinning ledger ───────────────────────
+    await apply_migration(
+        version="2026-05-11-recipe-pin-log",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS recipe_pin_log ("
+            " id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id  INTEGER NOT NULL,"
+            " recipe_name TEXT    NOT NULL,"
+            " version     TEXT    NOT NULL,"
+            " fit_score   REAL    NOT NULL DEFAULT 1.0,"
+            " pinned_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " UNIQUE(mission_id, recipe_name)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_recipe_pin_log_mission "
+            "ON recipe_pin_log(mission_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_recipe_pin_log_mission;\n"
+            "DROP TABLE IF EXISTS recipe_pin_log;\n"
+        ),
+        description=(
+            "Z2 T5A recipe library substrate: recipe_pin_log table + index. "
+            "Tracks which recipe version was pinned to each mission at mission start. "
+            "UNIQUE(mission_id, recipe_name) prevents silent upgrades mid-mission."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

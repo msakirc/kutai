@@ -1,0 +1,23 @@
+name: auth
+version: v1
+description: "Email-password + JWT/session authentication"
+requires:
+  tech_stack:
+    - "fastapi+postgres+nextjs"
+    - "fastapi+sqlite+nextjs"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - migration_apply
+  - test_run
+  - pattern_lint
+templates:
+  backend: backend.template.py
+  frontend: frontend.template.tsx
+  migrations: migrations/
+  tests: tests/
+prompts:
+  fastapi: prompts/fastapi.md
+  nextjs: prompts/nextjs.md
+lessons_domain: auth

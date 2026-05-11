@@ -61,6 +61,7 @@ from mr_roboto import init_mission_github_repo as init_mission_github_repo_modul
 from mr_roboto import find_similar_missions as find_similar_missions_module  # noqa: F401
 from mr_roboto import surface_prior_mission_hints as surface_prior_mission_hints_module  # noqa: F401
 from mr_roboto.prior_art_min_coverage import prior_art_min_coverage
+from mr_roboto.pick_recipe import pick_recipe
 # NOTE: do NOT `from mr_roboto.critic_gate import critic_gate` — that would
 # shadow the submodule on the mr_roboto package namespace and break
 # `patch("mr_roboto.critic_gate._persist")` style mocking. Import the
@@ -130,6 +131,7 @@ __all__ = [
     "regen_and_diff",
     "apply_migration",
     "inject_lessons",
+    "pick_recipe",
 ]
 
 
@@ -2260,9 +2262,6 @@ async def _run_dispatch(task: dict) -> Action:
 
     if action == "inject_lessons":
         # Z2 T4C — cross-mission lesson injector.
-        # Reads top-N lessons for a given stack/domain from mission_lessons
-        # (populated by T4A/T4B) and writes them to the mission context bucket
-        # as `lessons_top_n`. Coulson renders the bucket as "## Watch out for".
         from mr_roboto.inject_lessons import inject_lessons as _inject_lessons
         try:
             mid = task.get("mission_id") or payload.get("mission_id")
@@ -2276,6 +2275,21 @@ async def _run_dispatch(task: dict) -> Action:
                 stack=str(payload.get("stack") or ""),
                 domain=payload.get("domain"),
                 limit=int(payload.get("limit") or 5),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "pick_recipe":
+        # Z2 T5A — match recipe library against stack + feature_decl.
+        from mr_roboto.pick_recipe import pick_recipe as _pick_recipe
+        try:
+            res = await _pick_recipe(
+                mission_id=task.get("mission_id"),
+                feature_decl=str(payload.get("feature_decl") or ""),
+                stack=str(payload.get("stack") or ""),
+                recipes_dir=str(payload.get("recipes_dir") or "recipes"),
+                min_fit=float(payload.get("min_fit", 0.7)),
             )
             return Action(status="completed", result=res)
         except Exception as e:

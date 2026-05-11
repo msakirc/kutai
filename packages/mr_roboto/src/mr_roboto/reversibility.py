@@ -122,6 +122,8 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "mission_deliverable_bundle": "irreversible",  # posts to Telegram thread
     # ---- Z2 T4C cross-mission lesson injector ---------------------------
     "inject_lessons": "full",  # read-only query + writes to mission context JSON only
+    # ---- Z2 T5A recipe library substrate --------------------------------
+    "pick_recipe": "full",  # read-only: scans recipes/ dir, no writes
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

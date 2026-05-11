@@ -1,4 +1,4 @@
-"""Z6 T1C — real-world bridge admission gate.
+"""Z6 T1C + T6B — real-world bridge admission gate.
 
 Before a ``needs_real_tools=true`` task gets dispatched, three prerequisites
 must hold:

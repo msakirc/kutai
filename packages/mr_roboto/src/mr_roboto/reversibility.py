@@ -127,6 +127,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "pick_recipe": "full",  # read-only: scans recipes/ dir, no writes
     # ---- Z2 T5C recipe instantiation ------------------------------------
     "instantiate_recipe": "partial",  # writes files to target_dir; git-reversible
+    "instantiate_picked_recipes": "partial",  # batch wrapper for instantiate_recipe
     # ---- Z6 T3A vendor-call mechanical ---------------------------------
     "vendor_call": "partial",  # real-world API call; per-call adapter knows
     # ---- Z6 T5 Stripe family --------------------------------------------

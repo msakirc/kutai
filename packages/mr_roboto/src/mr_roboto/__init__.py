@@ -2518,4 +2518,21 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "instantiate_picked_recipes":
+        # Z2 Item-2 followup — consume recipe_picks.json, instantiate
+        # each non-null pick, emit recipe_instantiations.json manifest.
+        from mr_roboto.instantiate_picked_recipes import (
+            instantiate_picked_recipes as _inst_picks,
+        )
+        try:
+            res = await _inst_picks(
+                mission_id=task.get("mission_id"),
+                recipe_picks_path=str(payload.get("recipe_picks_path") or "mission/recipe_picks.json"),
+                manifest_path=str(payload.get("manifest_path") or "mission/recipe_instantiations.json"),
+                recipes_dir=str(payload.get("recipes_dir") or "recipes"),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

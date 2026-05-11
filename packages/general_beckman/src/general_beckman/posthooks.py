@@ -79,14 +79,28 @@ class PostHookSpec:
 # `_apply_posthook_verdict`, but the *discovery* path is fully data-driven.
 #
 # SEVERITY_RAMP_TODO — v1 ramp policy (Z2 v2 plan):
-#   The following kinds currently ship at default_severity="warning" and
-#   should be promoted to "blocker" once semgrep is bundled into the CI
-#   image and verified non-flaky across the full mission corpus:
+#   The following kinds currently ship at default_severity="warning":
 #     - pattern_lint          (T2C, verb=run_semgrep, forbidden.yml)
 #     - design_system_check   (T3C, verb=run_semgrep, design_system.yml)
-#   Tracking lives here (not in an issue tracker) on purpose — the rule
-#   row is the single source of truth, so the promotion is a one-line flip
-#   in this file. Bump occurrences count in this comment when promoting.
+#
+#   What blocks promotion to "blocker" (not just dev preference):
+#     1. semgrep is NOT in `requirements.txt` and not in dev venv (`which
+#        semgrep` returns nothing as of 2026-05-11). Until installed, every
+#        run hits the soft-skip path (ok=True, skipped=True) and findings
+#        can never surface — so flipping severity now is a no-op.
+#     2. The verdict fn `_apply_semgrep_warning_verdict` in apply.py is
+#        write-once: it logs findings, drops the kind from pending, and
+#        advances the source. A real "blocker" promotion needs a sibling
+#        `_apply_semgrep_blocker_verdict` that mirrors
+#        `_apply_test_run_verdict`'s shape — retry-with-feedback + bonus-
+#        budget + DLQ-on-exhaust — and routes by registry.default_severity.
+#     3. The rule packs (forbidden.yml, design_system.yml) ship with seed
+#        rules tuned for warn-on-hit, not block-on-hit. False-positive
+#        rates need profiling on real mission output before promotion.
+#
+#   Promotion steps (when ready): pip install semgrep → verify in CI →
+#   add _apply_semgrep_blocker_verdict in apply.py + route by severity →
+#   flip default_severity to "blocker" here. NOT a one-line flip.
 # ---------------------------------------------------------------------------
 POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     "verify_artifacts": PostHookSpec(
@@ -228,6 +242,76 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "SQLite stack: direct apply via sqlite3. "
             "Postgres: testcontainers (opt-in via enable_testcontainers). "
             "Unknown stack: alembic offline mode (syntax check only)."
+        ),
+    ),
+    # Z1 T5A (P6) — declared on step 1.11a (compliance_overlay_generation).
+    "compliance_template_present": PostHookSpec(
+        kind="compliance_template_present",
+        verb="compliance_template_present",
+        default_severity="blocker",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 T5A — assert each compliance_overlay generated_template_path "
+            "exists on disk under compliance_templates/."
+        ),
+    ),
+    # Z1 T5A (P6) — phase-boundary blocker check on step 6.6 (project_plan_review).
+    "compliance_blocker_check": PostHookSpec(
+        kind="compliance_blocker_check",
+        verb="compliance_blocker_check",
+        default_severity="blocker",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 T5A — phase-boundary check that required compliance docs are "
+            "rendered before phase ≤6 closes."
+        ),
+    ),
+    # Z1 T6A (A7) — declared on step 0.1 (product_charter_with_brand).
+    "find_similar_missions": PostHookSpec(
+        kind="find_similar_missions",
+        verb="find_similar_missions",
+        # Handler returns needs_review (not failed) when matches surface.
+        # Warning severity keeps source uninterrupted; the needs_review row
+        # surfaces to the founder via the standard surface path.
+        default_severity="warning",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 T6A — cross-mission idea dedup. Embeds idea_summary and "
+            "queries mission_ideas ChromaDB collection. needs_review on hit."
+        ),
+    ),
+    # Z1 T6A (A7) — declared on step 0.1 alongside find_similar_missions.
+    "index_idea_fingerprint": PostHookSpec(
+        kind="index_idea_fingerprint",
+        verb="index_idea_fingerprint",
+        default_severity="warning",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 T6A — embed idea_brief into mission_ideas ChromaDB collection "
+            "after charter lock. Feeds future find_similar_missions calls."
+        ),
+    ),
+    # Z1 T6A (P9) — declared on step 0.5 (clarification_questions).
+    "surface_prior_mission_hints": PostHookSpec(
+        kind="surface_prior_mission_hints",
+        verb="surface_prior_mission_hints",
+        # Handler always completes (advisory hints only — no fail/needs_review).
+        default_severity="warning",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 T6A — advisory hints from prior missions' ADR + compliance "
+            "decisions. Always completes."
+        ),
+    ),
+    # Z1 T6B (P5) — declared on step 1.0 (prior_art_search).
+    "prior_art_min_coverage": PostHookSpec(
+        kind="prior_art_min_coverage",
+        verb="prior_art_min_coverage",
+        default_severity="blocker",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 T6B — assert prior_art_report has attempted_solutions, "
+            "key_lessons, resolvable URLs."
         ),
     ),
 }

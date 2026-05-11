@@ -251,6 +251,58 @@ def expand_steps_to_tasks(
 
         tasks.append(task)
 
+    # Z2 T4C — auto-wire inject_lessons on the first phase_0 step so
+    # cross-mission lessons land in the mission context before any LLM runs.
+    tasks = _inject_lessons_at_mission_start(tasks, initial_context)
+
+    return tasks
+
+
+def _inject_lessons_at_mission_start(
+    tasks: list[dict],
+    initial_context: dict | None,
+) -> list[dict]:
+    """Idempotently prepend ``inject_lessons`` to the first phase_0 task's
+    ``post_hooks`` list (Z2 T4C).
+
+    The verb fires at mission start so the ``lessons_top_n`` bucket is
+    populated before any LLM step runs.  When ``initial_context`` carries a
+    ``tech_stack_detected`` field that field is forwarded as ``stack``; when
+    not available the verb defaults to an empty stack and returns
+    ``lessons_count=0`` gracefully.
+
+    Idempotent: skips if the hook is already present.
+    """
+    _ctx = initial_context or {}
+    # Build a stable stack string if available in the initial context.
+    _stack = str(_ctx.get("tech_stack_detected") or _ctx.get("tech_stack") or "")
+
+    for task in tasks:
+        task_ctx = task.get("context") or {}
+        phase = task_ctx.get("workflow_phase", "")
+        # Target: first phase_0 task (non-mechanical so it has a natural
+        # post-hook window).
+        if phase != "phase_0":
+            continue
+        if task_ctx.get("executor") == "mechanical":
+            continue
+
+        existing_hooks: list[str] = list(task_ctx.get("post_hooks") or [])
+        if "inject_lessons" in existing_hooks:
+            break  # already wired — stop here
+
+        task_ctx["post_hooks"] = ["inject_lessons"] + existing_hooks
+        # Store the stack so posthook machinery can forward it to the verb.
+        if _stack:
+            task_ctx.setdefault("inject_lessons_stack", _stack)
+        task["context"] = task_ctx
+        logger.debug(
+            "inject_lessons_at_mission_start: wired on step=%s stack=%r",
+            task_ctx.get("workflow_step_id"),
+            _stack,
+        )
+        break  # wire once — first eligible phase_0 step only
+
     return tasks
 
 

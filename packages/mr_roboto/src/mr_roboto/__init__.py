@@ -74,6 +74,7 @@ from mr_roboto import rollback_mission as rollback_mission_module  # noqa: F401
 import mr_roboto.record_demo as record_demo  # noqa: F401
 import mr_roboto.verify_demo_artifact as verify_demo_artifact  # noqa: F401
 import mr_roboto.mission_deliverable_bundle as mission_deliverable_bundle  # noqa: F401
+from mr_roboto.inject_lessons import inject_lessons
 
 __all__ = [
     "Action",
@@ -116,6 +117,7 @@ __all__ = [
     "verify_premortem_shape",
     "spec_consistency_check",
     "prior_art_min_coverage",
+    "inject_lessons",
 ]
 
 
@@ -2020,6 +2022,29 @@ async def _run_dispatch(task: dict) -> Action:
                 video_path=payload.get("video_path"),
                 repo_path=payload.get("repo_path"),
                 chat_id=payload.get("chat_id"),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "inject_lessons":
+        # Z2 T4C — cross-mission lesson injector.
+        # Reads top-N lessons for a given stack/domain from mission_lessons
+        # (populated by T4A/T4B) and writes them to the mission context bucket
+        # as `lessons_top_n`. Coulson renders the bucket as "## Watch out for".
+        from mr_roboto.inject_lessons import inject_lessons as _inject_lessons
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            if mid is None:
+                return Action(
+                    status="failed",
+                    error="inject_lessons requires mission_id",
+                )
+            res = await _inject_lessons(
+                mission_id=int(mid),
+                stack=str(payload.get("stack") or ""),
+                domain=payload.get("domain"),
+                limit=int(payload.get("limit") or 5),
             )
             return Action(status="completed", result=res)
         except Exception as e:

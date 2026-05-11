@@ -215,6 +215,37 @@ def build_system_prompt(profile, task: dict) -> str:
     except Exception:
         pass
 
+    # ── Z2 T4C — cross-mission lessons ("Watch out for") ─────────────
+    # inject_lessons mr_roboto verb writes `lessons_top_n` into the
+    # mission context bucket at mission start (phase_0 posthook). Read it
+    # here and render as a compact warning block so every agent dispatched
+    # on this mission sees recurring failure patterns at prompt-build time.
+    try:
+        _task_ctx = task.get("context")
+        if isinstance(_task_ctx, str):
+            import json as _json
+            try:
+                _task_ctx = _json.loads(_task_ctx)
+            except Exception:
+                _task_ctx = {}
+        if isinstance(_task_ctx, dict):
+            _mission_id = _task_ctx.get("mission_id") or task.get("mission_id")
+            if _mission_id is not None:
+                _lessons = _get_mission_lessons_cached(int(_mission_id))
+                if _lessons:
+                    _watch_lines = ["## Watch out for (lessons from past missions)"]
+                    for _les in _lessons:
+                        _pat = _les.get("pattern", "")
+                        _fix = _les.get("fix", "")
+                        _sev = _les.get("severity", "info")
+                        _watch_lines.append(
+                            f"- [{_sev.upper()}] {_pat}"
+                            + (f" → {_fix}" if _fix else "")
+                        )
+                    parts.append("\n".join(_watch_lines))
+    except Exception:
+        pass
+
     return "\n\n".join(parts)
 
 
@@ -307,6 +338,71 @@ def reset_calibration_cache() -> None:
     global _calibration_cache_loaded
     _calibration_cache.clear()
     _calibration_cache_loaded = False
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Mission lessons — Z2 T4C
+# ────────────────────────────────────────────────────────────────────────────
+
+# Simple process-local cache so we don't hit the DB on every iteration
+# of the same mission. Key: mission_id, Value: list[dict] | None.
+# Invalidated by inject_lessons writes (not needed for correctness — the
+# injector runs once at mission-start and the lessons don't change mid-mission).
+_mission_lessons_cache: dict[int, list[dict]] = {}
+
+
+def _get_mission_lessons_cached(mission_id: int) -> list[dict]:
+    """Sync-safe read of ``lessons_top_n`` from the mission context bucket.
+
+    Returns the cached list if already loaded.  On cache miss, reads the
+    ``missions.context`` JSON column synchronously via a blocking query.
+    Falls back to empty list on any error so prompt-build is never blocked.
+    """
+    if mission_id in _mission_lessons_cache:
+        return _mission_lessons_cache[mission_id]
+
+    import asyncio
+    import json
+
+    async def _fetch() -> list[dict]:
+        try:
+            from src.infra.db import get_db
+            db = await get_db()
+            async with db.execute(
+                "SELECT context FROM missions WHERE id = ?",
+                (mission_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return []
+            raw = row[0] or "{}"
+            ctx = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            return list(ctx.get("lessons_top_n") or [])
+        except Exception:
+            return []
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Inside an async context — return empty to avoid blocking.
+            # The caller (build_system_prompt) is sync; schedule and move on.
+            return []
+        result = loop.run_until_complete(_fetch())
+    except Exception:
+        result = []
+
+    _mission_lessons_cache[mission_id] = result
+    return result
+
+
+def prime_mission_lessons_cache(mission_id: int, lessons: list[dict]) -> None:
+    """Test hook: prime the cache directly so DB is not needed."""
+    _mission_lessons_cache[mission_id] = lessons
+
+
+def clear_mission_lessons_cache() -> None:
+    """Test hook: drop all cached lessons."""
+    _mission_lessons_cache.clear()
 
 
 def seed_calibration_cache(rows: list[dict]) -> None:

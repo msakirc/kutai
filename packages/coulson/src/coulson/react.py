@@ -889,9 +889,19 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             # Self-reflection
             if profile.enable_self_reflection:
                 try:
+                    # Z2 T4C Item-6 followup — thread tech_stack from task ctx
+                    # into reflection so STACK_BLOCKS fragments load.
+                    _stack = str(
+                        _task_ctx.get("tech_stack_detected")
+                        or _task_ctx.get("inject_lessons_stack")
+                        or _task_ctx.get("tech_stack")
+                        or ""
+                    ) or None
                     reflection = await self_reflect(
                         task, result, reqs, used_model,
-                        checklist=build_reflection_prompt(profile.name, iteration),
+                        checklist=build_reflection_prompt(
+                            profile.name, iteration, stack=_stack,
+                        ),
                     )
                     if reflection and reflection.get("verdict") == "fix":
                         corrected = reflection.get("corrected_result")

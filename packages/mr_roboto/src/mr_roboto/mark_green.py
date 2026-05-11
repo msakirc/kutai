@@ -12,10 +12,16 @@ Captures a paired green checkpoint for a mission:
 
 Trigger contract
 ----------------
-Invoked from the ``git_commit`` action when ``payload["mark_green"] = True``
-is set on the step. Founder wires this on key milestone steps (e.g. the
-final phase-15 verification commit). Auto-firing every commit is too costly
-— each green tag is hundreds of KB to MB on disk.
+Triggered explicitly via ``payload.mark_green=True`` on milestone gate
+steps; founder + reviewer cosign + tests-pass moments only. Auto-firing
+every commit is too costly — each green tag is hundreds of KB to MB on
+disk (Chroma + DB JSON-gz snapshot per fire).
+
+Currently wired in src/workflows/i2p/i2p_v3.json (z10-wire-fixes F2, cap
+≤6) on: 7.5.git_commit (frontend scaffold sealed), 8.spike.git_commit
+(spike validated), 4.16.git_commit_green (architecture_review approved),
+13.14.git_commit_green (launch_go_no_go approved). Each is a paired green
+checkpoint (git tag + DB rows + Chroma collections + ledger row).
 
 Reversibility: ``full`` — pure snapshot, no destructive op.
 """

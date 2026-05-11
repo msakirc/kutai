@@ -1,7 +1,13 @@
-"""Z10 T4A — record_demo verb tests."""
+"""Z10 T4A — record_demo verb tests.
+
+z10-wire-fixes F3 extends with scenario_path resolution chain tests:
+payload override > missions.demo_scenario_path > newest tests/e2e/*.spec.[tj]s
+> no_e2e_specs skip path.
+"""
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -190,3 +196,146 @@ async def test_record_demo_playwright_failure(tmp_path, monkeypatch):
             scenario_path="tests/e2e/golden_path.spec.ts",
             workspace_root=str(ws),
         )
+
+
+# ── z10-wire-fixes F3: scenario_path resolution ──────────────────────────
+
+
+def test_newest_e2e_spec_rel_picks_most_recent(tmp_path):
+    """F3: glob fallback returns the workspace-relative newest spec."""
+    from mr_roboto import record_demo as rd
+
+    ws = tmp_path / "ws"
+    (ws / "tests" / "e2e").mkdir(parents=True)
+    old = ws / "tests" / "e2e" / "older.spec.ts"
+    new = ws / "tests" / "e2e" / "newer.spec.ts"
+    old.write_text("x", encoding="utf-8")
+    # Ensure mtime ordering even on filesystems with coarse time resolution.
+    os.utime(old, (time.time() - 100, time.time() - 100))
+    new.write_text("y", encoding="utf-8")
+
+    rel = rd._newest_e2e_spec_rel(str(ws))
+    assert rel == "tests/e2e/newer.spec.ts"
+
+
+def test_newest_e2e_spec_rel_returns_none_when_empty(tmp_path):
+    """F3: no specs anywhere → None (caller takes no_e2e_specs path)."""
+    from mr_roboto import record_demo as rd
+
+    ws = tmp_path / "empty"
+    ws.mkdir()
+    assert rd._newest_e2e_spec_rel(str(ws)) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_scenario_path_payload_override_wins(tmp_path, monkeypatch):
+    """F3 order: explicit payload override has top priority."""
+    from mr_roboto import record_demo as rd
+
+    ws = _make_workspace_with_spec(tmp_path)  # has golden_path.spec.ts
+
+    async def _fake_db(mid):
+        return "tests/e2e/from-db.spec.ts"
+
+    monkeypatch.setattr(rd, "_mission_demo_scenario_path", _fake_db)
+    resolved = await rd._resolve_scenario_path(
+        mission_id=1, payload_override="tests/e2e/override.spec.ts",
+        workspace_root=str(ws),
+    )
+    assert resolved == "tests/e2e/override.spec.ts"
+
+
+@pytest.mark.asyncio
+async def test_resolve_scenario_path_db_value_then_glob(tmp_path, monkeypatch):
+    """F3 order: when no override, missions.demo_scenario_path wins over glob."""
+    from mr_roboto import record_demo as rd
+
+    ws = _make_workspace_with_spec(tmp_path)
+
+    async def _fake_db(mid):
+        return "tests/e2e/from-db.spec.ts"
+
+    monkeypatch.setattr(rd, "_mission_demo_scenario_path", _fake_db)
+    resolved = await rd._resolve_scenario_path(
+        mission_id=1, payload_override=None, workspace_root=str(ws),
+    )
+    assert resolved == "tests/e2e/from-db.spec.ts"
+
+
+@pytest.mark.asyncio
+async def test_resolve_scenario_path_falls_through_to_glob(tmp_path, monkeypatch):
+    """F3 order: no DB value → glob fallback returns the only spec."""
+    from mr_roboto import record_demo as rd
+
+    ws = _make_workspace_with_spec(tmp_path)  # golden_path.spec.ts
+
+    async def _fake_db(mid):
+        return None
+
+    monkeypatch.setattr(rd, "_mission_demo_scenario_path", _fake_db)
+    resolved = await rd._resolve_scenario_path(
+        mission_id=1, payload_override=None, workspace_root=str(ws),
+    )
+    assert resolved == "tests/e2e/golden_path.spec.ts"
+
+
+@pytest.mark.asyncio
+async def test_resolve_scenario_path_returns_none_when_nothing(tmp_path, monkeypatch):
+    """F3 order: no override, no DB, no specs → None (no_e2e_specs path)."""
+    from mr_roboto import record_demo as rd
+
+    ws = tmp_path / "empty"
+    ws.mkdir()
+
+    async def _fake_db(mid):
+        return None
+
+    monkeypatch.setattr(rd, "_mission_demo_scenario_path", _fake_db)
+    resolved = await rd._resolve_scenario_path(
+        mission_id=1, payload_override=None, workspace_root=str(ws),
+    )
+    assert resolved is None
+
+
+@pytest.mark.asyncio
+async def test_run_uses_resolved_scenario_when_none_passed(tmp_path, monkeypatch):
+    """F3: run() with scenario_path=None resolves via the chain and proceeds."""
+    from mr_roboto import record_demo as rd
+
+    ws = _make_workspace_with_spec(tmp_path)
+    _drop_webm(ws)
+    monkeypatch.setattr(rd, "_project_root", lambda: str(tmp_path))
+
+    async def _fake_db(mid):
+        return None  # force glob fallback
+
+    monkeypatch.setattr(rd, "_mission_demo_scenario_path", _fake_db)
+
+    captured: list[list[str]] = []
+
+    async def _fake_run(cmd, timeout=300.0):
+        captured.append(cmd)
+        if cmd[:2] == ["docker", "inspect"]:
+            return 0, "true\n", ""
+        if cmd[:2] == ["docker", "exec"]:
+            return 0, "ok", ""
+        if cmd[0] == "ffmpeg":
+            out_path = cmd[-1]
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            Path(out_path).write_bytes(b"X" * (2 * 1024 * 1024))
+            return 0, "", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(rd, "_run_subprocess", _fake_run)
+    monkeypatch.setattr(rd, "_video_duration_seconds", lambda p: 10.0)
+
+    res = await rd.run(
+        mission_id=2000, scenario_path=None,
+        max_seconds=60, workspace_root=str(ws),
+    )
+    assert res.get("scenario_path") == "tests/e2e/golden_path.spec.ts"
+    # docker exec should reference the resolved path.
+    docker_exec = next(c for c in captured if c[:2] == ["docker", "exec"])
+    assert any("golden_path.spec.ts" in part for part in docker_exec)
+
+

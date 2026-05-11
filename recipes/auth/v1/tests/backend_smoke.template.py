@@ -1,12 +1,26 @@
 """Auth recipe — backend smoke tests.
 
+NOTE — execution context:
+    This template is intended to run POST-instantiation. After the recipe
+    is instantiated via mr_roboto ``instantiate_recipe`` into a target
+    mission workspace, ``backend.template.py`` becomes the project's real
+    backend module (typically renamed by the planner) and these smoke
+    tests are copied alongside. Imports below reference the instantiated
+    layout, NOT the recipe source tree.
+
+    Running this file directly from ``recipes/auth/v1/tests/`` will fail
+    because the recipe source intentionally has no real importable
+    module — the ``.template`` suffix marks them as scaffolds. Use the
+    structural tests in ``tests/test_z2_t5b_auth_recipe.py`` to validate
+    the template files; use this file in the instantiated workspace.
+
 Pytest scaffold using httpx.AsyncClient against an in-process FastAPI app.
 All tests are self-contained: a fresh SQLite DB is created per test session
 via the `app` fixture.
 
 RECIPE_PARAM:BCRYPT_COST=4  (fast cost for tests — override in conftest)
 
-Run:
+Run (post-instantiation):
     pytest tests/auth/ -x -q
 """
 from __future__ import annotations

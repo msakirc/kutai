@@ -77,6 +77,16 @@ class PostHookSpec:
 # needed for the registry + expander auto-wire side.  The apply layer still
 # needs a matching branch in `_posthook_agent_and_payload` and
 # `_apply_posthook_verdict`, but the *discovery* path is fully data-driven.
+#
+# SEVERITY_RAMP_TODO — v1 ramp policy (Z2 v2 plan):
+#   The following kinds currently ship at default_severity="warning" and
+#   should be promoted to "blocker" once semgrep is bundled into the CI
+#   image and verified non-flaky across the full mission corpus:
+#     - pattern_lint          (T2C, verb=run_semgrep, forbidden.yml)
+#     - design_system_check   (T3C, verb=run_semgrep, design_system.yml)
+#   Tracking lives here (not in an issue tracker) on purpose — the rule
+#   row is the single source of truth, so the promotion is a one-line flip
+#   in this file. Bump occurrences count in this comment when promoting.
 # ---------------------------------------------------------------------------
 POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     "verify_artifacts": PostHookSpec(

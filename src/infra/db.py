@@ -2147,6 +2147,42 @@ async def init_db():
         ),
     )
 
+    # ── Z2 T4A: mission_lessons — cross-mission failure memory ───────────
+    await apply_migration(
+        version="2026-05-10-mission-lessons",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS mission_lessons ("
+            " id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " stack        TEXT    NOT NULL,"
+            " domain       TEXT    NOT NULL,"
+            " pattern      TEXT    NOT NULL,"
+            " fix          TEXT    NOT NULL DEFAULT '',"
+            " severity     TEXT    NOT NULL DEFAULT 'warning',"
+            " occurrences  INTEGER NOT NULL DEFAULT 1,"
+            " dedup_key    TEXT    NOT NULL UNIQUE,"
+            " source_kind  TEXT    NOT NULL,"
+            " source_ref   TEXT    NOT NULL DEFAULT '{}',"
+            " suppressed   INTEGER NOT NULL DEFAULT 0,"
+            " created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+            " last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_mission_lessons_stack_domain "
+            "ON mission_lessons(stack, domain);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mission_lessons_occurrences "
+            "ON mission_lessons(occurrences DESC, last_seen_at DESC);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_mission_lessons_occurrences;\n"
+            "DROP INDEX IF EXISTS idx_mission_lessons_stack_domain;\n"
+            "DROP TABLE IF EXISTS mission_lessons;\n"
+        ),
+        description=(
+            "Z2 T4A cross-mission memory: mission_lessons table + indexes. "
+            "Dedup via sha256(stack\\ndomain\\nnormalized_pattern)[:32]. "
+            "Populated by DLQ analyst + posthook-fail populators."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

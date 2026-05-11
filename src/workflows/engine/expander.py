@@ -304,6 +304,19 @@ def expand_steps_to_tasks(
         if step.get("triggers_clarification"):
             context["triggers_clarification"] = True
 
+        # Z6 T1A: real-world bridge flags. These all need to make it onto
+        # task.context so beckman admission (T1C) and add_task's column
+        # hoist see them. ``needs_real_tools`` and ``reversibility`` are
+        # additionally hoisted to indexed columns by add_task.
+        if step.get("needs_real_tools"):
+            context["needs_real_tools"] = True
+        if step.get("reversibility") in ("full", "partial", "irreversible"):
+            context["reversibility"] = step["reversibility"]
+        if "real_tool_kind" in step:
+            context["real_tool_kind"] = step["real_tool_kind"]
+        if "cost_estimate_usd" in step:
+            context["cost_estimate_usd"] = step["cost_estimate_usd"]
+
         # Propagate any step-level `context` dict from the workflow JSON.
         # Without this, fields like `per_site_n`, `max_groups`, or
         # `requires_grading` declared on a step are silently dropped.
@@ -583,8 +596,25 @@ def expand_template(
 
         # needs_real_tools marker (drift-guard): propagate for templates that
         # still have a NEEDS-REAL-TOOLS dependency we haven't unblocked yet.
+        # Z6 T1A: hoist to indexed column via add_task (also keeps the flag
+        # in step + task.context for legacy readers).
         if tpl_step.get("needs_real_tools"):
             step["needs_real_tools"] = True
+
+        # Z6 T1A: reversibility tag (full|partial|irreversible) propagates
+        # from template steps. Lives on the task row (indexed) and on
+        # task.context for the in-memory consumers.
+        _rev = tpl_step.get("reversibility")
+        if _rev in ("full", "partial", "irreversible"):
+            step["reversibility"] = _rev
+
+        # Z6 T1A: real_tool_kind + cost_estimate_usd hint for the admission
+        # gate (T1C). They live in task.context only; admission resolves
+        # adapter availability and cost ack from these.
+        if "real_tool_kind" in tpl_step:
+            step["real_tool_kind"] = tpl_step["real_tool_kind"]
+        if "cost_estimate_usd" in tpl_step:
+            step["cost_estimate_usd"] = tpl_step["cost_estimate_usd"]
 
         expanded.append(step)
 

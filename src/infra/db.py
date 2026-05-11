@@ -2210,6 +2210,23 @@ async def init_db():
         ),
     )
 
+    # ── Z6 T1A: hoist needs_real_tools from task.context to indexed column ──
+    # reversibility was added by 2026-05-10-tasks-confidence-reversibility
+    # (Z10 T1C); needs_real_tools is new. Idempotent ADD COLUMN.
+    await apply_migration(
+        version="2026-05-11-tasks-needs-real-tools",
+        sql=(
+            "ALTER TABLE tasks ADD COLUMN needs_real_tools INTEGER DEFAULT 0;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE tasks DROP COLUMN needs_real_tools;\n"
+        ),
+        description=(
+            "Z6 T1A: tasks.needs_real_tools indexed column hoisted from "
+            "task.context JSON so beckman admission can gate without parsing."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.
@@ -2582,6 +2599,8 @@ _TASK_COLUMNS = frozenset({
     # Unified lifecycle columns
     "grade_attempts", "max_grade_attempts",
     "failed_in_phase", "infra_resets", "exhaustion_reason",
+    # Z6 T1A: real-world bridge gate inputs (hoisted from context for index).
+    "needs_real_tools", "reversibility",
 })
 
 
@@ -2671,7 +2690,8 @@ async def find_duplicate_task(task_hash: str) -> dict | None:
 async def add_task(title, description, mission_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
                    requires_approval=False, depends_on=None, context=None,
-                   kind="main_work", runner=None):
+                   kind="main_work", runner=None,
+                   needs_real_tools=None, reversibility=None):
     """Atomic dedup + insert.
 
     Uses an isolated connection (connect_aux) for the BEGIN/COMMIT
@@ -2760,16 +2780,31 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                     context.get("phase_id")
                     or context.get("workflow_phase")
                 )
+            # Z6 T1A: hoist needs_real_tools / reversibility from context if
+            # not passed explicitly. Expander writes them on the step JSON;
+            # callers like _apply_subtasks fan that into task.context. Pulling
+            # them up here means a single source of truth (the indexed column)
+            # for beckman admission.
+            _nrt = needs_real_tools
+            _rev = reversibility
+            if isinstance(context, dict):
+                if _nrt is None and context.get("needs_real_tools"):
+                    _nrt = 1
+                if _rev is None and context.get("reversibility"):
+                    _rev = str(context.get("reversibility"))
+            _nrt_int = 1 if _nrt else 0
             cursor = await db.execute(
                 """INSERT INTO tasks
                    (mission_id, parent_task_id, title, description, agent_type,
                     tier, priority, requires_approval, depends_on, context,
-                    task_hash, kind, runner, phase_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    task_hash, kind, runner, phase_id,
+                    needs_real_tools, reversibility)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (mission_id, parent_task_id, title, description, agent_type,
                  tier, priority, requires_approval,
                  json.dumps(depends_on or []), json.dumps(context or {}),
-                 task_hash, kind, runner, _phase_id)
+                 task_hash, kind, runner, _phase_id,
+                 _nrt_int, _rev)
             )
             row_id = cursor.lastrowid
             if db._conn.in_transaction:
@@ -3264,17 +3299,28 @@ async def add_subtasks_atomically(
                      or _sub_ctx.get("workflow_phase"))
                     if isinstance(_sub_ctx, dict) else None
                 )
+                # Z6 T1A: hoist from sub-context.
+                _sub_nrt = st.get("needs_real_tools")
+                _sub_rev = st.get("reversibility")
+                if isinstance(_sub_ctx, dict):
+                    if _sub_nrt is None and _sub_ctx.get("needs_real_tools"):
+                        _sub_nrt = 1
+                    if _sub_rev is None and _sub_ctx.get("reversibility"):
+                        _sub_rev = str(_sub_ctx.get("reversibility"))
+                _sub_nrt_int = 1 if _sub_nrt else 0
                 cursor = await db.execute(
                     """INSERT INTO tasks
                        (mission_id, parent_task_id, title, description, agent_type,
                         tier, priority, requires_approval, depends_on, context,
-                        task_hash, runner, phase_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)""",
+                        task_hash, runner, phase_id,
+                        needs_real_tools, reversibility)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)""",
                     (mission_id, parent_task_id, title, description, agent_type,
                      st.get("tier", "auto"), st.get("priority", 5),
                      json.dumps(st.get("depends_on", [])),
                      json.dumps(st.get("context", {})),
-                     task_hash, runner, _sub_phase_id)
+                     task_hash, runner, _sub_phase_id,
+                     _sub_nrt_int, _sub_rev)
                 )
                 created_ids.append(cursor.lastrowid)
 
@@ -3372,17 +3418,28 @@ async def insert_tasks_atomically(
                     (_t_ctx.get("phase_id") or _t_ctx.get("workflow_phase"))
                     if isinstance(_t_ctx, dict) else None
                 )
+                # Z6 T1A: hoist from sub-context.
+                _t_nrt = t.get("needs_real_tools")
+                _t_rev = t.get("reversibility")
+                if isinstance(_t_ctx, dict):
+                    if _t_nrt is None and _t_ctx.get("needs_real_tools"):
+                        _t_nrt = 1
+                    if _t_rev is None and _t_ctx.get("reversibility"):
+                        _t_rev = str(_t_ctx.get("reversibility"))
+                _t_nrt_int = 1 if _t_nrt else 0
                 cursor = await db.execute(
                     """INSERT INTO tasks
                        (mission_id, parent_task_id, title, description, agent_type,
                         tier, priority, requires_approval, depends_on, context,
-                        task_hash, runner, phase_id)
-                       VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)""",
+                        task_hash, runner, phase_id,
+                        needs_real_tools, reversibility)
+                       VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)""",
                     (mission_id, title, description, agent_type,
                      t.get("tier", "auto"), t.get("priority", 5),
                      json.dumps(t.get("depends_on", [])),
                      json.dumps(t.get("context", {})),
-                     task_hash, runner, _t_phase_id)
+                     task_hash, runner, _t_phase_id,
+                     _t_nrt_int, _t_rev)
                 )
                 created_ids.append(cursor.lastrowid)
 

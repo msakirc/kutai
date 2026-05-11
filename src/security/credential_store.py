@@ -95,27 +95,16 @@ def _get_fernet():
                 "KUTAY_MASTER_KEY environment variable is required in "
                 f"{env} mode. Set a Fernet-compatible key or a passphrase."
             )
-        # Dev fallback (T2E gates this behind an explicit env var; here the
-        # legacy behaviour is preserved so T2D ships independently).
-        warnings.warn(
-            "KUTAY_MASTER_KEY not set — using dev-only fallback key. "
-            "This is NOT secure. Set KUTAY_MASTER_KEY for production.",
-            stacklevel=2,
-        )
-        raw_key = base64.urlsafe_b64encode(
-            b"kutay-dev-fallback-key-00000000"
-        ).decode()
-        logger.warning(
-            "Using insecure dev fallback key for credential encryption"
-        )
-        f = _build_fernet(raw_key)
-        if f is None:
-            return None
-        _fernet_by_version = {1: f}
-        _current_key_version = 1
-        _fernet = f
-        _MASTER_KEY = raw_key.encode()
-        return _fernet
+        # T2E: dev fallback is now opt-in via explicit env var.
+        if os.getenv("KUTAY_DEV_ALLOW_INSECURE_VAULT") != "1":
+            raise RuntimeError(
+                "vault unavailable: install cryptography + set "
+                "KUTAY_MASTER_KEY, or KUTAY_DEV_ALLOW_INSECURE_VAULT=1 "
+                "to opt in to the insecure base64 dev fallback"
+            )
+        # Insecure path: emit a warning per call (handled by _encrypt /
+        # _decrypt below) — return None so the base64 fallback is used.
+        return None
 
     # Build a Fernet per version; the highest-numbered key wins as "current".
     _fernet_by_version = {}
@@ -150,12 +139,27 @@ def _current_version() -> int:
     return _current_key_version
 
 
+def _insecure_warning(action: str) -> None:
+    """Emit a loud per-call warning when the base64 fallback is active."""
+    import socket
+
+    msg = (
+        f"vault using insecure base64 fallback for {action} "
+        f"(host={socket.gethostname()} pid={os.getpid()}). "
+        "Set KUTAY_MASTER_KEY for a real Fernet vault, or unset "
+        "KUTAY_DEV_ALLOW_INSECURE_VAULT to disable."
+    )
+    warnings.warn(msg, stacklevel=3)
+    logger.warning(msg)
+
+
 def _encrypt(data: str) -> str:
     """Encrypt a string, returning base64-encoded ciphertext."""
     f = _get_fernet()
     if f is not None:
         return f.encrypt(data.encode()).decode()
-    # Fallback: simple base64 (NOT secure)
+    # Fallback: simple base64 (NOT secure) — warn on every call.
+    _insecure_warning("encrypt")
     return base64.urlsafe_b64encode(data.encode()).decode()
 
 
@@ -177,7 +181,8 @@ def _decrypt(token: str) -> str:
             if last_exc is not None:
                 raise last_exc
             raise
-    # Fallback: simple base64
+    # Fallback: simple base64 — warn on every call.
+    _insecure_warning("decrypt")
     return base64.urlsafe_b64decode(token.encode()).decode()
 
 

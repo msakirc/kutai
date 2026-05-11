@@ -1,0 +1,57 @@
+# Age Gate Copy and Policy — template (review with counsel before publishing)
+
+_Generated: {{ generated_at }}_
+_Service: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Jurisdiction: {{ jurisdiction | default('default') }}_
+
+## 1. Minimum age
+
+To use {{ project_name | default('the Service') }} you must be at least
+**[LEGAL REVIEW REQUIRED]** years old. The minimum age varies by
+jurisdiction (e.g. 13 under COPPA in the US for unrestricted accounts;
+13-16 under GDPR Article 8 depending on Member State; higher for
+specific verticals such as gambling, alcohol, financial services).
+
+## 2. Age-gate copy
+
+> **Confirm your age**
+>
+> {{ project_name | default('This service') }} is intended for users
+> aged [LEGAL REVIEW REQUIRED] and over. Please confirm your date of
+> birth to continue.
+
+(Buttons: **I confirm** / **I am under the minimum age**.)
+
+## 3. What happens on a failed gate
+
+- The user is shown a friendly explanation.
+- No account is created. No Personal Data is collected beyond a
+  short-lived session cookie required to remember the gate result.
+
+## 4. Lawful basis
+
+{% if lawful_basis %}
+{% for b in lawful_basis -%}
+- {{ b }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — lawful basis for processing age-confirmation data.
+{% endif %}
+
+## 5. Parental consent
+
+If the Service is intended to be usable by minors below the digital age
+of consent in any jurisdiction we operate in, a verifiable parental
+consent flow is REQUIRED. [LEGAL REVIEW REQUIRED] — implement and
+describe the parental-consent mechanism (signed form, payment-card
+verification, knowledge-based test, etc.).
+
+## 6. Sensitive verticals
+
+[LEGAL REVIEW REQUIRED] — services involving alcohol, tobacco,
+gambling, lending, or adult content may require stricter age
+verification than self-attestation.
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before publishing._

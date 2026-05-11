@@ -1,0 +1,74 @@
+# Data Processing Agreement (DPA) — template (review with counsel before signing)
+
+_Generated: {{ generated_at }}_
+_Controller: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Controller contact: {{ controller_contact | default('[NOT SPECIFIED]') }}_
+_Jurisdiction: {{ jurisdiction | default('default') }}_
+
+## 1. Parties
+
+- **Controller:** {{ project_name | default('[NOT SPECIFIED]') }}
+- **Processor:** _to be filled in per processor relationship_
+
+## 2. Subject matter and duration
+
+The Processor processes Personal Data on behalf of the Controller for the
+purpose of operating {{ project_name | default('the Service') }}. Duration
+matches the underlying services agreement.
+
+## 3. Nature and purpose of processing
+
+{% if data_categories %}
+The Processor processes the following categories of Personal Data on
+behalf of the Controller:
+
+{% for cat in data_categories -%}
+- {{ cat }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list categories of Personal Data processed.
+{% endif %}
+
+## 4. Obligations of the Processor
+
+The Processor shall:
+
+- Process Personal Data only on documented instructions from the Controller.
+- Ensure personnel are bound by appropriate confidentiality obligations.
+- Implement technical and organisational measures appropriate to the risk.
+- Engage sub-processors only with prior written authorisation and equivalent obligations.
+- Assist the Controller with data-subject requests.
+- Notify the Controller of personal data breaches without undue delay.
+- Delete or return all Personal Data at the end of the engagement, unless retention is required by law.
+
+## 5. Sub-processors
+
+{% if third_parties %}
+Authorised sub-processors as of the date of this agreement:
+
+{% for t in third_parties -%}
+- {{ t }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list sub-processors (cloud, email, analytics, payment, support).
+{% endif %}
+
+## 6. International transfers
+
+[LEGAL REVIEW REQUIRED] — list the lawful transfer mechanism (SCCs, adequacy decision, derogation) for each non-domestic transfer.
+
+## 7. Audit rights
+
+Controller may audit the Processor's compliance with this DPA on reasonable notice and at Controller's expense, no more than once per year, save in the event of a personal data breach.
+
+## 8. Liability and indemnification
+
+[LEGAL REVIEW REQUIRED] — liability caps and indemnity terms are jurisdiction- and contract-specific.
+
+## 9. Governing law and venue
+
+[LEGAL REVIEW REQUIRED] — governing law and venue.
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before signing._

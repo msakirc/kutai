@@ -245,33 +245,28 @@ async def create(
     return action
 
 
+_notifier = None  # set by src.app.telegram_bot at startup
+
+
+def register_notifier(fn) -> None:
+    """Register an async callable that surfaces a new founder_action to the
+    user. fn signature: ``async fn(action: FounderAction) -> None``.
+
+    Telegram bot startup calls this with the inline-card poster. Tests skip
+    notification by passing ``notify_telegram=False`` on create().
+    """
+    global _notifier
+    _notifier = fn
+
+
 async def _notify_telegram(action: FounderAction) -> None:
-    """Best-effort Telegram surface — posts to mission thread if configured."""
-    from src.infra.db import get_mission
-    mission = await get_mission(action.mission_id)
-    if not mission:
+    """Best-effort Telegram surface — invokes the registered notifier."""
+    if _notifier is None:
         return
-    thread_id = mission.get("telegram_thread_id")
-    if not thread_id:
-        return
-    # Lazy imports — keep founder_actions importable without telegram stack.
     try:
-        from src.app.founder_action_render import render_action_card
-        from src.app.telegram_topics import post_to_mission_thread
-        from src.app.telegram_bot import get_bot_singleton  # type: ignore
+        await _notifier(action)
     except Exception as e:  # noqa: BLE001
-        logger.debug("telegram surface unavailable", error=str(e))
-        return
-    bot = get_bot_singleton()
-    if bot is None:
-        return
-    text, kb = render_action_card(action.to_dict())
-    try:
-        await post_to_mission_thread(
-            bot, action.mission_id, text, reply_markup=kb,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("post_to_mission_thread failed", error=str(e))
+        logger.debug("founder_action notifier failed", error=str(e))
 
 
 async def get(action_id: int) -> Optional[FounderAction]:
@@ -539,4 +534,5 @@ __all__ = [
     "block_mission_if_needed",
     "unblock_mission_if_clear",
     "sweep_unblock_all",
+    "register_notifier",
 ]

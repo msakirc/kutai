@@ -1934,6 +1934,20 @@ class TelegramInterface:
         self.app.add_handler(
             CommandHandler("rollback_mission", self.cmd_rollback_mission)
         )
+        # Z6 T1D: founder_actions surface (real-world bridge handoff queue)
+        self.app.add_handler(CommandHandler("actions", self.cmd_actions))
+        self.app.add_handler(CommandHandler("action_done", self.cmd_action_done))
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_founder_action_callback,
+            pattern=r"^fa_(done|inprogress|block)_\d+$",
+        ))
+        # Register the notifier with the founder_actions module so create()
+        # can surface new cards to the mission thread automatically.
+        try:
+            import src.founder_actions as _fa_mod
+            _fa_mod.register_notifier(self._notify_founder_action)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"founder_actions notifier register failed: {e}")
         self.app.add_handler(CallbackQueryHandler(
             self._handle_variant_choice, pattern=r"^(vc|variant_choice):"
         ))
@@ -7780,3 +7794,160 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 chat_id=chat_id, text=text,
                 reply_markup=markup, parse_mode="Markdown",
             )
+
+    # ─── Z6 T1D: founder_actions surface ────────────────────────────────
+    async def cmd_actions(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ):
+        """List pending founder_actions.
+
+        Usage:
+          ``/actions`` — pending across all active missions.
+          ``/actions <mission_id>`` — pending for that mission.
+        """
+        import src.founder_actions as fa
+        from src.app.founder_action_render import render_action_card
+
+        mission_id: int | None = None
+        if context.args:
+            try:
+                mission_id = int(context.args[0])
+            except (TypeError, ValueError):
+                await self._reply(update, "mission_id must be an integer.")
+                return
+
+        if mission_id is not None:
+            rows = await fa.list_by_mission(
+                mission_id, status_filter=["pending", "in_progress"],
+            )
+        else:
+            rows = await fa.list_pending()
+
+        if not rows:
+            await self._reply(
+                update,
+                "✅ All clear — no pending founder_actions.",
+            )
+            return
+
+        # First message: index. Each action gets its own card below.
+        index_lines = [f"📋 *Pending founder_actions* ({len(rows)})"]
+        for r in rows[:20]:
+            index_lines.append(
+                f"  #{r.id} [{r.kind}] m={r.mission_id} — {r.title[:50]}"
+            )
+        await self._reply(
+            update, "\n".join(index_lines), parse_mode="Markdown",
+        )
+
+        # Send the top 5 as inline cards so the founder can act inline.
+        for r in rows[:5]:
+            text, kb = render_action_card(r.to_dict())
+            try:
+                await update.message.reply_text(
+                    text, reply_markup=kb, parse_mode="Markdown",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"actions: card send failed #{r.id}: {e}")
+
+    async def cmd_action_done(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ):
+        """Resolve a founder_action.
+
+        Usage: ``/action_done <id> [json_payload]``
+        """
+        if not context.args:
+            await self._reply(
+                update, "Usage: /action_done <id> [json_payload]",
+            )
+            return
+        try:
+            aid = int(context.args[0])
+        except (TypeError, ValueError):
+            await self._reply(update, "action id must be an integer.")
+            return
+        payload: dict | None = None
+        if len(context.args) > 1:
+            import json as _json
+            try:
+                payload = _json.loads(" ".join(context.args[1:]))
+                if not isinstance(payload, dict):
+                    payload = {"raw": payload}
+            except Exception:
+                payload = {"raw_text": " ".join(context.args[1:])}
+        import src.founder_actions as fa
+        try:
+            action = await fa.resolve(aid, payload)
+        except ValueError as e:
+            await self._reply(update, f"❌ {e}")
+            return
+        await self._reply(
+            update,
+            f"✅ founder_action #{action.id} marked done.",
+        )
+
+    async def _handle_founder_action_callback(self, update, context):
+        """Inline-button handler for founder_action cards.
+
+        callback_data shape: ``fa_<verb>_<id>`` where verb ∈ {done,
+        inprogress, block}.
+        """
+        query = update.callback_query
+        if not query:
+            return
+        await query.answer()
+        data = query.data or ""
+        # fa_done_42, fa_inprogress_42, fa_block_42
+        parts = data.split("_")
+        if len(parts) != 3 or parts[0] != "fa":
+            return
+        verb = parts[1]
+        try:
+            aid = int(parts[2])
+        except (TypeError, ValueError):
+            return
+        verb_to_status = {
+            "done": "done",
+            "inprogress": "in_progress",
+            "block": "blocked",
+        }
+        new_status = verb_to_status.get(verb)
+        if new_status is None:
+            return
+        import src.founder_actions as fa
+        try:
+            action = await fa.update_status(aid, new_status)
+        except ValueError as e:
+            try:
+                await query.edit_message_text(f"❌ {e}")
+            except Exception:
+                pass
+            return
+        # Try to edit the card to reflect the new state.
+        emoji = {"done": "✅", "in_progress": "▶️", "blocked": "⛔"}[new_status]
+        new_text = (
+            f"{emoji} founder_action #{action.id} → *{new_status}*\n"
+            f"_{action.title}_"
+        )
+        try:
+            await query.edit_message_text(new_text, parse_mode="Markdown")
+        except Exception:
+            pass
+
+    async def _notify_founder_action(self, action) -> None:
+        """Posted as a callback registered with founder_actions.create()."""
+        try:
+            from src.app.founder_action_render import render_action_card
+            from src.app.telegram_topics import post_to_mission_thread
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"founder_action notify imports failed: {e}")
+            return
+        text, kb = render_action_card(action.to_dict())
+        try:
+            await post_to_mission_thread(
+                self.app.bot, action.mission_id, text,
+                reply_markup=kb, parse_mode="Markdown",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"founder_action thread post failed: {e}")

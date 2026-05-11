@@ -160,6 +160,30 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 604800,
         "payload": {"_executor": "credential_rotation_reminder"},
     },
+    # Z6 T5D — weekly Stripe dispute scan; emits legal_counsel
+    # founder_action per new dispute. No-op when no Stripe integration.
+    {
+        "title": "stripe_dispute_check",
+        "description": "Weekly Stripe dispute scan; legal_counsel founder_action per new dispute",
+        "interval_seconds": 604800,
+        "payload": {"_executor": "stripe_dispute_check"},
+    },
+    # Z6 T5D — weekly Stripe revenue digest (active subs + MRR + balance).
+    # Writes digest_<YYYY-WW>.md and (best-effort) posts to mission thread.
+    {
+        "title": "stripe_revenue_digest",
+        "description": "Weekly Stripe revenue digest (active subs + MRR + balance)",
+        "interval_seconds": 604800,
+        "payload": {"_executor": "stripe_revenue_digest"},
+    },
+    # Z6 T5E — monthly Stripe Tax CSV export ledger. Emits founder_action
+    # prompting forward-to-accountant.
+    {
+        "title": "tax_export_ledger",
+        "description": "Monthly Stripe Tax transactions → CSV ledger; founder_action to forward to accountant",
+        "interval_seconds": 2592000,
+        "payload": {"_executor": "tax_export_ledger"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

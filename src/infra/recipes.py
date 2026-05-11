@@ -470,6 +470,42 @@ def _substitute_tokens(text: str, resolved: dict[str, str]) -> str:
     return re.sub(r"<<([A-Z_][A-Z0-9_]*)>>", _replacer, text)
 
 
+def _substitute_inline_params(text: str, resolved: dict[str, str]) -> str:
+    """Replace literal values annotated with inline RECIPE_PARAM markers.
+
+    V2 — numeric / non-substitutable-literal sites.
+
+    Matches:
+        NAME = <literal>  # RECIPE_PARAM:KEY=default
+        NAME = <literal>    // RECIPE_PARAM:KEY=default
+    And replaces ``<literal>`` with ``resolved[KEY]`` when present.
+    Preserves the comment marker. Leaves rows alone when KEY is not in
+    ``resolved``. Works for int / float / quoted-string literals.
+    """
+    import re
+    pat = re.compile(
+        r"(?P<lhs>=\s*)"
+        r"(?P<lit>\"[^\"\n]*\"|'[^'\n]*'|-?\d+(?:\.\d+)?)"
+        r"(?P<tail>\s+(?:#|//)\s*RECIPE_PARAM:"
+        r"(?P<key>[A-Z_][A-Z0-9_]*)=[^\n]*)"
+    )
+
+    def _replacer(m: "re.Match") -> str:
+        key = m.group("key")
+        if key not in resolved:
+            return m.group(0)
+        lit = m.group("lit")
+        new_val = resolved[key]
+        # Preserve literal quoting style for string sites.
+        if lit.startswith('"'):
+            new_val = '"' + new_val.replace('"', '\\"') + '"'
+        elif lit.startswith("'"):
+            new_val = "'" + new_val.replace("'", "\\'") + "'"
+        return m.group("lhs") + new_val + m.group("tail")
+
+    return pat.sub(_replacer, text)
+
+
 def instantiate_recipe(
     recipe: Recipe,
     target_dir: str,
@@ -603,4 +639,7 @@ def _instantiate_file(
             params_used[key] = str(value)
 
     substituted = _substitute_tokens(text, resolved)
+    # V2 — inline literal substitution for numeric / quoted-string sites
+    # that can't host <<KEY>> tokens without breaking ast.parse.
+    substituted = _substitute_inline_params(substituted, resolved)
     dst.write_text(substituted, encoding="utf-8")

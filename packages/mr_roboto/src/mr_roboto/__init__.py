@@ -1689,6 +1689,26 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "vendor_call":
+        # Z6 T3A — drive a real-world vendor API via IntegrationRegistry.
+        from mr_roboto.executors.vendor_call import run as _vendor_call_run
+        try:
+            res = await _vendor_call_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"vendor_call: reason={res.get('reason')} "
+                        f"service={res.get('service')} "
+                        f"action={res.get('action')} "
+                        f"err={res.get('error') or res.get('detail') or ''}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "ingest_visual":
         # B7+C16: founder-uploaded sketch/photo → structured visual_brief.md
         from mr_roboto.ingest_visual import ingest_visual as _ingest_visual

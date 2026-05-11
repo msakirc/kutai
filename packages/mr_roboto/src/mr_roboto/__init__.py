@@ -1698,6 +1698,18 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "emit_dlq_lessons":
+        # Z2 T4B + Item-1 followup — daily DLQ→mission_lessons emitter.
+        from src.infra.mission_lessons import emit_lessons_from_dlq_patterns
+        try:
+            count = await emit_lessons_from_dlq_patterns()
+            return Action(
+                status="completed",
+                result={"ok": True, "lessons_count": int(count)},
+            )
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "mission_event_drain":
         # Z10 T2B: drain T1C confirmations + T2A budget alerts → mission_events.
         from mr_roboto.mission_event_drain import run as drain_run

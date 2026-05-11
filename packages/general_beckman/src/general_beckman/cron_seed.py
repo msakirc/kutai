@@ -184,6 +184,17 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 2592000,
         "payload": {"_executor": "tax_export_ledger"},
     },
+    # Z2 T4B + Item-1 followup — daily DLQ→mission_lessons emitter.
+    # Scans the last 30d of unresolved DLQ rows, groups by (stack,
+    # error_category), and upserts lessons rows when occurrences ≥ 3.
+    # Without this cron the lessons table sits empty until a human runs
+    # `python -m src.infra.mission_lessons emit-dlq`.
+    {
+        "title": "mission_lessons_emit_dlq",
+        "description": "Daily DLQ pattern detector — upserts mission_lessons rows for recurring failures",
+        "interval_seconds": 86400,  # 24h
+        "payload": {"_executor": "emit_dlq_lessons"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

@@ -117,6 +117,21 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "call per produces slot.  Fires before verify_artifacts."
         ),
     ),
+    # Z2 T2B — static import checker.
+    "imports_check": PostHookSpec(
+        kind="imports_check",
+        verb="check_imports",
+        default_severity="blocker",
+        # Auto-wire on steps that produce Python or TypeScript/TSX files.
+        # Pure static analysis (ast + regex); no network, no runtime.
+        # Missing dep → blocker. Unused declared dep → deferred (noisy).
+        auto_wire_triggers=["*.py", "*.ts", "*.tsx"],
+        description=(
+            "Verify imports resolve against project manifest "
+            "(pyproject.toml/requirements*.txt for Python; package.json for TS); "
+            "fail on missing."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

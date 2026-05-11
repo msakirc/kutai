@@ -74,6 +74,8 @@ from mr_roboto import rollback_mission as rollback_mission_module  # noqa: F401
 import mr_roboto.record_demo as record_demo  # noqa: F401
 import mr_roboto.verify_demo_artifact as verify_demo_artifact  # noqa: F401
 import mr_roboto.mission_deliverable_bundle as mission_deliverable_bundle  # noqa: F401
+# Z2 T2B — static import checker.
+from mr_roboto.check_imports import check_imports
 
 __all__ = [
     "Action",
@@ -116,6 +118,7 @@ __all__ = [
     "verify_premortem_shape",
     "spec_consistency_check",
     "prior_art_min_coverage",
+    "check_imports",
 ]
 
 
@@ -1226,6 +1229,35 @@ async def _run_dispatch(task: dict) -> Action:
                         f"timed_out={res.get('timed_out')} "
                         f"err={res.get('error') or ''}"
                     ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "check_imports":
+        # Z2 T2B — static import checker. Verifies that every import in the
+        # produced files resolves against the project manifest (pyproject.toml /
+        # requirements*.txt for Python; package.json for TS/JS). Missing imports
+        # → blocker verdict; verdict feeds back to source task via posthook path.
+        from mr_roboto.check_imports import check_imports as _check_imports
+        try:
+            res = await _check_imports(
+                mission_id=task.get("mission_id"),
+                target_files=payload.get("target_files") or [],
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                missing = res.get("missing") or []
+                summary = "; ".join(
+                    f"{r['file']}:{r.get('line', '?')} {r['module']}"
+                    for r in missing[:5]
+                )
+                if len(missing) > 5:
+                    summary += f" … (+{len(missing) - 5} more)"
+                return Action(
+                    status="failed",
+                    error=f"check_imports: missing={summary}",
                     result=res,
                 )
             return Action(status="completed", result=res)

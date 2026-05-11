@@ -2210,6 +2210,53 @@ async def init_db():
         ),
     )
 
+    # ── Z6 T1B: founder_actions table (real-world bridge queue) ───────────
+    # A founder_action is "agent surfaces a real-world task to founder,
+    # mission parks until founder marks done with optional output". One
+    # row per pending real-world handoff. Lifecycle: pending → in_progress
+    # → {done|blocked|cancelled}. Status transitions are gated by the repo
+    # module in src/founder_actions/ — DDL only here.
+    await apply_migration(
+        version="2026-05-11-founder-actions",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS founder_actions ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER NOT NULL,"
+            " blocking_task_id INTEGER,"
+            " blocking_step_id TEXT,"
+            " kind TEXT NOT NULL,"
+            " title TEXT NOT NULL,"
+            " why TEXT NOT NULL,"
+            " instructions_json TEXT NOT NULL,"
+            " expected_output_kind TEXT,"
+            " expected_output_schema_json TEXT,"
+            " cost_estimate_usd REAL,"
+            " reversibility TEXT,"
+            " status TEXT NOT NULL DEFAULT 'pending',"
+            " response_payload_json TEXT,"
+            " created_at TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL,"
+            " resolved_at TEXT,"
+            " FOREIGN KEY (mission_id) REFERENCES missions(id),"
+            " FOREIGN KEY (blocking_task_id) REFERENCES tasks(id)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_founder_actions_mission "
+            "ON founder_actions(mission_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_founder_actions_status "
+            "ON founder_actions(status);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_founder_actions_status;\n"
+            "DROP INDEX IF EXISTS idx_founder_actions_mission;\n"
+            "DROP TABLE IF EXISTS founder_actions;\n"
+        ),
+        description=(
+            "Z6 T1B: founder_actions table + mission/status indexes. "
+            "Surfaces real-world tasks to founder; mission blocks while "
+            "any row is pending/in_progress."
+        ),
+    )
+
     # ── Z6 T1A: hoist needs_real_tools from task.context to indexed column ──
     # reversibility was added by 2026-05-10-tasks-confidence-reversibility
     # (Z10 T1C); needs_real_tools is new. Idempotent ADD COLUMN.

@@ -869,12 +869,6 @@ def _posthook_agent_and_payload(
         })
     if a.kind == "imports_check":
         # Z2 T2B — mechanical post-hook: static import checker.
-        # Passes the step's declared `produces` list as `target_files`;
-        # mr_roboto.check_imports analyses each file against the project
-        # manifest and returns missing imports as blockers.
-        # Verdict interpretation:
-        #   missing import present → blocker (action status="failed")
-        #   unused declared dep     → deferred (warn only; skipped in v1)
         produces = list(source_ctx.get("produces") or [])
         workspace_path = source_ctx.get("workspace_path") or ""
         return ("mechanical", {
@@ -885,6 +879,20 @@ def _posthook_agent_and_payload(
                 "action": "check_imports",
                 "target_files": produces,
                 "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "test_run":
+        # Z2 T2A — mr_roboto picks runner (pytest/jest/vitest) from extension
+        # + optional stack_hint.
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "test_run",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_tests",
+                "target_files": produces,
+                "stack_hint": source_ctx.get("stack_hint") or "",
             },
         })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
@@ -1271,6 +1279,137 @@ async def _apply_code_review_verdict(
                          task_id=source.get("id"), error=str(_exc))
 
 
+async def _apply_test_run_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a test_run post-hook verdict back to the source task.
+
+    Pass: drop ``test_run`` from pending; if no other post-hooks remain,
+    mark source completed.  Slow-suite warning (>120s) in ``verdict.raw``
+    is noted in ctx but does NOT block.
+    Fail: retry source with the test output as feedback.  Any red exit
+    (failed/errors > 0, timed_out, spawn error) is severity=blocker.
+    Import errors in the test file count as red — exit 1, total=0.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "test_run"]
+        ctx["_pending_posthooks"] = new_pending
+        # Surface slow-suite warning into context without blocking.
+        raw = verdict.raw or {}
+        if raw.get("warning"):
+            ctx["_test_run_warning"] = raw["warning"]
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    # Fail path: blocker on any red result (failed/errors > 0, timed_out,
+    # zero-collected = import error, spawn error).
+    raw = verdict.raw or {}
+    failed_n = int(raw.get("failed") or 0)
+    errors_n = int(raw.get("errors") or 0)
+    total_n = int(raw.get("total") or 0)
+    timed_out = bool(raw.get("timed_out"))
+    spawn_err = raw.get("error") or ""
+    stdout_tail = (raw.get("stdout_tail") or "")[:400]
+
+    if timed_out:
+        error_str = "test_run: suite timed out"
+    elif spawn_err:
+        error_str = f"test_run: spawn error: {spawn_err}"[:500]
+    elif total_n == 0:
+        error_str = "test_run: 0 tests collected (possible import error)"
+    else:
+        error_str = (
+            f"test_run: {failed_n} failed, {errors_n} errors, "
+            f"{total_n} total."
+        )
+    if stdout_tail:
+        error_str = (error_str + f" output={stdout_tail!r}")[:500]
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    feedback = (
+        "Tests you wrote are failing. Fix the implementation (or the test "
+        "if it is wrong) so the suite goes green. "
+        f"Details: {error_str}"
+    )
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "test_run gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
+
+
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind == "grade":
         return f"Grade task #{a.source_task_id}"
@@ -1283,6 +1422,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Code review for #{a.source_task_id}"
     if a.kind == "grounding":
         return f"Grounding check for #{a.source_task_id}"
+    if a.kind == "test_run":
+        return f"Test run for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -1443,6 +1584,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
 
     if a.kind == "code_review":
         await _apply_code_review_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "test_run":
+        await _apply_test_run_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return

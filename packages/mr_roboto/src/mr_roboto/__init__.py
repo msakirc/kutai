@@ -31,6 +31,8 @@ from mr_roboto.propagate_asset_change import propagate_asset_change
 from mr_roboto.propose_spec_patch import propose_spec_patch_from_html_diff
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
+from mr_roboto.run_jest import run_jest
+from mr_roboto.run_vitest import run_vitest
 from mr_roboto.parse_og_tags import parse_og_tags
 from mr_roboto.http_check import http_check
 from mr_roboto.emit_preview_url import emit_preview_url
@@ -105,6 +107,8 @@ __all__ = [
     "propose_spec_patch_from_html_diff",
     "run_cmd",
     "run_pytest",
+    "run_jest",
+    "run_vitest",
     "parse_og_tags",
     "http_check",
     "emit_preview_url",
@@ -1263,6 +1267,122 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))
+
+    if action == "run_tests":
+        # test_run post-hook dispatch: picks the right runner from target_files.
+        # Rules (applied in order):
+        #   *.py            → run_pytest
+        #   *.test.ts(x)    → run_jest if jest config detected, else run_vitest
+        #   *.spec.ts       → same as above
+        #   no match        → warning verdict (no runner detected)
+        target_files: list[str] = list(payload.get("target_files") or [])
+        stack_hint: str = str(payload.get("stack_hint") or "")
+        timeout_s_val = float(payload.get("timeout_s", 600.0))
+
+        # Classify target files by language
+        py_targets = [f for f in target_files if f.endswith(".py")]
+        ts_targets = [
+            f for f in target_files
+            if any(f.endswith(ext) for ext in (
+                ".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx",
+            ))
+        ]
+
+        if py_targets:
+            from mr_roboto.run_pytest import run_pytest as _run_pytest
+            try:
+                res = await _run_pytest(
+                    mission_id=task.get("mission_id"),
+                    target=py_targets,
+                    cwd=payload.get("cwd"),
+                    timeout_s=timeout_s_val,
+                    extra_args=payload.get("extra_args"),
+                    workspace_path=payload.get("workspace_path"),
+                )
+            except Exception as e:
+                return Action(status="failed", error=f"run_tests/pytest spawn: {e}")
+        elif ts_targets:
+            # Choose runner: jest if jest is detected, else vitest.
+            # Detection: stack_hint contains "jest", or workspace package.json
+            # has a jest key. Vitest is the default for TS (common in Vite stacks).
+            use_jest = "jest" in stack_hint.lower()
+            if not use_jest:
+                # Best-effort workspace package.json probe
+                import os, json as _json
+                ws = payload.get("workspace_path") or ""
+                pkg_path = os.path.join(ws, "package.json") if ws else "package.json"
+                try:
+                    with open(pkg_path, "r", encoding="utf-8") as _f:
+                        pkg = _json.load(_f)
+                    use_jest = "jest" in (pkg.get("dependencies") or {}) or \
+                               "jest" in (pkg.get("devDependencies") or {}) or \
+                               "jest" in pkg
+                except (OSError, _json.JSONDecodeError):
+                    pass
+
+            if use_jest:
+                from mr_roboto.run_jest import run_jest as _run_jest
+                try:
+                    res = await _run_jest(
+                        mission_id=task.get("mission_id"),
+                        target=ts_targets,
+                        cwd=payload.get("cwd"),
+                        timeout_s=timeout_s_val,
+                        extra_args=payload.get("extra_args"),
+                        workspace_path=payload.get("workspace_path"),
+                    )
+                except Exception as e:
+                    return Action(status="failed", error=f"run_tests/jest spawn: {e}")
+            else:
+                from mr_roboto.run_vitest import run_vitest as _run_vitest
+                try:
+                    res = await _run_vitest(
+                        mission_id=task.get("mission_id"),
+                        target=ts_targets,
+                        cwd=payload.get("cwd"),
+                        timeout_s=timeout_s_val,
+                        extra_args=payload.get("extra_args"),
+                        workspace_path=payload.get("workspace_path"),
+                    )
+                except Exception as e:
+                    return Action(status="failed", error=f"run_tests/vitest spawn: {e}")
+        else:
+            # No recognised test files — warn but don't block.
+            return Action(
+                status="completed",
+                result={
+                    "ok": True,
+                    "warning": "no_runner_detected",
+                    "target_files": target_files,
+                    "message": (
+                        "run_tests: no .py or .test.ts(x)/.spec.ts(x) targets found; "
+                        "skipping test run."
+                    ),
+                },
+            )
+
+        # Slow-suite warning (>120s) but don't block; red test → blocker.
+        duration = float(res.get("duration_s") or 0.0)
+        warning = None
+        if duration > 120.0 and res.get("ok"):
+            warning = f"slow_suite: {duration:.1f}s > 120s threshold"
+
+        if not res.get("ok"):
+            return Action(
+                status="failed",
+                error=(
+                    f"run_tests: passed={res.get('passed')} "
+                    f"failed={res.get('failed')} errors={res.get('errors')} "
+                    f"total={res.get('total')} exit={res.get('exit')} "
+                    f"timed_out={res.get('timed_out')} "
+                    f"err={res.get('error') or ''}"
+                ),
+                result=res,
+            )
+        result_out = dict(res)
+        if warning:
+            result_out["warning"] = warning
+        return Action(status="completed", result=result_out)
 
     if action == "parse_og_tags":
         from mr_roboto.parse_og_tags import parse_og_tags as _parse_og

@@ -6,6 +6,8 @@ template expansion with context_strategy, and agent name mapping.
 
 from __future__ import annotations
 
+import fnmatch
+import os
 from typing import Optional
 
 from src.infra.logging_config import get_logger
@@ -79,6 +81,106 @@ def _phase_to_priority(phase: str) -> int:
         return 1
     # Linear interpolation: phase 1 -> 9, phase 14 -> 2
     return max(1, 10 - phase_num)
+
+
+def _auto_wire_posthooks(context: dict) -> None:
+    """Prepend post-hook kinds whose registry triggers match the step's produces.
+
+    Iterates ``POST_HOOK_REGISTRY`` in insertion order.  For each spec with
+    non-empty ``auto_wire_triggers``, checks whether any trigger glob
+    (fnmatch-style) matches any entry in ``context["produces"]``.  Produces
+    entries that are lists (any_of alternatives) have each alternative tested
+    individually — if any alternative matches, the trigger fires.
+
+    Prepends matched kinds so cheapest checks (grounding) fire before
+    more-expensive ones (verify_artifacts, code_review).  Idempotent: a kind
+    already present is never duplicated.
+
+    Called only when ``context["produces"]`` is non-empty.
+    """
+    from general_beckman.posthooks import POST_HOOK_REGISTRY  # lazy import avoids circular
+
+    produces: list = context.get("produces") or []
+    existing: list[str] = list(context.get("post_hooks") or [])
+
+    # Flatten produces to candidate path strings for glob matching.
+    # any_of entries (list of strings) contribute all alternatives.
+    candidate_paths: list[str] = []
+    for entry in produces:
+        if isinstance(entry, str):
+            candidate_paths.append(entry)
+        elif isinstance(entry, list):
+            candidate_paths.extend(s for s in entry if isinstance(s, str))
+
+    to_prepend: list[str] = []
+    for spec in POST_HOOK_REGISTRY.values():
+        if not spec.auto_wire_triggers:
+            continue
+        if spec.kind in existing or spec.kind in to_prepend:
+            continue
+        for trigger in spec.auto_wire_triggers:
+            if any(fnmatch.fnmatchcase(p, trigger) for p in candidate_paths):
+                to_prepend.append(spec.kind)
+                break
+
+    if to_prepend:
+        context["post_hooks"] = to_prepend + existing
+
+
+def _apply_hint_from_targets(
+    context: dict,
+    workspace_path: Optional[str] = None,
+) -> None:
+    """Strip ``write_file`` from tools_hint when a produce target already exists.
+
+    If the step's ``tools_hint`` contains ``"write_file"`` AND any path in
+    ``context["produces"]`` already exists under *workspace_path*, remove
+    ``"write_file"`` from the hint so the agent is nudged toward patch/edit
+    tools instead of blindly overwriting.
+
+    Decision — any_of alternatives (list of strings): if *any* of the
+    alternatives exists, ``write_file`` is stripped.  Rationale: an any_of
+    slot represents "one of these files will satisfy the requirement"; if one
+    already exists the agent should edit, not overwrite.
+
+    Founder override: ``context["force_write"] = True`` skips the strip.
+
+    Idempotent: calling twice yields the same result.
+    Does nothing when ``tools_hint`` is absent or doesn't include
+    ``"write_file"``.
+    """
+    tools_hint = context.get("tools_hint")
+    if not tools_hint or "write_file" not in tools_hint:
+        return
+    if context.get("force_write"):
+        return
+
+    produces: list = context.get("produces") or []
+    if not produces:
+        return
+
+    # Resolve workspace path: if not supplied, no filesystem check is possible
+    # so we skip (test callers pass tmp_path explicitly; production callers
+    # should pass the mission workspace root).
+    if workspace_path is None:
+        return
+
+    def _exists(rel: str) -> bool:
+        return os.path.exists(os.path.join(workspace_path, rel))
+
+    should_strip = False
+    for entry in produces:
+        if isinstance(entry, str):
+            if _exists(entry):
+                should_strip = True
+                break
+        elif isinstance(entry, list):
+            if any(isinstance(alt, str) and _exists(alt) for alt in entry):
+                should_strip = True
+                break
+
+    if should_strip:
+        context["tools_hint"] = [t for t in tools_hint if t != "write_file"]
 
 
 def expand_steps_to_tasks(
@@ -170,15 +272,20 @@ def expand_steps_to_tasks(
         if post_hooks and isinstance(post_hooks, list):
             context["post_hooks"] = [k for k in post_hooks if isinstance(k, str) and k.strip()]
 
-        # Auto-wire grounding (L2 of G): any step with declared produces
-        # gets a grounding post-hook prepended (runs before verify_artifacts
-        # so a "never wrote anything" agent fails on the cheaper check
-        # before mr_roboto bothers walking the workspace). Idempotent — skipped
-        # when explicitly listed already.
+        # Auto-wire post-hooks from registry (T1B).
+        # For each registered kind whose auto_wire_triggers are non-empty,
+        # prepend that kind when any trigger glob matches any produces entry.
+        # The existing grounding block is *migrated into this loop* rather
+        # than kept as a separate branch — "grounding" has auto_wire_triggers=["*"]
+        # which matches every produces entry, preserving identical behavior.
+        # Idempotent: a kind already present in post_hooks is never added again.
         if context.get("produces"):
-            existing = list(context.get("post_hooks") or [])
-            if "grounding" not in existing:
-                context["post_hooks"] = ["grounding"] + existing
+            _auto_wire_posthooks(context)
+
+        # Hint-from-targets pass (T1C): if tools_hint includes "write_file"
+        # and any declared produce path already exists in the workspace,
+        # strip "write_file" so the agent is nudged toward patch/edit tools.
+        _apply_hint_from_targets(context)
 
         skip_when = step.get("skip_when")
         if skip_when:

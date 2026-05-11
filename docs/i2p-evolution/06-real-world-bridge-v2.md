@@ -460,7 +460,33 @@ T1 + T3 + T4 → T7 polish [parallel after all]
 7. Each tier merge: run `pytest tests/integrations`, `pytest tests/founder_actions` (new), `pytest tests/test_credential_store`. Add tier-specific tests as part of the tier.
 8. Add `## Updates` entry per tier merge with date + commit hash.
 
+## Cross-references
+
+* **Z0 — lifecycle coordination.** `missions.lifecycle_state` reuse for
+  `blocked_on_founder_action`; budget pause; per-mission Telegram
+  thread topic that hosts inline action cards.
+* **Z1 — compliance_overlay producer.** Step 1.11a is the canonical
+  upstream artifact consumed by 12.1 (T4A) and the staleness scanner
+  (T4D).
+* **Z5 — mobile build pipeline.** Z5 owns .ipa / .aab build; Z6 T6C
+  owns App Store Connect + Google Play submit/list adapters.
+* **Z8 — operations cron.** T4D (template staleness), T7A (credential
+  rotation), T5D (Stripe dispute + revenue digest) all run on the
+  Beckman cron registered via ``general_beckman.cron_seed``.
+* **Z9 — Stripe pricing experiments.** Stripe Connect, A/B price
+  experiments and dispute analysis depend on the T5 recipe.
+* **Z10 — reversibility framing.** Step-level reversibility tags
+  (T6A) feed the cost-ack gate (T6B) and into Z10's mission
+  irreversibility scorecard.
+
 ## Updates
 
 - **2026-05-08** — v1 initial doc; pairs Z3+Z7; high-level "no vault/no adapters" framing.
 - **2026-05-11** — v2 supersedes v1. Re-audit revealed credential_store, IntegrationRegistry, compliance_overlay (Z1) already exist. 10-gap list reframed Z6 as wiring + finish. Locked: founder_actions = dedicated table; vendor_call = both mechanical + LLM tool; T6 full scope. Tier plan revised to 7 tiers with T1 keystone sequential, T2-T4 + T6 parallel batches, T5 sequential, T7 polish.
+- **2026-05-11 — T1 shipped** (commits ``74a2175`` → ``3b40d2b``): needs_real_tools+reversibility columns, founder_actions table+repo, Beckman z6_admission gate, /actions+/action_done Telegram surfaces, mission lifecycle coord (block/unblock).
+- **2026-05-11 — T2 shipped** (``b6ee8c3`` → ``c094cea``): credentials.scope/rotated_at/expires_at/key_version/schema_id columns; per-vendor schema validation; credential_access_log audit trail + /credential log; versioned master-key rekey; insecure dev-vault behind explicit env gate.
+- **2026-05-11 — T3 shipped** (``c478da1`` → ``153209f``): mechanical vendor_call post-hook; LLM vendor_call tool with allowlist + cost cap; wave 1 vendor configs (stripe/sendgrid/cloudflare/sentry/supabase); real_tool_kind resolver for pipe-separated adapter choice.
+- **2026-05-11 — T4 shipped** (``0ae71ce`` → ``2715a24``): 12.1 split into mechanical render + 12.1b LLM fill (consumes compliance_overlay); 7 missing template stubs; gdpr+ccpa jurisdiction overrides; weekly compliance_template_staleness cron emits legal_counsel founder_actions.
+- **2026-05-11 — T5 shipped** (``9a92cf6`` → ``ca7ec93``): build-phase stripe_scaffold; stripe_provision_products executor + 13.11b workflow step; 13.12 payment_flow_test deepened via vendor_call; stripe_dispute_check + revenue_digest weekly crons; stripe_tax_export monthly cron.
+- **2026-05-11 — T6 shipped** (``6ee111b`` → ``837fb64``): step-level reversibility tags swept across i2p_v3 with audit script; cost_ack founder_action for irreversible+cost-estimated steps; Apple App Store Connect + Google Play Console adapters with JWT mint + service-account auth.
+- **2026-05-11 — T7 shipped** (``c4a86ad`` → THIS): credential_rotation_reminder weekly cron (T7A); /missions+/mission UX polish with action count badges (T7B); coulson detect-and-bail closes G9 — short-circuits or injects warning prompt when needs_real_tools=true (T7C); docs + cross-refs + register_artifact helper + vendor_call audit context wired (T7D).

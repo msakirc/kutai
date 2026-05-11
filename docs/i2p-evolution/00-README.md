@@ -24,7 +24,7 @@ folder maps where each piece of work lives.
 | Z2 — Build review density | [03-build-review-density.md](03-build-review-density.md) | multi-pass review + multi-file expansion + QA modalities |
 | Z2 — Visual review | [04-build-visual-review.md](04-build-visual-review.md) | screenshot framing + state priming + diff (subproject) |
 | Z2 — Mobile track | [05-build-mobile-track.md](05-build-mobile-track.md) | platform-aware frontend + mobile tooling |
-| Z3 + Z7 — Real-world bridge | [06-real-world-bridge.md](06-real-world-bridge.md) | accounts, legal, vendor adapters, payments |
+| Z3 + Z7 — Real-world bridge | [06-real-world-bridge-v2.md](06-real-world-bridge-v2.md) (v1 [06-real-world-bridge.md](06-real-world-bridge.md) superseded 2026-05-11) | accounts, legal, vendor adapters, payments |
 | Z4 + Z8 — Humanish layers | [07-humanish-layers.md](07-humanish-layers.md) | marketing, story, comms helper, relationships |
 | Z5 — Operations | [08-operations.md](08-operations.md) | monitoring, on-call, incident, support, backups |
 | Z6 — Growth | [09-growth.md](09-growth.md) | analytics, hypotheses, A/B, prioritization |

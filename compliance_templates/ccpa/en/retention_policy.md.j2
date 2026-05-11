@@ -1,0 +1,66 @@
+# Data Retention Policy — California (CCPA / CPRA) variant (review with counsel before publishing)
+
+_Generated: {{ generated_at }}_
+_Business: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Contact: {{ controller_contact | default('[NOT SPECIFIED]') }}_
+
+This retention schedule satisfies the disclosure obligation of
+California Civil Code § 1798.100(a)(3): for each category of Personal
+Information, the business shall disclose the length of time it intends
+to retain each category, or, if not possible, the criteria used to
+determine the period.
+
+## 1. Categories and retention periods
+
+{% if data_categories %}
+| Category (§ 1798.140(v)) | Retention | Criteria |
+|---|---|---|
+{% for cat in data_categories -%}
+| {{ cat }} | {{ retention_period | default('[LEGAL REVIEW REQUIRED]') }} | _to be filled in_ |
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list each category and either a period or the criteria used to determine retention.
+{% endif %}
+
+## 2. Sensitive Personal Information (§ 1798.121)
+
+[LEGAL REVIEW REQUIRED] — Sensitive PI retention is limited to what is
+necessary for the purposes permitted under § 1798.121(a). Longer
+retention requires consumer-facing disclosure plus a "Limit the Use of
+My Sensitive Personal Information" link.
+
+## 3. Deletion procedures
+
+- Verifiable consumer deletion requests (§ 1798.105) are honoured within 45 days, extendable once by 45 days with notice.
+- We instruct service providers and contractors that received the consumer's Personal Information to delete it from their records, unless an exception applies.
+- We do not re-identify deidentified data once deletion has been actioned.
+
+## 4. Statutory exceptions (§ 1798.105(d))
+
+We may decline to delete to the extent retention is necessary to:
+
+- Complete the transaction for which the Personal Information was collected.
+- Detect security incidents or protect against malicious or illegal activity.
+- Debug to identify and repair errors.
+- Comply with a legal obligation (tax, employment, regulatory recordkeeping).
+- Exercise free speech or another right provided for by law.
+
+## 5. Backups and retention beyond the schedule
+
+Data persisted in backups is purged on the next backup rotation cycle
+after a deletion request, but is not used for any purpose other than
+disaster recovery while it remains in backup.
+
+## 6. Records
+
+We maintain an internal log of deletion requests and their status for
+at least 24 months per CCPA recordkeeping guidance.
+
+## 7. Review
+
+This policy is reviewed at least every 12 months as required by
+§ 1798.130(a)(5).
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before publishing._

@@ -1,0 +1,63 @@
+# Data Retention Policy — GDPR variant (review with counsel before publishing)
+
+_Generated: {{ generated_at }}_
+_Controller: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Controller contact: {{ controller_contact | default('[NOT SPECIFIED]') }}_
+
+This policy gives effect to the storage-limitation principle of
+Article 5(1)(e) GDPR — Personal Data is kept "no longer than is necessary"
+for the purposes for which it is processed.
+
+## 1. Categories and retention periods
+
+{% if data_categories %}
+| Category | Retention | Lawful basis (Art. 6) | Rationale |
+|---|---|---|---|
+{% for cat in data_categories -%}
+| {{ cat }} | {{ retention_period | default('[LEGAL REVIEW REQUIRED]') }} | {{ (lawful_basis | first) if lawful_basis else '[LEGAL REVIEW REQUIRED]' }} | _to be filled in_ |
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list categories with per-category retention and Art. 6 lawful basis.
+{% endif %}
+
+## 2. Default retention
+
+Where a category-specific term is not declared, data is retained for
+**{{ retention_period | default('[LEGAL REVIEW REQUIRED]') }}** from
+collection or last interaction, whichever is later.
+
+## 3. Lawful basis (Article 6) and special-category data (Article 9)
+
+{% if lawful_basis %}
+{% for b in lawful_basis -%}
+- {{ b }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — declare Art. 6 basis per category. Art. 9 special-category data requires an additional Art. 9(2) condition.
+{% endif %}
+
+## 4. Deletion mechanisms
+
+- Soft-delete on request or account closure; hard-delete and backup-rotation pruning within the declared retention period.
+- For data held only for archival in the public interest, scientific research, or statistical purposes (Art. 89), retention may be longer but pseudonymisation/aggregation MUST be applied.
+- Right to erasure (Art. 17) overrides scheduled retention where the conditions of Art. 17(1) are met.
+
+## 5. Legal-hold and regulatory obligations
+
+[LEGAL REVIEW REQUIRED] — list Member-State retention obligations
+(tax law, AML, employment law) that override the default deletion path.
+
+## 6. Records (Article 30)
+
+Retention decisions are recorded in the Art. 30 record of processing
+activities and reviewed at least annually.
+
+## 7. Review
+
+This policy is reviewed annually and immediately whenever new categories
+of Personal Data are introduced or when supervisory-authority guidance
+materially changes.
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before publishing._

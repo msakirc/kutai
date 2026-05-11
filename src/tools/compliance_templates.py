@@ -27,6 +27,23 @@ logger = get_logger("tools.compliance_templates")
 TEMPLATE_ROOT = "compliance_templates"
 STALE_DAYS = 180
 
+# Z6 T4C — alias common jurisdiction names to the template-directory slug
+# we ship. Resolution walks the alias's target first, then the literal,
+# then default/<lang>/, then default/en/. Match is case-insensitive.
+_JURISDICTION_ALIASES: dict[str, str] = {
+    "eu": "gdpr",
+    "european union": "gdpr",
+    "gdpr": "gdpr",
+    "uk": "gdpr",
+    "united kingdom": "gdpr",
+    "ee": "gdpr",
+    "eea": "gdpr",
+    "california": "ccpa",
+    "ca": "ccpa",
+    "ccpa": "ccpa",
+    "cpra": "ccpa",
+}
+
 
 def _resolve_template(
     doc_type: str,
@@ -34,11 +51,25 @@ def _resolve_template(
     lang: str,
     root: str,
 ) -> str | None:
-    candidates = [
-        os.path.join(root, jurisdiction, lang, f"{doc_type}.md.j2"),
-        os.path.join(root, "default", lang, f"{doc_type}.md.j2"),
-        os.path.join(root, "default", "en", f"{doc_type}.md.j2"),
-    ]
+    j_norm = (jurisdiction or "default").strip()
+    aliased = _JURISDICTION_ALIASES.get(j_norm.lower())
+    candidates: list[str] = []
+    # Try alias first (e.g. "EU" -> "gdpr"), then the literal jurisdiction
+    # (preserves explicit "gdpr"/"ccpa" callers + project-local overrides
+    # under a custom slug), then defaults.
+    if aliased and aliased != j_norm:
+        candidates.append(
+            os.path.join(root, aliased, lang, f"{doc_type}.md.j2")
+        )
+    candidates.append(
+        os.path.join(root, j_norm, lang, f"{doc_type}.md.j2")
+    )
+    candidates.append(
+        os.path.join(root, "default", lang, f"{doc_type}.md.j2")
+    )
+    candidates.append(
+        os.path.join(root, "default", "en", f"{doc_type}.md.j2")
+    )
     for path in candidates:
         if os.path.isfile(path):
             return path

@@ -1,0 +1,98 @@
+# Data Processing Agreement — GDPR Article 28 variant (review with counsel before signing)
+
+_Generated: {{ generated_at }}_
+_Controller: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Controller contact: {{ controller_contact | default('[NOT SPECIFIED]') }}_
+
+This DPA implements the requirements of Article 28 GDPR and applies to
+all processing of Personal Data by the Processor on behalf of the
+Controller.
+
+## 1. Subject matter, duration, nature and purpose
+
+- **Subject matter:** Processing necessary to provide the services agreed between the parties.
+- **Duration:** Term of the underlying services agreement plus any retention required by law.
+- **Nature:** {{ project_name | default('[NOT SPECIFIED]') }} platform operations.
+- **Purpose:** [LEGAL REVIEW REQUIRED] — specify per-service purpose.
+
+## 2. Categories of data and data subjects
+
+- **Categories of personal data:**
+{% if data_categories %}
+{% for cat in data_categories -%}  - {{ cat }}
+{% endfor %}
+{% else %}
+  [LEGAL REVIEW REQUIRED]
+{% endif %}
+- **Categories of data subjects:** [LEGAL REVIEW REQUIRED] — e.g. registered users, customers, employees of customers.
+
+## 3. Processor obligations (Article 28(3))
+
+The Processor shall:
+
+- (a) Process Personal Data only on the documented instructions of the Controller, including with regard to international transfers.
+- (b) Ensure persons authorised to process the Personal Data have committed themselves to confidentiality.
+- (c) Take all measures required pursuant to Article 32 (security of processing).
+- (d) Respect the conditions for engaging sub-processors per §4 below.
+- (e) Assist the Controller in responding to data-subject rights requests (Art. 12-22).
+- (f) Assist the Controller in ensuring compliance with Art. 32-36 (security, breach, DPIA, prior consultation).
+- (g) At the choice of the Controller, delete or return all Personal Data after the end of the services, unless retention is required by EU or Member State law.
+- (h) Make available to the Controller all information necessary to demonstrate compliance with Art. 28 and allow for and contribute to audits.
+
+## 4. Sub-processors (Article 28(2), 28(4))
+
+{% if third_parties %}
+Authorised sub-processors as of the effective date:
+
+{% for t in third_parties -%}
+- {{ t }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list authorised sub-processors with locations and roles.
+{% endif %}
+
+The Processor shall give the Controller at least 30 days' prior notice of any intended changes to its sub-processors. The Controller may object within that period.
+
+## 5. International transfers (Chapter V)
+
+For any transfer of Personal Data outside the EEA the parties rely on:
+
+[LEGAL REVIEW REQUIRED] — choose mechanism (SCCs Module 2 / 3 as appropriate, adequacy decision, BCRs) and document supplementary measures per the Schrems II ruling.
+
+## 6. Security (Article 32)
+
+The Processor implements appropriate technical and organisational measures, including:
+
+- Encryption of Personal Data in transit and at rest.
+- Ability to ensure ongoing confidentiality, integrity, availability, and resilience of processing systems.
+- Process for regularly testing, assessing and evaluating the effectiveness of those measures.
+- Pseudonymisation and access controls per role.
+
+## 7. Personal data breach (Articles 33-34)
+
+The Processor notifies the Controller of any Personal Data breach without
+undue delay and in any event within 48 hours of becoming aware, with all
+information reasonably needed for the Controller to meet its Art. 33
+notification obligation to the supervisory authority (72 hours).
+
+## 8. Data Protection Impact Assessment (Article 35)
+
+The Processor provides reasonable assistance to the Controller for any DPIA
+required and for prior consultation with the supervisory authority (Art. 36).
+
+## 9. Records (Article 30(2))
+
+The Processor maintains a record of all categories of processing activities
+carried out on behalf of the Controller and makes it available on request.
+
+## 10. Term and termination
+
+This DPA remains in force for as long as the Processor processes Personal Data on behalf of the Controller.
+
+## 11. Governing law
+
+[LEGAL REVIEW REQUIRED] — choose governing law (must be a Member State law or otherwise compatible with GDPR for transfers).
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before signing._

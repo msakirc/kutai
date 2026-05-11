@@ -165,3 +165,4 @@ When picking up this doc:
 ## Updates
 
 - 2026-05-08 — initial doc; absorbs Wave 1 + Wave 2 content from `docs/plans/2026-05-07-i2p-capability-expansion.md`.
+- 2026-05-10 — superseded by [02-build-foundation-v2.md](02-build-foundation-v2.md) per zone-deep-dive feedback. v2 corrects 7 stale claims (tools_hint already binding; mr_roboto already has run_pytest/run_cmd; reflection.py is the stack-prompt plug-point, not a new directory; etc.), adds alt shapes + picks per guardrail, sharpens recipe + memory schemas, tier-batches into 5 tiers like Z1.

@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from general_beckman.result_router import (
-    Action, Complete, SpawnSubtasks, RequestClarification,
+    Action, Complete, SpawnSubtasks, RequestClarification, RequestReview,
     Failed, MissionAdvance, CompleteWithReusedAnswer,
     RequestPostHook, PostHookVerdict,
 )
@@ -97,7 +97,11 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
                 inner = {}
         if not isinstance(inner, dict):
             inner = {}
-        passed = bool(inner.get("all_ok"))
+        # `all_ok` is the verify_artifacts convention; Z1 + Z2 mechanical
+        # post-hooks (compliance_template_present, prior_art_min_coverage,
+        # etc.) emit `ok` instead. Accept either so future hooks don't have
+        # to rename their result keys.
+        passed = bool(inner.get("all_ok") or inner.get("ok"))
         return [
             a,
             PostHookVerdict(
@@ -105,6 +109,30 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
                 kind=str(task_ctx["posthook_kind"]),
                 passed=passed,
                 raw=inner,
+            ),
+        ]
+
+    # Rule 0c': mechanical post-hook returned needs_review (e.g.
+    # find_similar_missions found matches; spec_consistency_check found
+    # drift). Spawn the review row so the founder is surfaced, AND
+    # synthesise PostHookVerdict(passed=False) so the source isn't stuck
+    # in 'ungraded' forever waiting for a verdict that the review channel
+    # would never produce. Z1 verdict handler decides whether passed=False
+    # means "block source" (blocker kind) or "soft-drop and advance"
+    # (warning kind, e.g. find_similar_missions).
+    if (
+        isinstance(a, RequestReview)
+        and task.get("agent_type") == "mechanical"
+        and task_ctx.get("source_task_id") is not None
+        and task_ctx.get("posthook_kind")
+    ):
+        return [
+            a,
+            PostHookVerdict(
+                source_task_id=int(task_ctx["source_task_id"]),
+                kind=str(task_ctx["posthook_kind"]),
+                passed=False,
+                raw={"needs_review": True, "summary": a.summary or ""},
             ),
         ]
 

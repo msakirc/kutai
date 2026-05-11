@@ -314,6 +314,21 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "key_lessons, resolvable URLs."
         ),
     ),
+    # Z1 T2 (P4) — declared on every phase-3 step that emits a
+    # commitment-shaped artifact (functional_requirements, etc.).
+    # Note: each of these steps also has a sibling `.verify` mechanical
+    # step. The post-hook is the cheaper earlier gate; the sibling step
+    # is the belt-and-suspenders standalone.
+    "verify_falsification_present": PostHookSpec(
+        kind="verify_falsification_present",
+        verb="verify_falsification_present",
+        default_severity="blocker",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 T2 P4 — assert each commitment-shaped item carries "
+            "risk_if_wrong / validation_method / falsification_signal."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

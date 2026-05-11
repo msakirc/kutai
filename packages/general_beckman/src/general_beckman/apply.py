@@ -930,6 +930,58 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
         )
         return
 
+    if posthook_kind in _Z1_BLOCKER_KINDS:
+        # Z1 blocker post-hook (compliance_template_present, etc.) DLQ'd
+        # — cascade source to failed so it doesn't get stuck in 'ungraded'.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != posthook_kind
+        ]
+        source_ctx[f"_{posthook_kind}_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"{posthook_kind} DLQ: {error[:400]}",
+            failed_in_phase="posthook",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning(
+            "%s DLQ cascaded source to failed",
+            posthook_kind, source_id=source_id, posthook_task_id=task["id"],
+        )
+        return
+
+    if posthook_kind in _Z1_WARNING_KINDS:
+        # Z1 warning post-hook (find_similar_missions, etc.) DLQ'd — soft-drop
+        # the pending kind; advance source if no others remain.
+        new_pending = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != posthook_kind
+        ]
+        source_ctx["_pending_posthooks"] = new_pending
+        source_ctx[f"_{posthook_kind}_dlq_reason"] = error[:300]
+        if not new_pending:
+            await update_task(
+                source_id, status="completed",
+                context=_json.dumps(source_ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning(
+            "%s DLQ soft-dropped (Z1 warning kind)",
+            posthook_kind, source_id=source_id, posthook_task_id=task["id"],
+        )
+        return
+
     if agent_type == "artifact_summarizer":
         artifact_name = ctx.get("artifact_name") or ""
         kind = f"summary:{artifact_name}"
@@ -1162,6 +1214,154 @@ def _posthook_agent_and_payload(
                 "workspace_path": workspace_path,
                 "stack_hint": stack_hint,
                 "enable_testcontainers": enable_tc,
+            },
+        })
+    if a.kind == "compliance_template_present":
+        # Z1 T5A (P6) — overlay_path defaults to produces[0]
+        # (mission_<id>/compliance_overlay.json). Handler reads file +
+        # extracts required_documents → template_ids → walks
+        # compliance_templates/.
+        produces = list(source_ctx.get("produces") or [])
+        overlay_path = (
+            source_ctx.get("overlay_path")
+            or (produces[0] if produces else None)
+        )
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "compliance_template_present",
+            "executor": "mechanical",
+            "payload": {
+                "action": "compliance_template_present",
+                "overlay_path": overlay_path,
+                "template_ids": source_ctx.get("template_ids"),
+                "template_root": source_ctx.get("template_root"),
+                "workspace_path": source_ctx.get("workspace_path"),
+            },
+        })
+    if a.kind == "compliance_blocker_check":
+        # Z1 T5A (P6) — phase-boundary check on step 6.6 project_plan_review.
+        # current_phase defaults to 6 (matches step ID phase_6).
+        current_phase = (
+            source_ctx.get("current_phase")
+            or source_ctx.get("workflow_phase_index")
+            or 6
+        )
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "compliance_blocker_check",
+            "executor": "mechanical",
+            "payload": {
+                "action": "compliance_blocker_check",
+                "current_phase": int(current_phase) if isinstance(current_phase, (int, str)) and str(current_phase).isdigit() else 6,
+                "workspace_path": source_ctx.get("workspace_path"),
+            },
+        })
+    if a.kind == "find_similar_missions":
+        # Z1 T6A (A7) — handler resolves idea_summary from workspace
+        # (.charter/product_charter.md, idea_brief.md) when None.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "find_similar_missions",
+            "executor": "mechanical",
+            "payload": {
+                "action": "find_similar_missions",
+                "idea_summary": source_ctx.get("idea_summary"),
+                "workspace_path": source_ctx.get("workspace_path"),
+                "top_k": int(source_ctx.get("similar_top_k") or 3),
+                "threshold": source_ctx.get("similar_threshold"),
+            },
+        })
+    if a.kind == "index_idea_fingerprint":
+        # Z1 T6A (A7) — siblings find_similar_missions on step 0.1.
+        # Indexes idea fingerprint into mission_ideas ChromaDB collection
+        # so future missions can dedup. Title from source title or ctx.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "index_idea_fingerprint",
+            "executor": "mechanical",
+            "payload": {
+                "action": "index_idea_fingerprint",
+                "idea_summary": source_ctx.get("idea_summary"),
+                "workspace_path": source_ctx.get("workspace_path"),
+                "title": str(
+                    source_ctx.get("title")
+                    or source_ctx.get("mission_title")
+                    or source.get("title")
+                    or ""
+                ),
+                "final_status_note": str(
+                    source_ctx.get("final_status_note") or ""
+                ),
+            },
+        })
+    if a.kind == "surface_prior_mission_hints":
+        # Z1 T6A (P9) — advisory cross-mission ADR + compliance hints on
+        # step 0.5 clarification_questions. Handler always completes.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "surface_prior_mission_hints",
+            "executor": "mechanical",
+            "payload": {
+                "action": "surface_prior_mission_hints",
+                "workspace_path": source_ctx.get("workspace_path"),
+                "founder_id": str(source_ctx.get("founder_id") or "default"),
+                "top_k": int(source_ctx.get("hints_top_k") or 3),
+                "jaccard_threshold": float(
+                    source_ctx.get("hints_jaccard_threshold") or 0.3
+                ),
+            },
+        })
+    if a.kind == "prior_art_min_coverage":
+        # Z1 T6B (P5) — handler reads report_path; defaults to produces[0]
+        # (mission_<id>/.research/prior_art_report.json).
+        produces = list(source_ctx.get("produces") or [])
+        report_path = (
+            source_ctx.get("report_path")
+            or (produces[0] if produces else None)
+        )
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "prior_art_min_coverage",
+            "executor": "mechanical",
+            "payload": {
+                "action": "prior_art_min_coverage",
+                "report_path": report_path,
+                "report": source_ctx.get("report"),
+            },
+        })
+    if a.kind == "verify_falsification_present":
+        # Z1 T2 (P4) — falsification triple check on phase-3 commitments.
+        # Resolve artifacts from source.result. Most phase-3 steps emit a
+        # single output artifact (functional_requirements, etc.); we wrap
+        # the parsed result under its declared output_artifacts[0] name.
+        # legacy_pre_falsification flag flows through source_ctx when the
+        # mission predates the Z1 P4 reshape.
+        source_result = source.get("result") or ""
+        parsed: object = {}
+        if isinstance(source_result, str) and source_result.strip():
+            try:
+                parsed = json.loads(source_result)
+            except (ValueError, TypeError):
+                parsed = {}
+        elif isinstance(source_result, (list, dict)):
+            parsed = source_result
+        output_names = list(source_ctx.get("output_artifacts") or [])
+        artifacts: dict = {}
+        if isinstance(parsed, dict):
+            # Result is already a {name: value} mapping.
+            artifacts = parsed
+        elif output_names and parsed:
+            artifacts = {output_names[0]: parsed}
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "verify_falsification_present",
+            "executor": "mechanical",
+            "payload": {
+                "action": "verify_falsification_present",
+                "artifacts": artifacts,
+                "legacy_pre_falsification": bool(
+                    source_ctx.get("legacy_pre_falsification", False)
+                ),
             },
         })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
@@ -2084,6 +2284,139 @@ async def _apply_migration_apply_verdict(
     )
 
 
+# Z1 mechanical post-hook kinds — handled by the shared
+# _apply_z1_mechanical_verdict below. Blocker kinds DLQ the source on
+# fail; warning kinds soft-drop the pending kind and let source advance.
+_Z1_BLOCKER_KINDS: frozenset[str] = frozenset({
+    "compliance_template_present",
+    "compliance_blocker_check",
+    "prior_art_min_coverage",
+    "verify_falsification_present",
+})
+
+_Z1_WARNING_KINDS: frozenset[str] = frozenset({
+    "find_similar_missions",
+    "index_idea_fingerprint",
+    "surface_prior_mission_hints",
+})
+
+_Z1_MECHANICAL_KINDS: frozenset[str] = _Z1_BLOCKER_KINDS | _Z1_WARNING_KINDS
+
+
+async def _apply_z1_mechanical_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z1 mechanical post-hook verdict.
+
+    Pass: drop ``kind`` from pending; if no other post-hooks remain,
+    mark source completed and advance the workflow.
+
+    Fail (blocker kinds): DLQ source with the error string.  No retry —
+    these are deterministic shape checks against artifacts that are
+    already on disk; a retry of the source step would re-emit the same
+    artifact unless the founder intervenes.  We surface DLQ so the
+    founder reviews the report path (e.g. similar_missions.md,
+    prior_art_report.json) and either fixes the artifact directly or
+    branches the mission.
+
+    Fail (warning kinds): soft-drop the pending kind and advance source.
+    The handler's own side-effects (write report + Telegram notify)
+    surface the issue; the source step itself shouldn't block.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    kind = verdict.kind
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    raw = verdict.raw or {}
+
+    # Warning kind — soft-drop pending and advance regardless.
+    if kind in _Z1_WARNING_KINDS:
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        ctx[f"_{kind}_warning"] = (
+            raw.get("error") or raw.get("summary") or "needs_review"
+        )[:300]
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, raw)
+            except Exception:
+                pass
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", raw)
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        logger.info(
+            "Z1 warning post-hook soft-dropped",
+            kind=kind, source_id=verdict.source_task_id,
+        )
+        return
+
+    # Blocker kind — DLQ source. No retry-with-feedback: these checks
+    # are deterministic against on-disk artifacts; founder must intervene.
+    error_detail = (
+        raw.get("error")
+        or str(raw.get("problems"))
+        or str(raw.get("missing"))
+        or str(raw.get("pending"))
+        or "blocker post-hook failed"
+    )
+    error_str = f"{kind}: {error_detail}"[:500]
+    ctx["_pending_posthooks"] = []
+    ctx[f"_{kind}_dlq_reason"] = error_str[:300]
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    await _dlq_write(
+        source, error=error_str, category="quality", attempts=attempts,
+    )
+    await _maybe_emit_lesson_from_posthook_fail(
+        source=source, kind=kind,
+        error_str=error_str, feedback=error_str, attempts=attempts,
+    )
+
+
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind == "grade":
         return f"Grade task #{a.source_task_id}"
@@ -2108,6 +2441,20 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"TypeScript sync check for #{a.source_task_id}"
     if a.kind == "migration_apply":
         return f"Migration apply for #{a.source_task_id}"
+    if a.kind == "compliance_template_present":
+        return f"Compliance template presence for #{a.source_task_id}"
+    if a.kind == "compliance_blocker_check":
+        return f"Compliance blocker check for #{a.source_task_id}"
+    if a.kind == "find_similar_missions":
+        return f"Find similar missions for #{a.source_task_id}"
+    if a.kind == "index_idea_fingerprint":
+        return f"Index idea fingerprint for #{a.source_task_id}"
+    if a.kind == "surface_prior_mission_hints":
+        return f"Surface prior mission hints for #{a.source_task_id}"
+    if a.kind == "prior_art_min_coverage":
+        return f"Prior art min coverage for #{a.source_task_id}"
+    if a.kind == "verify_falsification_present":
+        return f"Verify falsification present for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -2323,6 +2670,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     if a.kind in ("openapi_sync", "typescript_sync"):
         await _apply_type_sync_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind in _Z1_MECHANICAL_KINDS:
+        await _apply_z1_mechanical_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return
 

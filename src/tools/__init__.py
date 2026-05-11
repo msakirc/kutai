@@ -331,6 +331,28 @@ try:
 except Exception as e:
     logger.debug(f"service_call tool not available — {type(e).__name__}: {e}")
 
+# Z6 T3B — vendor_call tool (per-agent allowlist + cost cap).
+try:
+    from .vendor_call import vendor_call_tool
+
+    _optional_tools["vendor_call"] = {
+        "function": vendor_call_tool,
+        "description": (
+            "Call a vendor API through the IntegrationRegistry (Z6 T3B). "
+            "Subject to per-agent allowlist and MAX_TOOL_CALL_COST_USD cap. "
+            "Args: service (str), action (str), params (dict|JSON string), "
+            "cost_estimate_usd (float, optional), mission_id (int, optional), "
+            "task_id (int, optional), agent (str — injected by runtime)."
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "vendor_call", '
+            '"args": {"service": "stripe", "action": "list_products", '
+            '"params": {}}}'
+        ),
+    }
+except Exception as e:
+    logger.debug(f"vendor_call tool not available — {type(e).__name__}: {e}")
+
 # Deployment tool (Gap 6)
 try:
     from .deploy import deploy as _deploy_fn

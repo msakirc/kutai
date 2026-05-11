@@ -31,6 +31,7 @@ from mr_roboto.propagate_asset_change import propagate_asset_change
 from mr_roboto.propose_spec_patch import propose_spec_patch_from_html_diff
 from mr_roboto.run_cmd import run_cmd
 from mr_roboto.run_pytest import run_pytest
+from mr_roboto.run_semgrep import run_semgrep
 from mr_roboto.parse_og_tags import parse_og_tags
 from mr_roboto.http_check import http_check
 from mr_roboto.emit_preview_url import emit_preview_url
@@ -103,6 +104,7 @@ __all__ = [
     "propose_spec_patch_from_html_diff",
     "run_cmd",
     "run_pytest",
+    "run_semgrep",
     "parse_og_tags",
     "http_check",
     "emit_preview_url",
@@ -1224,6 +1226,32 @@ async def _run_dispatch(task: dict) -> Action:
                         f"failed={res.get('failed')} errors={res.get('errors')} "
                         f"total={res.get('total')} exit={res.get('exit')} "
                         f"timed_out={res.get('timed_out')} "
+                        f"err={res.get('error') or ''}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "run_semgrep":
+        # Z2 T2C — pattern_lint post-hook. Runs semgrep with the forbidden-
+        # patterns rule pack over the step's declared produces paths.
+        # Soft-skips when semgrep is not installed (ok=True, skipped=True).
+        from mr_roboto.run_semgrep import run_semgrep as _run_semgrep
+        try:
+            res = await _run_semgrep(
+                mission_id=task.get("mission_id"),
+                target_files=payload.get("target_files"),
+                rule_pack_path=payload.get("rule_pack_path"),
+                workspace_path=payload.get("workspace_path"),
+                timeout_s=float(payload.get("timeout_s", 120.0)),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"run_semgrep: exit={res.get('exit')} "
                         f"err={res.get('error') or ''}"
                     ),
                     result=res,

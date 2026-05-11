@@ -21,12 +21,13 @@ from general_beckman.posthooks import (
 # Registry shape
 # ---------------------------------------------------------------------------
 
-def test_registry_contains_exactly_three_starter_kinds():
-    assert set(POST_HOOK_REGISTRY.keys()) == {
-        "verify_artifacts",
-        "code_review",
-        "grounding",
-    }
+def test_registry_contains_starter_kinds():
+    # T1 registered 3; T2C added pattern_lint.  Use subset check so future
+    # T2/T3 additions don't require touching this test again.
+    required = {"verify_artifacts", "code_review", "grounding"}
+    assert required.issubset(POST_HOOK_REGISTRY.keys()), (
+        f"Registry is missing starter kinds: {required - set(POST_HOOK_REGISTRY.keys())}"
+    )
 
 
 def test_registry_values_are_posthookspec():

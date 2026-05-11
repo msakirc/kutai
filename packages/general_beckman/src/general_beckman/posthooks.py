@@ -117,6 +117,16 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "call per produces slot.  Fires before verify_artifacts."
         ),
     ),
+    "pattern_lint": PostHookSpec(
+        kind="pattern_lint",
+        verb="run_semgrep",
+        default_severity="warning",   # v1 ships at warning per v2 ramp policy
+        auto_wire_triggers=["*.py", "*.ts", "*.tsx", "*.js", "*.jsx"],
+        description=(
+            "Run semgrep with forbidden-patterns rule pack; warn on hits.  "
+            "Soft-skipped when semgrep is not installed."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

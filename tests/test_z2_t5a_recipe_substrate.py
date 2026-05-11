@@ -182,7 +182,7 @@ class TestPickRecipeVerb:
             )
             return result
 
-        result = asyncio.get_event_loop().run_until_complete(_run())
+        result = asyncio.new_event_loop().run_until_complete(_run())
         assert result["ok"] is True
         assert result["picked"] is not None
         assert result["picked"]["name"] == "auth"
@@ -201,7 +201,7 @@ class TestPickRecipeVerb:
             )
             return result
 
-        result = asyncio.get_event_loop().run_until_complete(_run())
+        result = asyncio.new_event_loop().run_until_complete(_run())
         assert result["ok"] is True
         assert result["picked"] is None
         assert "threshold" in result["reason"] or "0 candidates" in result["reason"]
@@ -232,7 +232,7 @@ class TestRecipePinLog:
             pass
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.new_event_loop().run_until_complete(coro)
 
     def _init_db(self):
         from src.infra.db import init_db

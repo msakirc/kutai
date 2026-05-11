@@ -129,7 +129,7 @@ class TestMissionLessonsCRUD:
     """Unit tests for upsert_mission_lesson, top_mission_lessons, suppress."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.new_event_loop().run_until_complete(coro)
 
     def setup_method(self):
         self._tmp = tempfile.mkdtemp()
@@ -291,7 +291,7 @@ class TestDLQEmitter:
     """emit_lessons_from_dlq_patterns: 3+ DLQ rows sharing category → lesson."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.new_event_loop().run_until_complete(coro)
 
     def setup_method(self):
         self._tmp = tempfile.mkdtemp()
@@ -369,7 +369,7 @@ class TestPosthookFailPopulator:
     """Drive _maybe_emit_lesson_from_posthook_fail directly."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.new_event_loop().run_until_complete(coro)
 
     def setup_method(self):
         self._tmp = tempfile.mkdtemp()

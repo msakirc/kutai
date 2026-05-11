@@ -145,7 +145,7 @@ def tmp_db(tmp_path):
                     ('nextjs', NULL, 'Missing use client directive', "Add 'use client'", 'blocker', 5)
             """)
             await db.commit()
-    asyncio.get_event_loop().run_until_complete(_setup())
+    asyncio.new_event_loop().run_until_complete(_setup())
     return db_path
 
 
@@ -265,7 +265,7 @@ def test_inject_lessons_populates_context(tmp_db, monkeypatch):
             await db.commit()
         return {"ok": True, "lessons_count": len(lesson_items), "mission_id": mission_id}
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
     result = loop.run_until_complete(
         inject_lessons_patched(mission_id=1, stack="fastapi", domain="auth")
     )
@@ -298,7 +298,7 @@ def test_inject_lessons_empty_result(tmp_db):
 
         return await patched_inject(mission_id=1, stack="fastapi")
 
-    result = asyncio.get_event_loop().run_until_complete(run())
+    result = asyncio.new_event_loop().run_until_complete(run())
     assert result["ok"] is True
     assert result["lessons_count"] == 0
 
@@ -326,7 +326,7 @@ def test_inject_lessons_top_mission_lessons_unavailable(tmp_db, monkeypatch):
     async def run():
         return await inject_lessons(mission_id=1, stack="fastapi", domain="auth")
 
-    result = asyncio.get_event_loop().run_until_complete(run())
+    result = asyncio.new_event_loop().run_until_complete(run())
     # Should return ok (not raise)
     assert result["ok"] is True
     assert result["lessons_count"] == 0

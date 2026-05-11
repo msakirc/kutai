@@ -266,7 +266,7 @@ class TestPickRecipeForAuth:
                 min_fit=0.7,
             )
 
-        result = asyncio.get_event_loop().run_until_complete(_run())
+        result = asyncio.new_event_loop().run_until_complete(_run())
         assert result["ok"] is True
         assert result["picked"] is not None
         assert result["picked"]["name"] == "auth"
@@ -284,7 +284,7 @@ class TestPickRecipeForAuth:
                 min_fit=0.7,
             )
 
-        result = asyncio.get_event_loop().run_until_complete(_run())
+        result = asyncio.new_event_loop().run_until_complete(_run())
         assert result["ok"] is True
         assert result["picked"] is not None
         assert result["picked"]["fit_score"] == 1.0

@@ -32,7 +32,7 @@ WORKTREE_ROOT = Path(__file__).parent.parent
 
 def _run(coro):
     """Run a coroutine synchronously, compatible with Python 3.10."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.new_event_loop().run_until_complete(coro)
 
 
 def _make_db(tmp_path: Path):

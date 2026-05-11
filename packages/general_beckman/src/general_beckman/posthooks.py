@@ -159,7 +159,7 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Soft-skipped when semgrep is not installed."
         ),
     ),
-    # Z2 T3B — openapi_sync: regenerate OpenAPI spec from routes; diff vs committed.
+    # Z2 T3B — openapi_sync.
     "openapi_sync": PostHookSpec(
         kind="openapi_sync",
         verb="regen_and_diff",
@@ -175,7 +175,7 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Regenerate OpenAPI spec from routes; fail on drift vs committed openapi.json."
         ),
     ),
-    # Z2 T3B — typescript_sync: regenerate frontend API types; diff vs committed.
+    # Z2 T3B — typescript_sync.
     "typescript_sync": PostHookSpec(
         kind="typescript_sync",
         verb="regen_and_diff",
@@ -193,13 +193,31 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     # Z2 T3C — design_system_check via shared semgrep engine.
     "design_system_check": PostHookSpec(
         kind="design_system_check",
-        verb="run_semgrep",  # shared engine with pattern_lint
-        default_severity="warning",  # v1 ramp policy
+        verb="run_semgrep",
+        default_severity="warning",
         auto_wire_triggers=["*.tsx", "*.jsx"],
         description=(
             "Run semgrep with design-system rule pack on JSX/TSX; warn on hits. "
             "Soft-skipped when semgrep is not installed. Rule pack is "
             "project-overridable via design_system_rule_pack in step context."
+        ),
+    ),
+    # Z2 T3A — migration_apply.
+    "migration_apply": PostHookSpec(
+        kind="migration_apply",
+        verb="apply_migration",
+        default_severity="blocker",
+        auto_wire_triggers=[
+            "migrations/*.py",
+            "migrations/*.sql",
+            "alembic/versions/*.py",
+            "*.sql",
+        ],
+        description=(
+            "Apply migration to ephemeral DB; fail on apply error. "
+            "SQLite stack: direct apply via sqlite3. "
+            "Postgres: testcontainers (opt-in via enable_testcontainers). "
+            "Unknown stack: alembic offline mode (syntax check only)."
         ),
     ),
 }

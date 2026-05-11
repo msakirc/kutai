@@ -997,9 +997,7 @@ def _posthook_agent_and_payload(
             },
         })
     if a.kind == "openapi_sync":
-        # Z2 T3B — regenerate OpenAPI spec from routes; diff vs committed file.
-        # generator_cmd is project-overridable via ``regen_cmd`` in step context.
-        # target_path is overridable via ``openapi_target_path``.
+        # Z2 T3B — regenerate OpenAPI spec; diff vs committed.
         default_cmd = [
             "python", "-c",
             "from app.main import app; import json; print(json.dumps(app.openapi()))",
@@ -1019,9 +1017,7 @@ def _posthook_agent_and_payload(
             },
         })
     if a.kind == "typescript_sync":
-        # Z2 T3B — regenerate frontend API types via openapi-typescript; diff
-        # vs committed file.  Both generator_cmd and target_path are
-        # project-overridable via step context.
+        # Z2 T3B — regenerate frontend API types; diff vs committed.
         default_cmd = ["npx", "openapi-typescript", "openapi.json"]
         generator_cmd = list(source_ctx.get("regen_cmd") or default_cmd)
         target_path = str(source_ctx.get("types_target_path") or "types/api.ts")
@@ -1038,15 +1034,12 @@ def _posthook_agent_and_payload(
             },
         })
     if a.kind == "design_system_check":
-        # Z2 T3C — semgrep with design-system rule pack. Warning-only in v1;
-        # soft-skips when semgrep not installed.  Rule pack is project-
-        # overridable via ``design_system_rule_pack`` in step context.
+        # Z2 T3C — semgrep with design-system rule pack; warning-only.
         from pathlib import Path as _Path
         _DS_RULE_PACK = str(
             _Path(__file__).parent.parent.parent.parent.parent
             / "mr_roboto" / "src" / "mr_roboto" / "rule_packs" / "design_system.yml"
         )
-        # Prefer importlib.resources resolution; fall back to sibling path.
         try:
             import importlib.resources as _ir
             import mr_roboto.rule_packs as _rp_pkg  # type: ignore[import]
@@ -1063,6 +1056,24 @@ def _posthook_agent_and_payload(
                 "action": "run_semgrep",
                 "target_files": produces,
                 "rule_pack_path": rule_pack,
+            },
+        })
+    if a.kind == "migration_apply":
+        # Z2 T3A — apply migration to ephemeral DB. Stack-aware.
+        produces = list(source_ctx.get("produces") or [])
+        workspace_path = source_ctx.get("workspace_path") or ""
+        stack_hint = str(source_ctx.get("stack_hint") or "")
+        enable_tc = bool(source_ctx.get("enable_testcontainers", False))
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "migration_apply",
+            "executor": "mechanical",
+            "payload": {
+                "action": "apply_migration",
+                "target_files": produces,
+                "workspace_path": workspace_path,
+                "stack_hint": stack_hint,
+                "enable_testcontainers": enable_tc,
             },
         })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
@@ -1653,13 +1664,7 @@ async def _apply_semgrep_warning_verdict(
 async def _apply_pattern_lint_verdict(
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
 ) -> None:
-    """Z2 T2C — pattern_lint is warning-only in v1.
-
-    Findings surfaced in ctx as ``_pattern_lint_findings`` but never retry
-    or DLQ the source. Soft-skipped when semgrep not installed.
-
-    Delegates to ``_apply_semgrep_warning_verdict`` — shared with T3C.
-    """
+    """Z2 T2C — delegates to shared semgrep warning verdict."""
     await _apply_semgrep_warning_verdict(
         kind="pattern_lint",
         findings_ctx_key="_pattern_lint_findings",
@@ -1671,13 +1676,7 @@ async def _apply_pattern_lint_verdict(
 async def _apply_design_system_check_verdict(
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
 ) -> None:
-    """Z2 T3C — design_system_check is warning-only in v1.
-
-    Findings surfaced in ctx as ``_design_system_findings`` but never retry
-    or DLQ the source.  Soft-skipped when semgrep not installed.
-
-    Delegates to ``_apply_semgrep_warning_verdict`` — shared engine with T2C.
-    """
+    """Z2 T3C — delegates to shared semgrep warning verdict."""
     await _apply_semgrep_warning_verdict(
         kind="design_system_check",
         findings_ctx_key="_design_system_findings",
@@ -1690,18 +1689,10 @@ async def _apply_type_sync_verdict(
     kind: str,
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
 ) -> None:
-    """Z2 T3B — shared verdict handler for openapi_sync and typescript_sync.
+    """Z2 T3B — openapi_sync / typescript_sync shared verdict.
 
-    Drift detected → blocker retry with feedback (same budget pattern as
-    test_run).  Skipped → soft-advance.  No drift → advance.
-
-    Parameters
-    ----------
-    kind:
-        ``"openapi_sync"`` or ``"typescript_sync"`` — used for log messages
-        and to remove the correct kind from ``_pending_posthooks``.
-    source, ctx, pending, verdict:
-        Standard verdict-fn contract.
+    Drift detected → blocker retry with feedback. Skipped → soft-advance.
+    No drift → advance.
     """
     import json as _json
     from src.infra.db import update_task
@@ -1845,6 +1836,135 @@ async def _apply_type_sync_verdict(
         await update_task(verdict.source_task_id, context=_json.dumps(ctx))
 
 
+async def _apply_migration_apply_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T3A — migration_apply verdict.
+
+    Apply error → blocker retry. Slow migration → warning surfaced, no
+    block. Skipped (testcontainers absent) → pass through.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    skipped = bool(raw.get("skipped"))
+    warning = raw.get("warning") or ""
+
+    # Skipped or slow-warning pass-through.
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "migration_apply"]
+        ctx["_pending_posthooks"] = new_pending
+        if warning:
+            ctx["_migration_apply_warning"] = warning
+        if skipped:
+            logger.debug(
+                "migration_apply: soft-skipped",
+                source_id=verdict.source_task_id,
+                reason=raw.get("reason") or "",
+            )
+        elif warning:
+            logger.info(
+                "migration_apply: slow migration warning",
+                source_id=verdict.source_task_id,
+                warning=warning,
+                duration_s=raw.get("duration_s"),
+            )
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    # Fail path — blocker: migration apply error.
+    error_detail = raw.get("error") or ""
+    stack_used = raw.get("stack_used") or ""
+    stderr_tail = (raw.get("stderr_tail") or "")[:300]
+    error_str = (
+        f"migration_apply: apply error (stack={stack_used}). "
+        f"{error_detail}"
+        + (f" stderr={stderr_tail!r}" if stderr_tail else "")
+    )[:500]
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    feedback = (
+        "Migration apply failed. Fix the migration file so it applies "
+        "cleanly to an empty database. "
+        f"Error: {error_str}"
+    )
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "migration_apply gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
+
+
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind == "grade":
         return f"Grade task #{a.source_task_id}"
@@ -1867,6 +1987,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"OpenAPI sync check for #{a.source_task_id}"
     if a.kind == "typescript_sync":
         return f"TypeScript sync check for #{a.source_task_id}"
+    if a.kind == "migration_apply":
+        return f"Migration apply for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -2049,11 +2171,18 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         )
         return
 
+    if a.kind == "migration_apply":
+        await _apply_migration_apply_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
     if a.kind in ("openapi_sync", "typescript_sync"):
         await _apply_type_sync_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return
+
 
     if a.kind == "grade" and a.passed:
         # Remove "grade" from pending; spawn summary tasks for large artifacts.

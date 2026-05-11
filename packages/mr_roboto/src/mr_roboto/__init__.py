@@ -79,8 +79,8 @@ import mr_roboto.verify_demo_artifact as verify_demo_artifact  # noqa: F401
 import mr_roboto.mission_deliverable_bundle as mission_deliverable_bundle  # noqa: F401
 # Z2 T2B — static import checker.
 from mr_roboto.check_imports import check_imports
-# Z2 T3B — regen-and-diff for openapi_sync / typescript_sync.
 from mr_roboto.regen_and_diff import regen_and_diff
+from mr_roboto.apply_migration import apply_migration
 
 __all__ = [
     "Action",
@@ -128,6 +128,7 @@ __all__ = [
     "prior_art_min_coverage",
     "check_imports",
     "regen_and_diff",
+    "apply_migration",
 ]
 
 
@@ -1296,8 +1297,6 @@ async def _run_dispatch(task: dict) -> Action:
 
     if action == "regen_and_diff":
         # Z2 T3B — openapi_sync / typescript_sync post-hook.
-        # Regenerates a file to stdout then diffs against the committed target.
-        # Soft-skips when generator is not installed (v1 ramp).
         from mr_roboto.regen_and_diff import regen_and_diff as _regen_and_diff
         try:
             res = await _regen_and_diff(
@@ -1316,9 +1315,36 @@ async def _run_dispatch(task: dict) -> Action:
                     ),
                     result=res,
                 )
-            # Drift (diff_present) is not an internal failure — let the
-            # posthook verdict fn (_apply_type_sync_verdict) decide on retry.
             return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "apply_migration":
+        # Z2 T3A — migration_apply post-hook.
+        from mr_roboto.apply_migration import apply_migration as _apply_migration
+        try:
+            res = await _apply_migration(
+                mission_id=task.get("mission_id"),
+                target_files=list(payload.get("target_files") or []),
+                workspace_path=str(payload.get("workspace_path") or ""),
+                stack_hint=str(payload.get("stack_hint") or ""),
+                timeout_s=float(payload.get("timeout_s", 120.0)),
+                enable_testcontainers=bool(
+                    payload.get("enable_testcontainers", False)
+                ),
+            )
+            if res.get("skipped"):
+                return Action(status="completed", result=res)
+            if res.get("ok"):
+                return Action(status="completed", result=res)
+            return Action(
+                status="failed",
+                error=(
+                    f"apply_migration: stack={res.get('stack_used')} "
+                    f"err={res.get('error') or ''}"
+                )[:500],
+                result=res,
+            )
         except Exception as e:
             return Action(status="failed", error=str(e))
 

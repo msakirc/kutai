@@ -7019,6 +7019,7 @@
       "phase": "phase_7",
       "name": "staging_environment",
       "needs_real_tools": true,
+      "real_tool_kind": "vercel|railway|fly",
       "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
@@ -9178,6 +9179,7 @@
       "phase": "phase_13",
       "name": "production_infrastructure",
       "needs_real_tools": true,
+      "real_tool_kind": "vercel|railway|supabase",
       "agent": "executor",
       "difficulty": "hard",
       "tools_hint": [
@@ -9298,6 +9300,7 @@
       "phase": "phase_13",
       "name": "monitoring_setup",
       "needs_real_tools": true,
+      "real_tool_kind": "sentry|datadog|new_relic",
       "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
@@ -11961,6 +11964,7 @@
           "template_step_id": "feat.13",
           "name": "staging_deploy",
           "needs_real_tools": true,
+          "real_tool_kind": "vercel|railway",
           "agent": "executor",
           "difficulty": "easy",
           "tools_hint": [

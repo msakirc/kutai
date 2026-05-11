@@ -286,11 +286,31 @@ class Orchestrator:
                 return await ShoppingPipelineV2().run(task)
             return await get_agent(agent_type).execute(task)
 
+        # Z6 W2 — set audit_context for the per-task execution. Any
+        # credential vault read fired by the agent or vendor_call tool now
+        # gets mission_id/task_id/agent stamped on its credential_access_log
+        # row. Without this, the rows have NULL provenance and post-mortem
+        # audits can't tie a credential read to a specific step.
+        try:
+            from src.security._audit_context import audit_context as _audit_cm
+        except Exception:  # pragma: no cover - defensive
+            _audit_cm = None  # type: ignore[assignment]
+
+        async def _run_with_audit() -> dict:
+            if _audit_cm is None:
+                return await _run()
+            async with _audit_cm(
+                mission_id=task.get("mission_id"),
+                task_id=task_id,
+                agent=agent_type,
+            ):
+                return await _run()
+
         try:
             from src.core import heartbeat as _hb
             _hb.current_task_id.set(int(task_id) if task_id else None)
             _hb.bump(task_id)  # initial heartbeat — task is alive
-            runner_task = asyncio.create_task(_run())
+            runner_task = asyncio.create_task(_run_with_audit())
 
             async def _watchdog() -> None:
                 """Wake periodically; abort runner if heartbeat goes stale."""

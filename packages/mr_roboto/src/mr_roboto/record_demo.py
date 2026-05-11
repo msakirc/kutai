@@ -133,6 +133,70 @@ async def _e2e_specs_present(workspace_root: str) -> bool:
     return len(matches) > 0
 
 
+async def _mission_demo_scenario_path(mission_id: int) -> str | None:
+    """Read ``missions.demo_scenario_path`` for the mission (None when unset)."""
+    try:
+        from src.infra.db import get_db
+        db = await get_db()
+        cur = await db.execute(
+            "SELECT demo_scenario_path FROM missions WHERE id = ?",
+            (int(mission_id),),
+        )
+        row = await cur.fetchone()
+        if row is None or row[0] is None:
+            return None
+        v = str(row[0]).strip()
+        return v or None
+    except Exception:
+        # Column may not exist in legacy DBs — silent None.
+        return None
+
+
+def _newest_e2e_spec_rel(workspace_root: str) -> str | None:
+    """Return workspace-relative path of newest tests/e2e/*.spec.[tj]s, or None."""
+    import glob
+    if not os.path.isdir(workspace_root):
+        return None
+    candidates: list[tuple[float, str]] = []
+    for pat in ("*.spec.ts", "*.spec.js"):
+        for p in glob.glob(
+            os.path.join(workspace_root, "tests", "e2e", pat)
+        ):
+            try:
+                candidates.append((os.path.getmtime(p), p))
+            except OSError:
+                continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    abs_path = candidates[0][1]
+    rel = os.path.relpath(abs_path, workspace_root).replace(os.sep, "/")
+    return rel
+
+
+async def _resolve_scenario_path(
+    mission_id: int,
+    payload_override: str | None,
+    workspace_root: str,
+) -> str | None:
+    """Z10 wire-fix F3 — resolution order:
+
+      1. ``payload.scenario_path`` (explicit override)
+      2. ``missions.demo_scenario_path`` (DB-stored per-mission default)
+      3. Newest ``tests/e2e/*.spec.{ts,js}`` in workspace
+      4. None (caller falls through to ``no_e2e_specs`` skip path)
+    """
+    if payload_override and str(payload_override).strip():
+        return str(payload_override).strip()
+    db_scenario = await _mission_demo_scenario_path(int(mission_id))
+    if db_scenario:
+        return db_scenario
+    rel = _newest_e2e_spec_rel(workspace_root)
+    if rel:
+        return rel
+    return None
+
+
 async def _mission_demo_required(mission_id: int) -> bool:
     """Read ``missions.demo_required`` for the mission (default True)."""
     try:
@@ -180,7 +244,7 @@ async def _post_no_e2e_blocker(mission_id: int) -> None:
 
 async def run(
     mission_id: int,
-    scenario_path: str,
+    scenario_path: str | None = None,
     max_seconds: int = DEFAULT_MAX_SECONDS,
     workspace_root: str | None = None,
 ) -> dict[str, Any]:
@@ -188,6 +252,12 @@ async def run(
 
     Raises RuntimeError with a clear message on each step failure — caller
     (mr_roboto.run) maps that to ``Action(status='failed', error=...)``.
+
+    Z10 wire-fix F3 — ``scenario_path`` is optional. When None, resolution
+    order: ``payload.scenario_path`` (passed in by caller) > ``missions.
+    demo_scenario_path`` > newest ``tests/e2e/*.spec.{ts,js}`` >
+    ``no_e2e_specs`` skip path. Web/Playwright missions auto-default; non-
+    web missions hit the silent or strict-blocker skip path.
 
     D4 — when no e2e specs are present in the workspace:
       - ``demo_required=1`` (default): post a ``[blocker]`` mission event
@@ -197,17 +267,23 @@ async def run(
     """
     if mission_id is None:
         raise RuntimeError("record_demo requires mission_id (per-mission container)")
-    if not scenario_path or os.path.isabs(scenario_path):
-        raise RuntimeError(
-            f"record_demo requires a workspace-relative scenario_path; got {scenario_path!r}"
-        )
 
     if workspace_root is None:
         from src.tools.workspace import get_mission_workspace
         workspace_root = get_mission_workspace(int(mission_id))
 
-    # D4 — gracefully handle missions without e2e specs.
-    if not await _e2e_specs_present(workspace_root):
+    # F3 — resolve scenario_path now that workspace_root is known.
+    scenario_path = await _resolve_scenario_path(
+        int(mission_id), scenario_path, workspace_root,
+    )
+    if scenario_path is not None and os.path.isabs(scenario_path):
+        raise RuntimeError(
+            f"record_demo requires a workspace-relative scenario_path; got {scenario_path!r}"
+        )
+
+    # D4 — gracefully handle missions without e2e specs. F3: triggers when
+    # scenario_path is also None (no override, no DB value, no glob match).
+    if scenario_path is None or not await _e2e_specs_present(workspace_root):
         strict = await _mission_demo_required(int(mission_id))
         if strict:
             await _post_no_e2e_blocker(int(mission_id))

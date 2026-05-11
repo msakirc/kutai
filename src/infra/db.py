@@ -2081,6 +2081,27 @@ async def init_db():
         ),
     )
 
+    # ── Z10 wire-fixes F3: per-mission demo scenario path ────────────────
+    # record_demo previously hardcoded tests/e2e/golden_path.spec.ts. This
+    # column lets add_mission seed a per-mission default (auto-set when the
+    # mission's stack hints "web"); record_demo's resolution order is:
+    # payload.scenario_path > missions.demo_scenario_path > newest
+    # tests/e2e/*.spec.[tj]s > no_e2e_specs skip path.
+    await apply_migration(
+        version="2026-05-11-missions-demo-scenario-path",
+        sql=(
+            "ALTER TABLE missions ADD COLUMN demo_scenario_path TEXT;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE missions DROP COLUMN demo_scenario_path;\n"
+        ),
+        description=(
+            "z10-wire-fixes F3: per-mission demo scenario path so record_demo "
+            "isn't hardcoded to tests/e2e/golden_path.spec.ts. Non-web missions "
+            "leave it NULL → record_demo falls through to no_e2e_specs path."
+        ),
+    )
+
     # ── Z10 T4B: confidence_outcomes (trust calibration loop) ────────────
     # Each row attributes a confidence claim on a task to an actual outcome
     # (reviewer-approved, downstream pass, regression). The nightly job

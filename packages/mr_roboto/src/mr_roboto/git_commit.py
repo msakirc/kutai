@@ -5,6 +5,14 @@ Ported from src/core/mechanical/git_commit.py during Phase 2a. Invoked via
 
 Z10 T1A — atomic commit↔push contract.
 ====================================
+``payload.push=True`` (set at the i2p step level) triggers atomic mode:
+the local commit and ``git push`` execute as a single transaction. Push
+failure rolls back the local commit unless ``allow_orphan=True``. Wired on
+milestone i2p steps only (phase-end + final-phase commits) — see
+src/workflows/i2p/i2p_v3.json (z10-wire-fixes F1: 7.3.git_commit /
+7.5.git_commit / 8.spike.git_commit / 4.16.git_commit_green /
+13.14.git_commit_green). Mid-phase scratch commits stay local-only.
+
 The verb now treats ``commit`` and ``push`` as a single transaction:
 
   * Default (``allow_orphan=False``): a successful local commit followed by

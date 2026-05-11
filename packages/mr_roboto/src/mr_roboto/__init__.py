@@ -1941,11 +1941,15 @@ async def _run_dispatch(task: dict) -> Action:
                     status="failed",
                     error="record_demo requires mission_id (per-mission container)",
                 )
-            scenario = payload.get("scenario_path") or "tests/e2e/golden_path.spec.ts"
+            # Z10 wire-fix F3: do NOT hardcode tests/e2e/golden_path.spec.ts.
+            # When payload omits scenario_path, record_demo resolves via
+            # missions.demo_scenario_path → newest tests/e2e/*.spec.[tj]s →
+            # no_e2e_specs skip path.
+            scenario = payload.get("scenario_path")
             max_s = int(payload.get("max_seconds") or 90)
             res = await _record_demo(
                 mission_id=int(mid),
-                scenario_path=str(scenario),
+                scenario_path=(str(scenario) if scenario else None),
                 max_seconds=max_s,
             )
             # Record provenance for demo.mp4 so it surfaces in artifact lineage.

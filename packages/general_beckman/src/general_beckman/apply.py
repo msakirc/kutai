@@ -915,6 +915,15 @@ async def _apply_grounding_verdict(
             await update_task(
                 verdict.source_task_id, context=_json.dumps(ctx),
             )
+        # Z10 wire-fix F8 — grounding-PASS resolves confidence claim true.
+        try:
+            await _record_and_resolve_confidence(
+                task_id=verdict.source_task_id, correct=True,
+                source="grounding",
+            )
+        except Exception as _e:
+            logger.debug("confidence claim record failed (grounding pass)",
+                         task_id=verdict.source_task_id, error=str(_e))
         return
 
     raw = verdict.raw or {}
@@ -985,6 +994,16 @@ async def _apply_grounding_verdict(
         next_retry_at=None,
         context=_json.dumps(ctx),
     )
+
+    # Z10 wire-fix F8 — grounding-FAIL resolves confidence claim false.
+    try:
+        await _record_and_resolve_confidence(
+            task_id=verdict.source_task_id, correct=False,
+            source="grounding",
+        )
+    except Exception as _e:
+        logger.debug("confidence claim record (grounding reject) failed",
+                     task_id=verdict.source_task_id, error=str(_e))
 
 
 async def _apply_verify_artifacts_verdict(
@@ -1363,6 +1382,16 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 source, error=error_str or "quality gate exhausted",
                 category="quality", attempts=attempts,
             )
+            # Z10 wire-fix F8 — grade-FAIL/DLQ resolves confidence claim false.
+            try:
+                await _record_and_resolve_confidence(
+                    task_id=a.source_task_id, correct=False, source="grade",
+                )
+            except Exception as _e:
+                logger.debug(
+                    "confidence claim record (grade DLQ) failed",
+                    task_id=a.source_task_id, error=str(_e),
+                )
             return
 
         # Feed the grader's rejection text + previous output back into the
@@ -1407,6 +1436,14 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             next_retry_at=None,
             context=_json.dumps(ctx),
         )
+        # Z10 wire-fix F8 — grade-FAIL resolves confidence claim false.
+        try:
+            await _record_and_resolve_confidence(
+                task_id=a.source_task_id, correct=False, source="grade",
+            )
+        except Exception as _e:
+            logger.debug("confidence claim record (grade reject) failed",
+                         task_id=a.source_task_id, error=str(_e))
         return
 
     if a.kind == "verify_artifacts":
@@ -1477,6 +1514,17 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             await update_task(
                 a.source_task_id, context=_json.dumps(ctx),
             )
+        # Z10 wire-fix F8 — grade-PASS resolves confidence claim true. Wire
+        # fires once whether or not summary post-hooks are still pending —
+        # the grader verdict is the resolution signal, summaries are
+        # orthogonal artefact extraction.
+        try:
+            await _record_and_resolve_confidence(
+                task_id=a.source_task_id, correct=True, source="grade",
+            )
+        except Exception as _e:
+            logger.debug("confidence claim record (grade pass) failed",
+                         task_id=a.source_task_id, error=str(_e))
         return
 
     if a.kind.startswith("summary:"):

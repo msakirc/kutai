@@ -4396,6 +4396,26 @@
       "context": {}
     },
     {
+      "id": "4.16.git_commit_green",
+      "phase": "phase_4",
+      "name": "post_architecture_review_green",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "4.16"
+      ],
+      "payload": {
+        "action": "git_commit",
+        "push": true,
+        "mark_green": true
+      },
+      "instruction": "Z10 T1A/T3C milestone commit: architecture_review approved => atomic push + mark_green snapshot. Pre-build foundation-confirmed checkpoint.",
+      "done_when": "Workspace committed (if changes) + remote push succeeded + mission_green_tags row appended.",
+      "context": {}
+    },
+    {
       "id": "5.0",
       "phase": "phase_5",
       "name": "taste_extraction_from_charter",
@@ -6306,9 +6326,10 @@
         "7.3"
       ],
       "payload": {
-        "action": "git_commit"
+        "action": "git_commit",
+        "push": true
       },
-      "instruction": "Mechanical auto-commit after 7.3.",
+      "instruction": "Mechanical auto-commit after 7.3. Z10 T1A: payload.push=true => atomic commit↔push (rollback local commit if push fails).",
       "done_when": "Workspace committed if there are changes.",
       "context": {}
     },
@@ -6448,9 +6469,11 @@
         "7.5"
       ],
       "payload": {
-        "action": "git_commit"
+        "action": "git_commit",
+        "push": true,
+        "mark_green": true
       },
-      "instruction": "Mechanical auto-commit after 7.5.",
+      "instruction": "Mechanical auto-commit after 7.5. Z10 T1A push=true => atomic commit↔push. Z10 T3C mark_green=true => snapshot mission DB + Chroma + git tag for /rollback_mission.",
       "done_when": "Workspace committed if there are changes.",
       "context": {}
     },
@@ -7167,9 +7190,11 @@
         "8.spike"
       ],
       "payload": {
-        "action": "git_commit"
+        "action": "git_commit",
+        "push": true,
+        "mark_green": true
       },
-      "instruction": "Mechanical auto-commit after 8.spike.",
+      "instruction": "Mechanical auto-commit after 8.spike. Z10 T1A push=true => atomic commit↔push. Z10 T3C mark_green=true => post-spike green checkpoint (architecture validated, before full build).",
       "done_when": "Workspace committed if there are changes.",
       "context": {}
     },
@@ -9546,6 +9571,26 @@
       "context": {}
     },
     {
+      "id": "13.14.git_commit_green",
+      "phase": "phase_13",
+      "name": "launch_approval_green",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "13.14"
+      ],
+      "payload": {
+        "action": "git_commit",
+        "push": true,
+        "mark_green": true
+      },
+      "instruction": "Z10 T1A/T3C milestone commit: launch_go_no_go approved => atomic push + mark_green snapshot. Pre-launch all-tests-pass checkpoint (rollback target if launch fails).",
+      "done_when": "Workspace committed (if changes) + remote push succeeded + mission_green_tags row appended.",
+      "context": {}
+    },
+    {
       "id": "14.1",
       "phase": "phase_14",
       "name": "launch_planning",
@@ -10364,10 +10409,9 @@
         "demo.mp4"
       ],
       "payload": {
-        "scenario_path": "tests/e2e/golden_path.spec.ts",
         "max_seconds": 90
       },
-      "instruction": "Z10 T4A: record an end-of-mission Playwright e2e demo, trim to <=90s, save as data/missions/{id}/demo.mp4. Runs inside per-mission Docker container.",
+      "instruction": "Z10 T4A + z10-wire-fixes F3: record an end-of-mission Playwright e2e demo, trim to <=90s, save as data/missions/{id}/demo.mp4. scenario_path resolution order: payload.scenario_path override > missions.demo_scenario_path > newest tests/e2e/*.spec.ts > no_e2e_specs skip path. Runs inside per-mission Docker container.",
       "done_when": "demo.mp4 exists and is a real mp4 video.",
       "context": {}
     },

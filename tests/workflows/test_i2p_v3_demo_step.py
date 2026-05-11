@@ -31,9 +31,13 @@ def test_record_demo_step_exists():
     assert "15.10" in (step.get("depends_on") or [])
     # skip_when token for the no-e2e case
     assert "no_e2e_specs" in (step.get("skip_when") or [])
-    # payload carries scenario + max_seconds
+    # z10-wire-fixes F3: scenario_path is no longer hardcoded — record_demo
+    # resolves it from missions.demo_scenario_path / newest e2e spec at run
+    # time. Payload should NOT pin it any more.
     pay = step.get("payload") or {}
-    assert pay.get("scenario_path") == "tests/e2e/golden_path.spec.ts"
+    assert "scenario_path" not in pay, (
+        "F3: scenario_path must not be hardcoded — record_demo resolves at runtime"
+    )
     assert int(pay.get("max_seconds")) == 90
 
 

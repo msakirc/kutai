@@ -10273,6 +10273,8 @@
       "name": "app_store_submission",
       "agent": "executor",
       "difficulty": "medium",
+      "needs_real_tools": true,
+      "real_tool_kind": "apple_appstore|google_play",
       "tools_hint": [
         "shell",
         "write_file"
@@ -10302,7 +10304,7 @@
         }
       },
       "context": {},
-      "reversibility": "full"
+      "reversibility": "irreversible"
     },
     {
       "id": "14.9",

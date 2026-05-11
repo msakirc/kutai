@@ -414,6 +414,63 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
                          task_id=task.get("id"), error=str(_exc))
 
 
+async def _maybe_emit_lesson_from_posthook_fail(
+    source: dict,
+    kind: str,
+    error_str: str,
+    feedback: str,
+    attempts: int,
+) -> None:
+    """Side-effect: upsert a mission_lessons row on posthook exhaustion.
+
+    Wraps import + upsert in try/except — NEVER lets lesson-emit failure
+    cascade into the verdict path. Idempotent via dedup_key.
+    """
+    try:
+        from src.infra.mission_lessons import upsert_mission_lesson
+        from src.infra.db import get_db
+        import json as _json
+
+        mission_id = source.get("mission_id")
+        stack = "unknown"
+        if mission_id:
+            try:
+                _db = await get_db()
+                _cur = await _db.execute(
+                    "SELECT context FROM missions WHERE id = ?", (mission_id,)
+                )
+                _row = await _cur.fetchone()
+                if _row:
+                    _ctx = _json.loads(_row[0] or "{}")
+                    stack = str(_ctx.get("tech_stack_detected") or "unknown")
+            except Exception:
+                pass
+
+        pattern = (error_str or "").strip()[:120]
+        fix = (feedback or "").strip()[:300]
+
+        await upsert_mission_lesson(
+            stack=stack,
+            domain=kind,
+            pattern=pattern or f"{kind} gate exhausted",
+            fix=fix,
+            severity="blocker",
+            source_kind="posthook_fail",
+            source_ref={
+                "source_task_id": source.get("id"),
+                "kind": kind,
+                "attempts": attempts,
+            },
+        )
+    except Exception as _exc:
+        logger.debug(
+            "lesson emit skipped (posthook_fail)",
+            kind=kind,
+            task_id=source.get("id"),
+            error=str(_exc),
+        )
+
+
 async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) -> None:
     from src.infra.db import add_task, update_task
     from src.infra.dead_letter import quarantine_task
@@ -969,6 +1026,10 @@ async def _apply_grounding_verdict(
             source, error=error_str or "grounding gate exhausted",
             category="quality", attempts=attempts,
         )
+        await _maybe_emit_lesson_from_posthook_fail(
+            source=source, kind="grounding",
+            error_str=error_str, feedback=feedback, attempts=attempts,
+        )
         return
 
     ctx["_schema_error"] = feedback
@@ -1083,6 +1144,10 @@ async def _apply_verify_artifacts_verdict(
         await _dlq_write(
             source, error=error_str or "verify_artifacts gate exhausted",
             category="quality", attempts=attempts,
+        )
+        await _maybe_emit_lesson_from_posthook_fail(
+            source=source, kind="verify_artifacts",
+            error_str=error_str, feedback=feedback, attempts=attempts,
         )
         return
 
@@ -1204,6 +1269,10 @@ async def _apply_code_review_verdict(
         await _dlq_write(
             source, error=error_str or "code review gate exhausted",
             category="quality", attempts=attempts,
+        )
+        await _maybe_emit_lesson_from_posthook_fail(
+            source=source, kind="code_review",
+            error_str=error_str, feedback=feedback, attempts=attempts,
         )
         return
 
@@ -1362,6 +1431,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             await _dlq_write(
                 source, error=error_str or "quality gate exhausted",
                 category="quality", attempts=attempts,
+            )
+            await _maybe_emit_lesson_from_posthook_fail(
+                source=source, kind="grade",
+                error_str=error_str,
+                feedback=f"Grader rejected output: {error_str}",
+                attempts=attempts,
             )
             return
 

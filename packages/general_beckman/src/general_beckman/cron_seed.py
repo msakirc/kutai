@@ -141,6 +141,15 @@ INTERNAL_CADENCES: list[dict] = [
         "cron_expression": "0 9 1 jan,apr,jul,oct *",
         "payload": {"_executor": "run_bash_audit"},
     },
+    # Z6 T4D — weekly compliance-template staleness scan; emits
+    # founder_action(kind='legal_counsel') for each template whose
+    # .meta.json last_reviewed is >180 days old. Idempotent (skips dup titles).
+    {
+        "title": "compliance_template_staleness",
+        "description": "Weekly scan of compliance template metadata; emit legal_counsel founder_action per stale template",
+        "interval_seconds": 604800,
+        "payload": {"_executor": "compliance_template_staleness"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

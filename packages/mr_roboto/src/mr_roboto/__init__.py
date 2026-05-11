@@ -1324,6 +1324,28 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "compliance_template_staleness":
+        # Z6 T4D — weekly scan of compliance template .meta.json files; emit
+        # founder_action(kind='legal_counsel') per stale entry. Idempotent.
+        from mr_roboto.executors.compliance_template_staleness import (
+            compliance_template_staleness as _staleness,
+        )
+        try:
+            res = await _staleness(
+                template_root=payload.get("template_root"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"compliance_template_staleness: {res.get('error', 'failed')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "legal_document_render":
         # Z6 T4A — render legal docs from compliance_overlay.required_documents[]
         # at step 12.1. Mechanical predecessor to 12.1b's LLM placeholder-fill.

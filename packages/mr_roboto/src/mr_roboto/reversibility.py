@@ -95,6 +95,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "workflow_advance": "full",  # mission-state transition; backward by retry
     "run_pytest": "full",  # reads only, side-effect-free
     "run_semgrep": "full",  # read-only static analysis, no writes
+    "apply_migration": "full",  # ephemeral DB only; no real-world write
     "run_bash_audit": "full",  # audit report writer
     # ---- Partial-reversible (caller may need to override) ----------
     "run_cmd": "partial",  # command may be destructive — caller knows

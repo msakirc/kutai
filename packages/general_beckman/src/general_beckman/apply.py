@@ -943,6 +943,26 @@ def _posthook_agent_and_payload(
                 "rule_pack_path": rule_pack,
             },
         })
+    if a.kind == "migration_apply":
+        # Z2 T3A — apply migration to an ephemeral DB sandbox.
+        # Stack-aware: sqlite direct, postgres testcontainers (opt-in),
+        # or alembic offline for unknown stacks.
+        produces = list(source_ctx.get("produces") or [])
+        workspace_path = source_ctx.get("workspace_path") or ""
+        stack_hint = str(source_ctx.get("stack_hint") or "")
+        enable_tc = bool(source_ctx.get("enable_testcontainers", False))
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "migration_apply",
+            "executor": "mechanical",
+            "payload": {
+                "action": "apply_migration",
+                "target_files": produces,
+                "workspace_path": workspace_path,
+                "stack_hint": stack_hint,
+                "enable_testcontainers": enable_tc,
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -1513,6 +1533,139 @@ async def _apply_pattern_lint_verdict(
         )
 
 
+async def _apply_migration_apply_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T3A — migration_apply post-hook verdict.
+
+    Apply error → blocker: retry source with migration error as feedback.
+    Slow migration (>30s) → warning surfaced in ctx, does not block.
+    Skipped (testcontainers absent or enable_testcontainers not set)
+    → pass through, kind removed from pending.
+    Honors worker attempt cap + bonus-progress budget (same as
+    verify_artifacts / test_run).
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    skipped = bool(raw.get("skipped"))
+    warning = raw.get("warning") or ""
+
+    # Skipped or slow-warning pass-through.
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "migration_apply"]
+        ctx["_pending_posthooks"] = new_pending
+        if warning:
+            ctx["_migration_apply_warning"] = warning
+        if skipped:
+            logger.debug(
+                "migration_apply: soft-skipped",
+                source_id=verdict.source_task_id,
+                reason=raw.get("reason") or "",
+            )
+        elif warning:
+            logger.info(
+                "migration_apply: slow migration warning",
+                source_id=verdict.source_task_id,
+                warning=warning,
+                duration_s=raw.get("duration_s"),
+            )
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    # Fail path — blocker: migration apply error.
+    error_detail = raw.get("error") or ""
+    stack_used = raw.get("stack_used") or ""
+    stderr_tail = (raw.get("stderr_tail") or "")[:300]
+    error_str = (
+        f"migration_apply: apply error (stack={stack_used}). "
+        f"{error_detail}"
+        + (f" stderr={stderr_tail!r}" if stderr_tail else "")
+    )[:500]
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    feedback = (
+        "Migration apply failed. Fix the migration file so it applies "
+        "cleanly to an empty database. "
+        f"Error: {error_str}"
+    )
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "migration_apply gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
+
+
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind == "grade":
         return f"Grade task #{a.source_task_id}"
@@ -1529,6 +1682,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Test run for #{a.source_task_id}"
     if a.kind == "pattern_lint":
         return f"Pattern lint for #{a.source_task_id}"
+    if a.kind == "migration_apply":
+        return f"Migration apply for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -1701,6 +1856,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
 
     if a.kind == "pattern_lint":
         await _apply_pattern_lint_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "migration_apply":
+        await _apply_migration_apply_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return

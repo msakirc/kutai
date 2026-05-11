@@ -159,6 +159,24 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Soft-skipped when semgrep is not installed."
         ),
     ),
+    # Z2 T3A — migration_apply.
+    "migration_apply": PostHookSpec(
+        kind="migration_apply",
+        verb="apply_migration",
+        default_severity="blocker",
+        auto_wire_triggers=[
+            "migrations/*.py",
+            "migrations/*.sql",
+            "alembic/versions/*.py",
+            "*.sql",
+        ],
+        description=(
+            "Apply migration to ephemeral DB; fail on apply error. "
+            "SQLite stack: direct apply via sqlite3. "
+            "Postgres: testcontainers (opt-in via enable_testcontainers). "
+            "Unknown stack: alembic offline mode (syntax check only)."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

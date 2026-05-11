@@ -849,8 +849,10 @@
         "estimated_output_tokens": 8000
       },
       "post_hooks": [
-        "find_similar_missions"
+        "find_similar_missions",
+        "index_idea_fingerprint"
       ],
+      "skip_when": "mission.legacy_pre_idea_dedup == '1'",
       "reversibility": "full"
     },
     {

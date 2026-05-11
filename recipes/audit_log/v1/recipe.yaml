@@ -1,0 +1,36 @@
+name: audit_log
+version: v1
+description: "Append-only audit event log with retention policy + queryable index"
+requires:
+  tech_stack:
+    - "fastapi+postgres+nextjs"
+    - "fastapi+sqlite+nextjs"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - migration_apply
+  - test_run
+  - pattern_lint
+templates:
+  backend: backend.template.py
+  migrations: migrations/
+  tests: tests/
+prompts:
+  fastapi: prompts/fastapi.md
+lessons_domain: audit_log
+dependencies:
+  backend:
+    - fastapi
+    - aiosqlite
+  frontend: []
+param_defaults:
+  TABLE_NAME: "audit_events"
+  RETENTION_DAYS: "365"
+  ACTOR_FIELD: "actor_user_id"
+  PK_TYPE: "INTEGER PRIMARY KEY AUTOINCREMENT"
+  EMIT_TO_STDOUT: "false"
+entry_points:
+  backend_routes: backend.template.py
+  migration: migrations/001_audit_events.sql.template
+  smoke_tests: tests/backend_smoke.template.py

@@ -70,6 +70,8 @@ async def pick_recipe(
 
     # Apply feature_decl bonus: substring match of feature_decl against
     # recipe.name or recipe.lessons_domain → +0.1 (capped at 1.0).
+    # Track bonus separately so it can break stack-score ties when both
+    # recipes hit fit=1.0 already.
     feature_lower = feature_decl.lower().strip()
     adjusted: list[tuple, float] = []
     for recipe, base_score in ranked:
@@ -81,18 +83,19 @@ async def pick_recipe(
         ):
             bonus = 0.1
         final_score = min(1.0, base_score + bonus)
-        adjusted.append((recipe, final_score))
+        adjusted.append((recipe, final_score, bonus))
 
-    # Re-sort after bonus application.
-    adjusted.sort(key=lambda x: (-x[1], x[0].name, x[0].version))
+    # Re-sort: score DESC, then bonus DESC (feature-matched first on ties),
+    # then name/version alphabetical for determinism.
+    adjusted.sort(key=lambda x: (-x[1], -x[2], x[0].name, x[0].version))
 
     candidates = [
         {"name": r.name, "version": r.version, "fit_score": score}
-        for r, score in adjusted
+        for r, score, _bonus in adjusted
     ]
 
     if adjusted and adjusted[0][1] >= min_fit:
-        top_recipe, top_score = adjusted[0]
+        top_recipe, top_score, _ = adjusted[0]
         picked = {
             "name": top_recipe.name,
             "version": top_recipe.version,

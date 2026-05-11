@@ -91,6 +91,27 @@ def _resolve_adapter(kinds: list[str]) -> Optional[str]:
     return None
 
 
+async def _resolve_adapter_with_cred(kinds: list[str]) -> Optional[str]:
+    """Z6 T3D — prefer a kind with both adapter AND credentials.
+
+    Returns the first kind in ``kinds`` that has (a) a registered adapter
+    AND (b) credentials in the vault. Falls back to ``_resolve_adapter``
+    (adapter-only first-match) when no kind has credentials — admission's
+    downstream credential check then emits ``credential_paste`` on that
+    kind.
+    """
+    if not kinds:
+        return None
+    try:
+        from src.integrations.resolver import resolve_real_tool
+        match = await resolve_real_tool(kinds)
+        if match is not None:
+            return match
+    except Exception as e:  # noqa: BLE001
+        logger.debug("resolver failed; fallback to adapter-only", error=str(e))
+    return _resolve_adapter(kinds)
+
+
 async def _prior_cost_ack(mission_id: int, step_id: Optional[str]) -> bool:
     """True if a resolved cost_ack exists for this mission+step."""
     if not step_id:
@@ -178,8 +199,10 @@ async def check_z6_admission(
             founder_actions_emitted=emitted,
         )
 
-    # 3. Adapter check.
-    matched_kind = _resolve_adapter(kinds)
+    # 3. Adapter check. T3D: prefer a kind with adapter+credentials; falls
+    # back to adapter-only first-match so the existing credential_paste
+    # path still fires when no kind has creds yet.
+    matched_kind = await _resolve_adapter_with_cred(kinds)
     if matched_kind is None:
         if not await _has_pending_action(mission_id, "vendor_enroll", step_id):
             a = await fa.create(

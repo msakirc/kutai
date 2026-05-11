@@ -333,6 +333,72 @@ async def pin_recipe(
     )
 
 
+async def pin_recipes_from_artifact(
+    mission_id: int,
+    recipe_picks_path: str,
+) -> int:
+    """Read recipe_picks.json artifact and write pin_recipe rows for each non-null pick.
+
+    The artifact is a JSON object mapping feature_name → pick_result where
+    pick_result is ``{"name": ..., "version": ..., "fit_score": ...}`` or null.
+
+    Returns count of pins written. Idempotent via UNIQUE(mission_id, recipe_name)
+    (uses INSERT OR IGNORE, so re-running is safe).
+
+    Raises ValueError when the artifact is missing or unparseable.
+    """
+    import json
+
+    p = Path(recipe_picks_path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Cannot read recipe_picks artifact {recipe_picks_path}: {exc}") from exc
+
+    try:
+        picks: dict = json.loads(text)
+    except Exception as exc:
+        raise ValueError(f"JSON parse error in {recipe_picks_path}: {exc}") from exc
+
+    if not isinstance(picks, dict):
+        raise ValueError(
+            f"recipe_picks.json must be a JSON object, got {type(picks).__name__}"
+        )
+
+    count = 0
+    for feature_name, pick in picks.items():
+        if pick is None:
+            continue
+        if not isinstance(pick, dict):
+            logger.warning(
+                "pin_recipes_from_artifact: skipping non-dict pick for feature=%s",
+                feature_name,
+            )
+            continue
+        recipe_name = pick.get("name")
+        version = pick.get("version")
+        fit_score = float(pick.get("fit_score") or 1.0)
+        if not recipe_name or not version:
+            logger.warning(
+                "pin_recipes_from_artifact: pick missing name/version for feature=%s",
+                feature_name,
+            )
+            continue
+        await pin_recipe(
+            mission_id=mission_id,
+            recipe_name=str(recipe_name),
+            version=str(version),
+            fit_score=fit_score,
+        )
+        count += 1
+
+    logger.info(
+        "pin_recipes_from_artifact: mission_id=%s pinned=%d from %s",
+        mission_id, count, recipe_picks_path,
+    )
+    return count
+
+
 async def get_pinned_recipes(mission_id: int) -> list[dict]:
     """Return all pinned recipes for a mission, ordered by pinned_at."""
     from src.infra.db import get_db
@@ -350,3 +416,191 @@ async def get_pinned_recipes(mission_id: int) -> list[dict]:
     rows = await cursor.fetchall()
     cols = [d[0] for d in cursor.description]
     return [dict(zip(cols, row)) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Recipe instantiation engine — Z2 T5C
+# ---------------------------------------------------------------------------
+
+_RECIPE_PARAM_RE = None  # compiled on first use
+
+
+def _get_param_re():
+    """Compile and cache the RECIPE_PARAM comment pattern."""
+    import re
+    global _RECIPE_PARAM_RE
+    if _RECIPE_PARAM_RE is None:
+        # Matches: # RECIPE_PARAM:KEY=default  or  // RECIPE_PARAM:KEY=default
+        # Captures: key_group, default_group
+        _RECIPE_PARAM_RE = re.compile(
+            r"(?:#|//)\s*RECIPE_PARAM:([A-Z_][A-Z0-9_]*)=([^\n]*)"
+        )
+    return _RECIPE_PARAM_RE
+
+
+def _collect_param_defaults(text: str) -> dict[str, str]:
+    """Scan source text for RECIPE_PARAM markers and return {KEY: default}."""
+    result: dict[str, str] = {}
+    for m in _get_param_re().finditer(text):
+        key = m.group(1)
+        default = m.group(2).strip()
+        if key not in result:
+            result[key] = default
+    return result
+
+
+def _substitute_tokens(text: str, resolved: dict[str, str]) -> str:
+    """Replace ``<<KEY>>`` tokens in ``text`` using ``resolved``.
+
+    V1 substitution rule
+    --------------------
+    - RECIPE_PARAM comment markers are left intact (they document knobs).
+    - ``<<KEY>>`` tokens elsewhere in the file are replaced with the resolved
+      value (``params.get(KEY, default_from_marker)``).
+    - Unknown ``<<KEY>>`` tokens (no RECIPE_PARAM declaration) are left as-is.
+
+    Design note: comment-style markers stay so ast.parse() passes before
+    AND after substitution — they are Python comments, not syntax.
+    """
+    import re
+    def _replacer(m: "re.Match") -> str:
+        key = m.group(1)
+        return resolved.get(key, m.group(0))  # leave unknown tokens as-is
+
+    return re.sub(r"<<([A-Z_][A-Z0-9_]*)>>", _replacer, text)
+
+
+def instantiate_recipe(
+    recipe: Recipe,
+    target_dir: str,
+    params: "dict[str, str]",
+) -> dict:
+    """Instantiate recipe template files into ``target_dir``.
+
+    Substitution algorithm (V1)
+    ---------------------------
+    1. For each template file, scan for ``RECIPE_PARAM:KEY=default`` comment
+       markers to build the defaults table.
+    2. Resolve each KEY: ``params.get(KEY) or recipe.param_defaults.get(KEY)
+       or marker_default``.
+    3. Replace ``<<KEY>>`` tokens (the body substitution sites) using resolved
+       values.  The original RECIPE_PARAM comment lines are preserved so
+       generated files are still self-documenting.
+    4. Write the result to ``target_dir/<original_filename>``.
+
+    Parameters
+    ----------
+    recipe:
+        Recipe instance (must have ``_recipe_dir`` set by ``load_recipe``).
+    target_dir:
+        Directory where instantiated files are written.  Created if absent.
+    params:
+        Caller-supplied parameter overrides.
+
+    Returns
+    -------
+    dict with keys:
+        ``ok`` (bool), ``files_written`` (list[str]), ``params_used`` (dict),
+        ``skipped`` (list[str]), ``error`` (str | None).
+    """
+    import shutil
+
+    recipe_dir = recipe._recipe_dir
+    if not recipe_dir:
+        return {
+            "ok": False,
+            "files_written": [],
+            "params_used": {},
+            "skipped": [],
+            "error": "recipe._recipe_dir is not set — load recipe via load_recipe()",
+        }
+
+    # Collect all template paths from both `templates` and `entry_points`.
+    # Use sets to avoid double-copying when entry_points re-declares a template.
+    template_files: set[str] = set()
+    for rel in recipe.templates.values():
+        template_files.add(rel)
+    for rel in recipe.entry_points.values():
+        template_files.add(rel)
+
+    target = Path(target_dir)
+    target.mkdir(parents=True, exist_ok=True)
+
+    files_written: list[str] = []
+    skipped: list[str] = []
+    params_used: dict[str, str] = {}
+
+    for rel in sorted(template_files):
+        src_path = Path(recipe_dir) / rel
+        if not src_path.exists():
+            logger.warning("instantiate_recipe: template file missing: %s", src_path)
+            skipped.append(rel)
+            continue
+
+        if src_path.is_dir():
+            # Recurse into directories (e.g. `migrations/`, `tests/`)
+            for child in sorted(src_path.rglob("*")):
+                if not child.is_file():
+                    continue
+                child_rel = child.relative_to(Path(recipe_dir))
+                dst = target / child_rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                _instantiate_file(child, dst, recipe, params, params_used)
+                files_written.append(str(child_rel))
+            continue
+
+        dst = target / src_path.name
+        _instantiate_file(src_path, dst, recipe, params, params_used)
+        files_written.append(src_path.name)
+
+    logger.info(
+        "instantiate_recipe: recipe=%s/%s target=%s files=%d skipped=%d",
+        recipe.name, recipe.version, target_dir,
+        len(files_written), len(skipped),
+    )
+    return {
+        "ok": True,
+        "files_written": files_written,
+        "params_used": params_used,
+        "skipped": skipped,
+        "error": None,
+    }
+
+
+def _instantiate_file(
+    src: Path,
+    dst: Path,
+    recipe: Recipe,
+    params: dict,
+    params_used: dict,
+) -> None:
+    """Read src, substitute tokens, write to dst.  Updates params_used in-place."""
+    try:
+        text = src.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.warning("instantiate_recipe: cannot read %s: %s", src, exc)
+        dst.write_bytes(src.read_bytes())
+        return
+
+    # Collect defaults from RECIPE_PARAM markers in this file.
+    marker_defaults = _collect_param_defaults(text)
+
+    # Resolve final values: caller params > recipe.param_defaults > marker default.
+    resolved: dict[str, str] = {}
+    for key, marker_default in marker_defaults.items():
+        value = (
+            params.get(key)
+            or recipe.param_defaults.get(key)
+            or marker_default
+        )
+        resolved[key] = str(value)
+        params_used[key] = str(value)
+
+    # Also resolve any params supplied by caller that don't have markers.
+    for key, value in params.items():
+        if key not in resolved:
+            resolved[key] = str(value)
+            params_used[key] = str(value)
+
+    substituted = _substitute_tokens(text, resolved)
+    dst.write_text(substituted, encoding="utf-8")

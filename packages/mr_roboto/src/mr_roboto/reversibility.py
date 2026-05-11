@@ -124,6 +124,8 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "inject_lessons": "full",  # read-only query + writes to mission context JSON only
     # ---- Z2 T5A recipe library substrate --------------------------------
     "pick_recipe": "full",  # read-only: scans recipes/ dir, no writes
+    # ---- Z2 T5C recipe instantiation ------------------------------------
+    "instantiate_recipe": "partial",  # writes files to target_dir; git-reversible
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

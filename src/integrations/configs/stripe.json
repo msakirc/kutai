@@ -34,6 +34,31 @@
       "method": "GET",
       "path": "/v1/balance",
       "required_params": []
+    },
+    "create_customer": {
+      "method": "POST",
+      "path": "/v1/customers",
+      "required_params": []
+    },
+    "cancel_subscription": {
+      "method": "DELETE",
+      "path": "/v1/subscriptions/{subscription_id}",
+      "required_params": ["subscription_id"]
+    },
+    "confirm_test_payment": {
+      "method": "POST",
+      "path": "/v1/payment_intents",
+      "required_params": ["customer"]
+    },
+    "list_disputes": {
+      "method": "GET",
+      "path": "/v1/disputes",
+      "required_params": []
+    },
+    "list_tax_transactions": {
+      "method": "GET",
+      "path": "/v1/tax/transactions",
+      "required_params": []
     }
   }
 }

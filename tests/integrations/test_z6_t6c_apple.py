@@ -33,7 +33,7 @@ def _make_p256_pem() -> str:
     key = ec.generate_private_key(ec.SECP256R1())
     pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateKeyFormat.PKCS8,
+        format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
     return pem.decode()

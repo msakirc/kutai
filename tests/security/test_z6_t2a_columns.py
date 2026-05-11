@@ -196,7 +196,7 @@ class TestScopeAndSchemaIdPersisted(_BaseT2A):
         async def _t():
             await self.cs_mod.store_credential(
                 "stripe",
-                {"secret_key": "sk_test_x"},
+                {"secret_key": "sk_test_x", "publishable_key": "pk_test_y"},
                 scope="read_only",
                 schema_id="stripe",
             )

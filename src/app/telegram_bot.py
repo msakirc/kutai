@@ -3462,8 +3462,9 @@ class TelegramInterface:
             await self._reply(update,
                 "Usage:\n"
                 "/credential list — Show stored services\n"
-                "/credential add <service> <json\\_data> — Store credential\n"
-                "/credential remove <service> — Delete credential\n\n"
+                "/credential add <service> <json\\_data> \\[--unsafe\\] — Store credential\n"
+                "/credential remove <service> — Delete credential\n"
+                "/credential schema <service> — Show required/optional fields\n\n"
                 "Example:\n"
                 '/credential add github \\{"token": "ghp\\_xxx"\\}',
                 parse_mode="Markdown",
@@ -3501,7 +3502,14 @@ class TelegramInterface:
                 return
 
             service_name = context.args[1]
-            json_str = " ".join(context.args[2:])
+            tail = list(context.args[2:])
+            # Allow --unsafe anywhere after the service name; strip it before
+            # parsing the JSON payload.
+            unsafe = False
+            if "--unsafe" in tail:
+                unsafe = True
+                tail = [t for t in tail if t != "--unsafe"]
+            json_str = " ".join(tail)
 
             try:
                 import json as _json
@@ -3514,12 +3522,22 @@ class TelegramInterface:
                 return
 
             try:
-                from ..security.credential_store import store_credential
+                from ..security.credential_store import (
+                    CredentialSchemaError,
+                    store_credential,
+                )
 
-                await store_credential(service_name, data)
+                await store_credential(service_name, data, unsafe=unsafe)
                 await self._reply(update,
-                    f"Stored credential for `{service_name}`.",
+                    f"Stored credential for `{service_name}`"
+                    + (" \\(unsafe\\)" if unsafe else "")
+                    + ".",
                     parse_mode="Markdown",
+                )
+            except CredentialSchemaError as e:
+                await self._reply(update,
+                    f"❌ Schema validation failed:\n{e}\n\n"
+                    "Re-run with `--unsafe` to bypass.",
                 )
             except Exception as e:
                 await self._reply(update,f"❌ {_friendly_error(str(e))}")
@@ -3548,9 +3566,26 @@ class TelegramInterface:
             except Exception as e:
                 await self._reply(update,f"❌ {_friendly_error(str(e))}")
 
+        elif sub == "schema":
+            if len(context.args) < 2:
+                await self._reply(update,
+                    "Usage: /credential schema <service>"
+                )
+                return
+            service_name = context.args[1]
+            try:
+                from ..security.credential_schemas import describe_schema
+
+                await self._reply(update,
+                    describe_schema(service_name),
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                await self._reply(update,f"❌ {_friendly_error(str(e))}")
+
         else:
             await self._reply(update,
-                "Unknown subcommand. Use: list, add, or remove."
+                "Unknown subcommand. Use: list, add, remove, or schema."
             )
 
     # ─── Workflow Commands ──────────────────────────────────────────────

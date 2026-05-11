@@ -1,0 +1,10 @@
+{
+  "service_name": "sentry",
+  "required_fields": ["auth_token"],
+  "optional_fields": ["org_slug", "project_slug"],
+  "scopes": ["read_only", "read_write", "admin"],
+  "default_scope": "read_only",
+  "rotation_recommended_days": 90,
+  "test_endpoint": { "action": "list_projects", "expect_status": 200 },
+  "docs_url": "https://docs.sentry.io/api/auth/"
+}

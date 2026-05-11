@@ -107,12 +107,18 @@ def _decrypt(token: str) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+class CredentialSchemaError(ValueError):
+    """Raised when a credential payload fails per-vendor schema validation."""
+
+
 async def store_credential(
     service_name: str,
     data: dict,
     expires_at: str | None = None,
     scope: str | None = None,
     schema_id: str | None = None,
+    *,
+    unsafe: bool = False,
 ) -> None:
     """Encrypt and store a credential in the database.
 
@@ -132,9 +138,31 @@ async def store_credential(
         Defaults to ``read_write`` at the column level.
     schema_id:
         Optional pointer to a ``credential_schemas/<service_name>.json`` entry
-        that the payload was validated against.
+        that the payload was validated against. When omitted, the loader
+        auto-uses *service_name* if a schema exists.
+    unsafe:
+        Bypass per-vendor schema validation. Required when storing a service
+        that has no schema and the caller explicitly opts out. Without this
+        flag, a payload that fails validation raises
+        :class:`CredentialSchemaError`.
     """
+    from . import credential_schemas as _cs_schemas
     from ..infra.db import get_db
+
+    # Validate against per-vendor schema if one is registered.
+    auto_schema_id = schema_id
+    if not unsafe:
+        ok, errors = _cs_schemas.validate_payload(
+            service_name, data, scope=scope
+        )
+        if not ok:
+            raise CredentialSchemaError(
+                f"credential payload for '{service_name}' failed validation: "
+                + "; ".join(errors)
+            )
+        if auto_schema_id is None and _cs_schemas.load_schema(service_name):
+            auto_schema_id = service_name
+    schema_id = auto_schema_id
 
     # Embed expiration inside the encrypted payload so it's tamper-proof
     envelope = {"_data": data}

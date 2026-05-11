@@ -1,0 +1,29 @@
+{
+  "service_name": "sendgrid",
+  "base_url": "https://api.sendgrid.com",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "api_key",
+  "actions": {
+    "send_mail": {
+      "method": "POST",
+      "path": "/v3/mail/send",
+      "required_params": ["personalizations", "from", "subject", "content"]
+    },
+    "list_templates": {
+      "method": "GET",
+      "path": "/v3/templates",
+      "required_params": []
+    },
+    "verify_domain": {
+      "method": "POST",
+      "path": "/v3/whitelabel/domains/{id}/validate",
+      "required_params": ["id"]
+    },
+    "list_suppressions": {
+      "method": "GET",
+      "path": "/v3/suppression/bounces",
+      "required_params": []
+    }
+  }
+}

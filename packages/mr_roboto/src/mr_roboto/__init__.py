@@ -1324,6 +1324,27 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "credential_rotation_reminder":
+        # Z6 T7A — weekly scan of the credentials table; emit one
+        # founder_action(kind='credential_paste') per service due for rotation.
+        from mr_roboto.executors.credential_rotation_reminder import (
+            credential_rotation_reminder as _rot_reminder,
+        )
+        try:
+            res = await _rot_reminder()
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"credential_rotation_reminder: "
+                        f"{res.get('error', 'failed')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "compliance_template_staleness":
         # Z6 T4D — weekly scan of compliance template .meta.json files; emit
         # founder_action(kind='legal_counsel') per stale entry. Idempotent.

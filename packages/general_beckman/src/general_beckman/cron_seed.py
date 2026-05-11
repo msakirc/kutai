@@ -150,6 +150,16 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 604800,
         "payload": {"_executor": "compliance_template_staleness"},
     },
+    # Z6 T7A — weekly credential rotation reminder. Scans the credentials
+    # table for rows that either (a) have expires_at within 14d or
+    # (b) have rotated_at IS NULL AND created_at > 90d. Emits a
+    # founder_action(kind='credential_paste') per service. Idempotent.
+    {
+        "title": "credential_rotation_reminder",
+        "description": "Weekly scan of credentials for upcoming expiry / overdue rotation; emit credential_paste founder_action per service",
+        "interval_seconds": 604800,
+        "payload": {"_executor": "credential_rotation_reminder"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

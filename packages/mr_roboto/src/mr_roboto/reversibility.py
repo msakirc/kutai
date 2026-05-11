@@ -96,6 +96,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "run_pytest": "full",  # reads only, side-effect-free
     "run_semgrep": "full",  # read-only static analysis, no writes
     "run_bash_audit": "full",  # audit report writer
+    "regen_and_diff": "full",  # generates to stdout only; never writes target
     # ---- Partial-reversible (caller may need to override) ----------
     "run_cmd": "partial",  # command may be destructive — caller knows
     "git_push": "partial",  # if remote is ours, force-push reverses; not perfect

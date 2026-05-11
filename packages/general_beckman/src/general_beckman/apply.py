@@ -789,6 +789,59 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
         )
         return
 
+    if posthook_kind == "design_system_check":
+        # Z2 T3C — design_system_check is v1-warning-only; same soft-drop
+        # behaviour as pattern_lint.  Never cascade source to failed.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "design_system_check"
+        ]
+        source_ctx["_design_system_check_dlq_reason"] = error[:300]
+        new_pending = source_ctx["_pending_posthooks"]
+        if not new_pending:
+            await update_task(
+                source_id,
+                status="completed",
+                context=_json.dumps(source_ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning(
+            "design_system_check DLQ soft-dropped (warning-only kind)",
+            source_id=source_id, linter_task_id=task["id"],
+        )
+        return
+
+    if posthook_kind in ("openapi_sync", "typescript_sync"):
+        # Z2 T3B — blocker kinds: DLQ cascades source to failed so it doesn't
+        # get stuck in 'ungraded' when the regen_and_diff executor itself DLQs.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != posthook_kind
+        ]
+        source_ctx[f"_{posthook_kind}_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"{posthook_kind} DLQ: {error[:400]}",
+            failed_in_phase="posthook",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning(
+            "%s DLQ cascaded source to failed",
+            posthook_kind, source_id=source_id, posthook_task_id=task["id"],
+        )
+        return
+
     if agent_type == "artifact_summarizer":
         artifact_name = ctx.get("artifact_name") or ""
         kind = f"summary:{artifact_name}"
@@ -936,6 +989,75 @@ def _posthook_agent_and_payload(
         return ("mechanical", {
             "source_task_id": a.source_task_id,
             "posthook_kind": "pattern_lint",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_semgrep",
+                "target_files": produces,
+                "rule_pack_path": rule_pack,
+            },
+        })
+    if a.kind == "openapi_sync":
+        # Z2 T3B — regenerate OpenAPI spec from routes; diff vs committed file.
+        # generator_cmd is project-overridable via ``regen_cmd`` in step context.
+        # target_path is overridable via ``openapi_target_path``.
+        default_cmd = [
+            "python", "-c",
+            "from app.main import app; import json; print(json.dumps(app.openapi()))",
+        ]
+        generator_cmd = list(source_ctx.get("regen_cmd") or default_cmd)
+        target_path = str(source_ctx.get("openapi_target_path") or "openapi.json")
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "openapi_sync",
+            "executor": "mechanical",
+            "payload": {
+                "action": "regen_and_diff",
+                "generator_cmd": generator_cmd,
+                "target_path": target_path,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "typescript_sync":
+        # Z2 T3B — regenerate frontend API types via openapi-typescript; diff
+        # vs committed file.  Both generator_cmd and target_path are
+        # project-overridable via step context.
+        default_cmd = ["npx", "openapi-typescript", "openapi.json"]
+        generator_cmd = list(source_ctx.get("regen_cmd") or default_cmd)
+        target_path = str(source_ctx.get("types_target_path") or "types/api.ts")
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "typescript_sync",
+            "executor": "mechanical",
+            "payload": {
+                "action": "regen_and_diff",
+                "generator_cmd": generator_cmd,
+                "target_path": target_path,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "design_system_check":
+        # Z2 T3C — semgrep with design-system rule pack. Warning-only in v1;
+        # soft-skips when semgrep not installed.  Rule pack is project-
+        # overridable via ``design_system_rule_pack`` in step context.
+        from pathlib import Path as _Path
+        _DS_RULE_PACK = str(
+            _Path(__file__).parent.parent.parent.parent.parent
+            / "mr_roboto" / "src" / "mr_roboto" / "rule_packs" / "design_system.yml"
+        )
+        # Prefer importlib.resources resolution; fall back to sibling path.
+        try:
+            import importlib.resources as _ir
+            import mr_roboto.rule_packs as _rp_pkg  # type: ignore[import]
+            _DS_RULE_PACK = str(_ir.files(_rp_pkg).joinpath("design_system.yml"))
+        except Exception:
+            pass
+        produces = list(source_ctx.get("produces") or [])
+        rule_pack = str(source_ctx.get("design_system_rule_pack") or _DS_RULE_PACK)
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "design_system_check",
             "executor": "mechanical",
             "payload": {
                 "action": "run_semgrep",
@@ -1450,13 +1572,28 @@ async def _apply_test_run_verdict(
     )
 
 
-async def _apply_pattern_lint_verdict(
+async def _apply_semgrep_warning_verdict(
+    kind: str,
+    findings_ctx_key: str,
+    dlq_reason_ctx_key: str,
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
 ) -> None:
-    """Z2 T2C — pattern_lint is warning-only in v1.
+    """Shared implementation for warning-only semgrep post-hook kinds.
 
-    Findings surfaced in ctx as ``_pattern_lint_findings`` but never retry
-    or DLQ the source. Soft-skipped when semgrep not installed.
+    Used by both pattern_lint (T2C) and design_system_check (T3C).  The two
+    callers differ only in the ``kind`` name used to remove the pending entry
+    and the ctx keys used to surface findings.
+
+    Parameters
+    ----------
+    kind:
+        The post-hook kind string (e.g. ``"pattern_lint"``).
+    findings_ctx_key:
+        Context key under which findings list is stored
+        (e.g. ``"_pattern_lint_findings"``).
+    dlq_reason_ctx_key:
+        Context key for DLQ soft-drop reason (unused here; present for
+        symmetry with ``_posthook_dlq_cascade``).
     """
     import json as _json
     from src.infra.db import update_task
@@ -1466,11 +1603,11 @@ async def _apply_pattern_lint_verdict(
     skipped = bool(raw.get("skipped"))
 
     if findings:
-        ctx["_pattern_lint_findings"] = findings[:50]
+        ctx[findings_ctx_key] = findings[:50]
         blocker_count = int(raw.get("blocker_count") or 0)
         warning_count = int(raw.get("warning_count") or 0)
         logger.info(
-            "pattern_lint: findings surfaced (warning-only, not retrying)",
+            f"{kind}: findings surfaced (warning-only, not retrying)",
             source_id=verdict.source_task_id,
             findings=len(findings),
             blockers=blocker_count,
@@ -1479,11 +1616,11 @@ async def _apply_pattern_lint_verdict(
         )
     elif skipped:
         logger.debug(
-            "pattern_lint: semgrep not installed, soft-skipped",
+            f"{kind}: semgrep not installed, soft-skipped",
             source_id=verdict.source_task_id,
         )
 
-    new_pending = [k for k in pending if k != "pattern_lint"]
+    new_pending = [k for k in pending if k != kind]
     ctx["_pending_posthooks"] = new_pending
 
     if not new_pending:
@@ -1513,6 +1650,201 @@ async def _apply_pattern_lint_verdict(
         )
 
 
+async def _apply_pattern_lint_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T2C — pattern_lint is warning-only in v1.
+
+    Findings surfaced in ctx as ``_pattern_lint_findings`` but never retry
+    or DLQ the source. Soft-skipped when semgrep not installed.
+
+    Delegates to ``_apply_semgrep_warning_verdict`` — shared with T3C.
+    """
+    await _apply_semgrep_warning_verdict(
+        kind="pattern_lint",
+        findings_ctx_key="_pattern_lint_findings",
+        dlq_reason_ctx_key="_pattern_lint_dlq_reason",
+        source=source, ctx=ctx, pending=pending, verdict=verdict,
+    )
+
+
+async def _apply_design_system_check_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T3C — design_system_check is warning-only in v1.
+
+    Findings surfaced in ctx as ``_design_system_findings`` but never retry
+    or DLQ the source.  Soft-skipped when semgrep not installed.
+
+    Delegates to ``_apply_semgrep_warning_verdict`` — shared engine with T2C.
+    """
+    await _apply_semgrep_warning_verdict(
+        kind="design_system_check",
+        findings_ctx_key="_design_system_findings",
+        dlq_reason_ctx_key="_design_system_check_dlq_reason",
+        source=source, ctx=ctx, pending=pending, verdict=verdict,
+    )
+
+
+async def _apply_type_sync_verdict(
+    kind: str,
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T3B — shared verdict handler for openapi_sync and typescript_sync.
+
+    Drift detected → blocker retry with feedback (same budget pattern as
+    test_run).  Skipped → soft-advance.  No drift → advance.
+
+    Parameters
+    ----------
+    kind:
+        ``"openapi_sync"`` or ``"typescript_sync"`` — used for log messages
+        and to remove the correct kind from ``_pending_posthooks``.
+    source, ctx, pending, verdict:
+        Standard verdict-fn contract.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    skipped = bool(raw.get("skipped"))
+    diff_present = bool(raw.get("diff_present"))
+    target_path = str(raw.get("target_path") or "")
+    generator_cmd = list(raw.get("generator_cmd") or [])
+
+    # Slow-regen warning — surface into ctx but never block.
+    if raw.get("warning"):
+        ctx[f"_{kind}_warning"] = raw["warning"]
+
+    if not verdict.passed or diff_present:
+        # Soft-skip: generator not installed → advance (v1 ramp).
+        if skipped:
+            logger.debug(
+                "%s: generator not installed, soft-skipped",
+                kind, source_id=verdict.source_task_id,
+            )
+            new_pending = [k for k in pending if k != kind]
+            ctx["_pending_posthooks"] = new_pending
+            if not new_pending:
+                await update_task(
+                    verdict.source_task_id,
+                    status="completed",
+                    context=_json.dumps(ctx),
+                    error=None,
+                    error_category=None,
+                    next_retry_at=None,
+                    retry_reason=None,
+                    failed_in_phase=None,
+                )
+                await _spawn_workflow_advance_if_mission(source, verdict.raw)
+                try:
+                    from general_beckman import _send_step_progress
+                    from src.infra.db import get_task
+                    fresh = await get_task(verdict.source_task_id)
+                    if fresh:
+                        await _send_step_progress(fresh, "completed", verdict.raw or {})
+                except Exception:
+                    pass
+            else:
+                await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+            return
+
+        # Drift or internal failure → blocker retry with feedback.
+        diff_excerpt = str(raw.get("diff_excerpt") or "")
+        error_str = (
+            f"{kind}: Drift detected in {target_path!r}. "
+            f"Regenerate via {generator_cmd!r}."
+        )
+        if diff_excerpt:
+            error_str = (error_str + f" Diff:\n{diff_excerpt}")[:500]
+
+        attempts = int(source.get("worker_attempts") or 0) + 1
+        max_attempts = int(source.get("max_worker_attempts") or 15)
+        ctx["_pending_posthooks"] = []
+
+        feedback = (
+            f"The committed {target_path!r} is out of sync with the generated "
+            f"output. Run: {' '.join(generator_cmd)!r} and commit the updated file. "
+            f"Details: {error_str}"
+        )
+
+        if attempts >= max_attempts:
+            from general_beckman.retry import _MAX_BONUS
+            bonus_count = int(ctx.get("_bonus_count", 0))
+            progress = _parse_progress(source)
+            can_bonus = (
+                progress is not None
+                and progress >= 0.5
+                and bonus_count < _MAX_BONUS
+            )
+            if can_bonus:
+                ctx["_bonus_count"] = bonus_count + 1
+                max_attempts += 1
+                ctx["_schema_error"] = feedback
+                prev_output = source.get("result") or ""
+                if isinstance(prev_output, str) and prev_output.strip():
+                    ctx["_prev_output"] = prev_output[:6000]
+                _stamp_retry_feedback(ctx, attempts)
+                await update_task(
+                    verdict.source_task_id,
+                    status="pending",
+                    worker_attempts=attempts,
+                    max_worker_attempts=max_attempts,
+                    error=error_str[:500],
+                    error_category="quality",
+                    next_retry_at=None,
+                    context=_json.dumps(ctx),
+                )
+                return
+            await _dlq_write(
+                source, error=error_str[:500] or f"{kind} gate exhausted",
+                category="quality", attempts=attempts,
+            )
+            return
+
+        ctx["_schema_error"] = feedback
+        prev_output = source.get("result") or ""
+        if isinstance(prev_output, str) and prev_output.strip():
+            ctx["_prev_output"] = prev_output[:6000]
+        _stamp_retry_feedback(ctx, attempts)
+        await update_task(
+            verdict.source_task_id,
+            status="pending",
+            worker_attempts=attempts,
+            error=error_str[:500],
+            error_category="quality",
+            next_retry_at=None,
+            context=_json.dumps(ctx),
+        )
+        return
+
+    # Pass — no drift.
+    new_pending = [k for k in pending if k != kind]
+    ctx["_pending_posthooks"] = new_pending
+    if not new_pending:
+        await update_task(
+            verdict.source_task_id,
+            status="completed",
+            context=_json.dumps(ctx),
+            error=None,
+            error_category=None,
+            next_retry_at=None,
+            retry_reason=None,
+            failed_in_phase=None,
+        )
+        await _spawn_workflow_advance_if_mission(source, verdict.raw)
+        try:
+            from general_beckman import _send_step_progress
+            from src.infra.db import get_task
+            fresh = await get_task(verdict.source_task_id)
+            if fresh:
+                await _send_step_progress(fresh, "completed", verdict.raw or {})
+        except Exception:
+            pass
+    else:
+        await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+
+
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind == "grade":
         return f"Grade task #{a.source_task_id}"
@@ -1529,6 +1861,12 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Test run for #{a.source_task_id}"
     if a.kind == "pattern_lint":
         return f"Pattern lint for #{a.source_task_id}"
+    if a.kind == "design_system_check":
+        return f"Design system check for #{a.source_task_id}"
+    if a.kind == "openapi_sync":
+        return f"OpenAPI sync check for #{a.source_task_id}"
+    if a.kind == "typescript_sync":
+        return f"TypeScript sync check for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
@@ -1702,6 +2040,18 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     if a.kind == "pattern_lint":
         await _apply_pattern_lint_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "design_system_check":
+        await _apply_design_system_check_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind in ("openapi_sync", "typescript_sync"):
+        await _apply_type_sync_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return
 

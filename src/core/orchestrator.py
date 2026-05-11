@@ -388,6 +388,11 @@ class Orchestrator:
         shutdown_signal = Path("logs") / "shutdown.signal"
         import general_beckman
 
+        # Z6 T1E: throttle counter for the founder_actions unblock sweep.
+        # 20 ticks * 3s base sleep ≈ 60s between sweeps. Keep it cheap —
+        # the sweep is one indexed SELECT + zero-to-N UPDATEs.
+        _z6_sweep_counter = 0
+
         while self.running and not self.shutdown_event.is_set():
             try:
                 if shutdown_signal.exists():
@@ -405,6 +410,25 @@ class Orchestrator:
                     t = asyncio.create_task(self._dispatch(task))
                     self._running_futures.append(t)
                     t.add_done_callback(self._drop_running_future)
+
+                # Z6 T1E: periodic mission-unblock sweep. Founder may resolve
+                # actions via the Yaşar Usta bot or external tooling without
+                # the per-resolve hook firing in this process — sweep is the
+                # backstop. Throttle to ~once per minute (20 ticks * 3s).
+                _z6_sweep_counter += 1
+                if _z6_sweep_counter >= 20:
+                    _z6_sweep_counter = 0
+                    try:
+                        import src.founder_actions as _fa
+                        n = await _fa.sweep_unblock_all()
+                        if n > 0:
+                            logger.info(
+                                "z6 lifecycle sweep: unblocked %d mission(s)",
+                                n,
+                            )
+                    except Exception as _e:
+                        logger.debug(f"z6 sweep skipped: {_e}")
+
                 await asyncio.sleep(3)
             except asyncio.CancelledError:
                 raise

@@ -285,7 +285,19 @@ def expand_steps_to_tasks(
         # Hint-from-targets pass (T1C): if tools_hint includes "write_file"
         # and any declared produce path already exists in the workspace,
         # strip "write_file" so the agent is nudged toward patch/edit tools.
-        _apply_hint_from_targets(context)
+        # Z2 Item-3 followup — thread workspace_path so the pass actually
+        # activates in production (was no-op while workspace_path=None).
+        _ws_path: Optional[str] = None
+        try:
+            if mission_id:
+                from src.tools.workspace import WORKSPACE_DIR
+                import os.path as _osp
+                _candidate = _osp.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                if _osp.isdir(_candidate):
+                    _ws_path = _candidate
+        except Exception:
+            _ws_path = None
+        _apply_hint_from_targets(context, workspace_path=_ws_path)
 
         skip_when = step.get("skip_when")
         if skip_when:

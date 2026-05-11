@@ -453,7 +453,8 @@
       },
       "context": {
         "estimated_output_tokens": 5000
-      }
+      },
+      "reversibility": "partial"
     },
     {
       "id": "-1.2",
@@ -492,7 +493,8 @@
       },
       "context": {
         "estimated_output_tokens": 4000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "-1.3",
@@ -535,7 +537,8 @@
           "required_fields": []
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "-1.4",
@@ -569,7 +572,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "-1.5",
@@ -605,7 +609,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "-1.6",
@@ -644,7 +649,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "-1.7",
@@ -678,7 +684,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.0z",
@@ -723,7 +730,8 @@
       },
       "context": {
         "ambition_tier_aware": true
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "0.0z.verify",
@@ -751,7 +759,8 @@
       },
       "instruction": "Mechanical post-check that 0.0z produced a paraflow-shape reverse pitch (Z1 A1). No LLM. Failure surfaces missing sections / placeholder text and forces a regenerate.",
       "done_when": "verify_reverse_pitch_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.0a",
@@ -792,7 +801,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.1",
@@ -840,7 +850,8 @@
       },
       "post_hooks": [
         "find_similar_missions"
-      ]
+      ],
+      "reversibility": "full"
     },
     {
       "id": "0.1.verify",
@@ -871,7 +882,8 @@
       },
       "instruction": "Mechanical post-check that 0.1 produced a paraflow-shape product charter (Z1 C1+A9+C6+A14). No LLM. Asserts 5 sections + 3-7 solutions each with full sub-shape (boundaries + guiding-principles required) + no placeholder text. Failure forces 0.1 to regenerate.",
       "done_when": "verify_charter_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.2",
@@ -906,7 +918,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.3",
@@ -941,7 +954,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.0c",
@@ -982,7 +996,8 @@
       },
       "context": {
         "estimated_output_tokens": 2500
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "0.0c.verify",
@@ -1012,7 +1027,8 @@
       },
       "instruction": "Mechanical post-check that 0.0c produced a well-formed interview script (Z1 A4). No LLM. Asserts front matter (_schema_version=1, mission_id, target_assumptions non-empty), Logistics section present, 5-7 Q blocks each with Question/Probes (with bullets)/Looking-for fields, no placeholder text. Failure forces 0.0c to regenerate.",
       "done_when": "verify_interview_script_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.0c.request",
@@ -1039,7 +1055,8 @@
       },
       "instruction": "Surface the generated interview script to the founder via Telegram (Z1 A4). Founder replies DONE (after dropping transcripts into mission_{mission_id}/.intake/interviews/) or SKIP (mission proceeds at own risk; reviewer 1.13 grades by ambition tier — soft warn at private_beta+, hard reject at public_launch).",
       "done_when": "Founder has acknowledged via DONE or SKIP.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.4",
@@ -1078,7 +1095,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.4a",
@@ -1105,7 +1123,8 @@
       "skip_when": "mission.legacy_pre_compliance == '1'",
       "context": {
         "estimated_output_tokens": 0
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "0.5",
@@ -1139,7 +1158,8 @@
       "context": {},
       "post_hooks": [
         "surface_prior_mission_hints"
-      ]
+      ],
+      "reversibility": "full"
     },
     {
       "id": "0.6",
@@ -1186,7 +1206,8 @@
       },
       "context": {
         "estimated_output_tokens": 5000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "0.6a",
@@ -1228,7 +1249,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "0.6a.verify",
@@ -1267,7 +1289,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.0",
@@ -1313,7 +1336,8 @@
       },
       "context": {
         "estimated_output_tokens": 3000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "1.1",
@@ -1353,7 +1377,8 @@
       "api_hints": [
         "market_data"
       ],
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.2",
@@ -1390,7 +1415,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.3",
@@ -1434,7 +1460,8 @@
       "api_hints": [
         "market_data"
       ],
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.4",
@@ -1475,7 +1502,8 @@
       "api_hints": [
         "market_data"
       ],
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.4a",
@@ -1521,7 +1549,8 @@
       },
       "context": {
         "estimated_output_tokens": 4000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "1.4a.verify",
@@ -1549,7 +1578,8 @@
       },
       "instruction": "Mechanical post-check that 1.4a produced a paraflow-PRD-§6-shape positioning doc (Z1 C2). No LLM. Asserts front matter (_schema_version=1, mission_id, named_competitors non-empty), six required sections present and non-empty, no placeholders. Failure forces 1.4a to regenerate.",
       "done_when": "verify_competitive_positioning_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.5",
@@ -1602,7 +1632,8 @@
       "api_hints": [
         "market_data"
       ],
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.6",
@@ -1641,7 +1672,8 @@
       "api_hints": [
         "market_data"
       ],
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.7",
@@ -1695,7 +1727,8 @@
       "api_hints": [
         "market_data"
       ],
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.8",
@@ -1738,7 +1771,8 @@
       ],
       "context": {
         "estimated_output_tokens": 5000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "1.9",
@@ -1775,7 +1809,8 @@
       "api_hints": [
         "market_data"
       ],
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.10",
@@ -1818,7 +1853,8 @@
       "api_hints": [
         "github_trending"
       ],
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.11",
@@ -1858,7 +1894,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.11a",
@@ -1900,7 +1937,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.12a",
@@ -1947,7 +1985,8 @@
       ],
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "1.12b",
@@ -1992,7 +2031,8 @@
       ],
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "1.13",
@@ -2032,7 +2072,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "1.14",
@@ -2076,7 +2117,8 @@
       },
       "context": {
         "estimated_output_tokens": 4000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "2.1",
@@ -2118,7 +2160,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "2.2",
@@ -2189,7 +2232,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "2.3",
@@ -2223,7 +2267,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "2.4",
@@ -2276,7 +2321,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "2.5",
@@ -2319,7 +2365,8 @@
       },
       "context": {
         "estimated_output_tokens": 12000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "2.6",
@@ -2357,7 +2404,8 @@
           ],
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "2.7",
@@ -2391,7 +2439,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "2.8",
@@ -2430,7 +2479,8 @@
           ],
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "2.9",
@@ -2496,7 +2546,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "2.10",
@@ -2532,7 +2583,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "2.11a",
@@ -2572,7 +2624,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "2.11b",
@@ -2617,7 +2670,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "3.1",
@@ -2661,7 +2715,8 @@
           ],
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "3.1.verify",
@@ -2698,7 +2753,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.2",
@@ -2747,7 +2803,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.2.verify",
@@ -2786,7 +2843,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.3",
@@ -2837,7 +2895,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.3.verify",
@@ -2876,7 +2935,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.4",
@@ -2954,7 +3014,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.5",
@@ -3003,7 +3064,8 @@
       },
       "context": {
         "estimated_output_tokens": 4000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "3.6",
@@ -3066,7 +3128,8 @@
       },
       "context": {
         "estimated_output_tokens": 8000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "3.7",
@@ -3108,7 +3171,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.7.verify",
@@ -3145,7 +3209,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.8",
@@ -3184,7 +3249,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.9a",
@@ -3221,7 +3287,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.9b",
@@ -3261,7 +3328,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "3.10a",
@@ -3302,7 +3370,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "3.10b",
@@ -3345,7 +3414,8 @@
           ],
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "3.11",
@@ -3389,7 +3459,8 @@
           },
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "4.1",
@@ -3442,7 +3513,8 @@
         "mission_{mission_id}/.adr/architecture_pattern_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'"
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "reversibility": "full"
     },
     {
       "id": "4.2",
@@ -3502,7 +3574,8 @@
         "mission_{mission_id}/.adr/tech_stack_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'"
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "reversibility": "full"
     },
     {
       "id": "4.3",
@@ -3539,7 +3612,8 @@
           ],
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "4.4",
@@ -3601,7 +3675,8 @@
         "mission_{mission_id}/.adr/database_schema_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'"
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "reversibility": "full"
     },
     {
       "id": "4.5a",
@@ -3643,7 +3718,8 @@
           ],
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "4.5b",
@@ -3707,7 +3783,8 @@
           },
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "4.6",
@@ -3773,7 +3850,8 @@
         "mission_{mission_id}/.adr/auth_design_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'"
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "reversibility": "full"
     },
     {
       "id": "4.7",
@@ -3810,7 +3888,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.8",
@@ -3895,7 +3974,8 @@
         "mission_{mission_id}/.adr/third_party_selections_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'"
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "reversibility": "full"
     },
     {
       "id": "4.9",
@@ -3975,7 +4055,8 @@
         "mission_{mission_id}/.adr/infrastructure_designs_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'"
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "reversibility": "full"
     },
     {
       "id": "4.10",
@@ -4051,7 +4132,8 @@
         "mission_{mission_id}/.adr/communication_designs_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'"
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "reversibility": "full"
     },
     {
       "id": "4.11",
@@ -4085,7 +4167,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.12",
@@ -4131,7 +4214,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.13",
@@ -4165,7 +4249,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.14",
@@ -4221,7 +4306,8 @@
       "produces": [
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'"
+      "skip_when": "mission.legacy_pre_adr == '1'",
+      "reversibility": "full"
     },
     {
       "id": "4.15a1",
@@ -4263,7 +4349,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "4.15a2",
@@ -4308,7 +4395,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "4.15b",
@@ -4353,7 +4441,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "4.16",
@@ -4393,7 +4482,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "5.0",
@@ -4438,7 +4528,8 @@
       },
       "context": {
         "estimated_output_tokens": 3000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "5.0.verify",
@@ -4457,7 +4548,8 @@
       },
       "instruction": "Mechanical shape verification of taste_emphasis.json (required fields, _schema_version, primary_content_type whitelist, 'other' implies populated secondary_emphasis).",
       "done_when": "Verifier returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "5.0a",
@@ -4498,7 +4590,8 @@
       },
       "context": {
         "estimated_output_tokens": 6000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "5.0a.verify",
@@ -4517,7 +4610,8 @@
       },
       "instruction": "Mechanical shape verification of design_tokens.json (light + dark present, all required token blocks, no placeholder hex, font_family non-empty, tag_signature present).",
       "done_when": "Verifier returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "5.0b",
@@ -4554,7 +4648,8 @@
         ],
         "persist_to": "mission_{mission_id}/.charter/surfaces.json"
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "5.0b.verify",
@@ -4580,7 +4675,8 @@
         "action": "verify_surfaces_shape",
         "path": ".charter/surfaces.json"
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "5.0c",
@@ -4617,7 +4713,8 @@
       },
       "context": {
         "estimated_output_tokens": 4000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "5.0c.verify",
@@ -4643,7 +4740,8 @@
         "action": "verify_user_flow_shape",
         "path": ".flow/user_flow.md"
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "5.0d",
@@ -4689,7 +4787,8 @@
       },
       "context": {
         "estimated_output_tokens": 6000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "5.0d.verify",
@@ -4720,7 +4819,8 @@
           "path": ".flow/shared_shell.md"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "5.0d.verify_shell",
@@ -4746,7 +4846,8 @@
         "action": "verify_shared_shell_shape",
         "path": ".flow/shared_shell.md"
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "5.1",
@@ -4780,7 +4881,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.2",
@@ -4813,7 +4915,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.3",
@@ -4874,7 +4977,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.4a",
@@ -4918,7 +5022,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.4b",
@@ -4962,7 +5067,8 @@
       "context": {
         "estimated_output_tokens": 12000
       },
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.5",
@@ -5004,7 +5110,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.6",
@@ -5053,7 +5160,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.7",
@@ -5092,7 +5200,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.8",
@@ -5127,7 +5236,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.9",
@@ -5181,7 +5291,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.10",
@@ -5226,7 +5337,8 @@
         }
       },
       "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.11a",
@@ -5266,7 +5378,8 @@
           "_schema_version": "1"
         }
       },
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.11b",
@@ -5313,7 +5426,8 @@
           "_schema_version": "1"
         }
       },
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
+      "reversibility": "full"
     },
     {
       "id": "5.20a",
@@ -5360,7 +5474,8 @@
       "produces": [
         "mission_{mission_id}/.screens/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.20a.verify_shape",
@@ -5378,7 +5493,8 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every plan produced by 5.20a. Caller wires `plan_paths` from the 5.20a artifact's `plans[].path` list.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.20b",
@@ -5424,7 +5540,8 @@
       "produces": [
         "mission_{mission_id}/.screens/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.20b.verify_shape",
@@ -5442,7 +5559,8 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every plan produced by 5.20b.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.20.verify_consistency",
@@ -5461,7 +5579,8 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — cross-screen `inherits_shell` consistency check across both chunks (B8/C18). Caller wires `screen_plan_paths` (union of both chunks' plans) and `shared_shell_components` from shared_shell.md.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.30a",
@@ -5505,7 +5624,8 @@
       "produces": [
         "mission_{mission_id}/.web/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.30a.verify_shape",
@@ -5523,7 +5643,8 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every HTML produced by 5.30a. Caller wires `html_paths` and `design_tokens` (parsed JSON) from the artifact store.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.30b",
@@ -5569,7 +5690,8 @@
       "produces": [
         "mission_{mission_id}/.web/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.30b.verify_shape",
@@ -5587,7 +5709,8 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every HTML produced by 5.30b.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'"
+      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.30c",
@@ -5606,7 +5729,8 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Z1 Tier 4 (T4B / C17+A20): post-process every HTML emitted by 5.30a/b — walk the DOM via BeautifulSoup and assign `data-oid=\"<artifact_slug>:<section>\"` to semantic blocks (header/main/nav/footer/aside/section/article + role-classed divs: hero/cta/card/form/etc.). Anchor for `propose_spec_patch_from_html_diff`. Caller wires `html_paths` (union of both chunks) and `artifact_slug` derived per file. Idempotent: existing `data-oid` values are preserved.",
-      "skip_when": "mission.legacy_pre_html_oids == '1'"
+      "skip_when": "mission.legacy_pre_html_oids == '1'",
+      "reversibility": "full"
     },
     {
       "id": "5.40",
@@ -5627,7 +5751,8 @@
         "mission_{mission_id}/preview_url.txt"
       ],
       "instruction": "Z1 T4C (C10+A19) — emit a tunneled preview URL surface for the per-screen HTML prototypes. EMIT-ONLY: writes preview_url.txt with a live cloudflared URL when KUTAI_PREVIEW_PROVIDER=cloudflared and the binary is on PATH; otherwise writes a 'pending: hosting deferred to Z2' placeholder. Idempotent: any prior tunnel is terminated before re-emitting.",
-      "skip_when": "mission.legacy_pre_preview_url == '1'"
+      "skip_when": "mission.legacy_pre_preview_url == '1'",
+      "reversibility": "full"
     },
     {
       "id": "6.1",
@@ -5724,7 +5849,8 @@
           },
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "6.2",
@@ -5766,7 +5892,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "6.3",
@@ -5808,7 +5935,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "6.4",
@@ -5916,7 +6044,8 @@
           },
           "_schema_version": "1"
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "6.5",
@@ -5962,7 +6091,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "6.5z",
@@ -6004,7 +6134,8 @@
           "_schema_version": "1"
         }
       },
-      "skip_when": "mission.legacy_pre_premortem == '1'"
+      "skip_when": "mission.legacy_pre_premortem == '1'",
+      "reversibility": "full"
     },
     {
       "id": "6.5z.verify_shape",
@@ -6022,7 +6153,8 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical post-hook on 6.5z. Caller wires `premortem_path` (default `mission_{mission_id}/premortem.md`) or `premortem_text`. Asserts the JSON envelope: _schema_version=='1', scenarios>=3, kinds {technical, market, founder} each present, plausibility ∈ [1,5], obituary + cause non-empty.",
-      "skip_when": "mission.legacy_pre_premortem == '1'"
+      "skip_when": "mission.legacy_pre_premortem == '1'",
+      "reversibility": "full"
     },
     {
       "id": "6.6",
@@ -6070,7 +6202,8 @@
           "_schema_version": "1"
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "6.7",
@@ -6092,7 +6225,8 @@
         "mission_{mission_id}/github_init_status.md"
       ],
       "instruction": "Z1 Tier 6 (C18) — at the end of phase 6 (after compliance_blocker_check on 6.6 has passed) initialise a GitHub repository for the mission via gh-cli and push the locked phase-≤6 spec artifacts as the initial commit. Fail-soft when gh-cli is missing or unauthenticated: writes `mission_{mission_id}/github_init_status.md` with `pending: <reason>` and the workflow continues — founder retries via Telegram `/github init <mission_id>`. Repo name: `kutai-mission-<id>-<charter_slug>` (kebab-case, ≤30 chars from charter title). Visibility default `public` (overridable via `KUTAI_GITHUB_DEFAULT_VISIBILITY`). Owner default = current `gh` user (overridable via `KUTAI_GITHUB_ORG`). The export uses a separate `mission_{mission_id}/.git_export/` repo so any mission-internal git history (created later in phase 7+) is not clobbered. Set `payload.skip_github=true` to opt out (still emits the status file). Persists `missions.github_repo_url`.",
-      "skip_when": "mission.legacy_pre_github_init == '1'"
+      "skip_when": "mission.legacy_pre_github_init == '1'",
+      "reversibility": "partial"
     },
     {
       "id": "6.7z",
@@ -6115,7 +6249,8 @@
       "skip_when": "mission.legacy_pre_inheritance == '1'",
       "context": {
         "estimated_output_tokens": 0
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.0z",
@@ -6137,7 +6272,8 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — Augment Intent's `specs stay alive`. Wave-start mechanical step before phase-7 execution. Re-reads phase-≤6 locked spec artifacts (charter, ADRs, design_tokens, screen_plans, surfaces, non_goals, premortem, compliance_overlay if present) + any phase-7 artifacts on disk; rule-based drift scan (R1 stack drift / R2 token drift / R3 surface drift / R4 non-goal drift). On drift, returns needs_review + drift report path; reviewer / source has to acknowledge before downstream waves continue.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'"
+      "skip_when": "mission.legacy_pre_spec_alive == '1'",
+      "reversibility": "full"
     },
     {
       "id": "7.1",
@@ -6182,7 +6318,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "7.2",
@@ -6240,7 +6377,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.3",
@@ -6292,7 +6430,8 @@
             "health_check_verified"
           ]
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.3.git_commit",
@@ -6310,7 +6449,8 @@
       },
       "instruction": "Mechanical auto-commit after 7.3.",
       "done_when": "Workspace committed if there are changes.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "7.4",
@@ -6383,7 +6523,8 @@
             "script_path"
           ]
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.5",
@@ -6434,7 +6575,8 @@
             "dev_server_verified"
           ]
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.5.git_commit",
@@ -6452,7 +6594,8 @@
       },
       "instruction": "Mechanical auto-commit after 7.5.",
       "done_when": "Workspace committed if there are changes.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "7.6",
@@ -6522,7 +6665,8 @@
             "coverage_tool"
           ]
         }
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.7",
@@ -6570,7 +6714,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.8",
@@ -6631,7 +6776,8 @@
             "config"
           ]
         }
-      }
+      },
+      "reversibility": "partial"
     },
     {
       "id": "7.9",
@@ -6687,7 +6833,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.10",
@@ -6734,7 +6881,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.11",
@@ -6782,7 +6930,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.12",
@@ -6821,7 +6970,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "7.13",
@@ -6870,7 +7020,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "irreversible"
     },
     {
       "id": "7.14",
@@ -6907,7 +7058,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "7.15",
@@ -6945,7 +7097,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "partial"
     },
     {
       "id": "7.16",
@@ -6988,7 +7141,8 @@
           }
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "7.17",
@@ -7027,7 +7181,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "8.0z",
@@ -7049,7 +7204,8 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 8. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'"
+      "skip_when": "mission.legacy_pre_spec_alive == '1'",
+      "reversibility": "full"
     },
     {
       "id": "8.0",
@@ -7109,7 +7265,8 @@
           }
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "8.0a",
@@ -7139,7 +7296,8 @@
       "done_when": "recipe_picks.json written with entries for all backlog features (null allowed for no match).",
       "context": {
         "pin_recipes": true
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "8.spike",
@@ -7183,7 +7341,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "8.spike.git_commit",
@@ -7201,7 +7360,8 @@
       },
       "instruction": "Mechanical auto-commit after 8.spike.",
       "done_when": "Workspace committed if there are changes.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "8.sprint_ritual",
@@ -7240,7 +7400,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "8.arch_check",
@@ -7293,7 +7454,8 @@
           }
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "9.0z",
@@ -7315,7 +7477,8 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 9. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'"
+      "skip_when": "mission.legacy_pre_spec_alive == '1'",
+      "reversibility": "full"
     },
     {
       "id": "9.1",
@@ -7350,7 +7513,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "9.2",
@@ -7401,7 +7565,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "9.3",
@@ -7443,7 +7608,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "9.4",
@@ -7478,7 +7644,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "9.4a",
@@ -7517,7 +7684,8 @@
       },
       "context": {
         "requires_grading": false
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "9.5",
@@ -7561,7 +7729,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "9.6",
@@ -7610,7 +7779,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "9.7",
@@ -7652,7 +7822,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "9.8",
@@ -7693,7 +7864,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "9.9",
@@ -7739,7 +7911,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "9.10",
@@ -7778,7 +7951,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "9.11",
@@ -7812,7 +7986,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "10.0z",
@@ -7834,7 +8009,8 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 10. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'"
+      "skip_when": "mission.legacy_pre_spec_alive == '1'",
+      "reversibility": "full"
     },
     {
       "id": "10.1",
@@ -7902,7 +8078,8 @@
           }
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "10.2",
@@ -7943,7 +8120,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "10.3",
@@ -7993,7 +8171,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "10.4",
@@ -8042,7 +8221,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "10.5",
@@ -8150,7 +8330,8 @@
           }
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "10.6",
@@ -8198,7 +8379,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "10.7",
@@ -8235,7 +8417,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "10.8a",
@@ -8273,7 +8456,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "10.8b",
@@ -8320,7 +8504,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "10.9",
@@ -8368,7 +8553,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "11.0z",
@@ -8390,7 +8576,8 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 11. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'"
+      "skip_when": "mission.legacy_pre_spec_alive == '1'",
+      "reversibility": "full"
     },
     {
       "id": "11.1",
@@ -8441,7 +8628,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "11.2",
@@ -8489,7 +8677,8 @@
       },
       "context": {
         "estimated_output_tokens": 8000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "11.3",
@@ -8534,7 +8723,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "11.4",
@@ -8597,7 +8787,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "partial"
     },
     {
       "id": "11.5",
@@ -8633,7 +8824,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "12.0z",
@@ -8655,7 +8847,8 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 12. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'"
+      "skip_when": "mission.legacy_pre_spec_alive == '1'",
+      "reversibility": "full"
     },
     {
       "id": "12.1",
@@ -8694,7 +8887,8 @@
       },
       "instruction": "Z6 T4A — render legal-doc drafts from compliance_overlay.required_documents[]. No LLM. Each writer-facing doc_type (tos / privacy_policy / cookie_banner) renders to mission_<id>/.compliance/legal/<artifact>.md via compliance_template_render. 12.1b (writer) then fills [LEGAL REVIEW REQUIRED] placeholders that can be filled from PRD + overlay context.",
       "done_when": "terms_of_service, privacy_policy, and cookie_policy markdown files exist under mission_<id>/.compliance/legal/.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "12.1b",
@@ -8754,7 +8948,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "12.2",
@@ -8795,7 +8990,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "12.3",
@@ -8839,7 +9035,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "12.4",
@@ -8883,7 +9080,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "12.5",
@@ -8931,7 +9129,8 @@
           }
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "13.1",
@@ -8991,7 +9190,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "irreversible"
     },
     {
       "id": "13.2",
@@ -9049,7 +9249,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "13.3",
@@ -9132,7 +9333,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "irreversible"
     },
     {
       "id": "13.4",
@@ -9187,7 +9389,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "13.5",
@@ -9230,7 +9433,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "13.6",
@@ -9274,7 +9478,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "13.7",
@@ -9319,7 +9524,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "13.8",
@@ -9367,7 +9573,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "13.9",
@@ -9415,7 +9622,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "13.10",
@@ -9455,7 +9663,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "13.11",
@@ -9494,7 +9703,8 @@
       },
       "context": {
         "requires_grading": false
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "13.12",
@@ -9527,7 +9737,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "13.13",
@@ -9570,7 +9781,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "13.14",
@@ -9613,7 +9825,8 @@
           }
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "14.1",
@@ -9655,7 +9868,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "14.2",
@@ -9691,7 +9905,8 @@
           }
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "14.3",
@@ -9738,7 +9953,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "14.4",
@@ -9780,7 +9996,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "14.5",
@@ -9813,7 +10030,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "partial"
     },
     {
       "id": "14.6",
@@ -9852,7 +10070,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "14.7",
@@ -9886,7 +10105,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "14.8",
@@ -9922,7 +10142,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "14.9",
@@ -9956,7 +10177,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.1",
@@ -10008,7 +10230,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "partial"
     },
     {
       "id": "15.2",
@@ -10049,7 +10272,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "15.3",
@@ -10086,7 +10310,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.4",
@@ -10131,7 +10356,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "15.5",
@@ -10180,7 +10406,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.6",
@@ -10217,7 +10444,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.7",
@@ -10275,7 +10503,8 @@
       },
       "context": {
         "estimated_output_tokens": 10000
-      }
+      },
+      "reversibility": "partial"
     },
     {
       "id": "15.8",
@@ -10313,7 +10542,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.9",
@@ -10360,7 +10590,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.10",
@@ -10408,7 +10639,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.10b_record_demo",
@@ -10439,7 +10671,8 @@
       },
       "instruction": "Z10 T4A: record an end-of-mission Playwright e2e demo, trim to <=90s, save as data/missions/{id}/demo.mp4. Runs inside per-mission Docker container.",
       "done_when": "demo.mp4 exists and is a real mp4 video.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.10c_verify_demo",
@@ -10467,7 +10700,8 @@
       },
       "instruction": "Z10 T4A: gate-check demo.mp4 — must exist, be video/mp4, >1MB, >5s.",
       "done_when": "verify_demo_artifact reports ok=True.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.11",
@@ -10528,7 +10762,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.12",
@@ -10588,7 +10823,8 @@
       },
       "context": {
         "estimated_output_tokens": 4000
-      }
+      },
+      "reversibility": "partial"
     },
     {
       "id": "15.13",
@@ -10630,7 +10866,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.14",
@@ -10673,7 +10910,8 @@
           ]
         }
       },
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "15.14b_deliverable_bundle",
@@ -10698,7 +10936,8 @@
       "output_artifacts": [],
       "instruction": "Z10 T4A: post end-of-mission deliverable bundle (demo.mp4 + commit + provenance + cost) to the mission's Telegram thread.",
       "done_when": "deliverable bundle posted to Telegram.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.2a",
@@ -10751,7 +10990,8 @@
       },
       "context": {
         "estimated_output_tokens": 4000
-      }
+      },
+      "reversibility": "full"
     },
     {
       "id": "4.1.verify",
@@ -10780,7 +11020,8 @@
       },
       "instruction": "Mechanical post-check for step 4.1 (architecture_pattern): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
       "done_when": "verify_adr_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.2.verify",
@@ -10809,7 +11050,8 @@
       },
       "instruction": "Mechanical post-check for step 4.2 (tech_stack): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
       "done_when": "verify_adr_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.2.verify_cost_curve",
@@ -10837,7 +11079,8 @@
       },
       "instruction": "Mechanical post-check (A8) for stack step 4.2: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
       "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.4.verify",
@@ -10866,7 +11109,8 @@
       },
       "instruction": "Mechanical post-check for step 4.4 (database): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
       "done_when": "verify_adr_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.4.verify_cost_curve",
@@ -10894,7 +11138,8 @@
       },
       "instruction": "Mechanical post-check (A8) for stack step 4.4: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
       "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.6.verify",
@@ -10923,7 +11168,8 @@
       },
       "instruction": "Mechanical post-check for step 4.6 (auth): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
       "done_when": "verify_adr_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.6.verify_cost_curve",
@@ -10951,7 +11197,8 @@
       },
       "instruction": "Mechanical post-check (A8) for stack step 4.6: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
       "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.8.verify",
@@ -10980,7 +11227,8 @@
       },
       "instruction": "Mechanical post-check for step 4.8 (third_party_services): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
       "done_when": "verify_adr_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.8.verify_cost_curve",
@@ -11008,7 +11256,8 @@
       },
       "instruction": "Mechanical post-check (A8) for stack step 4.8: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
       "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.9.verify",
@@ -11037,7 +11286,8 @@
       },
       "instruction": "Mechanical post-check for step 4.9 (infrastructure): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
       "done_when": "verify_adr_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.9.verify_cost_curve",
@@ -11065,7 +11315,8 @@
       },
       "instruction": "Mechanical post-check (A8) for stack step 4.9: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
       "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.10.verify",
@@ -11094,7 +11345,8 @@
       },
       "instruction": "Mechanical post-check for step 4.10 (communication): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
       "done_when": "verify_adr_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.10.verify_cost_curve",
@@ -11122,7 +11374,8 @@
       },
       "instruction": "Mechanical post-check (A8) for stack step 4.10: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
       "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.2a.verify",
@@ -11151,7 +11404,8 @@
       },
       "instruction": "Mechanical post-check for step 4.2a (component_library): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
       "done_when": "verify_adr_shape returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "4.14.verify_register",
@@ -11179,7 +11433,8 @@
       },
       "instruction": "Mechanical post-check (P3): every ADR id in register.md resolves to a JSON file under mission_{mission_id}/.adr/, and there are no orphan ADR JSONs. Failure forces 4.14 to regenerate the register.",
       "done_when": "verify_adr_register returns ok=true.",
-      "context": {}
+      "context": {},
+      "reversibility": "full"
     }
   ],
   "templates": [

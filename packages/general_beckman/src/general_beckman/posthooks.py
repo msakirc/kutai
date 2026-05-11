@@ -159,6 +159,49 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Soft-skipped when semgrep is not installed."
         ),
     ),
+    # Z2 T3B — openapi_sync: regenerate OpenAPI spec from routes; diff vs committed.
+    "openapi_sync": PostHookSpec(
+        kind="openapi_sync",
+        verb="regen_and_diff",
+        default_severity="blocker",
+        auto_wire_triggers=[
+            "**/routes/*.py",
+            "**/routers/*.py",
+            "**/api/*.py",
+            "openapi.json",
+            "openapi.yaml",
+        ],
+        description=(
+            "Regenerate OpenAPI spec from routes; fail on drift vs committed openapi.json."
+        ),
+    ),
+    # Z2 T3B — typescript_sync: regenerate frontend API types; diff vs committed.
+    "typescript_sync": PostHookSpec(
+        kind="typescript_sync",
+        verb="regen_and_diff",
+        default_severity="blocker",
+        auto_wire_triggers=[
+            "openapi.json",
+            "openapi.yaml",
+            "types/api.ts",
+            "types/api/*.ts",
+        ],
+        description=(
+            "Regenerate frontend API types via openapi-typescript; fail on drift."
+        ),
+    ),
+    # Z2 T3C — design_system_check via shared semgrep engine.
+    "design_system_check": PostHookSpec(
+        kind="design_system_check",
+        verb="run_semgrep",  # shared engine with pattern_lint
+        default_severity="warning",  # v1 ramp policy
+        auto_wire_triggers=["*.tsx", "*.jsx"],
+        description=(
+            "Run semgrep with design-system rule pack on JSX/TSX; warn on hits. "
+            "Soft-skipped when semgrep is not installed. Rule pack is "
+            "project-overridable via design_system_rule_pack in step context."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

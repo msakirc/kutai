@@ -21,7 +21,10 @@ logger = get_logger("security.credential_store")
 # ---------------------------------------------------------------------------
 
 _MASTER_KEY: bytes | None = None
-_fernet = None
+_fernet = None  # current-version Fernet (for new writes)
+_fernet_by_version: dict[int, "object"] = {}  # all known versions (for decrypt)
+_current_key_version: int = 1
+_rekey_in_progress: bool = False  # bypass mismatch guard during rekey CLI
 
 try:
     from cryptography.fernet import Fernet
@@ -32,9 +35,47 @@ except ImportError:
     Fernet = None  # type: ignore[assignment,misc]
 
 
+def _build_fernet(raw_key: str):
+    """Build a Fernet instance from *raw_key*, deriving via PBKDF2 if needed."""
+    if not _HAS_CRYPTOGRAPHY:
+        return None
+    try:
+        return Fernet(raw_key.encode() if isinstance(raw_key, str) else raw_key)
+    except Exception:
+        import hashlib
+
+        derived = hashlib.pbkdf2_hmac(
+            "sha256",
+            raw_key.encode(),
+            salt=b"kutay-credential-store-v1",
+            iterations=480_000,
+        )
+        return Fernet(base64.urlsafe_b64encode(derived))
+
+
+def _discover_versioned_keys() -> dict[int, str]:
+    """Scan env for KUTAY_MASTER_KEY_v<N> entries plus the legacy var."""
+    versions: dict[int, str] = {}
+    legacy = os.getenv("KUTAY_MASTER_KEY", "")
+    if legacy:
+        versions[1] = legacy
+    import re
+
+    # Windows uppercases env var names — match case-insensitively.
+    pat = re.compile(r"^KUTAY_MASTER_KEY_v(\d+)$", re.IGNORECASE)
+    for name, value in os.environ.items():
+        m = pat.match(name)
+        if not m or not value:
+            continue
+        v = int(m.group(1))
+        # Explicit v1 overrides legacy if both present
+        versions[v] = value
+    return versions
+
+
 def _get_fernet():
-    """Return a Fernet instance using the master key, or None for fallback."""
-    global _fernet, _MASTER_KEY
+    """Return a Fernet instance using the current master key, or None for fallback."""
+    global _fernet, _MASTER_KEY, _current_key_version, _fernet_by_version
 
     if _fernet is not None:
         return _fernet
@@ -46,43 +87,67 @@ def _get_fernet():
         )
         return None
 
-    raw_key = os.getenv("KUTAY_MASTER_KEY", "")
-    if not raw_key:
+    versions = _discover_versioned_keys()
+    if not versions:
         env = os.getenv("KUTAY_ENV", "development").lower()
         if env in ("production", "prod", "staging"):
             raise RuntimeError(
                 "KUTAY_MASTER_KEY environment variable is required in "
                 f"{env} mode. Set a Fernet-compatible key or a passphrase."
             )
+        # Dev fallback (T2E gates this behind an explicit env var; here the
+        # legacy behaviour is preserved so T2D ships independently).
         warnings.warn(
             "KUTAY_MASTER_KEY not set — using dev-only fallback key. "
             "This is NOT secure. Set KUTAY_MASTER_KEY for production.",
             stacklevel=2,
         )
-        # Dev-only deterministic key — credentials won't survive key changes
-        raw_key = base64.urlsafe_b64encode(b"kutay-dev-fallback-key-00000000").decode()
-        logger.warning("🔓 Using insecure dev fallback key for credential encryption")
-
-    # Ensure the key is valid Fernet format (32 url-safe base64 bytes)
-    try:
-        _fernet = Fernet(raw_key.encode() if isinstance(raw_key, str) else raw_key)
-        _MASTER_KEY = raw_key.encode() if isinstance(raw_key, str) else raw_key
-        return _fernet
-    except Exception:
-        # Key isn't valid Fernet format — derive one using PBKDF2
-        import hashlib
-
-        # Use PBKDF2 with 480k iterations (OWASP 2023 recommendation for SHA-256)
-        derived = hashlib.pbkdf2_hmac(
-            "sha256",
-            raw_key.encode(),
-            salt=b"kutay-credential-store-v1",  # static salt is OK here
-            iterations=480_000,
+        raw_key = base64.urlsafe_b64encode(
+            b"kutay-dev-fallback-key-00000000"
+        ).decode()
+        logger.warning(
+            "Using insecure dev fallback key for credential encryption"
         )
-        key = base64.urlsafe_b64encode(derived)
-        _fernet = Fernet(key)
-        _MASTER_KEY = key
+        f = _build_fernet(raw_key)
+        if f is None:
+            return None
+        _fernet_by_version = {1: f}
+        _current_key_version = 1
+        _fernet = f
+        _MASTER_KEY = raw_key.encode()
         return _fernet
+
+    # Build a Fernet per version; the highest-numbered key wins as "current".
+    _fernet_by_version = {}
+    for v, raw_key in versions.items():
+        f = _build_fernet(raw_key)
+        if f is not None:
+            _fernet_by_version[v] = f
+    if not _fernet_by_version:
+        return None
+    _current_key_version = max(_fernet_by_version.keys())
+    _fernet = _fernet_by_version[_current_key_version]
+    _MASTER_KEY = (
+        versions[_current_key_version].encode()
+        if isinstance(versions[_current_key_version], str)
+        else versions[_current_key_version]
+    )
+    return _fernet
+
+
+def _reset_key_state() -> None:
+    """Test/CLI helper — re-discover keys on next access."""
+    global _fernet, _MASTER_KEY, _fernet_by_version, _current_key_version
+    _fernet = None
+    _MASTER_KEY = None
+    _fernet_by_version = {}
+    _current_key_version = 1
+
+
+def _current_version() -> int:
+    """Return the current encryption version (after initial key discovery)."""
+    _get_fernet()
+    return _current_key_version
 
 
 def _encrypt(data: str) -> str:
@@ -95,10 +160,23 @@ def _encrypt(data: str) -> str:
 
 
 def _decrypt(token: str) -> str:
-    """Decrypt a token back to the original string."""
-    f = _get_fernet()
-    if f is not None:
-        return f.decrypt(token.encode()).decode()
+    """Decrypt a token, trying every known key version in newest-first order."""
+    _get_fernet()  # ensure versions discovered
+    if _fernet_by_version:
+        last_exc: Exception | None = None
+        for v in sorted(_fernet_by_version.keys(), reverse=True):
+            try:
+                return _fernet_by_version[v].decrypt(token.encode()).decode()
+            except Exception as e:
+                last_exc = e
+                continue
+        # No version could decrypt — fall through to base64 (legacy rows)
+        try:
+            return base64.urlsafe_b64decode(token.encode()).decode()
+        except Exception:
+            if last_exc is not None:
+                raise last_exc
+            raise
     # Fallback: simple base64
     return base64.urlsafe_b64decode(token.encode()).decode()
 
@@ -174,11 +252,47 @@ async def store_credential(
 
     db = await get_db()
     # Detect whether this is a fresh write or an in-place rotation so the
-    # audit log uses the right action verb.
+    # audit log uses the right action verb. Also fetch the stored
+    # key_version so we can guard against mismatches (T2D).
     pre_cur = await db.execute(
-        "SELECT 1 FROM credentials WHERE service_name = ?", (service_name,)
+        "SELECT key_version FROM credentials WHERE service_name = ?",
+        (service_name,),
     )
-    existed = await pre_cur.fetchone() is not None
+    pre_row = await pre_cur.fetchone()
+    existed = pre_row is not None
+    if existed:
+        try:
+            existing_key_version = (
+                pre_row[0] if isinstance(pre_row, tuple) else pre_row["key_version"]
+            )
+        except (KeyError, IndexError):
+            existing_key_version = 1
+        cur_version = _current_version()
+        # Refuse to overwrite a row encrypted with a key version we no
+        # longer have, OR a row whose version is lower than the active
+        # one without going through the rekey CLI. The rekey CLI sets
+        # `_rekey_in_progress` to bypass this guard.
+        if (
+            existing_key_version not in _fernet_by_version
+            and not _rekey_in_progress
+        ):
+            raise RuntimeError(
+                f"credential '{service_name}' was encrypted with "
+                f"KUTAY_MASTER_KEY_v{existing_key_version} which is not "
+                "currently available. Re-export that key or run "
+                "`python -m src.security.rekey` to migrate."
+            )
+        if (
+            existing_key_version != cur_version
+            and not _rekey_in_progress
+        ):
+            raise RuntimeError(
+                f"credential '{service_name}' is at key_version="
+                f"{existing_key_version} but current active version is "
+                f"{cur_version}. Run `python -m src.security.rekey "
+                f"--from-version {existing_key_version} "
+                f"--to-version {cur_version}` first."
+            )
     # UPSERT: insert with full metadata; on conflict update only the fields
     # the caller cared about so a partial update doesn't reset, e.g., scope
     # back to the column default. ``rotated_at`` is bumped on every update
@@ -186,19 +300,21 @@ async def store_credential(
     # Pass scope as NULL into excluded when the caller omitted it so the
     # ON CONFLICT branch can preserve any previously set scope via COALESCE.
     # On a fresh INSERT, the column DEFAULT 'read_write' will fill NULLs.
+    cur_version = _current_version()
     await db.execute(
         """INSERT INTO credentials (
                service_name, encrypted_data, created_at, updated_at,
-               scope, expires_at, schema_id
+               scope, expires_at, schema_id, key_version
            )
-           VALUES (?, ?, ?, ?, COALESCE(?, 'read_write'), ?, ?)
+           VALUES (?, ?, ?, ?, COALESCE(?, 'read_write'), ?, ?, ?)
            ON CONFLICT(service_name) DO UPDATE SET
                encrypted_data = excluded.encrypted_data,
                updated_at = excluded.updated_at,
                rotated_at = excluded.updated_at,
                scope = COALESCE(?, credentials.scope),
                expires_at = excluded.expires_at,
-               schema_id = COALESCE(?, credentials.schema_id)""",
+               schema_id = COALESCE(?, credentials.schema_id),
+               key_version = excluded.key_version""",
         (
             service_name,
             encrypted,
@@ -207,6 +323,7 @@ async def store_credential(
             scope,
             expires_at,
             schema_id,
+            cur_version,
             scope,
             schema_id,
         ),

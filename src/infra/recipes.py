@@ -128,6 +128,15 @@ class Recipe:
     prompts: dict = field(default_factory=dict)
     lessons_domain: str = ""
 
+    # T5B optional fields — all have safe defaults so T5A tests keep passing.
+    # dependencies.backend: list of Python package names required by the backend template.
+    # dependencies.frontend: list of npm package names required by the frontend template.
+    dependencies: dict = field(default_factory=dict)
+    # param_defaults: default values for RECIPE_PARAM markers in the templates.
+    param_defaults: dict = field(default_factory=dict)
+    # entry_points: role -> file mapping for planner consumption.
+    entry_points: dict = field(default_factory=dict)
+
     # Path to the directory containing this recipe.yaml (set by load_recipe).
     _recipe_dir: Optional[str] = field(default=None, repr=False, compare=False)
 
@@ -178,6 +187,17 @@ def load_recipe(path: str) -> Recipe:
     if not requires.get("tech_stack"):
         raise ValueError(f"'requires.tech_stack' is empty or missing in {path}")
 
+    # T5B optional fields — validated with safe defaults to stay backward-compatible.
+    raw_deps = data.get("dependencies") or {}
+    if not isinstance(raw_deps, dict):
+        raw_deps = {}
+    raw_params = data.get("param_defaults") or {}
+    if not isinstance(raw_params, dict):
+        raw_params = {}
+    raw_entry = data.get("entry_points") or {}
+    if not isinstance(raw_entry, dict):
+        raw_entry = {}
+
     return Recipe(
         name=str(data["name"]),
         version=str(data["version"]),
@@ -188,6 +208,12 @@ def load_recipe(path: str) -> Recipe:
         templates=dict(data.get("templates") or {}),
         prompts=dict(data.get("prompts") or {}),
         lessons_domain=str(data.get("lessons_domain") or ""),
+        dependencies={
+            "backend": list(raw_deps.get("backend") or []),
+            "frontend": list(raw_deps.get("frontend") or []),
+        },
+        param_defaults={str(k): str(v) for k, v in raw_params.items()},
+        entry_points={str(k): str(v) for k, v in raw_entry.items()},
         _recipe_dir=str(p.parent),
     )
 

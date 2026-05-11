@@ -21,3 +21,30 @@ prompts:
   fastapi: prompts/fastapi.md
   nextjs: prompts/nextjs.md
 lessons_domain: auth
+dependencies:
+  backend:
+    - fastapi
+    - "passlib[bcrypt]"
+    - "python-jose[cryptography]"
+    - aiosqlite
+    - slowapi
+  frontend:
+    - zod
+    - "@tanstack/react-query"
+param_defaults:
+  JWT_ALGO: "HS256"
+  JWT_SECRET_ENV: "AUTH_JWT_SECRET"
+  JWT_TTL_MIN: "15"
+  REFRESH_TTL_DAYS: "7"
+  BCRYPT_COST: "12"
+  LOGIN_RATE_LIMIT: "10/minute"
+  TOKEN_TRANSPORT: "split"
+  REDIRECT_AFTER_LOGIN: "/dashboard"
+  APP_NAME: "MyApp"
+  API_BASE: "/api"
+  PK_TYPE: "INTEGER PRIMARY KEY AUTOINCREMENT"
+entry_points:
+  backend_routes: backend.template.py
+  frontend_components: frontend.template.tsx
+  migration: migrations/001_users.sql.template
+  smoke_tests: tests/backend_smoke.template.py

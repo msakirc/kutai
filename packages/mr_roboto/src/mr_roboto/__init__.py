@@ -302,6 +302,29 @@ async def _await_confirmation(
     )
 
 
+async def _legacy_pre_critic_gate(mission_id) -> bool:
+    """Z1 T5C (B4) — return True when mission predates the critic gate.
+
+    Existing rows are backfilled to ``legacy_pre_critic_gate=1`` so the
+    gate stays off for them. New missions default to 0 and get gated.
+    DB read errors return False (fail-open: gate ON) so a broken telemetry
+    path can't silently disable the gate in production.
+    """
+    if not mission_id:
+        return False
+    try:
+        from src.infra.db import get_db
+        db = await get_db()
+        async with db.execute(
+            "SELECT legacy_pre_critic_gate FROM missions WHERE id = ?",
+            (int(mission_id),),
+        ) as cur:
+            row = await cur.fetchone()
+        return bool(row and int(row[0] or 0) == 1)
+    except Exception:
+        return False
+
+
 async def _run_dispatch(task: dict) -> Action:
     payload = task.get("payload") or {}
     action = payload.get("action")
@@ -326,7 +349,12 @@ async def _run_dispatch(task: dict) -> Action:
         from src.tools.workspace import get_mission_workspace_relative
         from src.tools.git_ops import _run_git, ensure_git_repo
 
-        gate_enabled = (not _critic_opt_out()) and bool(payload.get("critic_gate", True))
+        _legacy = await _legacy_pre_critic_gate(task.get("mission_id"))
+        gate_enabled = (
+            (not _critic_opt_out())
+            and (not _legacy)
+            and bool(payload.get("critic_gate", True))
+        )
         gate_result: dict | None = None
         if gate_enabled:
             try:
@@ -1624,8 +1652,11 @@ async def _run_dispatch(task: dict) -> Action:
             critic_gate as _critic_gate,
             _opt_out as _critic_opt_out,
         )
+        _legacy = await _legacy_pre_critic_gate(task.get("mission_id"))
         gate_enabled = (
-            (not _critic_opt_out()) and bool(payload.get("critic_gate", True))
+            (not _critic_opt_out())
+            and (not _legacy)
+            and bool(payload.get("critic_gate", True))
         )
         if gate_enabled:
             text = payload.get("message") or payload.get("text") or ""

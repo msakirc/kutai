@@ -1960,6 +1960,9 @@ class TelegramInterface:
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
         # B7+C16: founder photo upload → mission .intake/visuals/ + clarify-shape
         self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        # Z1 T4B: founder document upload — paired with /edit_html via
+        # _pending_action[chat_id]={"command":"_edit_html_upload",...}
+        self.app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.REPLY,
             self.handle_reply
@@ -3460,6 +3463,102 @@ class TelegramInterface:
             "(a) Rakip ekran  (b) Moodboard  (c) Wireframe\n"
             "(d) İlham  (e) Mevcut ürün ekranı",
             reply_markup=kb)
+
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z1 T4B: pair a founder document upload with a pending `/edit_html`.
+
+        Consumes ``_pending_action[chat_id]["command"] == "_edit_html_upload"``
+        stashed by ``cmd_edit_html``. Downloads the edited HTML next to the
+        original under ``mission_<id>/.web/edited/`` and enqueues a
+        ``propose_spec_patch_from_html_diff`` mechanical task on Beckman.
+
+        Without a matching ``_pending_action`` we ignore the upload (silent
+        — telegram users drop random documents into chats; surfacing every
+        one as a usage error would be noise).
+        """
+        chat_id = update.message.chat_id
+        doc = update.message.document
+        if doc is None:
+            return
+        pending = self._pending_action.get(chat_id) or {}
+        if pending.get("command") != "_edit_html_upload":
+            return
+        # 5-min staleness window — drop without acting so the founder
+        # doesn't get a confusing pair-up with a stale `/edit_html`.
+        if _time.time() - float(pending.get("ts") or 0) > 300:
+            self._pending_action.pop(chat_id, None)
+            await self._reply(update,
+                "⏱ `/edit_html` istemi zamanaşımına uğradı. Tekrar başlat.",
+                parse_mode="Markdown")
+            return
+        mission_id = int(pending.get("mission_id") or 0)
+        screen_slug = str(pending.get("screen_slug") or "")
+        original_path = str(pending.get("original_path") or "")
+        if not (mission_id and screen_slug and original_path):
+            self._pending_action.pop(chat_id, None)
+            await self._reply(update,
+                "❌ `/edit_html` bağlamı eksik. Tekrar başlat.",
+                parse_mode="Markdown")
+            return
+
+        # Download the edited HTML next to the original.
+        try:
+            from src.tools.workspace import get_mission_workspace
+            ws = Path(get_mission_workspace(mission_id))
+            edited_dir = ws / ".web" / "edited"
+            edited_dir.mkdir(parents=True, exist_ok=True)
+            # Telegram document file_name may collide across uploads — namespace by ts.
+            base = doc.file_name or f"{screen_slug}.html"
+            base = base.replace("/", "_").replace("\\", "_")[:80]
+            ts = int(_time.time())
+            edited_path = edited_dir / f"{ts}_{base}"
+            file_obj = await context.bot.get_file(doc.file_id)
+            await file_obj.download_to_drive(str(edited_path))
+        except Exception as exc:
+            logger.error("handle_document: download failed",
+                         chat_id=chat_id, error=str(exc))
+            await self._reply(update,
+                f"❌ Belge indirilemedi: {_friendly_error(str(exc))}")
+            return
+        finally:
+            # Always clear the stash — consumed (success) or aborted (fail).
+            self._pending_action.pop(chat_id, None)
+
+        # Enqueue propose_spec_patch_from_html_diff via Beckman.
+        proposal_dir = ws / ".propagation"
+        proposal_dir.mkdir(parents=True, exist_ok=True)
+        proposal_path = proposal_dir / f"spec_patch_proposal_{ts}.md"
+        try:
+            import general_beckman
+            await general_beckman.enqueue({
+                "title": f"propose_spec_patch:{screen_slug}",
+                "description": (
+                    f"Diff founder-edited HTML vs original for {screen_slug} "
+                    f"(mission #{mission_id})."
+                ),
+                "agent_type": "mechanical",
+                "kind": "main_work",
+                "priority": 5,
+                "mission_id": mission_id,
+                "context": {
+                    "executor": "mechanical",
+                    "payload": {
+                        "action": "propose_spec_patch_from_html_diff",
+                        "html_path": original_path,
+                        "edited_html_path": str(edited_path),
+                        "out_path": str(proposal_path),
+                    },
+                },
+            })
+        except Exception as exc:
+            logger.error("propose_spec_patch enqueue failed", error=str(exc))
+            await self._reply(update,
+                f"❌ Spec-patch enqueue failed: {_friendly_error(str(exc))}")
+            return
+        await self._reply(update,
+            f"📋 `{screen_slug}` için spec-patch proposal kuyruğa alındı.\n"
+            f"Sonuç: `{proposal_path}`",
+            parse_mode="Markdown")
 
     async def cmd_ingest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Ingest a URL or file into the knowledge base."""

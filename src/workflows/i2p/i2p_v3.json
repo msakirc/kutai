@@ -4588,6 +4588,7 @@
         "5.0.verify"
       ],
       "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_design_tokens == '1'",
       "input_artifacts": [
         "taste_emphasis",
         "product_charter"
@@ -4712,6 +4713,7 @@
         "5.0b.verify"
       ],
       "may_need_clarification": false,
+      "skip_when": "mission.legacy_pre_user_flow == '1'",
       "input_artifacts": [
         "surfaces_config",
         "product_charter",

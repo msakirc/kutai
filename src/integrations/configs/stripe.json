@@ -4,6 +4,7 @@
   "auth_type": "bearer",
   "auth_header": "Authorization",
   "auth_token_field": "secret_key",
+  "webhook_secret": "${STRIPE_WEBHOOK_SECRET}",
   "actions": {
     "list_products": {
       "method": "GET",

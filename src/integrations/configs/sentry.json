@@ -4,6 +4,7 @@
   "auth_type": "bearer",
   "auth_header": "Authorization",
   "auth_token_field": "auth_token",
+  "webhook_secret": "${SENTRY_WEBHOOK_SECRET}",
   "actions": {
     "list_projects": {
       "method": "GET",

@@ -1,0 +1,20 @@
+{
+  "service_name": "twilio",
+  "base_url": "https://api.twilio.com",
+  "auth_type": "header",
+  "auth_header": "Authorization",
+  "auth_token_field": "auth_token",
+  "webhook_secret": "${TWILIO_AUTH_TOKEN}",
+  "actions": {
+    "send_sms": {
+      "method": "POST",
+      "path": "/2010-04-01/Accounts/{account_sid}/Messages.json",
+      "required_params": ["account_sid", "To", "From", "Body"]
+    },
+    "list_messages": {
+      "method": "GET",
+      "path": "/2010-04-01/Accounts/{account_sid}/Messages.json",
+      "required_params": ["account_sid"]
+    }
+  }
+}

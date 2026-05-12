@@ -1,0 +1,35 @@
+{
+  "service_name": "betterstack",
+  "base_url": "https://uptime.betterstack.com/api/v2",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "api_token",
+  "webhook_secret": "${BETTERSTACK_WEBHOOK_SECRET}",
+  "actions": {
+    "list_monitors": {
+      "method": "GET",
+      "path": "/monitors",
+      "required_params": []
+    },
+    "get_monitor": {
+      "method": "GET",
+      "path": "/monitors/{monitor_id}",
+      "required_params": ["monitor_id"]
+    },
+    "list_incidents": {
+      "method": "GET",
+      "path": "/incidents",
+      "required_params": []
+    },
+    "acknowledge_incident": {
+      "method": "POST",
+      "path": "/incidents/{incident_id}/acknowledge",
+      "required_params": ["incident_id"]
+    },
+    "resolve_incident": {
+      "method": "POST",
+      "path": "/incidents/{incident_id}/resolve",
+      "required_params": ["incident_id"]
+    }
+  }
+}

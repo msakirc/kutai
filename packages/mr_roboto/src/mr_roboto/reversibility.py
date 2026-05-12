@@ -157,6 +157,9 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z8 T5A backup_verify cron --------------------------------------
     "backup_verify": "full",  # copy + read smoke SELECT, no external write
     "cron_backup_verify": "full",
+    # ---- Z8 T5B dependency hygiene cron ---------------------------------
+    "dependency_scan": "full",  # pip-audit / npm audit, read-only
+    "cron_dep_hygiene": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

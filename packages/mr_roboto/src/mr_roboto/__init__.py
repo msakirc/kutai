@@ -2766,4 +2766,13 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action in ("dependency_scan", "cron_dep_hygiene"):
+        # Z8 T5B — pip-audit / npm audit subprocess wrapper.
+        from mr_roboto.executors.dependency_scan import run as _dep_run
+        try:
+            res = await _dep_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

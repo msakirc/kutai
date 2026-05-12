@@ -83,6 +83,7 @@ from mr_roboto.regen_and_diff import regen_and_diff
 from mr_roboto.apply_migration import apply_migration
 from mr_roboto.inject_lessons import inject_lessons
 from mr_roboto.instantiate_recipe import instantiate_recipe_verb
+from mr_roboto.extract_signatures import extract_signatures
 
 __all__ = [
     "Action",
@@ -135,6 +136,7 @@ __all__ = [
     "inject_lessons",
     "pick_recipe",
     "instantiate_recipe_verb",
+    "extract_signatures",
 ]
 
 
@@ -2640,6 +2642,19 @@ async def _run_dispatch(task: dict) -> Action:
                 recipe_picks_path=str(payload.get("recipe_picks_path") or "mission/recipe_picks.json"),
                 manifest_path=str(payload.get("manifest_path") or "mission/recipe_instantiations.json"),
                 recipes_dir=str(payload.get("recipes_dir") or "recipes"),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "extract_signatures":
+        # Z3 T2C — AST-based signature extraction + cross-file mismatch detection.
+        # Used as a mechanical pre-check inside the integration_review post-hook.
+        from mr_roboto.extract_signatures import extract_signatures as _extract_sigs
+        try:
+            res = await _extract_sigs(
+                target_files=list(payload.get("target_files") or []),
+                workspace_path=payload.get("workspace_path") or None,
             )
             return Action(status="completed", result=res)
         except Exception as e:

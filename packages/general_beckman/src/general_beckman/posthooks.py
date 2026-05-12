@@ -444,6 +444,21 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "and the source step retries."
         ),
     ),
+    # Z3 T2C — integration_review.
+    "integration_review": PostHookSpec(
+        kind="integration_review",
+        verb="integration_reviewer",
+        default_severity="blocker",
+        cost_band="moderate",
+        # No auto-wire triggers: injected by the expander as a sibling step
+        # on multi-file expansions, not by file-pattern auto-wiring.
+        auto_wire_triggers=[],
+        description=(
+            "Cross-file consistency review after multi-file feature expansion. "
+            "AST signature mechanical pre-check (extract_signatures) feeds "
+            "context into LLM integration_reviewer."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

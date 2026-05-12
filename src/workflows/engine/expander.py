@@ -415,6 +415,132 @@ def expand_steps_to_tasks(
     return tasks
 
 
+# ---------------------------------------------------------------------------
+# Z3 T2C — multi-file expansion helpers
+# ---------------------------------------------------------------------------
+
+
+def _maybe_expand_multifile(
+    step: dict,
+    mission_dials,  # MissionDialContext | None
+    artifacts: Optional[dict] = None,
+) -> "list[dict] | None":
+    """Attempt multi-file template expansion for *step*.
+
+    Returns ``None`` when:
+    - ``mission_dials`` is ``None``
+    - ``mission_dials.multi_file_expansion`` is ``False``
+    - No rule exists for the (template_id, stack) combo
+
+    Returns a list of step dicts (N sub-task steps + 1 integration_review
+    sibling) when expansion succeeds.
+
+    The integration_review sibling inherits the parent's ``phase`` and
+    ``depends_on`` all N sub-task step IDs.
+
+    This function is pure / sync — DB and async calls belong in the
+    async wrapper ``expand_steps_to_tasks_with_dials``.
+    """
+    if mission_dials is None:
+        return None
+    if not getattr(mission_dials, "multi_file_expansion", False):
+        return None
+
+    # Lazy imports to avoid circulars
+    from src.workflows.engine.multifile import expand_template, SubTaskSpec
+
+    # Determine template_id and stack
+    step_ctx = step.get("context") or {}
+    if isinstance(step_ctx, str):
+        import json as _json
+        try:
+            step_ctx = _json.loads(step_ctx)
+        except Exception:
+            step_ctx = {}
+
+    template_id: str = str(
+        step_ctx.get("template_id")
+        or step.get("template_id")
+        or getattr(mission_dials, "template_id", None)
+        or ""
+    )
+    stack: str = str(
+        step_ctx.get("stack_slug")
+        or step.get("stack_slug")
+        or getattr(mission_dials, "stack_slug", None)
+        or (artifacts or {}).get("tech_stack_detected")
+        or ""
+    ).lower()
+
+    if not template_id or not stack:
+        return None
+
+    sub_specs = expand_template(
+        template_id=template_id,
+        stack=stack,
+        parent_step=step,
+        artifacts=artifacts,
+    )
+    if sub_specs is None:
+        return None  # No rule — LLM fallback
+
+    parent_id = step.get("id", "")
+    parent_phase = step.get("phase", "phase_0")
+    parent_depends = list(step.get("depends_on", []))
+
+    sub_steps: list[dict] = []
+    sub_step_ids: list[str] = []
+
+    for spec in sub_specs:
+        child_id = f"{parent_id}.{spec.step_id_suffix}" if parent_id else spec.step_id_suffix
+        sub_step_ids.append(child_id)
+        child_step = {
+            "id": child_id,
+            "name": spec.name,
+            "instruction": spec.instruction,
+            "agent": spec.agent,
+            "phase": spec.phase or parent_phase,
+            "depends_on": list(parent_depends),
+            "produces": list(spec.produces),
+            "tools_hint": list(spec.tools_hint),
+            "context": dict(spec.extra_context),
+            "_multifile_parent": parent_id,
+        }
+        sub_steps.append(child_step)
+
+    # Integration-review sibling: fires after ALL sub-tasks complete.
+    # It holds the integration_review post-hook so beckman/apply.py can
+    # dispatch the LLM reviewer with signature context injected.
+    ir_step_id = f"{parent_id}.integration_review" if parent_id else "integration_review"
+    # Collect all produces from sub-tasks for the review context.
+    all_produces: list[str] = []
+    for spec in sub_specs:
+        all_produces.extend(spec.produces)
+
+    integration_review_step = {
+        "id": ir_step_id,
+        "name": f"Integration review: {step.get('name', parent_id)}",
+        "instruction": (
+            "Review cross-file consistency of the expanded sub-tasks. "
+            "Check import contracts, interface alignment, and integration seams."
+        ),
+        "agent": "integration_reviewer",
+        "phase": parent_phase,
+        "depends_on": list(sub_step_ids),
+        "produces": [],
+        "post_hooks": ["integration_review"],
+        # Carries the full produces list for the pre-check verb.
+        "context": {
+            "sub_task_ids": sub_step_ids,
+            "parent_step_id": parent_id,
+            "all_sub_task_produces": all_produces,
+        },
+        "_multifile_parent": parent_id,
+    }
+
+    return sub_steps + [integration_review_step]
+
+
 def _inject_lessons_at_mission_start(
     tasks: list[dict],
     initial_context: dict | None,
@@ -656,6 +782,68 @@ def expand_template(
         expanded.append(step)
 
     return expanded
+
+
+# ---------------------------------------------------------------------------
+# Z3 T2C — async variant that resolves mission dials before expansion
+# ---------------------------------------------------------------------------
+
+
+async def expand_steps_with_multifile(
+    steps: list[dict],
+    mission_id: str,
+    initial_context: Optional[dict] = None,
+) -> list[dict]:
+    """Like ``expand_steps_to_tasks`` but also applies multi-file expansion.
+
+    Resolves mission dials via ``review_density.get_dials()`` then processes
+    each step. Steps for which ``_maybe_expand_multifile`` returns a non-None
+    result have their original step replaced by the returned sub-step list
+    (which includes the integration_review sibling). The resulting task list
+    is then passed through the standard ``expand_steps_to_tasks`` pipeline.
+
+    Callers that do NOT need multi-file expansion (i.e. the dial is False or
+    the mission has no rule) get exactly the same output as calling
+    ``expand_steps_to_tasks`` directly, so this function is a safe drop-in.
+
+    Parameters
+    ----------
+    steps, mission_id, initial_context:
+        Same as ``expand_steps_to_tasks``.
+    """
+    # Lazy import to avoid circulars (review_density imports db lazily)
+    try:
+        from src.workflows.review_density import get_dials, to_mission_dial_context
+        raw_dials = await get_dials(mission_id)
+        mission_dials = to_mission_dial_context(mission_id, raw_dials)
+    except Exception:
+        mission_dials = None
+
+    # Extract artifacts from initial_context for template resolution
+    artifacts: dict = {}
+    if initial_context:
+        artifacts = {
+            k: initial_context[k]
+            for k in ("tech_stack_detected", "tech_stack", "feature_name")
+            if k in initial_context
+        }
+
+    # Expand multi-file steps BEFORE convert to tasks
+    expanded_steps: list[dict] = []
+    for step in steps:
+        sub = _maybe_expand_multifile(step, mission_dials, artifacts)
+        if sub is not None:
+            expanded_steps.extend(sub)
+            logger.debug(
+                "expand_steps_with_multifile: expanded step=%s into %d sub-steps",
+                step.get("id"),
+                len(sub),
+            )
+        else:
+            expanded_steps.append(step)
+
+    # Run through standard task expansion (post-hook auto-wire, etc.)
+    return expand_steps_to_tasks(expanded_steps, mission_id, initial_context)
 
 
 def filter_skipped_steps(

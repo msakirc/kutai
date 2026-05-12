@@ -1023,6 +1023,12 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
     )
 
     agent_type, payload = _posthook_agent_and_payload(a, source, ctx)
+
+    # Z3 T2C: For integration_review, run the mechanical AST pre-check here
+    # (async context) and inject the result into the payload before enqueue.
+    if a.kind == "integration_review":
+        payload = await _enrich_integration_review_payload(payload)
+
     await add_task(
         title=_posthook_title(a, source),
         description="",
@@ -1384,7 +1390,59 @@ def _posthook_agent_and_payload(
                 "mission_id": source.get("mission_id"),
             },
         })
+    if a.kind == "integration_review":
+        # Z3 T2C — cross-file consistency review after multi-file expansion.
+        # The mechanical pre-check (extract_signatures) is run async in
+        # _enrich_integration_review_payload, called from _apply_request_posthook
+        # AFTER this function returns. Signatures start empty here; enriched
+        # before the reviewer task row is enqueued.
+        all_produces = list(
+            source_ctx.get("all_sub_task_produces")
+            or source_ctx.get("produces")
+            or []
+        )
+        workspace_path = source_ctx.get("workspace_path") or ""
+        sub_task_ids = list(source_ctx.get("sub_task_ids") or [])
+
+        return ("integration_reviewer", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "integration_review",
+            "sub_task_ids": sub_task_ids,
+            "sub_task_titles": list(source_ctx.get("sub_task_titles") or []),
+            "all_sub_task_produces": all_produces,
+            "workspace_path": workspace_path,
+            # Enriched by _enrich_integration_review_payload (async):
+            "signatures": {},
+            "mismatches": [],
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
+
+
+async def _enrich_integration_review_payload(payload: dict) -> dict:
+    """Z3 T2C — run extract_signatures and inject the result into *payload*.
+
+    Called from ``_apply_request_posthook`` in the async path so we can
+    properly await the mr_roboto verb without wrapping in sync hacks.
+    Best-effort: any failure returns the original payload unchanged.
+    """
+    all_produces = list(payload.get("all_sub_task_produces") or [])
+    workspace_path = payload.get("workspace_path") or None
+    if not all_produces:
+        return payload
+    try:
+        from mr_roboto.extract_signatures import extract_signatures as _es
+        sig_result = await _es(
+            target_files=all_produces,
+            workspace_path=workspace_path,
+        )
+        return {
+            **payload,
+            "signatures": sig_result.get("signatures") or {},
+            "mismatches": sig_result.get("mismatches") or [],
+        }
+    except Exception:
+        # Best-effort — never block the reviewer dispatch
+        return payload
 
 
 async def _apply_grounding_verdict(

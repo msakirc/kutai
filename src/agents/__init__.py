@@ -22,6 +22,7 @@ from .grader import GraderAgent
 from .code_reviewer import CodeReviewerAgent
 from .artifact_summarizer import ArtifactSummarizerAgent
 from .integration_reviewer import IntegrationReviewerAgent
+from .oncall_agent import OncallAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -46,6 +47,7 @@ AGENT_REGISTRY = {
     "code_reviewer": CodeReviewerAgent(),
     "artifact_summarizer": ArtifactSummarizerAgent(),
     "integration_reviewer": IntegrationReviewerAgent(),
+    "oncall_agent": OncallAgent(),
 }
 
 

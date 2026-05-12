@@ -134,6 +134,21 @@ REFLECTION_BLOCKS: dict[str, str] = {
         "4. ASSERT messages helpful (not bare `assert x`)?\n"
         "If any 'no' — keep iterating."
     ),
+    "oncall_agent": (
+        "Self-check before final_answer:\n"
+        "1. Did you READ the entire alert payload (not just severity)?\n"
+        "2. Does a known incident PLAYBOOK match this alert? Use it.\n"
+        "3. Is the proposed action in the WHITELIST "
+        "(restart_service, rollback_to_last_green, scale_up, scale_down, "
+        "drain_traffic, rotate_failed_key, archive_flake_test, "
+        "escalate_to_founder)?\n"
+        "4. Is the action in COOLDOWN? If yes — escalate instead, "
+        "never retry blindly.\n"
+        "5. Will the action be REVERSIBLE? If no and severity < critical, "
+        "escalate to founder.\n"
+        "6. Tier-3 (security) incidents always ESCALATE — never act directly.\n"
+        "If any 'no' — re-evaluate before emitting final_answer."
+    ),
     "integration_reviewer": (
         "Self-check before final_answer:\n"
         "1. Did I check EVERY emitted file in the task, not just the ones "

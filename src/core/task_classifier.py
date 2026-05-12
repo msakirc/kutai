@@ -63,6 +63,7 @@ CODING CLUSTER:
 REVIEW CLUSTER:
 - "reviewer": Pick for general code/content quality review, "review this PR", "check for issues", critique, structured review. NOT for numeric scoring.
 - "code_reviewer": Pick for strict code-specific review with pass/fail verdict, "code review", "audit this PR". More stringent than reviewer. NOT for numeric scoring.
+- "integration_reviewer": Pick for cross-file / cross-module consistency checks — "check integration", "verify signatures match", "cross-module consistency", "caller callee alignment", "migration model alignment", "interface contract", "type contract across modules", "check boundary". NOT for single-file reviews.
 - "grader": Pick when output is a numeric score, pass/fail, yes/no judgment — "score", "grade", "rate", "0-10", "evaluate answer quality". NOT for open-ended critique.
 
 RESEARCH & ANALYSIS CLUSTER:

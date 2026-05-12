@@ -81,6 +81,10 @@ _NO_POSTHOOKS_AGENT_TYPES: frozenset[str] = frozenset({
     # Spawning a grader on it would be judge-of-judge — same reasoning
     # as for "reviewer" above. Its verdict IS the gate.
     "code_reviewer",
+    # IntegrationReviewerAgent is a cross-file consistency reviewer.
+    # Its verdict IS the gate — same judge-of-judge reasoning as
+    # code_reviewer. Chain another reviewer-typed step for extra QA.
+    "integration_reviewer",
 })
 
 

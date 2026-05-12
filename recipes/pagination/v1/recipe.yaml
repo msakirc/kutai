@@ -1,0 +1,32 @@
+name: pagination
+version: v1
+description: "Cursor + offset pagination for paged list endpoints"
+requires:
+  tech_stack:
+    - "fastapi+postgres+nextjs"
+    - "fastapi+sqlite+nextjs"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - test_run
+  - pattern_lint
+templates:
+  backend: backend.template.py
+  tests: tests/
+prompts:
+  fastapi: prompts/fastapi.md
+lessons_domain: pagination
+dependencies:
+  backend:
+    - fastapi
+    - aiosqlite
+  frontend: []
+param_defaults:
+  PAGE_SIZE_DEFAULT: "25"
+  MAX_PAGE_SIZE: "100"
+  CURSOR_FIELD: "created_at"
+  USE_CURSOR: "true"
+entry_points:
+  backend_routes: backend.template.py
+  smoke_tests: tests/backend_smoke.template.py

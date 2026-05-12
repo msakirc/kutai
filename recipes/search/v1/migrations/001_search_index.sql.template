@@ -1,0 +1,23 @@
+-- Search recipe v1 — tsvector column + GIN index (Postgres)
+-- For SQLite, use FTS5 virtual table (see comment below).
+-- RECIPE_PARAM:TABLE_NAME=items
+-- RECIPE_PARAM:SEARCH_BACKEND=postgres_tsvector
+
+-- Postgres: add search_vector column + GIN index + trigger
+-- Run only when SEARCH_BACKEND=postgres_tsvector and DB is Postgres.
+-- For SQLite FTS5, use the section at the bottom instead.
+
+-- Postgres path:
+ALTER TABLE <<TABLE_NAME>> ADD COLUMN IF NOT EXISTS
+    search_vector tsvector GENERATED ALWAYS AS (
+        to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(body, ''))
+    ) STORED;
+
+-- GIN index (use CREATE INDEX CONCURRENTLY on large tables to avoid table lock):
+CREATE INDEX IF NOT EXISTS idx_<<TABLE_NAME>>_search_vector
+    ON <<TABLE_NAME>> USING GIN(search_vector);
+
+-- SQLite FTS5 virtual table (use instead of above for SQLite stacks):
+-- CREATE VIRTUAL TABLE IF NOT EXISTS <<TABLE_NAME>>_fts
+--     USING fts5(title, body, content=<<TABLE_NAME>>, content_rowid=id);
+-- Populate: INSERT INTO <<TABLE_NAME>>_fts(rowid, title, body) SELECT id, title, body FROM <<TABLE_NAME>>;

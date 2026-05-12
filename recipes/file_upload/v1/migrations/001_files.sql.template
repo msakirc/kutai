@@ -1,0 +1,18 @@
+-- File upload recipe v1 — files metadata table.
+-- RECIPE_PARAM:PK_TYPE=INTEGER PRIMARY KEY AUTOINCREMENT
+
+CREATE TABLE IF NOT EXISTS files (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id   INTEGER,                      -- FK to users.id; NULL for anonymous uploads
+    original_name   TEXT    NOT NULL,
+    mime_type       TEXT    NOT NULL,
+    byte_size       INTEGER NOT NULL,
+    storage_path    TEXT    NOT NULL,             -- local path or s3://bucket/key
+    sha256          TEXT    NOT NULL UNIQUE,      -- content-addressable dedup key
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_owner
+    ON files(owner_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_files_sha256
+    ON files(sha256);

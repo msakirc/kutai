@@ -85,6 +85,8 @@ from mr_roboto.inject_lessons import inject_lessons
 from mr_roboto.instantiate_recipe import instantiate_recipe_verb
 from mr_roboto.extract_signatures import extract_signatures
 from mr_roboto.check_adr_drift import check_adr_drift  # Z3 T4B
+from mr_roboto.integration_replay import integration_replay  # Z3 T5
+from mr_roboto.integration_bisect import integration_bisect  # Z3 T5
 
 __all__ = [
     "Action",
@@ -2733,6 +2735,34 @@ async def _run_dispatch(task: dict) -> Action:
                 adr_register_path=str(payload.get("adr_register_path") or ""),
                 produced_files=list(payload.get("produced_files") or []),
                 workspace_path=payload.get("workspace_path") or None,
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "integration_replay":
+        # Z3 T5 — re-run test suite against commits in shuffle; soft-skip on no git/tests.
+        from mr_roboto.integration_replay import integration_replay as _replay
+        try:
+            res = await _replay(
+                commits=list(payload.get("commits") or []),
+                suite_glob=str(payload.get("suite_glob") or "tests/integration/**"),
+                shuffle_seed=int(payload.get("shuffle_seed") or 0),
+                mode=str(payload.get("mode") or "standard"),
+                workspace_path=payload.get("workspace_path") or None,
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "integration_bisect":
+        # Z3 T5 — binary-search breaking commit pair after integration_replay fail.
+        from mr_roboto.integration_bisect import integration_bisect as _bisect
+        try:
+            res = await _bisect(
+                commits=list(payload.get("commits") or []),
+                suite_glob=str(payload.get("suite_glob") or "tests/integration/**"),
+                workspace_path=str(payload.get("workspace_path") or ""),
             )
             return Action(status="completed", result=res)
         except Exception as e:

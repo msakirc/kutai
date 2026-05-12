@@ -545,6 +545,19 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "context. Threshold breach → blocker."
         ),
     ),
+    # Z3 T5 — integration_replay (rerun suite against prior commits in shuffle; bisect on red).
+    "integration_replay": PostHookSpec(
+        kind="integration_replay",
+        verb="integration_replay",
+        default_severity="blocker",
+        cost_band="heavy",
+        # Expander-injected only — sibling of integration_review on parent feature step.
+        auto_wire_triggers=[],
+        description=(
+            "Re-run test suite against current commit + N prior feature commits "
+            "in random shuffle; bisect on fail emits mission_lessons row."
+        ),
+    ),
     # Z3 T4B — adr_drift_check (mechanical violation gate against ADR falsification_signal).
     "adr_drift_check": PostHookSpec(
         kind="adr_drift_check",

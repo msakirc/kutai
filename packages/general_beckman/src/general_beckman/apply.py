@@ -1510,6 +1510,28 @@ def _posthook_agent_and_payload(
                 "thresholds": source_ctx.get("perf_thresholds") or {},
             },
         })
+    if a.kind == "integration_replay":
+        # Z3 T5 — rerun suite against shuffled prior commits. mode from dial
+        # (quick|standard|strict); commits + shuffle_seed default from mission_id.
+        workspace_path = source_ctx.get("workspace_path") or ""
+        mission_id = source.get("mission_id") or 0
+        mode = source_ctx.get("integration_replay_mode") or "standard"
+        commits = list(source_ctx.get("integration_replay_commits") or [])
+        seed = int(source_ctx.get("shuffle_seed") or mission_id or 0)
+        suite_glob = source_ctx.get("integration_suite_glob") or "tests/integration/**"
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "integration_replay",
+            "executor": "mechanical",
+            "payload": {
+                "action": "integration_replay",
+                "commits": commits,
+                "suite_glob": suite_glob,
+                "shuffle_seed": seed,
+                "mode": mode,
+                "workspace_path": workspace_path,
+            },
+        })
     if a.kind == "adr_drift_check":
         # Z3 T4B — mechanical ADR drift gate.
         workspace_path = source_ctx.get("workspace_path") or ""
@@ -3154,12 +3176,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         )
         return
 
-    # Z3 T3 + T4B — security/accessibility/contract/performance/adr_drift_check
-    # share the simple blocker-or-pass pattern (mechanical verb produces
-    # {findings, verdict}).
+    # Z3 T3 + T4B + T5 — security/accessibility/contract/performance/adr_drift_check/
+    # integration_replay share the simple blocker-or-pass pattern (mechanical
+    # verb produces {findings, verdict}).
     if a.kind in (
         "security_review", "accessibility_review", "contract_review",
-        "performance_review", "adr_drift_check",
+        "performance_review", "adr_drift_check", "integration_replay",
     ):
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,

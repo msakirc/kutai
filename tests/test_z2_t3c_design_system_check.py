@@ -59,10 +59,10 @@ def test_design_system_check_shared_verb():
     assert spec.verb == "run_semgrep"
 
 
-def test_design_system_check_default_severity_is_warning():
-    """v1 ramp policy: ships at warning, not blocker."""
+def test_design_system_check_default_severity_is_blocker():
+    """Z2 T6: promoted to blocker (2026-05-12). Soft-skip preserved when semgrep absent."""
     spec = POST_HOOK_REGISTRY["design_system_check"]
-    assert spec.default_severity == "warning"
+    assert spec.default_severity == "blocker"
 
 
 def test_design_system_check_auto_wire_triggers():

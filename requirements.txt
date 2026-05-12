@@ -108,3 +108,5 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 
 # Test dependencies
 pytest-aiohttp>=1.0.0
+
+semgrep==1.96.0  # Linux/Mac only; Windows hits soft-skip path

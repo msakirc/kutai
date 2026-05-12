@@ -46,9 +46,9 @@ def test_pattern_lint_verb():
     assert POST_HOOK_REGISTRY["pattern_lint"].verb == "run_semgrep"
 
 
-def test_pattern_lint_default_severity_is_warning():
-    """v1 policy: ships at warning, not blocker."""
-    assert POST_HOOK_REGISTRY["pattern_lint"].default_severity == "warning"
+def test_pattern_lint_default_severity_is_blocker():
+    """Z2 T6: promoted to blocker (2026-05-12). Soft-skip preserved when semgrep absent."""
+    assert POST_HOOK_REGISTRY["pattern_lint"].default_severity == "blocker"
 
 
 def test_pattern_lint_auto_wire_triggers():

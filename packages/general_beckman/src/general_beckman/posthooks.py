@@ -78,29 +78,13 @@ class PostHookSpec:
 # needs a matching branch in `_posthook_agent_and_payload` and
 # `_apply_posthook_verdict`, but the *discovery* path is fully data-driven.
 #
-# SEVERITY_RAMP_TODO — v1 ramp policy (Z2 v2 plan):
-#   The following kinds currently ship at default_severity="warning":
-#     - pattern_lint          (T2C, verb=run_semgrep, forbidden.yml)
-#     - design_system_check   (T3C, verb=run_semgrep, design_system.yml)
-#
-#   What blocks promotion to "blocker" (not just dev preference):
-#     1. semgrep is NOT in `requirements.txt` and not in dev venv (`which
-#        semgrep` returns nothing as of 2026-05-11). Until installed, every
-#        run hits the soft-skip path (ok=True, skipped=True) and findings
-#        can never surface — so flipping severity now is a no-op.
-#     2. The verdict fn `_apply_semgrep_warning_verdict` in apply.py is
-#        write-once: it logs findings, drops the kind from pending, and
-#        advances the source. A real "blocker" promotion needs a sibling
-#        `_apply_semgrep_blocker_verdict` that mirrors
-#        `_apply_test_run_verdict`'s shape — retry-with-feedback + bonus-
-#        budget + DLQ-on-exhaust — and routes by registry.default_severity.
-#     3. The rule packs (forbidden.yml, design_system.yml) ship with seed
-#        rules tuned for warn-on-hit, not block-on-hit. False-positive
-#        rates need profiling on real mission output before promotion.
-#
-#   Promotion steps (when ready): pip install semgrep → verify in CI →
-#   add _apply_semgrep_blocker_verdict in apply.py + route by severity →
-#   flip default_severity to "blocker" here. NOT a one-line flip.
+# SEVERITY_RAMP — Promoted 2026-05-12.
+#   pattern_lint + design_system_check now ship at default_severity="blocker".
+#   semgrep pinned in requirements.txt (install via `pip install -r requirements.txt`).
+#   Soft-skip path preserved when semgrep binary is absent.
+#   Rule packs (forbidden.yml, design_system.yml) may need false-positive tuning
+#   on real mission output — edit the rule packs to reduce noise before enabling
+#   in high-throughput missions.
 # ---------------------------------------------------------------------------
 POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     "verify_artifacts": PostHookSpec(
@@ -176,7 +160,7 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     "pattern_lint": PostHookSpec(
         kind="pattern_lint",
         verb="run_semgrep",
-        default_severity="warning",
+        default_severity="blocker",
         auto_wire_triggers=["*.py", "*.ts", "*.tsx", "*.js", "*.jsx"],
         description=(
             "Run semgrep with forbidden-patterns rule pack; warn on hits. "
@@ -218,7 +202,7 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     "design_system_check": PostHookSpec(
         kind="design_system_check",
         verb="run_semgrep",
-        default_severity="warning",
+        default_severity="blocker",
         auto_wire_triggers=["*.tsx", "*.jsx"],
         description=(
             "Run semgrep with design-system rule pack on JSX/TSX; warn on hits. "

@@ -1980,28 +1980,239 @@ async def _apply_semgrep_warning_verdict(
         )
 
 
+async def _apply_semgrep_blocker_verdict(
+    kind: str,
+    findings_ctx_key: str,
+    dlq_reason_ctx_key: str,
+    blocker_threshold: str,
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Blocker-severity semgrep post-hook verdict.
+
+    Mirrors _apply_test_run_verdict shape: retry-with-feedback on findings,
+    bonus-budget + DLQ-on-exhaust. Soft-skip preserved when semgrep absent.
+
+    Parameters
+    ----------
+    kind:
+        Post-hook kind string (e.g. ``"pattern_lint"``).
+    findings_ctx_key:
+        Context key for findings list.
+    dlq_reason_ctx_key:
+        Context key for DLQ reason.
+    blocker_threshold:
+        Severity level that triggers blocking (e.g. ``"ERROR"``).
+        Findings with severity >= threshold cause a retry.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    findings = raw.get("findings") or []
+    skipped = bool(raw.get("skipped"))
+
+    # Soft-skip: semgrep not installed → advance as if passed.
+    if skipped:
+        logger.debug(
+            f"{kind}: semgrep not installed, soft-skipped (blocker severity)",
+            source_id=verdict.source_task_id,
+        )
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id,
+                status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Separate blocker-level findings from sub-threshold findings.
+    # blocker_threshold is a semgrep severity string (ERROR/WARNING/INFO) or
+    # the posthook severity string ("blocker"/"warning"). Normalize posthook
+    # severity strings to their semgrep equivalent: "blocker" → "ERROR",
+    # "warning" → "WARNING".
+    _POSTHOOK_TO_SEMGREP = {"blocker": "ERROR", "warning": "WARNING"}
+    _SEVERITY_ORDER = {"ERROR": 3, "WARNING": 2, "INFO": 1}
+    normalised_threshold = _POSTHOOK_TO_SEMGREP.get(
+        blocker_threshold.lower(), blocker_threshold.upper()
+    )
+    threshold_level = _SEVERITY_ORDER.get(normalised_threshold.upper(), 3)
+    blocker_findings = [
+        f for f in findings
+        if _SEVERITY_ORDER.get((f.get("severity") or "WARNING").upper(), 2) >= threshold_level
+    ]
+
+    if not blocker_findings:
+        # All findings below threshold → warning surface + advance (old behaviour).
+        if findings:
+            ctx[findings_ctx_key] = findings[:50]
+            logger.info(
+                f"{kind}: {len(findings)} finding(s) below blocker threshold, warning only",
+                source_id=verdict.source_task_id,
+                threshold=blocker_threshold,
+            )
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id,
+                status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Blocker path: retry-with-feedback.
+    ctx[findings_ctx_key] = blocker_findings[:50]
+
+    finding_strs = [
+        f"{f.get('path','?')}:{f.get('line','?')} {f.get('rule_id','?')} {f.get('message','')}"
+        for f in blocker_findings[:10]
+    ]
+    error_str = (
+        f"{kind}: {len(blocker_findings)} blocker finding(s). "
+        f"Fix: {'; '.join(finding_strs)}"
+    )[:500]
+
+    feedback = (
+        f"Semgrep found {len(blocker_findings)} pattern violation(s) that must be fixed. "
+        f"Details: {error_str}"
+    )
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or f"{kind} blocker gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
+
+
 async def _apply_pattern_lint_verdict(
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
 ) -> None:
-    """Z2 T2C — delegates to shared semgrep warning verdict."""
-    await _apply_semgrep_warning_verdict(
-        kind="pattern_lint",
-        findings_ctx_key="_pattern_lint_findings",
-        dlq_reason_ctx_key="_pattern_lint_dlq_reason",
-        source=source, ctx=ctx, pending=pending, verdict=verdict,
-    )
+    """Z2 T2C — routes by registry default_severity (blocker or warning)."""
+    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    spec = POST_HOOK_REGISTRY.get("pattern_lint")
+    default_severity = (spec.default_severity if spec else "warning")
+    step_threshold = ctx.get("semgrep_blocker_threshold") or default_severity
+    if default_severity == "blocker":
+        await _apply_semgrep_blocker_verdict(
+            kind="pattern_lint",
+            findings_ctx_key="_pattern_lint_findings",
+            dlq_reason_ctx_key="_pattern_lint_dlq_reason",
+            blocker_threshold=step_threshold,
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+    else:
+        await _apply_semgrep_warning_verdict(
+            kind="pattern_lint",
+            findings_ctx_key="_pattern_lint_findings",
+            dlq_reason_ctx_key="_pattern_lint_dlq_reason",
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
 
 
 async def _apply_design_system_check_verdict(
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
 ) -> None:
-    """Z2 T3C — delegates to shared semgrep warning verdict."""
-    await _apply_semgrep_warning_verdict(
-        kind="design_system_check",
-        findings_ctx_key="_design_system_findings",
-        dlq_reason_ctx_key="_design_system_check_dlq_reason",
-        source=source, ctx=ctx, pending=pending, verdict=verdict,
-    )
+    """Z2 T3C — routes by registry default_severity (blocker or warning)."""
+    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    spec = POST_HOOK_REGISTRY.get("design_system_check")
+    default_severity = (spec.default_severity if spec else "warning")
+    step_threshold = ctx.get("semgrep_blocker_threshold") or default_severity
+    if default_severity == "blocker":
+        await _apply_semgrep_blocker_verdict(
+            kind="design_system_check",
+            findings_ctx_key="_design_system_findings",
+            dlq_reason_ctx_key="_design_system_check_dlq_reason",
+            blocker_threshold=step_threshold,
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+    else:
+        await _apply_semgrep_warning_verdict(
+            kind="design_system_check",
+            findings_ctx_key="_design_system_findings",
+            dlq_reason_ctx_key="_design_system_check_dlq_reason",
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
 
 
 async def _apply_type_sync_verdict(

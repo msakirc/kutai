@@ -2389,6 +2389,29 @@ async def init_db():
         ),
     )
 
+    # ── Z8 T1B: tasks.lane admission column ─────────────────────────
+    # Lane is the admission pool: 'oneshot' (default) vs 'ongoing'.
+    # Ongoing covers alert_triage / cron / support_ticket tasks attached
+    # to ``kind='ongoing'`` missions. Caps live in
+    # ``general_beckman.lanes``. Backfill to 'oneshot' so legacy rows
+    # keep flowing through the historical pool.
+    await apply_migration(
+        version="2026-05-12-tasks-lane",
+        sql=(
+            "ALTER TABLE tasks ADD COLUMN lane TEXT NOT NULL DEFAULT 'oneshot';\n"
+            "CREATE INDEX IF NOT EXISTS idx_tasks_lane_status "
+            "ON tasks(lane, status);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_tasks_lane_status;\n"
+            "ALTER TABLE tasks DROP COLUMN lane;\n"
+        ),
+        description=(
+            "Z8 T1B: tasks.lane admission column for ongoing-mission "
+            "lane separation (cap=8 ongoing / cap=4 oneshot)."
+        ),
+    )
+
     # ── Z6 T2A: credentials hardening — scope, rotated_at, expires_at,
     # key_version, schema_id columns. expires_at is promoted from inside the
     # encrypted envelope to an indexable column (still also kept inside the
@@ -2936,7 +2959,8 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                    agent_type="executor", tier="auto", priority=5,
                    requires_approval=False, depends_on=None, context=None,
                    kind="main_work", runner=None,
-                   needs_real_tools=None, reversibility=None):
+                   needs_real_tools=None, reversibility=None,
+                   lane=None):
     """Atomic dedup + insert.
 
     Uses an isolated connection (connect_aux) for the BEGIN/COMMIT
@@ -3038,18 +3062,22 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                 if _rev is None and context.get("reversibility"):
                     _rev = str(context.get("reversibility"))
             _nrt_int = 1 if _nrt else 0
+            # Z8 T1B: lane defaults to 'oneshot' so legacy callers keep
+            # flowing through the historical pool. Callers that want the
+            # ongoing pool (alert_triage / cron) pass lane='ongoing'.
+            _lane = lane or "oneshot"
             cursor = await db.execute(
                 """INSERT INTO tasks
                    (mission_id, parent_task_id, title, description, agent_type,
                     tier, priority, requires_approval, depends_on, context,
                     task_hash, kind, runner, phase_id,
-                    needs_real_tools, reversibility)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    needs_real_tools, reversibility, lane)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (mission_id, parent_task_id, title, description, agent_type,
                  tier, priority, requires_approval,
                  json.dumps(depends_on or []), json.dumps(context or {}),
                  task_hash, kind, runner, _phase_id,
-                 _nrt_int, _rev)
+                 _nrt_int, _rev, _lane)
             )
             row_id = cursor.lastrowid
             if db._conn.in_transaction:

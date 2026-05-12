@@ -167,23 +167,50 @@ async def _claim_task(task_id: int) -> bool:
     return await claim_task(task_id)
 
 
-async def next_task():
+async def next_task(lane: str | None = None):
     """Admission loop: pick one ready task whose pool pressure clears its urgency threshold.
 
     Called by orchestrator on its pump cycle. Iterates top-K ready tasks
-    by urgency; for each, asks Fatih Hoca for a Pick, then gates on
+    by urgency *within the given admission lane*; for each, asks Fatih
+    Hoca for a Pick, then gates on
     ``snapshot.pressure_for(pick.model) >= threshold(urgency)``. First
     candidate to clear is claimed, tagged with ``preselected_pick``, and
     returned. Non-admitted candidates remain in the queue untouched.
+
+    Z8 T1B: ``lane`` (default ``LANE_ONESHOT``) selects between the
+    historical oneshot pool and the ongoing-mission pool. A lane-local
+    in-flight cap short-circuits the scan when reached so a lane can't
+    drown the other.
     """
     import os
     from general_beckman import queue as _queue
     from general_beckman.admission import compute_urgency
     from general_beckman.cron import fire_due
+    from general_beckman.lanes import (
+        LANE_ONESHOT, cap_for, count_in_flight,
+    )
+
+    if lane is None:
+        lane = LANE_ONESHOT
 
     top_k = int(os.environ.get("BECKMAN_TOP_K", "5"))
 
     await fire_due()
+
+    # Lane cap: reject early so the snapshot/Hoca scan is skipped when
+    # the lane is already saturated. Uses the shared db connection.
+    try:
+        from src.infra.db import get_db as _get_db
+        _conn = await _get_db()
+        _cap = await cap_for(lane)
+        _inflight = await count_in_flight(_conn, lane)
+        if _inflight >= _cap:
+            return None
+    except Exception:
+        # If the lane column hasn't migrated yet (pre-T1B DB), fall through
+        # — the lane filter on pick_ready_top_k will still work and the
+        # caller can keep dispatching from oneshot.
+        pass
 
     # One fresh snapshot per tick. Admission gates on snapshot.pressure_for(pick.model);
     # the in-flight list in the snapshot — pushed by the dispatcher — is the
@@ -267,7 +294,7 @@ async def next_task():
         except Exception as e:
             _log.debug(f"cloud state overlay failed: {e}")
 
-    candidates = await _queue.pick_ready_top_k(k=top_k)
+    candidates = await _queue.pick_ready_top_k(k=top_k, lane=lane)
 
     # Skip the entire scan if state hasn't changed since last tick and last
     # tick admitted nothing — result is deterministic. Mechanical tasks are
@@ -777,6 +804,7 @@ async def enqueue(
     await_inline: bool = False,
     on_complete: str | None = None,
     next_task_spec: dict | None = None,
+    lane: str | None = None,
 ) -> "int | TaskResult":
     """Single external write path for all Beckman tasks.
 
@@ -800,11 +828,23 @@ async def enqueue(
     import json as _json
     from src.infra.db import add_task
     from general_beckman.queue_profile_push import build_and_push
+    from general_beckman.lanes import pick_lane
 
     spec = dict(spec)  # shallow copy — don't mutate caller's dict
 
     # ── kind ──────────────────────────────────────────────────────────────
     kind = spec.pop("kind", "main_work")
+
+    # ── lane ──────────────────────────────────────────────────────────────
+    # Z8 T1B: explicit ``lane=`` overrides; otherwise derive from
+    # agent_type via ``pick_lane``. spec.lane (rare) wins last so an
+    # in-spec value is respected.
+    if "lane" in spec:
+        _lane = spec.pop("lane")
+    elif lane is not None:
+        _lane = lane
+    else:
+        _lane = pick_lane(spec.get("agent_type"))
 
     # ── parent_id ─────────────────────────────────────────────────────────
     if parent_id is not None:
@@ -831,7 +871,7 @@ async def enqueue(
         ctx["beckman"] = beckman_sub
         spec["context"] = ctx  # add_task will json.dumps() it
 
-    task_id = await add_task(**spec, kind=kind)
+    task_id = await add_task(**spec, kind=kind, lane=_lane)
     await build_and_push()
 
     if not await_inline:

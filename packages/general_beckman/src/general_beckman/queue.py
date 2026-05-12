@@ -43,15 +43,25 @@ async def pick_ready_task() -> dict | None:
     return None
 
 
-async def pick_ready_top_k(k: int = 5) -> list[dict]:
+async def pick_ready_top_k(k: int = 5, lane: str | None = None) -> list[dict]:
     """Return up to ``k`` ready tasks ordered by urgency descending.
 
     Unlike :func:`pick_ready_task`, this helper does NOT claim any rows.
     The admission loop inspects several candidates and claims at most one.
     Paused tasks are filtered out.
+
+    Z8 T1B: ``lane`` (default = ``LANE_ONESHOT``) filters by
+    ``tasks.lane`` so the oneshot and ongoing pools dispatch
+    independently.
     """
+    from general_beckman.lanes import LANE_ONESHOT
+    target_lane = lane or LANE_ONESHOT
+
     rows = await get_ready_tasks(limit=max(k * 2, 8))
-    eligible = [r for r in rows if not is_paused(r)]
+    eligible = [
+        r for r in rows
+        if not is_paused(r) and (r.get("lane") or LANE_ONESHOT) == target_lane
+    ]
     eligible.sort(key=compute_urgency, reverse=True)
     return eligible[:k]
 

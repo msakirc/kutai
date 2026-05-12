@@ -1858,6 +1858,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("task", self.cmd_add_task))
         self.app.add_handler(CommandHandler("queue", self.cmd_view_queue))
         self.app.add_handler(CommandHandler("status", self.cmd_status))
+        # Z8 T1D — /stop_ops <mission_id> revokes an ongoing mission.
+        self.app.add_handler(CommandHandler("stop_ops", self.cmd_stop_ops))
         self.app.add_handler(CommandHandler("digest", self.cmd_digest))
         self.app.add_handler(CommandHandler("debug", self.cmd_debug))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))
@@ -2344,6 +2346,38 @@ class TelegramInterface:
         except Exception:
             pass
         await self._reply(update, status_msg, parse_mode="Markdown")
+
+    async def cmd_stop_ops(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z8 T1D — revoke an ongoing mission.
+
+        Usage: ``/stop_ops <mission_id>``. Transitions
+        ``missions.lifecycle_state`` → ``'revoked'`` and stamps
+        ``revoked_at`` so the orchestrator stops resuming it on boot
+        and webhook/cron handlers drop their subscriptions. No-op for
+        oneshot missions or unknown ids.
+        """
+        if not context.args:
+            await self._reply(update, "Usage: /stop_ops <mission_id>")
+            return
+        try:
+            mid = int(context.args[0])
+        except (TypeError, ValueError):
+            await self._reply(update, "mission_id must be an integer")
+            return
+        try:
+            from general_beckman.resumption import revoke
+            ok = await revoke(mid)
+        except Exception as e:
+            logger.warning(f"/stop_ops failed for mission {mid}: {e}")
+            await self._reply(update, f"failed to revoke mission {mid}: {e}")
+            return
+        if ok:
+            await self._reply(update, f"mission {mid} revoked")
+        else:
+            await self._reply(
+                update,
+                f"mission {mid} not ongoing or not found"
+            )
 
     async def cmd_bench_picks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show 7-day model pick distribution from model_pick_log."""

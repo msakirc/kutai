@@ -60,6 +60,9 @@ COLLECTIONS = [
     "conversations",
     "shopping",
     "web_knowledge",
+    # Z8 T5E — tier-1 support RAG: indexed FAQ / policy / how-to docs that
+    # the support_tier1 agent queries before answering user tickets.
+    "support_docs",
 ]
 
 _DB_DIR = os.path.join(

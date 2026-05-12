@@ -149,6 +149,17 @@ REFLECTION_BLOCKS: dict[str, str] = {
         "6. Tier-3 (security) incidents always ESCALATE — never act directly.\n"
         "If any 'no' — re-evaluate before emitting final_answer."
     ),
+    "support_tier1": (
+        "Self-check before final_answer:\n"
+        "1. Is every claim in your answer GROUNDED in a retrieved support_doc?\n"
+        "2. Did you CITE each source by doc_id?\n"
+        "3. Is `confidence` CALIBRATED — 1.0 only if docs answer verbatim, "
+        "below 0.7 when inferring or docs are thin?\n"
+        "4. Did you avoid PROMISING refunds, credits, or policy changes?\n"
+        "5. If the user sounds ANGRY / URGENT, did you set confidence "
+        "below 0.7 so the escalation path triggers?\n"
+        "If any 'no' — fix before final_answer."
+    ),
     "integration_reviewer": (
         "Self-check before final_answer:\n"
         "1. Did I check EVERY emitted file in the task, not just the ones "

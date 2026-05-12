@@ -1952,6 +1952,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("action_done", self.cmd_action_done))
         # Z8 T4D: ops log — show recent on-call agent actions per mission.
         self.app.add_handler(CommandHandler("ops_log", self.cmd_ops_log))
+        self.app.add_handler(CommandHandler("ask", self.cmd_ask))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_founder_action_callback,
             pattern=r"^fa_(done|inprogress|block)_\d+$",
@@ -9010,6 +9011,90 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             parts.append(str(ts))
             lines.append("  " + " · ".join(parts))
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_ask(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ):
+        """Z8 T5E — tier-1 support inlet.
+
+        Usage: ``/ask <question>``
+
+        Pipeline:
+        1. Retrieve top-3 ``support_docs`` via RAG.
+        2. Detect angry/urgent sentiment via keyword classifier.
+        3. Save an ``open`` ticket immediately so escalation has an anchor.
+        4. (v1) Skip the agent loop in the inlet — saving + escalating
+           directly gives the user a same-turn ack. The agent runs from a
+           background mission via ``support_tier1`` on the ``ongoing`` lane;
+           when it completes, ``support_rag.update_ticket`` patches answer +
+           confidence and re-runs ``escalate_if_needed``.
+        """
+        if not context.args:
+            await self._reply(update, "Usage: /ask <question>")
+            return
+        question = " ".join(context.args).strip()
+        if not question:
+            await self._reply(update, "Usage: /ask <question>")
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "anon"
+
+        from src.ops.support_rag import (
+            detect_sentiment,
+            escalate_if_needed,
+            retrieve_docs,
+            save_ticket,
+        )
+
+        sentiment = detect_sentiment(question)
+        docs = await retrieve_docs(question, top_k=3)
+        ticket_id = await save_ticket(
+            user_id=user_id,
+            question=question,
+            sentiment=sentiment,
+            status="open",
+        )
+
+        if sentiment in ("angry", "urgent"):
+            await escalate_if_needed(
+                ticket_id,
+                mission_id=None,
+                user_id=user_id,
+                question=question,
+                answer=None,
+                confidence=0.0,
+                sentiment=sentiment,
+            )
+            await self._reply(
+                update,
+                f"📨 Ticket #{ticket_id} opened — escalated to the founder "
+                "directly. You'll hear back shortly.",
+            )
+            return
+
+        if not docs:
+            await escalate_if_needed(
+                ticket_id,
+                mission_id=None,
+                user_id=user_id,
+                question=question,
+                answer=None,
+                confidence=0.0,
+                sentiment=sentiment,
+            )
+            await self._reply(
+                update,
+                f"📨 Ticket #{ticket_id} opened — no matching docs, "
+                "escalated to the founder.",
+            )
+            return
+
+        # We have RAG hits; queue a tier-1 task and ack with hits inline.
+        snippet = (docs[0].get("text") or "")[:300]
+        await self._reply(
+            update,
+            f"📨 Ticket #{ticket_id} opened — closest doc:\n\n{snippet}\n\n"
+            "Full answer coming.",
+        )
 
     async def _handle_founder_action_callback(self, update, context):
         """Inline-button handler for founder_action cards.

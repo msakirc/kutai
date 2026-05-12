@@ -2600,6 +2600,71 @@ async def init_db():
         ),
     )
 
+    # ── Z8 T5E: tickets table for tier-1 support RAG ────────────────────────
+    # One row per user question. ``confidence`` is the agent's calibrated
+    # confidence ∈ [0.0, 1.0]. ``escalated_to_founder`` flips when confidence
+    # < 0.7 OR sentiment is angry/urgent — the inlet writes a
+    # ``founder_action(kind='support_escalation')`` and points its
+    # ``founder_action_id`` here for follow-up.
+    await apply_migration(
+        version="2026-05-12-tickets",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS tickets ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER,"
+            " user_id TEXT NOT NULL,"
+            " question TEXT NOT NULL,"
+            " answer TEXT,"
+            " confidence REAL,"
+            " status TEXT NOT NULL DEFAULT 'open',"
+            " escalated_to_founder INTEGER NOT NULL DEFAULT 0,"
+            " founder_action_id INTEGER,"
+            " sentiment TEXT,"
+            " created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);\n"
+            "CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON tickets(user_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_tickets_user_id;\n"
+            "DROP INDEX IF EXISTS idx_tickets_status;\n"
+            "DROP TABLE IF EXISTS tickets;\n"
+        ),
+        description=(
+            "Z8 T5E: tickets table for tier-1 support RAG; confidence + "
+            "escalation tracking."
+        ),
+    )
+
+    # ── Z8 T5F: perf_baselines for synthetic-check regression diff ──────────
+    # One row per release_tag + metric. Synthetic checks compare current
+    # p50/p95/p99 against the last green baseline; >10% delta marks the
+    # mission task as ``regression_detected`` and surfaces a rollback verb.
+    await apply_migration(
+        version="2026-05-12-perf-baselines",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS perf_baselines ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER NOT NULL,"
+            " release_tag TEXT NOT NULL,"
+            " metric TEXT NOT NULL,"
+            " p50 REAL,"
+            " p95 REAL,"
+            " p99 REAL,"
+            " recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_perf_baselines_mission_metric "
+            "ON perf_baselines(mission_id, metric, recorded_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_perf_baselines_mission_metric;\n"
+            "DROP TABLE IF EXISTS perf_baselines;\n"
+        ),
+        description=(
+            "Z8 T5F: perf_baselines for synthetic-check regression diff."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

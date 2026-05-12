@@ -139,17 +139,33 @@ def _render_digest(
 
 
 async def _post_to_mission_thread(mission_id: int, body: str) -> None:
+    """Z6 polish P2 — surface the digest to Telegram (best-effort).
+
+    Uses ``src.app.telegram_topics.post_to_mission_thread`` which already
+    implements the same fallback the founder_action notifier uses:
+    * If the mission has a ``telegram_thread_id``, send with
+      ``message_thread_id=thread_id`` (forum topic).
+    * If unset, fall back to flat-prefix ``[Mission {id}] ...`` to the
+      admin chat.
+
+    SYSTEM_MISSION_ID (cron path) → file-only, no Telegram send.
+    """
     if mission_id == SYSTEM_MISSION_ID:
         return
     try:
-        from src.collaboration.blackboard import write_event_to_mission
-        await write_event_to_mission(
-            mission_id=mission_id,
-            kind="revenue_digest",
-            payload={"body": body},
-        )
+        from src.app.telegram_bot import get_telegram
+        from src.app.telegram_topics import post_to_mission_thread
     except Exception as exc:  # noqa: BLE001
-        logger.debug("digest telegram post deferred: %s", exc)
+        logger.debug("digest telegram imports deferred: %s", exc)
+        return
+    try:
+        tg = get_telegram()
+        if tg is None or getattr(tg, "app", None) is None:
+            logger.debug("digest telegram: no interface available")
+            return
+        await post_to_mission_thread(tg.app.bot, mission_id, body)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("digest telegram post failed: %s", exc)
 
 
 # ── main entrypoint ───────────────────────────────────────────────────────

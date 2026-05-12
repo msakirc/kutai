@@ -44,10 +44,18 @@ def test_mechanical_commit_steps_depend_on_their_coder_parent():
 
 
 def test_mechanical_commit_steps_carry_executor_tag():
+    """Commit-flavoured mechanical steps must declare executor=git_commit.
+
+    Other mechanical executors (clarify, vendor_call, …) exist in the
+    workflow and carry their own executor tag — this test is scoped to
+    git_commit steps to match the file name and intent.
+    """
     wf = _load_workflow()
     for s in wf["steps"]:
         if s.get("agent") != "mechanical":
             continue
+        if s.get("payload", {}).get("action") != "git_commit":
+            continue
         assert s.get("executor") == "mechanical", (
-            f"mechanical step {s['id']} missing executor=mechanical"
+            f"mechanical commit step {s['id']} missing executor=mechanical"
         )

@@ -1,0 +1,26 @@
+id: incident_playbook_error_spike_v1
+kind: incident_playbook
+description: "Sentry events >100/5min → rollback_to_last_green (cooldown-gated, 2/hr)"
+requires:
+  tech_stack:
+    - sentry
+  runtime_state: []
+match:
+  alerts:
+    - integration: sentry
+      event: issue_alert
+    - integration: sentry
+      event: event_spike
+action_sequence:
+  - verb: rollback_to_last_green
+    params:
+      reason: "error spike >100 events/5min"
+    reversibility: irreversible
+  - verb: escalate_to_founder
+    params:
+      summary: "Rolled back to last green tag — investigate the bad deploy."
+      severity: high
+    reversibility: irreversible
+on_failure:
+  - verb: escalate_to_founder
+    severity: critical

@@ -1,0 +1,31 @@
+id: incident_playbook_auth_provider_down_v1
+kind: incident_playbook
+description: "Auth provider down → maintenance_mode_on + status_page_update"
+requires:
+  tech_stack:
+    - clerk
+    - auth0
+    - supabase
+  runtime_state: []
+match:
+  alerts:
+    - integration: clerk
+      event: provider_down
+    - integration: auth0
+      event: provider_down
+    - integration: betterstack
+      event: auth_endpoint_down
+action_sequence:
+  - verb: drain_traffic
+    params:
+      target: auth
+      to: maintenance_page
+    reversibility: partial
+  - verb: escalate_to_founder
+    params:
+      summary: "Auth provider down — maintenance mode on, status page updated."
+      severity: high
+    reversibility: irreversible
+on_failure:
+  - verb: escalate_to_founder
+    severity: critical

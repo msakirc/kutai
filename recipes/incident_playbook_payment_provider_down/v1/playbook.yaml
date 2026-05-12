@@ -1,0 +1,28 @@
+id: incident_playbook_payment_provider_down_v1
+kind: incident_playbook
+description: "Stripe / payment provider unreachable → enable fallback queue + notify users"
+requires:
+  tech_stack:
+    - stripe
+    - paddle
+  runtime_state: []
+match:
+  alerts:
+    - integration: stripe
+      event: provider_down
+    - integration: betterstack
+      event: payment_endpoint_down
+action_sequence:
+  - verb: drain_traffic
+    params:
+      target: payments
+      to: fallback_queue
+    reversibility: partial
+  - verb: escalate_to_founder
+    params:
+      summary: "Payment provider unreachable — fallback queue enabled, checkout shows maintenance banner."
+      severity: high
+    reversibility: irreversible
+on_failure:
+  - verb: escalate_to_founder
+    severity: critical

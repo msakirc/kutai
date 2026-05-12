@@ -9512,6 +9512,31 @@
       "reversibility": "full"
     },
     {
+      "id": "13.3.playbooks",
+      "phase": "phase_13",
+      "name": "generate_incident_playbooks",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "13.3"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "tech_stack"
+      ],
+      "output_artifacts": [
+        "incident_playbooks"
+      ],
+      "payload": {
+        "action": "generate_playbooks"
+      },
+      "instruction": "Z8 T4C — phase 13 playbook generator: from spec.architecture + spec.tech_stack, instantiate every matching incident_playbook_*_v1 recipe and emit the per-mission incident_playbooks artifact. The on-call agent (Z8 T4A) reads this artifact at alert time to know which playbooks are pre-blessed for this mission. No LLM.",
+      "done_when": "incident_playbooks artifact exists with a (possibly empty) playbook list.",
+      "reversibility": "full"
+    },
+    {
       "id": "13.4",
       "phase": "phase_13",
       "name": "analytics_integration",

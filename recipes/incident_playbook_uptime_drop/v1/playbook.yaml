@@ -1,0 +1,27 @@
+id: incident_playbook_uptime_drop_v1
+kind: incident_playbook
+description: "Better Stack uptime check failing → restart_service; escalate if no recovery in 5min"
+requires:
+  tech_stack:
+    - betterstack
+    - pingdom
+  runtime_state: []
+match:
+  alerts:
+    - integration: betterstack
+      event: monitor_down
+    - integration: pingdom
+      event: check_failed
+action_sequence:
+  - verb: restart_service
+    params:
+      service: web
+    reversibility: partial
+  - verb: escalate_to_founder
+    params:
+      summary: "Service restarted in response to uptime drop — re-escalate if not recovered in 5min."
+      severity: high
+    reversibility: irreversible
+on_failure:
+  - verb: escalate_to_founder
+    severity: critical

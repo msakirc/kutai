@@ -1,0 +1,29 @@
+id: incident_playbook_db_disk_full_v1
+kind: incident_playbook
+description: "DB disk usage >85% → archive old rows + alert founder"
+requires:
+  tech_stack:
+    - postgres
+    - mysql
+    - sqlite
+  runtime_state:
+    - condition: db.disk_used_pct_gt
+      threshold: 85
+match:
+  alerts:
+    - integration: betterstack
+      event: db_disk_alert
+action_sequence:
+  - verb: archive_flake_test
+    params:
+      target: old_rows
+      older_than_days: 90
+    reversibility: partial
+  - verb: escalate_to_founder
+    params:
+      summary: "DB disk high — archived rows older than 90d; verify free space and consider partitioning."
+      severity: high
+    reversibility: irreversible
+on_failure:
+  - verb: escalate_to_founder
+    severity: critical

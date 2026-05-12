@@ -784,6 +784,10 @@ async def init_db():
             "ALTER TABLE missions ADD COLUMN cost_ceiling_usd REAL",
             "cost_ceiling_usd",
         ),
+        (
+            "ALTER TABLE missions ADD COLUMN branched_from_mission_id INTEGER",
+            "branched_from_mission_id",
+        ),
     ):
         try:
             await db.execute(sql)

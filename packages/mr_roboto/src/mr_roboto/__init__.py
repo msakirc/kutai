@@ -2269,6 +2269,23 @@ async def _run_dispatch(task: dict) -> Action:
                 ),
             )
             if not res.get("ok"):
+                # Z1 T6A — surface inline Continue / Branch / Abort buttons
+                # in Telegram. Best-effort: notification failure must not
+                # mask the needs_review verdict.
+                try:
+                    from mr_roboto._similar_review_notify import (
+                        enqueue_similar_review_notice,
+                    )
+                    await enqueue_similar_review_notice(
+                        mission_id=int(mid) if mid is not None else 0,
+                        matches=res.get("matches") or [],
+                        report_path=res.get("report_path"),
+                    )
+                except Exception as _notice_exc:
+                    import logging as _logging
+                    _logging.getLogger("mr_roboto.find_similar").warning(
+                        "similar-review notify failed: %s", _notice_exc,
+                    )
                 return Action(
                     status="needs_review",
                     error=(

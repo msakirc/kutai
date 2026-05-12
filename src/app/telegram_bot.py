@@ -5893,6 +5893,66 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         # Default: treat as a new message, not a clarification response
         return False
 
+    async def _resume_needs_review_tasks(
+        self, mission_id: int, posthook_kind: str,
+        note: str = "founder ack", cancel: bool = False,
+    ) -> int:
+        """Resolve any waiting needs_review tasks for a given posthook kind.
+
+        Z1 T6A — when the founder clicks Continue/Branch/Abort on a
+        similar-missions notification, the find_similar_missions source
+        task is sitting in needs_review. This helper either completes
+        (Continue/Branch) or cancels (Abort) all such tasks for the
+        mission.
+
+        Returns the count of tasks transitioned.
+        """
+        import json as _json
+        from src.infra.db import get_db, update_task
+
+        try:
+            db = await get_db()
+            cur = await db.execute(
+                "SELECT id, context FROM tasks "
+                "WHERE mission_id = ? AND status = 'waiting_human'",
+                (int(mission_id),),
+            )
+            rows = await cur.fetchall() or []
+        except Exception as exc:
+            logger.warning(
+                "resume_needs_review query failed",
+                mission_id=mission_id, error=str(exc),
+            )
+            return 0
+
+        count = 0
+        target_status = "cancelled" if cancel else "completed"
+        for row in rows:
+            tid = row[0]
+            raw_ctx = row[1] or "{}"
+            try:
+                ctx = _json.loads(raw_ctx) if isinstance(raw_ctx, str) else {}
+            except (ValueError, TypeError):
+                ctx = {}
+            payload = (ctx.get("payload") or {})
+            if payload.get("action") != posthook_kind and ctx.get(
+                "posthook_kind"
+            ) != posthook_kind:
+                continue
+            ctx["founder_review_note"] = note
+            try:
+                await update_task(
+                    tid, status=target_status,
+                    context=_json.dumps(ctx),
+                )
+                count += 1
+            except Exception as exc:
+                logger.warning(
+                    "resume_needs_review update failed",
+                    task_id=tid, error=str(exc),
+                )
+        return count
+
     async def _resume_with_clarification(
         self, chat_id: int, task_id: int, answer: str,
         task_info: dict, update: Update
@@ -6723,6 +6783,99 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         query = update.callback_query
         await query.answer()
         data = query.data
+
+        # ── Z1 Tier 6A: similar-missions review inline buttons ─────
+        # Format:
+        #   simrev:c:<mid>           → Continue (index + clear needs_review)
+        #   simrev:b:<from>:<mid>    → Branch from prior #from
+        #   simrev:a:<mid>           → Abort current mission
+        if data.startswith("simrev:"):
+            try:
+                parts = data.split(":")
+                kind = parts[1]
+                mid = int(parts[-1])
+            except (ValueError, IndexError):
+                await query.message.reply_text("❌ Bozuk similar-review butonu.")
+                return
+            if kind == "c":
+                # Continue: enqueue index_idea_fingerprint + resolve any
+                # waiting find_similar_missions tasks on this mission.
+                try:
+                    import general_beckman as _beckman
+                    import json as _json_dbg
+                    await _beckman.enqueue({
+                        "title": f"index_idea_fingerprint:m{mid}",
+                        "agent_type": "mechanical",
+                        "mission_id": mid,
+                        "context": _json_dbg.dumps({
+                            "executor": "mechanical",
+                            "payload": {
+                                "action": "index_idea_fingerprint",
+                                "mission_id": mid,
+                            },
+                        }),
+                    })
+                    await self._resume_needs_review_tasks(
+                        mid, "find_similar_missions", note="founder: continue",
+                    )
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Continue failed: {e}"
+                    )
+                    return
+                await query.message.reply_text(
+                    f"▶️ Continuing mission #{mid}. Idea indexed."
+                )
+                return
+            if kind == "b":
+                try:
+                    from_mid = int(parts[2])
+                except (ValueError, IndexError):
+                    await query.message.reply_text("❌ Bozuk branch butonu.")
+                    return
+                try:
+                    from src.infra.db import get_db
+                    db = await get_db()
+                    await db.execute(
+                        "UPDATE missions SET branched_from_mission_id = ? "
+                        "WHERE id = ?",
+                        (from_mid, mid),
+                    )
+                    await db.commit()
+                    await self._resume_needs_review_tasks(
+                        mid, "find_similar_missions",
+                        note=f"founder: branch_from_{from_mid}",
+                    )
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Branch failed: {e}"
+                    )
+                    return
+                await query.message.reply_text(
+                    f"🌿 Mission #{mid} branched from prior mission "
+                    f"#{from_mid}. You can now `/clone_artifacts {from_mid}` "
+                    f"or proceed."
+                )
+                return
+            if kind == "a":
+                try:
+                    from src.infra.db import update_mission
+                    await update_mission(mid, status="cancelled")
+                    await self._resume_needs_review_tasks(
+                        mid, "find_similar_missions", note="founder: abort",
+                        cancel=True,
+                    )
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Abort failed: {e}"
+                    )
+                    return
+                await query.message.reply_text(
+                    f"🛑 Mission #{mid} aborted."
+                )
+                return
+            await query.message.reply_text("❌ Unknown similar-review action.")
+            return
 
         # ── Z1 Tier 4B: propagate inline button ─────────────────────
         # Format: `propagate:<mission_id>:<artifact_path>`

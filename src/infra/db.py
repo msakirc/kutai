@@ -794,6 +794,26 @@ async def init_db():
     except Exception:
         pass
 
+    # Z1 Tier 5A (P6) — founder_signoffs. One row per (mission, doc_type) the
+    # founder has affirmed. Read by compliance_blocker_check to gate phase
+    # boundaries when `founder_review_required=true` is set in the
+    # compliance_overlay. `signature_hash` is sha256[:16] of the signed
+    # doc body at sign time — lets a later check detect template drift.
+    try:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS founder_signoffs (
+                mission_id INTEGER NOT NULL,
+                doc_type TEXT NOT NULL,
+                signed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                signature_hash TEXT,
+                PRIMARY KEY (mission_id, doc_type)
+            )
+            """
+        )
+    except Exception:
+        pass
+
     # Z1 Tier 5C (B4) — Critic gate audit trail. One row per critic call
     # (pass or veto) on an irreversible action. `redacted_payload_hash`
     # is a sha256[:16] of the SECRET-REDACTED payload — usable for
@@ -4834,6 +4854,46 @@ async def record_streaming_guard_outcome(
         )
     except Exception:
         pass
+
+
+async def record_founder_signoff(
+    *,
+    mission_id: int,
+    doc_type: str,
+    signature_hash: str | None = None,
+) -> dict:
+    """Z1 T5A (P6) — upsert a founder_signoffs row.
+
+    PRIMARY KEY (mission_id, doc_type) — re-signing replaces the prior row
+    so signature_hash always reflects the latest signed body.
+    """
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO founder_signoffs (mission_id, doc_type, signature_hash)
+        VALUES (?, ?, ?)
+        ON CONFLICT(mission_id, doc_type) DO UPDATE SET
+            signed_at = CURRENT_TIMESTAMP,
+            signature_hash = excluded.signature_hash
+        """,
+        (int(mission_id), str(doc_type), signature_hash),
+    )
+    await db.commit()
+    return {"ok": True, "mission_id": int(mission_id), "doc_type": str(doc_type)}
+
+
+async def get_founder_signoffs(mission_id: int) -> set[str]:
+    """Return the set of `doc_type`s that have a founder_signoffs row."""
+    try:
+        db = await get_db()
+        cur = await db.execute(
+            "SELECT doc_type FROM founder_signoffs WHERE mission_id = ?",
+            (int(mission_id),),
+        )
+        rows = await cur.fetchall()
+        return {r[0] for r in rows if r and r[0]}
+    except Exception:
+        return set()
 
 
 async def record_source_quality(

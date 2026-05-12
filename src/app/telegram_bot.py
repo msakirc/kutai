@@ -1866,6 +1866,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("priority", self.cmd_priority))
         self.app.add_handler(CommandHandler("graph", self.cmd_graph))
         self.app.add_handler(CommandHandler("budget", self.cmd_budget))
+        self.app.add_handler(CommandHandler("signoff", self.cmd_signoff))
         self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))
         self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))
         self.app.add_handler(CommandHandler("progress", self.cmd_progress))
@@ -1892,6 +1893,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("preview_off", self.cmd_preview_off))
         # Z1 Tier 5A (A5): founder attention budget
         self.app.add_handler(CommandHandler("budget", self.cmd_budget))
+        # Z1 Tier 5A (P6): founder compliance signoffs
+        self.app.add_handler(CommandHandler("signoff", self.cmd_signoff))
         # Z1 Tier 6 (C18): per-mission GitHub repo (init / view / visibility)
         self.app.add_handler(CommandHandler("github", self.cmd_github))
         # Z1 Tier 7B (C21): bundle-quality regression vs Paraflow goldens
@@ -4350,6 +4353,85 @@ class TelegramInterface:
                 f"  spent:     {res.get('spent')} min\n"
                 f"  remaining: {res.get('remaining')} min"
             ),
+        )
+
+    async def cmd_signoff(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z1 T5A (P6) — record a founder signoff for a compliance doc.
+
+        Usage:
+          /signoff <mission_id> <doc_type>           — record signoff
+          /signoff <mission_id> list                 — list signed doc_types
+
+        ``doc_type`` matches the value from ``compliance_overlay.required_documents[].doc_type``
+        (e.g. ``privacy_policy``, ``tos``, ``dpa``).
+        """
+        args = context.args or []
+        if len(args) < 2:
+            await self._reply(
+                update,
+                "Usage: `/signoff <mission_id> <doc_type>` or "
+                "`/signoff <mission_id> list`",
+                parse_mode="Markdown",
+            )
+            return
+        try:
+            mission_id = int(args[0])
+        except (ValueError, TypeError):
+            await self._reply(update, "❌ mission_id must be an integer.")
+            return
+
+        if args[1].lower() == "list":
+            from src.infra.db import get_founder_signoffs
+            signed = await get_founder_signoffs(mission_id)
+            if not signed:
+                await self._reply(
+                    update,
+                    f"Mission #{mission_id}: no signoffs recorded.",
+                )
+                return
+            await self._reply(
+                update,
+                f"Mission #{mission_id} signoffs:\n"
+                + "\n".join(f"  • {dt}" for dt in sorted(signed)),
+            )
+            return
+
+        doc_type = args[1].strip()
+        # Compute signature_hash from the rendered template body when we
+        # can find one — best-effort, leave NULL otherwise. Lets a later
+        # drift check detect that the founder signed v1 but v2 is now on disk.
+        import hashlib
+        import os
+        from src.infra.db import record_founder_signoff
+        from src.tools.workspace import get_mission_workspace
+
+        sig = None
+        try:
+            ws = get_mission_workspace(mission_id)
+            for cand in (
+                os.path.join(ws, f"compliance/{doc_type}.md"),
+                os.path.join(ws, f"compliance/{doc_type}.html"),
+                os.path.join(ws, f"{doc_type}.md"),
+            ):
+                if os.path.isfile(cand):
+                    with open(cand, "rb") as fh:
+                        sig = hashlib.sha256(fh.read()).hexdigest()[:16]
+                    break
+        except Exception:
+            pass
+
+        try:
+            await record_founder_signoff(
+                mission_id=mission_id, doc_type=doc_type, signature_hash=sig
+            )
+        except Exception as e:
+            await self._reply(update, f"❌ Signoff failed: {e}")
+            return
+        await self._reply(
+            update,
+            f"✅ Signoff recorded: mission #{mission_id}, doc `{doc_type}`"
+            + (f" (sig {sig})" if sig else ""),
+            parse_mode="Markdown",
         )
 
     async def cmd_github(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

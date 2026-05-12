@@ -123,6 +123,83 @@ def test_alt_overlay_path_compliance_subdir(tmp_path):
     assert res["overlay_present"] is True
 
 
+def test_founder_review_required_no_signoff_fails(tmp_path):
+    """File rendered but founder_review_required=true and no signoff ⇒ blocked."""
+    rendered = tmp_path / "privacy.md"
+    rendered.write_text("# Privacy\n", encoding="utf-8")
+    overlay = {
+        "required_documents": [
+            {
+                "doc_type": "privacy_policy",
+                "template_id": "privacy_policy",
+                "blocker_for_phase": 4,
+                "generated_template_path": str(rendered),
+                "founder_review_required": True,
+            },
+        ],
+    }
+    (tmp_path / "compliance_overlay.json").write_text(
+        json.dumps(overlay), encoding="utf-8",
+    )
+    res = compliance_blocker_check(
+        mission_id=42, current_phase=6, workspace_path=str(tmp_path),
+        signoffs=set(),  # explicit: nothing signed yet
+    )
+    assert res["ok"] is False
+    assert res["pending"][0]["doc_type"] == "privacy_policy"
+    assert res["pending"][0]["reason"] == "founder_signoff_missing"
+
+
+def test_founder_review_required_with_signoff_passes(tmp_path):
+    """File rendered + signoff in set ⇒ pass."""
+    rendered = tmp_path / "privacy.md"
+    rendered.write_text("# Privacy\n", encoding="utf-8")
+    overlay = {
+        "required_documents": [
+            {
+                "doc_type": "privacy_policy",
+                "template_id": "privacy_policy",
+                "blocker_for_phase": 4,
+                "generated_template_path": str(rendered),
+                "founder_review_required": True,
+            },
+        ],
+    }
+    (tmp_path / "compliance_overlay.json").write_text(
+        json.dumps(overlay), encoding="utf-8",
+    )
+    res = compliance_blocker_check(
+        mission_id=42, current_phase=6, workspace_path=str(tmp_path),
+        signoffs={"privacy_policy"},
+    )
+    assert res["ok"] is True
+    assert res["pending"] == []
+
+
+def test_no_signoff_required_when_flag_absent(tmp_path):
+    """founder_review_required omitted ⇒ signoff not required (legacy path)."""
+    rendered = tmp_path / "tos.md"
+    rendered.write_text("# TOS\n", encoding="utf-8")
+    overlay = {
+        "required_documents": [
+            {
+                "doc_type": "tos",
+                "blocker_for_phase": 4,
+                "generated_template_path": str(rendered),
+                # no founder_review_required key
+            },
+        ],
+    }
+    (tmp_path / "compliance_overlay.json").write_text(
+        json.dumps(overlay), encoding="utf-8",
+    )
+    res = compliance_blocker_check(
+        mission_id=42, current_phase=6, workspace_path=str(tmp_path),
+        signoffs=set(),
+    )
+    assert res["ok"] is True
+
+
 @pytest.mark.asyncio
 async def test_dispatch_through_run_passes(tmp_path):
     from mr_roboto import run

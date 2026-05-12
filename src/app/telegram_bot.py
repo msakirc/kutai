@@ -8083,7 +8083,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             pass
 
     async def _notify_founder_action(self, action) -> None:
-        """Posted as a callback registered with founder_actions.create()."""
+        """Posted as a callback registered with founder_actions.create().
+
+        Z6 polish P1: when action.urgent is truthy, bypass the mission
+        thread and DM the admin chat directly (disputes, expired creds,
+        security incidents). Regular path uses the mission thread.
+        """
         try:
             from src.app.founder_action_render import render_action_card
             from src.app.telegram_topics import post_to_mission_thread
@@ -8091,6 +8096,23 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             logger.debug(f"founder_action notify imports failed: {e}")
             return
         text, kb = render_action_card(action.to_dict())
+        urgent = bool(getattr(action, "urgent", False))
+        if urgent:
+            # DM bypass — admin chat directly, prefixed for visibility.
+            if not TELEGRAM_ADMIN_CHAT_ID:
+                logger.debug("urgent founder_action: no admin chat configured")
+                return
+            urgent_text = f"🚨 *URGENT* — {text}"
+            try:
+                await self.app.bot.send_message(
+                    chat_id=int(TELEGRAM_ADMIN_CHAT_ID),
+                    text=urgent_text,
+                    reply_markup=kb,
+                    parse_mode="Markdown",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"urgent founder_action DM failed: {e}")
+            return
         try:
             await post_to_mission_thread(
                 self.app.bot, action.mission_id, text,

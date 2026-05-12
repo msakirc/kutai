@@ -115,6 +115,7 @@ async def _emit_legal_counsel(
                 "Decide whether to contest with evidence or accept.",
                 "Consult counsel if reason involves fraud or chargeback abuse.",
             ],
+            urgent=True,
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("legal_counsel founder_action emit failed: %s", exc)

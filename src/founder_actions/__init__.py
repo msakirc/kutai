@@ -69,6 +69,7 @@ class FounderAction:
     created_at: str
     updated_at: str
     resolved_at: Optional[str]
+    urgent: bool = False
 
     @classmethod
     def from_row(cls, row: Any) -> "FounderAction":
@@ -113,6 +114,7 @@ class FounderAction:
             created_at=d["created_at"],
             updated_at=d["updated_at"],
             resolved_at=d.get("resolved_at"),
+            urgent=bool(d.get("urgent") or 0),
         )
 
     def to_dict(self) -> dict:
@@ -140,6 +142,7 @@ class FounderAction:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "resolved_at": self.resolved_at,
+            "urgent": bool(self.urgent),
         }
 
 
@@ -184,6 +187,7 @@ async def create(
     expected_output_schema: Optional[dict] = None,
     cost_estimate_usd: Optional[float] = None,
     reversibility: Optional[str] = None,
+    urgent: bool = False,
     notify_telegram: bool = True,
 ) -> FounderAction:
     """Create a new pending founder_action. Returns the persisted row.
@@ -204,8 +208,9 @@ async def create(
         "INSERT INTO founder_actions "
         "(mission_id, blocking_task_id, blocking_step_id, kind, title, why, "
         " instructions_json, expected_output_kind, expected_output_schema_json,"
-        " cost_estimate_usd, reversibility, status, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+        " cost_estimate_usd, reversibility, urgent, status, "
+        " created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
         (
             mission_id,
             blocking_task_id,
@@ -218,6 +223,7 @@ async def create(
             json.dumps(expected_output_schema) if expected_output_schema else None,
             cost_estimate_usd,
             reversibility,
+            1 if urgent else 0,
             now,
             now,
         ),

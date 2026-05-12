@@ -304,6 +304,11 @@ async def credential_rotation_reminder(
             ),
             "Mark this action done after the new credential is stored.",
         ]
+        # Urgent only when token has already expired (days_to_expiry < 0).
+        days_to_exp = entry.get("days_to_expiry")
+        is_urgent = bool(
+            days_to_exp is not None and days_to_exp < 0
+        )
         try:
             action = await create_founder_action(
                 mission_id=SYSTEM_MISSION_ID,
@@ -312,6 +317,7 @@ async def credential_rotation_reminder(
                 why=why,
                 instructions=instructions,
                 expected_output_kind="credential",
+                urgent=is_urgent,
                 notify_telegram=False,
             )
             emitted.append(action.id)

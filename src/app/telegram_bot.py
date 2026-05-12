@@ -1867,6 +1867,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("graph", self.cmd_graph))
         self.app.add_handler(CommandHandler("budget", self.cmd_budget))
         self.app.add_handler(CommandHandler("signoff", self.cmd_signoff))
+        self.app.add_handler(CommandHandler("preflight", self.cmd_preflight))
         self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))
         self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))
         self.app.add_handler(CommandHandler("progress", self.cmd_progress))
@@ -1895,6 +1896,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("budget", self.cmd_budget))
         # Z1 Tier 5A (P6): founder compliance signoffs
         self.app.add_handler(CommandHandler("signoff", self.cmd_signoff))
+        # Z0 minimal slice: mission preflight contract
+        self.app.add_handler(CommandHandler("preflight", self.cmd_preflight))
         # Z1 Tier 6 (C18): per-mission GitHub repo (init / view / visibility)
         self.app.add_handler(CommandHandler("github", self.cmd_github))
         # Z1 Tier 7B (C21): bundle-quality regression vs Paraflow goldens
@@ -4353,6 +4356,131 @@ class TelegramInterface:
                 f"  spent:     {res.get('spent')} min\n"
                 f"  remaining: {res.get('remaining')} min"
             ),
+        )
+
+    async def cmd_preflight(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z0 minimal slice — view / set mission preflight contract.
+
+        Usage:
+          /preflight <mission_id>                      — show preflight
+          /preflight <mission_id> tier <name>          — set ambition_tier
+          /preflight <mission_id> cost <usd>           — set cost ceiling
+          /preflight <mission_id> attention <minutes>  — override attention budget
+
+        ``tier`` ∈ {prototype, private_beta, public_launch, revenue_product}.
+        Setting `tier` without `attention` applies the spec'd default for
+        that tier (120/240/480/None).
+        """
+        args = context.args or []
+        if not args:
+            await self._reply(
+                update,
+                "Usage: `/preflight <mission_id> [tier|cost|attention] [value]`",
+                parse_mode="Markdown",
+            )
+            return
+        try:
+            mission_id = int(args[0])
+        except (ValueError, TypeError):
+            await self._reply(update, "❌ mission_id must be an integer.")
+            return
+
+        if len(args) == 1:
+            # Show current preflight.
+            import os
+            import json as _json
+            from src.tools.workspace import get_mission_workspace
+            from src.infra.db import get_db
+            ws = get_mission_workspace(mission_id)
+            path = os.path.join(ws, ".preflight", "mission_preflight.json")
+            if os.path.isfile(path):
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        body = fh.read()
+                    await self._reply(
+                        update,
+                        f"Mission #{mission_id} preflight:\n```json\n{body}\n```",
+                        parse_mode="Markdown",
+                    )
+                    return
+                except Exception:
+                    pass
+            # Fall back to DB columns.
+            db = await get_db()
+            cur = await db.execute(
+                "SELECT ambition_tier, cost_ceiling_usd, "
+                "founder_attention_budget_minutes FROM missions WHERE id=?",
+                (mission_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                await self._reply(update, f"Mission #{mission_id} not found.")
+                return
+            await self._reply(
+                update,
+                (
+                    f"Mission #{mission_id} preflight (no JSON yet)\n"
+                    f"  ambition_tier:           {row[0] or '(unset)'}\n"
+                    f"  cost_ceiling_usd:        {row[1] if row[1] is not None else '(unset)'}\n"
+                    f"  attention_budget_min:    {row[2] if row[2] is not None else '(unbounded)'}"
+                ),
+            )
+            return
+
+        if len(args) < 3:
+            await self._reply(
+                update,
+                "Usage: `/preflight <mission_id> <tier|cost|attention> <value>`",
+                parse_mode="Markdown",
+            )
+            return
+
+        key = args[1].lower()
+        value = args[2]
+
+        from mr_roboto.z0_preflight import z0_preflight_write, VALID_TIERS
+        kwargs: dict = {"mission_id": mission_id}
+        if key == "tier":
+            if value not in VALID_TIERS:
+                await self._reply(
+                    update,
+                    f"❌ tier must be one of: {', '.join(VALID_TIERS)}",
+                )
+                return
+            kwargs["ambition_tier"] = value
+        elif key == "cost":
+            try:
+                kwargs["cost_ceiling_usd"] = float(value)
+            except ValueError:
+                await self._reply(update, "❌ cost must be a number (USD).")
+                return
+        elif key == "attention":
+            try:
+                kwargs["attention_budget_minutes"] = int(value)
+            except ValueError:
+                await self._reply(update, "❌ attention must be an integer.")
+                return
+        else:
+            await self._reply(
+                update,
+                "❌ key must be one of: tier, cost, attention.",
+            )
+            return
+
+        try:
+            res = await z0_preflight_write(**kwargs)
+        except Exception as e:
+            await self._reply(update, f"❌ preflight write failed: {e}")
+            return
+        if not res.get("ok"):
+            await self._reply(update, f"❌ {res.get('error')}")
+            return
+        await self._reply(
+            update,
+            f"✅ Preflight updated for mission #{mission_id}\n"
+            f"  {key}: {value}\n"
+            f"  written: `{res.get('preflight_path')}`",
+            parse_mode="Markdown",
         )
 
     async def cmd_signoff(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

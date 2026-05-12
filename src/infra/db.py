@@ -772,6 +772,25 @@ async def init_db():
     except Exception:
         pass  # Column already exists
 
+    # Z0 minimal slice — ambition_tier + cost_ceiling per mission. The full
+    # z0 preflight wizard is a multi-feature zone of its own; this slice
+    # ships the two fields downstream gates need (attention-budget defaults
+    # by tier, cost-ceiling enforcement in 06-real-world-bridge).
+    # ambition_tier ∈ {prototype, private_beta, public_launch, revenue_product}.
+    # NULL = legacy / undeclared → treated as 'private_beta' by callers.
+    for sql, label in (
+        ("ALTER TABLE missions ADD COLUMN ambition_tier TEXT", "ambition_tier"),
+        (
+            "ALTER TABLE missions ADD COLUMN cost_ceiling_usd REAL",
+            "cost_ceiling_usd",
+        ),
+    ):
+        try:
+            await db.execute(sql)
+            logger.info(f"Z0 minimal migration: {label} added")
+        except Exception:
+            pass
+
     # Z1 Tier 5A (A5): founder_attention_log — one row per debit. Used by
     # attention_check to compute remaining budget.
     try:

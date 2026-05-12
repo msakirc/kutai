@@ -124,6 +124,7 @@ __all__ = [
     "compliance_blocker_check",
     "attention_check",
     "attention_debit",
+    "z0_preflight_write",
     "write_deferred_question",
     "verify_premortem_shape",
     "spec_consistency_check",
@@ -2119,6 +2120,34 @@ async def _run_dispatch(task: dict) -> Action:
             )
             # Never fail the dispatch — caller (orchestrator pre-hook) reads
             # `ok` and decides whether to skip or proceed. Return result.
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "z0_preflight_write":
+        # Z0 minimal slice — write mission preflight JSON + set
+        # ambition_tier / cost_ceiling_usd / attention budget on
+        # missions row. Drives downstream Z1 gates.
+        from mr_roboto.z0_preflight import z0_preflight_write as _z0_write
+        try:
+            mid = task.get("mission_id") or payload.get("mission_id")
+            res = await _z0_write(
+                mission_id=int(mid) if mid is not None else 0,
+                ambition_tier=payload.get("ambition_tier"),
+                cost_ceiling_usd=payload.get("cost_ceiling_usd"),
+                attention_budget_minutes=payload.get(
+                    "attention_budget_minutes"
+                ),
+                jurisdictions=payload.get("jurisdictions"),
+                user_classes=payload.get("user_classes"),
+                workspace_path=payload.get("workspace_path"),
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=str(res.get("error") or "z0_preflight_write failed"),
+                    result=res,
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

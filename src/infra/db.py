@@ -795,6 +795,38 @@ async def init_db():
         except Exception:
             pass
 
+    # 2026-05-12 Z8 T1A — mission lifecycle columns.
+    # ``kind`` ∈ {oneshot, ongoing}; ``lifecycle_state`` ∈ {pending, active,
+    # terminal, revoked}. Existing rows backfill to ('oneshot','terminal') so
+    # nothing legacy looks like a live ongoing subscription.
+    # ``cursor`` is opaque JSON owned by the handler (webhook event id,
+    # cron last-fire ts, etc.). ``product_id`` is a nullable placeholder —
+    # Z0 may take ownership later; routing code treats NULL as "default
+    # product." Index supports the resumption query
+    # (kind='ongoing' AND lifecycle_state='active').
+    for sql, label in (
+        ("ALTER TABLE missions ADD COLUMN kind TEXT NOT NULL DEFAULT 'oneshot'", "kind"),
+        (
+            "ALTER TABLE missions ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'terminal'",
+            "lifecycle_state",
+        ),
+        ("ALTER TABLE missions ADD COLUMN cursor TEXT", "cursor"),
+        ("ALTER TABLE missions ADD COLUMN product_id TEXT", "product_id"),
+        ("ALTER TABLE missions ADD COLUMN revoked_at TEXT", "revoked_at"),
+    ):
+        try:
+            await db.execute(sql)
+            logger.info(f"Z8 T1A migration: {label} added to missions")
+        except Exception:
+            pass
+    try:
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_missions_kind_state "
+            "ON missions(kind, lifecycle_state)"
+        )
+    except Exception:
+        pass
+
     # Z1 Tier 5A (A5): founder_attention_log — one row per debit. Used by
     # attention_check to compute remaining budget.
     try:

@@ -1789,4 +1789,5 @@ P7 ─┬─ P4 ─ P3 ─┬─ P5
 
 ## Updates
 
-(none — this is v3's initial cut)
+- 2026-05-08 — v3 initial cut.
+- 2026-05-12 — **Z1 CLOSED**. All 7 tiers shipped + audit Telegram surface: T1-T4 baseline (per `project_z1_complete` 2026-05-10), then T5 (founder_signoffs + attention_debit + spec_consistency R5/R6 + critic_gate), T6 (find_similar_missions Continue/Branch/Abort + yazbunu z1_prior_art telemetry + GitHub visibility-flip confirm), T7 (bash audit + paraflow goldens cron), plus post-T7 closures (8 dead mechanical post-hooks wired, regen honest failure signal, /audit surface, 3 handoff items). 52 z1-tagged commits. Tag `z1-complete-2026-05-12`. Residual v3 notes (request_evidence_uploads as /evidence slash command P10b, extra_metrics_json column) remain deferred per original v3 scope.

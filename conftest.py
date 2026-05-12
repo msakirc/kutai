@@ -8,15 +8,8 @@ Having a single root conftest avoids pluggy "Plugin already registered
 under a different name" collisions caused by multiple `tests/conftest.py`
 files under `packages/*/tests/`.
 """
-import os
 import pathlib
 import sys
-
-# Z1 Tier 5C (B4) — Critic gate is default-on in production but must be
-# default-off in unit tests so that pre-existing router tests don't hit
-# the real LLMDispatcher. Dedicated gate tests opt back in via
-# `monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)`.
-os.environ.setdefault("KUTAI_CRITIC_GATE", "off")
 
 _ROOT = pathlib.Path(__file__).parent
 

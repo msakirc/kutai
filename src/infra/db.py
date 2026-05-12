@@ -2278,6 +2278,25 @@ async def init_db():
         ),
     )
 
+    # ── Z6 polish P1: founder_actions.urgent flag for DM bypass ─────────────
+    # When urgent=1, the Telegram notifier DMs the admin chat directly
+    # instead of posting to the mission thread (disputes, payment failures,
+    # security incidents, expired credentials). Idempotent ADD COLUMN.
+    await apply_migration(
+        version="2026-05-12-founder-actions-urgent",
+        sql=(
+            "ALTER TABLE founder_actions "
+            "ADD COLUMN urgent INTEGER DEFAULT 0;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE founder_actions DROP COLUMN urgent;\n"
+        ),
+        description=(
+            "Z6 polish P1: founder_actions.urgent flag drives DM-to-admin "
+            "bypass for disputes, expired creds, security incidents."
+        ),
+    )
+
     # ── Z6 T1A: hoist needs_real_tools from task.context to indexed column ──
     # reversibility was added by 2026-05-10-tasks-confidence-reversibility
     # (Z10 T1C); needs_real_tools is new. Idempotent ADD COLUMN.
@@ -4787,6 +4806,34 @@ async def update_model_stats(
 
 
 # ─── Web Source Quality Tracking ───────────────────────────────────────────
+
+
+async def record_streaming_guard_outcome(
+    *,
+    guard_name: str,
+    action: str,
+    note: str | None = None,
+    task_id: int | None = None,
+    mission_id: int | None = None,
+) -> None:
+    """Z1 T5C (B3) — insert one streaming_guard_log row.
+
+    Fire-and-forget from the streaming pipeline's sink. Errors are
+    swallowed: a broken telemetry table must never abort LLM streaming.
+    Schema CHECK enforces ``action IN ('warn','halt','fix')``.
+    """
+    if action not in ("warn", "halt", "fix"):
+        return
+    try:
+        db = await get_db()
+        await db.execute(
+            "INSERT INTO streaming_guard_log "
+            "(mission_id, task_id, guard_name, action, note) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (mission_id, task_id, guard_name, action, (note or "")[:500]),
+        )
+    except Exception:
+        pass
 
 
 async def record_source_quality(

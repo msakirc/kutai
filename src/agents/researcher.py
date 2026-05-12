@@ -24,6 +24,7 @@ class ResearcherAgent(BaseAgent):
 
     allowed_tools = [
         "web_search",
+        "find_prior_art",
         "read_file",
         "write_file",
         "file_tree",
@@ -45,8 +46,12 @@ class ResearcherAgent(BaseAgent):
             "1. **Anchor** — At the start of your reasoning, restate the research "
             "question in one sentence. Check every result against this question "
             "before including it.\n"
-            "2. **Search** — Use `web_search` once. The search tool already "
-            "queries multiple sources and synthesizes results.\n"
+            "2. **Search** — Use `web_search` once for general queries. "
+            "For prior-art / idea-validation tasks (HN/Wikipedia/Wayback/PH "
+            "sweep, dead-startup history, attempted-solutions catalog), use "
+            "`find_prior_art` instead — it's purpose-built for that and "
+            "returns a structured report. The search tool already queries "
+            "multiple sources and synthesizes results.\n"
             "3. **Evaluate** — If the result is comprehensive, go straight to "
             "final_answer. Only search again if the first result is clearly "
             "incomplete or off-topic.\n"

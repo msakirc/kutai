@@ -269,6 +269,41 @@ def _extract_reasoning_tokens(raw_result) -> int:
 
 # ─── Streaming ─────────────────────────────────────────────────────────────
 
+
+def _streaming_guard_sink(result) -> None:
+    """Z1 T5C (B3) — sink for StreamingGuardPipeline.
+
+    Mirrors the default sink's logger.warning behaviour AND schedules a
+    fire-and-forget DB row write to ``streaming_guard_log``. ``task_id``
+    is resolved from the ``current_task_id`` contextvar; ``mission_id``
+    is left NULL (the streaming layer doesn't carry mission context —
+    join via tasks.mission_id at query time).
+
+    Errors here are swallowed: telemetry must never abort streaming.
+    """
+    if result.action not in {"warn", "halt", "fix"}:
+        return
+    if result.action in {"warn", "halt"}:
+        _get_logger().warning(
+            f"[streaming_guard:{result.guard_name}] "
+            f"{result.action}: {result.note}"
+        )
+    try:
+        import asyncio as _aio
+        from src.core.heartbeat import current_task_id as _ctid
+        from src.infra.db import record_streaming_guard_outcome
+        loop = _aio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(record_streaming_guard_outcome(
+                guard_name=result.guard_name or "",
+                action=result.action,
+                note=result.note or "",
+                task_id=_ctid.get(),
+            ))
+    except Exception:
+        pass
+
+
 async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     """Call litellm with streaming, accumulate content for partial recovery.
 
@@ -295,7 +330,7 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     _stream_pipeline = None
     try:
         from coulson.streaming_guards import StreamingGuardPipeline
-        _stream_pipeline = StreamingGuardPipeline()
+        _stream_pipeline = StreamingGuardPipeline(sink=_streaming_guard_sink)
     except Exception:
         _stream_pipeline = None
 

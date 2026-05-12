@@ -5766,6 +5766,46 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             logger.info("clarification received, task resumed",
                         task_id=task_id, answer_preview=answer[:50])
 
+            # Z1 T5A — auto-fire attention_debit. Minutes elapsed = answer
+            # timestamp minus the question's sent timestamp (replied_to). Floor
+            # at 1 minute (any answer costs at least one). Best-effort:
+            # failures must not block resume.
+            try:
+                mission_id = task_info.get("mission_id")
+                if mission_id:
+                    step_id = ctx.get("step_id") or ctx.get("_step_id") or "clarify"
+                    minutes = 1
+                    try:
+                        replied_to = (
+                            update.message.reply_to_message
+                            if update and update.message else None
+                        )
+                        if replied_to and replied_to.date and update.message.date:
+                            delta = update.message.date - replied_to.date
+                            minutes = max(1, int(delta.total_seconds() // 60))
+                    except Exception:
+                        pass
+                    import general_beckman as _beckman
+                    import json as _json_dbg
+                    await _beckman.enqueue({
+                        "title": f"attention_debit:m{mission_id}:t{task_id}",
+                        "agent_type": "mechanical",
+                        "mission_id": mission_id,
+                        "context": _json_dbg.dumps({
+                            "executor": "mechanical",
+                            "payload": {
+                                "action": "attention_debit",
+                                "mission_id": mission_id,
+                                "step_id": str(step_id),
+                                "debit_action": "clarify_reply",
+                                "minutes_debited": minutes,
+                            },
+                        }),
+                    })
+            except Exception as _debit_exc:
+                logger.warning("attention_debit auto-fire failed",
+                               task_id=task_id, error=str(_debit_exc))
+
             # Record feedback
             try:
                 await record_feedback(task_info, "modified", details=answer)

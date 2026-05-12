@@ -138,9 +138,11 @@ async def _invoke_emitter(
     Production path: ask the LLM via coulson with a small wrapper task
     carrying the current body + change description + optional axis fragment.
 
-    The default deterministic fallback simply prepends a regen header to
-    the existing body so the action remains useful without a live model
-    (matches ``generate_intake_todo``'s testability pattern).
+    Returns an envelope ``{"ok": bool, "text": str | None, "error": str | None}``.
+    Failure modes (coulson unavailable / coulson raised / empty text) return
+    ``ok=False`` with an error string. Callers MUST NOT write the original
+    body back to disk on failure — that would silently pretend the regen
+    succeeded.
     """
     try:  # pragma: no cover — exercised only when coulson is wired live.
         from coulson import execute as _coulson_execute  # type: ignore
@@ -148,15 +150,12 @@ async def _invoke_emitter(
         _coulson_execute = None  # type: ignore[assignment]
 
     if _coulson_execute is None:
-        # Deterministic fallback. Tests patch this function entirely so this
-        # path only runs when no live LLM is available.
-        header_bits = [f"<!-- regen: {change_description} -->"]
-        if axis_fragment:
-            header_bits.append(f"<!-- axis: {axis_fragment} -->")
-        new_body = "\n".join(header_bits) + "\n" + current_body
-        return {"text": new_body}
+        return {
+            "ok": False,
+            "text": None,
+            "error": "coulson unavailable; regen requires an LLM emitter",
+        }
 
-    # Build a synthetic task for coulson (single-shot emission profile).
     prompt = [
         f"Re-emit the artifact at `{artifact_path}` against the change below.",
         "Preserve format and schema. Output ONLY the new body, no commentary.",
@@ -175,12 +174,16 @@ async def _invoke_emitter(
     try:
         res = await _coulson_execute("overhead", task)  # type: ignore[misc]
     except Exception as exc:
-        logger.warning("regen_artifact: coulson failed (%s) — using fallback body", exc)
-        return {"text": current_body}
+        logger.warning("regen_artifact: coulson failed (%s)", exc)
+        return {"ok": False, "text": None, "error": f"coulson failed: {exc}"}
     text = (res or {}).get("text") if isinstance(res, dict) else None
     if not isinstance(text, str) or not text.strip():
-        return {"text": current_body}
-    return {"text": text}
+        return {
+            "ok": False,
+            "text": None,
+            "error": "emitter returned empty text",
+        }
+    return {"ok": True, "text": text, "error": None}
 
 
 # ---------------------------------------------------------------------------
@@ -302,9 +305,25 @@ async def regen_artifact(
         axis_fragment=axis_fragment,
         mission_id=mission_id,
     )
-    new_body = emit.get("text") or current_body
+    # Back-compat: accept legacy `{"text": ...}` shape (treat as success when
+    # text is a non-empty string). New shape: `{"ok": bool, "text", "error"}`.
+    if "ok" in emit:
+        if not emit.get("ok"):
+            return {
+                "ok": False,
+                "artifact_path": artifact_path,
+                "error": f"regen_artifact: emitter failed ({emit.get('error') or 'unknown error'})",
+            }
+        new_body = emit.get("text")
+    else:
+        new_body = emit.get("text")
+    if not isinstance(new_body, str) or not new_body.strip():
+        return {
+            "ok": False,
+            "artifact_path": artifact_path,
+            "error": "regen_artifact: emitter produced empty body",
+        }
 
-    # Write versioned snapshot first, then overwrite canonical path.
     try:
         with open(new_path, "w", encoding="utf-8") as fh:
             fh.write(new_body)

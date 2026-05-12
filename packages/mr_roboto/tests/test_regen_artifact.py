@@ -142,6 +142,61 @@ async def test_regen_artifact_records_log_row(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_regen_artifact_emitter_failure_does_not_overwrite(tmp_path):
+    """Emitter ok=False ⇒ canonical path untouched + action fails (no silent same-body write)."""
+    mission_root = tmp_path / "mission_9"
+    mission_root.mkdir()
+    art = mission_root / "charter.md"
+    original = "# Charter v1\n\noriginal body\n"
+    art.write_text(original, encoding="utf-8")
+
+    task = {
+        "id": 1,
+        "mission_id": 9,
+        "payload": {
+            "action": "regen_artifact",
+            "artifact_path": "mission_9/charter.md",
+            "change_description": "tighten",
+            "workspace_path": str(tmp_path),
+        },
+    }
+    with patch("mr_roboto.regen._invoke_emitter", new_callable=AsyncMock) as mock_emit:
+        mock_emit.return_value = {"ok": False, "text": None, "error": "coulson unavailable"}
+        action = await mr_roboto.run(task)
+
+    assert action.status == "failed"
+    assert "coulson unavailable" in (action.error or "")
+    assert art.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_regen_artifact_empty_emitter_text_fails(tmp_path):
+    """Empty/whitespace text from emitter ⇒ failure, not silent no-op write."""
+    mission_root = tmp_path / "mission_10"
+    mission_root.mkdir()
+    art = mission_root / "prd.md"
+    art.write_text("body", encoding="utf-8")
+
+    task = {
+        "id": 1,
+        "mission_id": 10,
+        "payload": {
+            "action": "regen_artifact",
+            "artifact_path": "mission_10/prd.md",
+            "change_description": "x",
+            "workspace_path": str(tmp_path),
+        },
+    }
+    with patch("mr_roboto.regen._invoke_emitter", new_callable=AsyncMock) as mock_emit:
+        mock_emit.return_value = {"ok": True, "text": "   ", "error": None}
+        action = await mr_roboto.run(task)
+
+    assert action.status == "failed"
+    assert "empty" in (action.error or "").lower()
+    assert art.read_text(encoding="utf-8") == "body"
+
+
+@pytest.mark.asyncio
 async def test_regen_artifact_missing_change_description_fails(tmp_path):
     task = {
         "id": 1,

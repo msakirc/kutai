@@ -2044,16 +2044,22 @@ async def _apply_semgrep_blocker_verdict(
         return
 
     # Separate blocker-level findings from sub-threshold findings.
-    # blocker_threshold is a semgrep severity string (ERROR/WARNING/INFO) or
-    # the posthook severity string ("blocker"/"warning"). Normalize posthook
-    # severity strings to their semgrep equivalent: "blocker" → "ERROR",
-    # "warning" → "WARNING".
-    _POSTHOOK_TO_SEMGREP = {"blocker": "ERROR", "warning": "WARNING"}
+    #
+    # blocker_threshold is a semgrep severity string (ERROR / WARNING / INFO).
+    # A finding blocks the source when its severity is >= threshold.
+    #
+    # When the threshold value is the posthook severity word "blocker" or
+    # "warning" (i.e. caller passed `default_severity` straight through), it
+    # is reinterpreted: "blocker" means "this kind gates aggressively" → use
+    # the LOWEST semgrep severity (INFO) so ANY finding blocks. "warning"
+    # means "non-fatal" → use ERROR so only the worst findings block.
+    # Step context can override via `semgrep_blocker_threshold`.
+    _POSTHOOK_TO_SEMGREP = {"blocker": "WARNING", "warning": "ERROR"}
     _SEVERITY_ORDER = {"ERROR": 3, "WARNING": 2, "INFO": 1}
     normalised_threshold = _POSTHOOK_TO_SEMGREP.get(
         blocker_threshold.lower(), blocker_threshold.upper()
     )
-    threshold_level = _SEVERITY_ORDER.get(normalised_threshold.upper(), 3)
+    threshold_level = _SEVERITY_ORDER.get(normalised_threshold.upper(), 2)
     blocker_findings = [
         f for f in findings
         if _SEVERITY_ORDER.get((f.get("severity") or "WARNING").upper(), 2) >= threshold_level

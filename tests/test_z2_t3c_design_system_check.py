@@ -188,8 +188,8 @@ def test_design_system_rule_pack_severities():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_verdict_findings_surfaced_in_ctx():
-    """Findings go to ctx['_design_system_findings'], source advances."""
+async def test_verdict_info_finding_surfaces_and_advances():
+    """INFO finding is below blocker threshold (WARNING) — source advances."""
     from general_beckman.result_router import PostHookVerdict
     from general_beckman.apply import _apply_design_system_check_verdict
 
@@ -202,9 +202,10 @@ async def test_verdict_findings_surfaced_in_ctx():
         kind="design_system_check",
         passed=True,
         raw={
-            "findings": [{"rule_id": "no-inline-style-attr", "path": "Button.tsx"}],
+            "findings": [{"rule_id": "no-px-in-styles", "path": "Button.tsx",
+                          "severity": "INFO"}],
             "blocker_count": 0,
-            "warning_count": 1,
+            "warning_count": 0,
             "skipped": False,
         },
     )
@@ -218,11 +219,45 @@ async def test_verdict_findings_surfaced_in_ctx():
 
     assert "_design_system_findings" in ctx
     assert len(ctx["_design_system_findings"]) == 1
-    assert ctx["_design_system_findings"][0]["rule_id"] == "no-inline-style-attr"
-    # Source should advance to completed (no remaining pending hooks)
+    # INFO below threshold → source advances to completed
     mock_update.assert_called_once()
     call_kwargs = mock_update.call_args[1]
     assert call_kwargs.get("status") == "completed"
+
+
+@pytest.mark.asyncio
+async def test_verdict_warning_finding_blocks_retry():
+    """WARNING-level finding meets blocker threshold — source retries (pending)."""
+    from general_beckman.result_router import PostHookVerdict
+    from general_beckman.apply import _apply_design_system_check_verdict
+
+    source = {"id": 44, "mission_id": None, "agent_type": "coder",
+              "worker_attempts": 0, "max_worker_attempts": 15}
+    ctx = {"_pending_posthooks": ["design_system_check"]}
+    pending = ["design_system_check"]
+
+    verdict = PostHookVerdict(
+        source_task_id=44,
+        kind="design_system_check",
+        passed=True,
+        raw={
+            "findings": [{"rule_id": "no-inline-style-attr", "path": "Button.tsx",
+                          "severity": "WARNING"}],
+            "blocker_count": 0,
+            "warning_count": 1,
+            "skipped": False,
+        },
+    )
+
+    with patch("src.infra.db.update_task", new_callable=AsyncMock) as mock_update, \
+         patch("general_beckman.apply._stamp_retry_feedback"):
+        await _apply_design_system_check_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+
+    mock_update.assert_called_once()
+    call_kwargs = mock_update.call_args[1]
+    assert call_kwargs.get("status") == "pending"
 
 
 @pytest.mark.asyncio

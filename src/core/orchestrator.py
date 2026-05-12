@@ -481,19 +481,32 @@ class Orchestrator:
     # ─── Background Tasks & Startup ───────────────────────────────────────
 
     async def _rebind_ongoing(self, mission) -> None:
-        """Z8 T1C v1 — re-bind an ongoing mission after restart.
+        """Z8 T1C v1 + T5-prep — re-bind an ongoing mission after restart.
 
-        v1 is intentionally a no-op past logging: the webhook listener
-        (T3) reads ``mission.cursor`` to skip already-processed events,
-        and the cron scheduler (T5) re-arms by querying
-        ``find_resumable()`` directly. Full re-subscribe logic lands in
-        T3D once integration adapters carry their own pulse.
+        Webhook listener (T3) reads ``mission.cursor`` to skip
+        already-processed events. T5-prep wires the cron scheduler:
+        ``mission.cursor['cron']`` is a list of
+        ``{"action": str, "interval_seconds": int}`` entries; each is
+        armed via ``mission_cron.arm()``.
         """
         logger.debug(
             f"_rebind_ongoing: mission #{mission.id} parked for "
             f"handler-side replay (cursor_keys="
             f"{sorted(mission.cursor.keys()) if mission.cursor else []})"
         )
+        try:
+            from general_beckman.mission_cron import arm_from_cursor
+            armed = await arm_from_cursor(mission)
+            if armed:
+                logger.info(
+                    "mission_cron armed",
+                    mission_id=mission.id,
+                    armed=armed,
+                )
+        except Exception as e:
+            logger.warning(
+                f"mission_cron arm failed for mid={mission.id}: {e}"
+            )
 
     async def _heartbeat_loop(self):
         """Run heartbeat + state-snapshot writer.

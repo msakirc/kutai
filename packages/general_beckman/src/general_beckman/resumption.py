@@ -96,4 +96,12 @@ async def revoke(mission_id: int) -> bool:
         rc = cur.rowcount
     except AttributeError:
         rc = -1
-    return rc == 1
+    transitioned = rc == 1
+    if transitioned:
+        # Z8 T5-prep — tear down any cron schedules armed for this mission.
+        try:
+            from general_beckman.mission_cron import disarm
+            await disarm(mission_id)
+        except Exception:
+            pass
+    return transitioned

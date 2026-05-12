@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import fnmatch
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from general_beckman.posthooks import MissionDialContext
 
 from src.infra.logging_config import get_logger
 
@@ -83,22 +86,43 @@ def _phase_to_priority(phase: str) -> int:
     return max(1, 10 - phase_num)
 
 
-def _auto_wire_posthooks(context: dict) -> None:
+def _auto_wire_posthooks(
+    context: dict,
+    dial_ctx: Optional["MissionDialContext"] = None,
+) -> None:
     """Prepend post-hook kinds whose registry triggers match the step's produces.
 
-    Iterates ``POST_HOOK_REGISTRY`` in insertion order.  For each spec with
-    non-empty ``auto_wire_triggers``, checks whether any trigger glob
-    (fnmatch-style) matches any entry in ``context["produces"]``.  Produces
-    entries that are lists (any_of alternatives) have each alternative tested
-    individually — if any alternative matches, the trigger fires.
+    Iterates ``POST_HOOK_REGISTRY`` in insertion order.  For each spec,
+    resolves its ``auto_wire_triggers`` (static list *or* callable) via
+    :meth:`PostHookSpec.resolve_triggers`, then checks whether any returned
+    glob (fnmatch-style) matches any entry in ``context["produces"]``.
+    Produces entries that are lists (any_of alternatives) have each
+    alternative tested individually — if any alternative matches, the
+    trigger fires.
 
     Prepends matched kinds so cheapest checks (grounding) fire before
     more-expensive ones (verify_artifacts, code_review).  Idempotent: a kind
     already present is never duplicated.
 
     Called only when ``context["produces"]`` is non-empty.
+
+    Parameters
+    ----------
+    context:
+        Mutable step context dict.  ``post_hooks`` is updated in-place.
+    dial_ctx:
+        Optional :class:`~general_beckman.posthooks.MissionDialContext`
+        forwarded to callable ``auto_wire_triggers`` so the trigger set can
+        vary with founder dial settings (T1C).  When ``None``, the default
+        conservative context is used — behaviour is identical to the static
+        form until real dials are wired.
     """
-    from general_beckman.posthooks import POST_HOOK_REGISTRY  # lazy import avoids circular
+    from general_beckman.posthooks import (  # lazy import avoids circular
+        POST_HOOK_REGISTRY,
+        MissionDialContext as _MDC,
+    )
+
+    _dial = dial_ctx if dial_ctx is not None else _MDC()
 
     produces: list = context.get("produces") or []
     existing: list[str] = list(context.get("post_hooks") or [])
@@ -114,11 +138,12 @@ def _auto_wire_posthooks(context: dict) -> None:
 
     to_prepend: list[str] = []
     for spec in POST_HOOK_REGISTRY.values():
-        if not spec.auto_wire_triggers:
+        resolved_triggers = spec.resolve_triggers(_dial)
+        if not resolved_triggers:
             continue
         if spec.kind in existing or spec.kind in to_prepend:
             continue
-        for trigger in spec.auto_wire_triggers:
+        for trigger in resolved_triggers:
             if any(fnmatch.fnmatchcase(p, trigger) for p in candidate_paths):
                 to_prepend.append(spec.kind)
                 break

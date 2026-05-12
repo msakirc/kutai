@@ -72,9 +72,12 @@ def test_cost_band_is_valid_literal(registry):
         )
 
 
-def test_registry_has_exactly_10_kinds(registry):
-    """Sanity: no kinds were accidentally added or removed."""
-    assert len(registry) == 10, f"Expected 10 kinds, got {len(registry)}"
+def test_registry_has_expected_minimum_kinds(registry):
+    """Sanity: 10 Z2 kinds + 8 Z1-audit mechanical kinds wired through registry.
+    Use minimum-kinds assert so future additions (Z3 T2/T3) don't break this test."""
+    assert len(registry) >= 18, f"Expected ≥18 kinds (10 Z2 + 8 Z1 mechanical), got {len(registry)}"
+    for kind in _EXPECTED_COST_BANDS:
+        assert kind in registry, f"Z2 baseline kind missing: {kind}"
 
 
 # ---------------------------------------------------------------------------
@@ -93,23 +96,24 @@ def test_mission_dial_context_default_multi_file_expansion_false(default_dial):
     assert default_dial.multi_file_expansion is False
 
 
-def test_mission_dial_context_default_integration_replay_off(default_dial):
-    assert default_dial.integration_replay == "off"
+def test_mission_dial_context_default_integration_replay_standard(default_dial):
+    """Default matches plan vocab: integration_replay ∈ {quick, standard, strict}."""
+    assert default_dial.integration_replay == "standard"
 
 
 def test_mission_dial_context_fields_present():
-    """MissionDialContext can be constructed with explicit values."""
+    """MissionDialContext accepts explicit values per plan-aligned vocab."""
     from general_beckman.posthooks import MissionDialContext
     ctx = MissionDialContext(
         qa_dial="strict",
-        accessibility_dial="warn",
+        accessibility_dial="on",
         multi_file_expansion=True,
-        integration_replay="smoke",
+        integration_replay="strict",
     )
     assert ctx.qa_dial == "strict"
-    assert ctx.accessibility_dial == "warn"
+    assert ctx.accessibility_dial == "on"
     assert ctx.multi_file_expansion is True
-    assert ctx.integration_replay == "smoke"
+    assert ctx.integration_replay == "strict"
 
 
 # ---------------------------------------------------------------------------

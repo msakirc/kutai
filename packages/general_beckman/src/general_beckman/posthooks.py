@@ -61,39 +61,13 @@ class MissionDialContext:
 #   grader was second-guessing the rubric). When you need extra QA on
 #   a reviewer step's output, chain another reviewer-typed step rather
 #   than running grader as judge-of-judge.
-@dataclass
-class MissionDialContext:
-    """Founder-controlled dials passed to callable auto_wire_triggers.
-
-    All fields are optional with conservative defaults so that existing
-    callers (and T1C's future wiring) see identical behaviour until the
-    real dial values are supplied.
-
-    Fields
-    ------
-    qa_dial:
-        Quality-assurance intensity.  ``"off"`` suppresses optional QA
-        hooks; ``"standard"`` (default) applies the baseline set;
-        ``"strict"`` adds additional verification passes.
-    accessibility_dial:
-        Accessibility-check level.  ``"off"`` (default) skips a11y hooks;
-        ``"warn"`` fires them as warnings; ``"strict"`` promotes to blocker.
-    multi_file_expansion:
-        When ``True`` the expander is allowed to replace a single step with
-        N per-file sub-steps (Z3 T2 multi-file feature expansion).
-        ``False`` by default — safe for all existing missions.
-    integration_replay:
-        Integration-test replay mode.  ``"off"`` (default) skips replay;
-        ``"smoke"`` runs the fastest subset; ``"full"`` runs the complete
-        suite.
-    """
-    qa_dial: str = "standard"
-    accessibility_dial: str = "off"
-    multi_file_expansion: bool = False
-    integration_replay: str = "off"
-
-
 # Conservative default — no dials set; behaviour identical to pre-T1A.
+# Vocab/defaults defined on MissionDialContext above; aligns with
+# src/workflows/review_density.py validation:
+#   qa_dial ∈ {quick, standard, strict}
+#   accessibility_dial ∈ {on, off}
+#   multi_file_expansion ∈ {True, False}
+#   integration_replay ∈ {quick, standard, strict}
 _DEFAULT_DIAL_CONTEXT: MissionDialContext = MissionDialContext()
 
 

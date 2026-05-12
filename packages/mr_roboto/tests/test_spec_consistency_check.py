@@ -201,6 +201,89 @@ async def test_dispatch_via_mr_roboto_run_drift_returns_needs_review(tmp_path):
     assert action.result.get("drift_items")
 
 
+def test_r5_brand_drift_from_charter_excluded(tmp_path):
+    """Charter 'Brand Keywords → Excluded:' triggers R5 on copy doc."""
+    md = _seed_minimal_spec(tmp_path)
+    # Replace the brand keywords section with an Excluded line.
+    (md / ".charter" / "product_charter.md").write_text(
+        "## Brand Keywords\n- **calm** — quiet UI\n- Excluded: corporate, enterprise\n",
+        encoding="utf-8",
+    )
+    (md / ".phase_8").mkdir(parents=True, exist_ok=True)
+    (md / ".phase_8" / "landing_copy.md").write_text(
+        "Welcome to our enterprise-grade solution.\n", encoding="utf-8"
+    )
+    res = spec_consistency_check(
+        mission_id=42, current_phase="phase_8",
+        workspace_path=str(tmp_path),
+    )
+    conflicts = [d["conflict"] for d in res["drift_items"]]
+    assert any("R5" in c and "enterprise" in c for c in conflicts), conflicts
+
+
+def test_r5_brand_drift_only_copy_docs(tmp_path):
+    """R5 ignores .py / .ts / .json files (copy-only)."""
+    md = _seed_minimal_spec(tmp_path)
+    (md / ".charter" / "product_charter.md").write_text(
+        "## Brand Keywords\n- Excluded: corporate\n", encoding="utf-8",
+    )
+    (md / ".phase_8").mkdir(parents=True, exist_ok=True)
+    (md / ".phase_8" / "service.py").write_text(
+        "# corporate identity helper\n", encoding="utf-8"
+    )
+    res = spec_consistency_check(
+        mission_id=42, current_phase="phase_8",
+        workspace_path=str(tmp_path),
+    )
+    r5 = [d for d in res["drift_items"] if "R5" in d["conflict"]]
+    assert r5 == []  # code file ignored for brand rule
+
+
+def test_r6_compliance_forbidden_third_parties(tmp_path):
+    """compliance_overlay.json forbidden_third_parties triggers R6."""
+    md = _seed_minimal_spec(tmp_path)
+    # Compliance overlay declares Vercel as forbidden.
+    (md / "compliance_overlay.md").write_text("placeholder\n", encoding="utf-8")
+    (md / "compliance_overlay.json").write_text(
+        json.dumps({"forbidden_third_parties": ["vercel"]}), encoding="utf-8"
+    )
+    (md / ".phase_8").mkdir(parents=True, exist_ok=True)
+    (md / ".phase_8" / "deploy.md").write_text(
+        "Deploy to Vercel for fast iteration.\n", encoding="utf-8"
+    )
+    res = spec_consistency_check(
+        mission_id=42, current_phase="phase_8",
+        workspace_path=str(tmp_path),
+    )
+    conflicts = [d["conflict"] for d in res["drift_items"]]
+    assert any("R6" in c and "vercel" in c for c in conflicts), conflicts
+
+
+def test_r6_compliance_from_required_documents_forbidden_keywords(tmp_path):
+    """forbidden_keywords nested in required_documents picked up."""
+    md = _seed_minimal_spec(tmp_path)
+    (md / "compliance_overlay.md").write_text("x\n", encoding="utf-8")
+    (md / "compliance_overlay.json").write_text(
+        json.dumps({
+            "required_documents": [
+                {"doc_type": "privacy_policy",
+                 "forbidden_keywords": ["clearview"]}
+            ]
+        }),
+        encoding="utf-8"
+    )
+    (md / ".phase_8").mkdir(parents=True, exist_ok=True)
+    (md / ".phase_8" / "vendor.py").write_text(
+        "# Integrate with Clearview for face matching.\n", encoding="utf-8"
+    )
+    res = spec_consistency_check(
+        mission_id=42, current_phase="phase_8",
+        workspace_path=str(tmp_path),
+    )
+    conflicts = [d["conflict"] for d in res["drift_items"]]
+    assert any("R6" in c and "clearview" in c for c in conflicts), conflicts
+
+
 def test_report_envelope_shape(tmp_path):
     md = _seed_minimal_spec(tmp_path)
     (md / ".phase_8").mkdir(parents=True, exist_ok=True)

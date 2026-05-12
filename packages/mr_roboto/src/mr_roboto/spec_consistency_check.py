@@ -274,6 +274,85 @@ def _extract_surfaces(surfaces_path: Path) -> set[str]:
     return out
 
 
+_BRAND_HEADER_RE = re.compile(
+    r"^#{1,6}\s*(?:🎯\s*)?brand\s*keywords?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_EXCLUDED_HEADER_RE = re.compile(
+    r"^\s*[-*]?\s*(?:excluded|avoid|do not use|forbidden)\s*[:\-]\s*",
+    re.IGNORECASE,
+)
+
+
+def _extract_brand_excluded(charter_paths: list[Path]) -> set[str]:
+    """Read charter "Brand Keywords" section; return excluded brand tokens.
+
+    Pattern accepted:
+        ## Brand Keywords
+        - Excluded: foo, bar, baz
+        - Avoid: corporate, enterprise
+    Tokens are lowercased + stripped of whitespace.
+    """
+    excluded: set[str] = set()
+    for p in charter_paths:
+        body = _read_text(p)
+        if not body:
+            continue
+        m = _BRAND_HEADER_RE.search(body)
+        if not m:
+            continue
+        # Take everything until the next heading at <= same level OR EOF.
+        section = body[m.end():]
+        next_header = re.search(r"\n#{1,6}\s+\S", section)
+        if next_header:
+            section = section[:next_header.start()]
+        for line in section.splitlines():
+            ex = _EXCLUDED_HEADER_RE.match(line)
+            if not ex:
+                continue
+            tail = line[ex.end():]
+            for tok in re.split(r"[,;]\s*|\s+\bor\b\s+", tail):
+                tok = tok.strip().strip(".").lower()
+                if len(tok) >= 3 and tok.isascii():
+                    excluded.add(tok)
+    return excluded
+
+
+def _extract_compliance_forbidden(compliance_paths: list[Path]) -> set[str]:
+    """Read `compliance_overlay.json` and surface explicit forbidden tokens.
+
+    Accepted keys (compliance_overlay schema is loose so we tolerate both
+    shapes):
+      * top-level ``forbidden_third_parties``: list[str]
+      * each ``required_documents[i].forbidden_keywords``: list[str]
+    Tokens are lowercased.
+    """
+    out: set[str] = set()
+    for p in compliance_paths:
+        # _gather_spec_files collects compliance_overlay.md; the JSON sibling
+        # has the structured payload — try that too.
+        candidates = [p]
+        if p.suffix == ".md":
+            sib = p.with_suffix(".json")
+            if sib.exists():
+                candidates.append(sib)
+        for c in candidates:
+            if c.suffix != ".json":
+                continue
+            try:
+                data = json.loads(c.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for k in data.get("forbidden_third_parties") or []:
+                if isinstance(k, str) and len(k) >= 3:
+                    out.add(k.strip().lower())
+            for doc in data.get("required_documents") or []:
+                for k in (doc or {}).get("forbidden_keywords") or []:
+                    if isinstance(k, str) and len(k) >= 3:
+                        out.add(k.strip().lower())
+    return out
+
+
 def _extract_rejected_tech(adr_paths: list[Path]) -> set[str]:
     """Return tech keywords from ADR options marked as rejected."""
     out: set[str] = set()
@@ -299,6 +378,13 @@ def _extract_rejected_tech(adr_paths: list[Path]) -> set[str]:
     return out
 
 
+_COPY_DOC_SUFFIXES = (".md", ".mdx", ".txt", ".html", ".htm")
+_CODE_DOC_SUFFIXES = (
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".vue", ".rs", ".go", ".java",
+    ".kt", ".swift", ".json", ".yml", ".yaml",
+)
+
+
 def _scan_phase_files(
     files: list[Path],
     mission_dir: Path,
@@ -307,8 +393,16 @@ def _scan_phase_files(
     surfaces: set[str],
     rejected_tech: set[str],
     current_phase: str,
+    brand_excluded: set[str] | None = None,
+    compliance_forbidden: set[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Apply rules R1-R4 to phase-N files. Returns drift_items."""
+    """Apply rules R1-R6 to phase-N files. Returns drift_items.
+
+    R5 = brand drift (copy docs only).
+    R6 = compliance forbidden tokens (copy + code).
+    """
+    brand_excluded = brand_excluded or set()
+    compliance_forbidden = compliance_forbidden or set()
     drift: list[dict[str, str]] = []
     surface_keywords = ("mobile", "web", "desktop")
     for p in files:
@@ -370,6 +464,47 @@ def _scan_phase_files(
                         "suggested_resolution": (
                             f"Either add {kw!r} to surfaces.md or remove "
                             f"the reference."
+                        ),
+                    })
+                    break
+
+        # R5 — brand drift (copy docs only)
+        if brand_excluded and p.suffix.lower() in _COPY_DOC_SUFFIXES:
+            low = txt.lower()
+            for kw in brand_excluded:
+                if re.search(rf"\b{re.escape(kw)}\b", low):
+                    drift.append({
+                        "phase": current_phase,
+                        "artifact": rel,
+                        "conflict": (
+                            f"R5 brand_drift: copy uses excluded brand "
+                            f"keyword {kw!r} (charter 'Brand Keywords' → "
+                            f"Excluded)"
+                        ),
+                        "suggested_resolution": (
+                            f"Rephrase to avoid {kw!r}, or amend the "
+                            f"charter's brand-keyword exclusions."
+                        ),
+                    })
+                    break
+
+        # R6 — compliance forbidden tokens (copy + code; broader scope)
+        if compliance_forbidden and p.suffix.lower() in (
+            _COPY_DOC_SUFFIXES + _CODE_DOC_SUFFIXES
+        ):
+            low = txt.lower()
+            for kw in compliance_forbidden:
+                if re.search(rf"\b{re.escape(kw)}\b", low):
+                    drift.append({
+                        "phase": current_phase,
+                        "artifact": rel,
+                        "conflict": (
+                            f"R6 compliance_drift: references compliance-"
+                            f"forbidden token {kw!r} from compliance_overlay"
+                        ),
+                        "suggested_resolution": (
+                            f"Remove the reference or amend "
+                            f"compliance_overlay.json."
                         ),
                     })
                     break
@@ -478,6 +613,8 @@ def spec_consistency_check(
         else set()
     )
     rejected_tech = _extract_rejected_tech(spec["adrs"])
+    brand_excluded = _extract_brand_excluded(spec["charter"])
+    compliance_forbidden = _extract_compliance_forbidden(spec["compliance"])
 
     phase_files = _gather_phase_n_files(mission_dir, current_phase)
     drift_items = _scan_phase_files(
@@ -488,6 +625,8 @@ def spec_consistency_check(
         surfaces,
         rejected_tech,
         current_phase,
+        brand_excluded=brand_excluded,
+        compliance_forbidden=compliance_forbidden,
     )
 
     env = {

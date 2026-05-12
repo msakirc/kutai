@@ -1868,6 +1868,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("budget", self.cmd_budget))
         self.app.add_handler(CommandHandler("signoff", self.cmd_signoff))
         self.app.add_handler(CommandHandler("preflight", self.cmd_preflight))
+        self.app.add_handler(CommandHandler("audit", self.cmd_audit))
         self.app.add_handler(CommandHandler("modelstats", self.cmd_model_stats))
         self.app.add_handler(CommandHandler("workspace", self.cmd_workspace))
         self.app.add_handler(CommandHandler("progress", self.cmd_progress))
@@ -1898,6 +1899,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("signoff", self.cmd_signoff))
         # Z0 minimal slice: mission preflight contract
         self.app.add_handler(CommandHandler("preflight", self.cmd_preflight))
+        # Z1 audit-log inspector (critic/regen/preview/paraflow/streaming)
+        self.app.add_handler(CommandHandler("audit", self.cmd_audit))
         # Z1 Tier 6 (C18): per-mission GitHub repo (init / view / visibility)
         self.app.add_handler(CommandHandler("github", self.cmd_github))
         # Z1 Tier 7B (C21): bundle-quality regression vs Paraflow goldens
@@ -4356,6 +4359,175 @@ class TelegramInterface:
                 f"  spent:     {res.get('spent')} min\n"
                 f"  remaining: {res.get('remaining')} min"
             ),
+        )
+
+    async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z1 audit-log inspector — view recent rows of write-only Z1 logs.
+
+        Subcommands:
+          /audit critic [mission_id] [N]      — last N critic_log rows
+          /audit regen [mission_id] [N]       — last N regen_log rows
+          /audit preview [mission_id] [N]     — last N preview_log rows
+          /audit paraflow [mission_id] [N]    — last N paraflow_diff_log rows
+          /audit streaming [N]                — last N streaming_guard_log rows
+
+        Default N=10. mission_id omitted = aggregate across missions.
+        """
+        from src.infra.db import get_db
+        args = context.args or []
+        if not args:
+            await self._reply(
+                update,
+                "Usage: `/audit <critic|regen|preview|paraflow|streaming> "
+                "[mission_id] [N]`",
+                parse_mode="Markdown",
+            )
+            return
+
+        kind = args[0].lower()
+        # Optional mission_id (integer in pos 1) + N (integer in pos 2)
+        mid: int | None = None
+        limit = 10
+        rest = args[1:]
+        if rest:
+            try:
+                mid = int(rest[0])
+                rest = rest[1:]
+            except (ValueError, TypeError):
+                mid = None
+        if rest:
+            try:
+                limit = max(1, min(50, int(rest[0])))
+            except (ValueError, TypeError):
+                pass
+
+        db = await get_db()
+        if kind == "critic":
+            where = "WHERE mission_id = ?" if mid is not None else ""
+            sql = (
+                f"SELECT mission_id, action_name, verdict, reasons_json, "
+                f"created_at FROM critic_log {where} "
+                f"ORDER BY id DESC LIMIT ?"
+            )
+            params = ((mid, limit) if mid is not None else (limit,))
+            cur = await db.execute(sql, params)
+            rows = await cur.fetchall() or []
+            if not rows:
+                await self._reply(update, "No critic_log rows.")
+                return
+            lines = ["🛡 *critic_log* (latest)"]
+            for r in rows:
+                emoji = "✅" if r[2] == "pass" else "🛑"
+                lines.append(
+                    f"{emoji} #{r[0]} {r[1]} — {r[2]} _{r[4]}_"
+                )
+            await self._reply(
+                update, "\n".join(lines), parse_mode="Markdown",
+            )
+            return
+
+        if kind == "regen":
+            where = "WHERE mission_id = ?" if mid is not None else ""
+            sql = (
+                f"SELECT mission_id, artifact_path, change_description, "
+                f"prev_version, new_version, scope, created_at "
+                f"FROM regen_log {where} ORDER BY id DESC LIMIT ?"
+            )
+            params = ((mid, limit) if mid is not None else (limit,))
+            cur = await db.execute(sql, params)
+            rows = await cur.fetchall() or []
+            if not rows:
+                await self._reply(update, "No regen_log rows.")
+                return
+            lines = ["🔄 *regen_log* (latest)"]
+            for r in rows:
+                lines.append(
+                    f"#{r[0]} `{r[1]}` ({r[5]}) — _{r[6]}_\n"
+                    f"  ↳ {r[2][:80]}"
+                )
+            await self._reply(
+                update, "\n".join(lines), parse_mode="Markdown",
+            )
+            return
+
+        if kind == "preview":
+            where = "WHERE mission_id = ?" if mid is not None else ""
+            sql = (
+                f"SELECT mission_id, action, url, exit_code, created_at "
+                f"FROM preview_log {where} ORDER BY id DESC LIMIT ?"
+            )
+            params = ((mid, limit) if mid is not None else (limit,))
+            cur = await db.execute(sql, params)
+            rows = await cur.fetchall() or []
+            if not rows:
+                await self._reply(update, "No preview_log rows.")
+                return
+            lines = ["🌐 *preview_log* (latest)"]
+            for r in rows:
+                ok = "✅" if r[3] == 0 else "❌"
+                lines.append(
+                    f"{ok} #{r[0]} {r[1]} {r[2] or '(no url)'} _{r[4]}_"
+                )
+            await self._reply(
+                update, "\n".join(lines), parse_mode="Markdown",
+            )
+            return
+
+        if kind == "paraflow":
+            where = "WHERE mission_id = ?" if mid is not None else ""
+            sql = (
+                f"SELECT mission_id, archetype, verdict, score, created_at "
+                f"FROM paraflow_diff_log {where} ORDER BY id DESC LIMIT ?"
+            )
+            params = ((mid, limit) if mid is not None else (limit,))
+            cur = await db.execute(sql, params)
+            rows = await cur.fetchall() or []
+            if not rows:
+                await self._reply(update, "No paraflow_diff_log rows.")
+                return
+            lines = ["📐 *paraflow_diff_log* (latest)"]
+            for r in rows:
+                emoji = {"paraflow_par": "✅",
+                         "paraflow_partial": "🟡",
+                         "paraflow_gap": "🛑"}.get(r[2], "•")
+                score = f"{r[3]:.2f}" if r[3] is not None else "—"
+                lines.append(
+                    f"{emoji} #{r[0]} {r[1]} ({score}) — {r[2]} _{r[4]}_"
+                )
+            await self._reply(
+                update, "\n".join(lines), parse_mode="Markdown",
+            )
+            return
+
+        if kind == "streaming":
+            sql = (
+                "SELECT mission_id, task_id, guard_name, action, note, "
+                "created_at FROM streaming_guard_log "
+                "ORDER BY id DESC LIMIT ?"
+            )
+            cur = await db.execute(sql, (limit,))
+            rows = await cur.fetchall() or []
+            if not rows:
+                await self._reply(update, "No streaming_guard_log rows.")
+                return
+            lines = ["🚦 *streaming_guard_log* (latest)"]
+            for r in rows:
+                emoji = {"halt": "🛑", "warn": "⚠️", "fix": "🩹"}.get(
+                    r[3], "•"
+                )
+                lines.append(
+                    f"{emoji} m{r[0] or '?'} t{r[1] or '?'} "
+                    f"{r[2]}: {r[3]} _{r[5]}_"
+                )
+            await self._reply(
+                update, "\n".join(lines), parse_mode="Markdown",
+            )
+            return
+
+        await self._reply(
+            update,
+            "Unknown audit kind. Use one of: critic, regen, preview, "
+            "paraflow, streaming.",
         )
 
     async def cmd_preflight(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -480,6 +480,21 @@ class Orchestrator:
 
     # ─── Background Tasks & Startup ───────────────────────────────────────
 
+    async def _rebind_ongoing(self, mission) -> None:
+        """Z8 T1C v1 — re-bind an ongoing mission after restart.
+
+        v1 is intentionally a no-op past logging: the webhook listener
+        (T3) reads ``mission.cursor`` to skip already-processed events,
+        and the cron scheduler (T5) re-arms by querying
+        ``find_resumable()`` directly. Full re-subscribe logic lands in
+        T3D once integration adapters carry their own pulse.
+        """
+        logger.debug(
+            f"_rebind_ongoing: mission #{mission.id} parked for "
+            f"handler-side replay (cursor_keys="
+            f"{sorted(mission.cursor.keys()) if mission.cursor else []})"
+        )
+
     async def _heartbeat_loop(self):
         """Run heartbeat + state-snapshot writer.
 
@@ -521,6 +536,30 @@ class Orchestrator:
             await startup_recovery()
         except Exception as e:
             logger.warning(f"Startup recovery failed: {e}")
+
+        # Z8 T1C — replay ongoing missions. find_resumable() returns every
+        # kind='ongoing' AND lifecycle_state='active' AND not revoked
+        # mission. v1 just logs + delegates re-binding to handler-side
+        # code (webhook listener wakes via cursor in T3; cron scheduler
+        # re-arms in T5 by querying find_resumable() itself).
+        try:
+            from general_beckman.resumption import find_resumable
+            resumed = await find_resumable()
+            for m in resumed:
+                logger.info(
+                    "resuming ongoing mission",
+                    mission_id=m.id,
+                    title=m.title,
+                    cursor_keys=sorted(m.cursor.keys()) if m.cursor else [],
+                )
+                await self._rebind_ongoing(m)
+            if resumed:
+                logger.info(
+                    f"z8 resumption: {len(resumed)} ongoing mission(s) "
+                    "marked for handler-side replay"
+                )
+        except Exception as e:
+            logger.warning(f"Ongoing-mission resumption failed: {e}")
 
         from ..models.local_model_manager import get_local_manager
         manager = get_local_manager()

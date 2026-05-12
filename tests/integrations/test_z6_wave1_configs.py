@@ -87,9 +87,14 @@ def test_actions_have_required_shape(service):
         cfg = json.load(f)
     actions = cfg.get("actions") or {}
     expected = WAVE1[service]["actions"]
-    assert set(actions.keys()) == expected, (
-        f"{service} action set mismatch: "
-        f"got {sorted(actions.keys())} expected {sorted(expected)}"
+    # Wave-1 set is the floor — later tiers (T5/T6) may extend with more
+    # actions (e.g. stripe gained list_disputes, list_tax_transactions,
+    # create_customer, cancel_subscription, confirm_test_payment). The
+    # test guarantees the original wave-1 contract is intact.
+    missing = expected - set(actions.keys())
+    assert not missing, (
+        f"{service} missing wave-1 actions: {sorted(missing)}; "
+        f"got {sorted(actions.keys())}"
     )
     for name, spec in actions.items():
         assert "method" in spec, f"{service}.{name} missing method"
@@ -111,7 +116,12 @@ def test_http_integration_loads(service):
     integration = HttpIntegration.from_service_name(service)
     assert integration.service_name == service
     caps = integration.capabilities()
-    assert set(caps) == WAVE1[service]["actions"]
+    # Wave-1 floor; tiers may extend the action set.
+    missing = WAVE1[service]["actions"] - set(caps)
+    assert not missing, (
+        f"{service} HttpIntegration missing wave-1 caps: {sorted(missing)}; "
+        f"got {sorted(caps)}"
+    )
 
 
 def test_registry_picks_up_wave1_configs():

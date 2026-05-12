@@ -491,19 +491,44 @@ def _maybe_expand_multifile(
     sub_steps: list[dict] = []
     sub_step_ids: list[str] = []
 
+    # T1B SubTaskSpec fields: step_id, template_id, target_file, produces,
+    # inherited_post_hooks, inherited_from.  Derive other step keys here.
+    feature_name = str(step_ctx.get("feature_name") or step_ctx.get("feature") or "")
+    feature_slug = feature_name.lower().replace(" ", "_").replace("-", "_")
+    role_inference = {
+        "model": "coder",
+        "schema": "coder",
+        "service": "coder",
+        "repository": "coder",
+        "error_mapper": "coder",
+        "fixtures": "test_generator",
+        "tests": "test_generator",
+        "component": "coder",
+        "hook": "coder",
+        "story": "coder",
+        "test": "test_generator",
+    }
+
     for spec in sub_specs:
-        child_id = f"{parent_id}.{spec.step_id_suffix}" if parent_id else spec.step_id_suffix
+        # spec.step_id is already "<parent>.<role>".  Override parent prefix
+        # in case parent_id changed since spec built.
+        role = spec.step_id.rsplit(".", 1)[-1] if "." in spec.step_id else spec.step_id
+        child_id = f"{parent_id}.{role}" if parent_id else role
         sub_step_ids.append(child_id)
+        produces_resolved = [
+            p.replace("{{feature}}", feature_slug) if feature_slug else p
+            for p in spec.produces
+        ]
         child_step = {
             "id": child_id,
-            "name": spec.name,
-            "instruction": spec.instruction,
-            "agent": spec.agent,
-            "phase": spec.phase or parent_phase,
+            "name": f"{role}: {feature_name or parent_id}".strip(),
+            "instruction": f"Emit the {role} file for feature {feature_name or '<unnamed>'} ({template_id} template, {stack} stack).",
+            "agent": role_inference.get(role, "coder"),
+            "phase": parent_phase,
             "depends_on": list(parent_depends),
-            "produces": list(spec.produces),
-            "tools_hint": list(spec.tools_hint),
-            "context": dict(spec.extra_context),
+            "produces": produces_resolved,
+            "post_hooks": list(spec.inherited_post_hooks),
+            "context": {"feature_name": feature_name, "role": role, "template_id": template_id, "stack": stack},
             "_multifile_parent": parent_id,
         }
         sub_steps.append(child_step)
@@ -513,9 +538,11 @@ def _maybe_expand_multifile(
     # dispatch the LLM reviewer with signature context injected.
     ir_step_id = f"{parent_id}.integration_review" if parent_id else "integration_review"
     # Collect all produces from sub-tasks for the review context.
+    # Use the resolved (feature-substituted) produces from sub_steps so the
+    # integration_review payload matches what sub-tasks will actually emit.
     all_produces: list[str] = []
-    for spec in sub_specs:
-        all_produces.extend(spec.produces)
+    for s in sub_steps:
+        all_produces.extend(s.get("produces", []))
 
     integration_review_step = {
         "id": ir_step_id,

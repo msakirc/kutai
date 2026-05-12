@@ -16,7 +16,7 @@ v1 framed gaps A–J as "isolated automations." Ground-truth audit (this doc, §
 | "All actions audit-logged + reversibility-tagged" | Reversibility shipped (Z10 T1C): `reversibility.py` registry with 100+ verbs, `tasks.reversibility` column, `registry_events.reversibility` audit row. **Step-level reversibility on i2p_v3.json still missing** (Z0 territory). | `packages/mr_roboto/src/mr_roboto/reversibility.py:32`, `src/infra/db.py:1624,1699` |
 | "Per-stack recipes for monitoring kit" | Recipe engine SHIPPED (Z2 T5A): Recipe dataclass, load/list/match/instantiate/pick verbs. **Zero ops recipes authored** — backup, cost-monitor, cve-scan, monitoring all greenfield. | `src/infra/recipes.py:1`, `packages/mr_roboto/src/mr_roboto/instantiate_recipe.py` |
 | "Tier-1 support flow" | Clarification-Q&A flow exists in Telegram bot; no FAQ artifact, no ticket memory, no "answer from docs vs escalate" branching. | `src/app/telegram_bot.py:5541–5656` |
-| "needs_real_tools tasks should be gated" | Column added (`tasks.needs_real_tools`) but **admission gate not enforced** — tasks dispatch normally regardless. v1 didn't flag this; it blocks Z8 §B. | `src/infra/db.py:2286` (migration), no Beckman call-site |
+| "needs_real_tools tasks should be gated" | **SHIPPED.** Column added (`tasks.needs_real_tools`) AND `check_z6_admission` wired into `next_task()` since commit `a171bcd` (Z6 T1C). Initial v2 audit miscalled this. `/action_done` unblock chain works end-to-end. H3 closed. | `src/infra/db.py:2286`, `packages/general_beckman/src/general_beckman/__init__.py:329-355`, `src/founder_actions/__init__.py:498-502` |
 
 **Net:** v1 treated Z8 as 10 gaps. v2 treats it as **4 hinge points** that unlock 10 outputs.
 

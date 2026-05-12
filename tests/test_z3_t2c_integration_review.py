@@ -187,23 +187,27 @@ def test_integration_reviewer_in_no_posthooks():
 # ---------------------------------------------------------------------------
 
 
+def _make_dial(multi_file=True):
+    """Helper: build canonical MissionDialContext."""
+    from general_beckman.posthooks import MissionDialContext
+    return MissionDialContext(multi_file_expansion=multi_file)
+
+
 def test_expander_multifile_expansion_dial_true():
     from src.workflows.engine.expander import _maybe_expand_multifile
-    from src.workflows.review_density import MissionDialContext
 
-    dial = MissionDialContext(
-        mission_id="test-1",
-        multi_file_expansion=True,
-        template_id="crud_feature",
-        stack_slug="fastapi",
-    )
+    dial = _make_dial(multi_file=True)
 
     step = {
         "id": "3.4",
         "name": "Implement user CRUD",
         "phase": "phase_3",
         "depends_on": ["3.3"],
-        "context": {"feature_name": "user"},
+        "context": {
+            "feature_name": "user",
+            "template_id": "backend_service",
+            "stack_slug": "fastapi+nextjs",
+        },
     }
 
     result = _maybe_expand_multifile(step, dial, {})
@@ -229,15 +233,17 @@ def test_expander_multifile_expansion_dial_true():
 def test_expander_multifile_all_produces_collected():
     """Integration-review sibling should collect produces from all sub-tasks."""
     from src.workflows.engine.expander import _maybe_expand_multifile
-    from src.workflows.review_density import MissionDialContext
 
-    dial = MissionDialContext(
-        mission_id="test-2",
-        multi_file_expansion=True,
-        template_id="crud_feature",
-        stack_slug="fastapi",
-    )
-    step = {"id": "5.1", "name": "Product CRUD", "context": {"feature_name": "product"}}
+    dial = _make_dial(multi_file=True)
+    step = {
+        "id": "5.1",
+        "name": "Product service",
+        "context": {
+            "feature_name": "product",
+            "template_id": "backend_service",
+            "stack_slug": "fastapi+nextjs",
+        },
+    }
     result = _maybe_expand_multifile(step, dial, {})
     assert result is not None
 
@@ -258,15 +264,17 @@ def test_expander_multifile_all_produces_collected():
 
 def test_expander_multifile_dial_false():
     from src.workflows.engine.expander import _maybe_expand_multifile
-    from src.workflows.review_density import MissionDialContext
 
-    dial = MissionDialContext(
-        mission_id="test-3",
-        multi_file_expansion=False,  # disabled
-        template_id="crud_feature",
-        stack_slug="fastapi",
-    )
-    step = {"id": "2.1", "name": "Some step", "context": {"feature_name": "order"}}
+    dial = _make_dial(multi_file=False)  # disabled
+    step = {
+        "id": "2.1",
+        "name": "Some step",
+        "context": {
+            "feature_name": "order",
+            "template_id": "backend_service",
+            "stack_slug": "fastapi+nextjs",
+        },
+    }
     result = _maybe_expand_multifile(step, dial, {})
     assert result is None  # pass-through
 
@@ -286,15 +294,17 @@ def test_expander_multifile_no_dial():
 
 def test_expander_multifile_no_rule():
     from src.workflows.engine.expander import _maybe_expand_multifile
-    from src.workflows.review_density import MissionDialContext
 
-    dial = MissionDialContext(
-        mission_id="test-4",
-        multi_file_expansion=True,
-        template_id="nonexistent_template",
-        stack_slug="unknown_stack",
-    )
-    step = {"id": "2.1", "name": "Some step", "context": {}}
+    dial = _make_dial(multi_file=True)
+    step = {
+        "id": "2.1",
+        "name": "Some step",
+        "context": {
+            "feature_name": "thing",
+            "template_id": "nonexistent_template",
+            "stack_slug": "unknown_stack",
+        },
+    }
     result = _maybe_expand_multifile(step, dial, {})
     assert result is None  # no rule → pass-through
 
@@ -339,50 +349,69 @@ def test_apply_posthook_integration_review_injects_signatures():
 
 
 def test_mission_dial_context_defaults():
-    from src.workflows.review_density import MissionDialContext
+    """Canonical MissionDialContext lives in general_beckman.posthooks."""
+    from general_beckman.posthooks import MissionDialContext
 
     ctx = MissionDialContext()
     assert ctx.multi_file_expansion is False
-    assert ctx.template_id is None
-    assert ctx.stack_slug is None
+    assert ctx.qa_dial == "standard"
+    assert ctx.accessibility_dial == "off"
+    assert ctx.integration_replay == "standard"
 
 
 def test_to_mission_dial_context_conversion():
-    from src.workflows.review_density import to_mission_dial_context
+    """T1C bridge converts ReviewDensityDials → MissionDialContext."""
+    from src.workflows.review_density import (
+        ReviewDensityDials,
+        to_mission_dial_context,
+    )
 
-    dials = {
-        "multi_file_expansion": True,
-        "template_id": "crud_feature",
-        "stack_slug": "fastapi",
-        "some_extra": 99,
-    }
-    ctx = to_mission_dial_context("m42", dials)
-    assert ctx.mission_id == "m42"
+    dials = ReviewDensityDials(
+        qa_dial="strict",
+        accessibility_dial="on",
+        multi_file_expansion=True,
+        integration_replay="strict",
+    )
+    ctx = to_mission_dial_context(dials)
+    assert ctx.qa_dial == "strict"
+    assert ctx.accessibility_dial == "on"
     assert ctx.multi_file_expansion is True
-    assert ctx.template_id == "crud_feature"
-    assert ctx.stack_slug == "fastapi"
-    assert ctx.extra == {"some_extra": 99}
+    assert ctx.integration_replay == "strict"
 
 
 # ---------------------------------------------------------------------------
-# 10. multifile.expand_template — slug substitution
+# 10. multifile.expand_template — canonical T1B signature
 # ---------------------------------------------------------------------------
 
 
-def test_expand_template_fastapi_slug():
+def test_expand_template_fastapi_nextjs_backend_service():
+    """Canonical T1B: (backend_service, fastapi+nextjs) → 7 sub-task specs."""
     from src.workflows.engine.multifile import expand_template
 
-    step = {"context": {"feature_name": "Order Item"}}
-    specs = expand_template("crud_feature", "fastapi", parent_step=step)
+    step = {"step_id": "3.4", "produces": [], "post_hooks": ["code_review"]}
+    specs = expand_template(
+        template_id="backend_service",
+        stack="fastapi+nextjs",
+        parent_step=step,
+        artifacts={},
+    )
     assert specs is not None
-    produces_flat = [p for s in specs for p in s.produces]
-    # Should have slug 'order_item' in all paths
-    for p in produces_flat:
-        assert "order_item" in p
+    assert len(specs) == 7  # model, schema, service, repository, error_mapper, fixtures, tests
+    roles = [s.step_id.split(".")[-1] for s in specs]
+    assert "model" in roles
+    assert "tests" in roles
+    # All children inherit parent's post_hooks
+    for s in specs:
+        assert "code_review" in s.inherited_post_hooks
 
 
 def test_expand_template_returns_none_for_unknown():
     from src.workflows.engine.multifile import expand_template
 
-    result = expand_template("no_such_template", "no_such_stack")
+    result = expand_template(
+        template_id="no_such_template",
+        stack="no_such_stack",
+        parent_step={},
+        artifacts={},
+    )
     assert result is None

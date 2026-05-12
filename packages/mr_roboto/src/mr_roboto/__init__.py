@@ -2660,11 +2660,99 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "run_bandit":
+        from mr_roboto.run_bandit import run_bandit as _run_bandit
+        try:
+            res = await _run_bandit(
+                target_files=list(payload.get("target_files") or []),
+                workspace_path=payload.get("workspace_path") or None,
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "run_npm_audit":
+        from mr_roboto.run_npm_audit import run_npm_audit as _run_npm_audit
+        try:
+            res = await _run_npm_audit(workspace_path=payload.get("workspace_path") or "")
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "security_review":
+        # Z3 T3A — composite: semgrep + bandit + npm audit.
+        from mr_roboto.security_review import security_review as _sec_review
+        try:
+            res = await _sec_review(
+                target_files=list(payload.get("target_files") or []),
+                workspace_path=payload.get("workspace_path") or None,
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "run_axe":
+        # Z3 T3B — accessibility scan via @axe-core/cli against preview URL.
+        from mr_roboto.run_axe import run_axe as _run_axe
+        try:
+            res = await _run_axe(
+                preview_url=str(payload.get("preview_url") or ""),
+                target_paths=list(payload.get("target_paths") or []),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "run_schemathesis":
+        # Z3 T3C — contract fuzz via schemathesis.
+        from mr_roboto.run_schemathesis import run_schemathesis as _run_st
+        try:
+            res = await _run_st(
+                spec_path=str(payload.get("spec_path") or ""),
+                base_url=str(payload.get("base_url") or ""),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "performance_review":
+        # Z3 T3C — composite: lighthouse (mode=web) or k6 (mode=api).
+        from mr_roboto.performance_review import performance_review as _perf
+        try:
+            res = await _perf(**payload)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "alert_triage":
         # Z8 T3D — webhook → severity classification (rule-based + LLM stub).
         from mr_roboto.executors.alert_triage import run as _alert_triage_run
         try:
             res = await _alert_triage_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "oncall_action":
+        # Z8 T4B — on-call verb gateway: whitelist + cooldown check, then
+        # delegate to the verb sub-handler. See executors/oncall_action.py.
+        from mr_roboto.executors.oncall_action import run as _oncall_run
+        try:
+            res = await _oncall_run(task)
+            # Cooldown blocks and whitelist refusals are completed actions
+            # from the dispatcher's view — they carry their own status field
+            # for downstream interpretation (the agent must re-evaluate).
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "generate_playbooks":
+        # Z8 T4C — phase 13 playbook generator: matches incident_playbook
+        # recipes against the mission's tech_stack and emits the
+        # incident_playbooks artifact.
+        from mr_roboto.executors.generate_playbooks import run as _gen_pb_run
+        try:
+            res = await _gen_pb_run(task)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

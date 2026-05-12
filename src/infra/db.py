@@ -2553,6 +2553,53 @@ async def init_db():
         ),
     )
 
+    # Z8 T4B — action_cooldowns: per-(mission, verb) rate-limit ledger for
+    # the on-call agent (rollback ≤ 2/hr, key-rotate ≤ 1/24h, etc.).
+    await apply_migration(
+        version="2026-05-12-action-cooldowns",
+        sql=(
+            "CREATE TABLE action_cooldowns ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id INTEGER NOT NULL,"
+            " verb TEXT NOT NULL,"
+            " invoked_at TIMESTAMP NOT NULL,"
+            " outcome TEXT"
+            ");\n"
+            "CREATE INDEX idx_cooldown_lookup ON action_cooldowns"
+            "(mission_id, verb, invoked_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_cooldown_lookup;\n"
+            "DROP TABLE IF EXISTS action_cooldowns;\n"
+        ),
+        description=(
+            "Z8 T4B: action_cooldowns ledger for oncall_agent per-verb "
+            "rate limiting (Mr. Roboto pre-execute enforcement)."
+        ),
+    )
+
+    # Z8 T4D — escalation_policy: per-mission tier→channel routing
+    # with quiet-hours support.
+    await apply_migration(
+        version="2026-05-12-escalation-policy",
+        sql=(
+            "CREATE TABLE escalation_policy ("
+            " mission_id INTEGER PRIMARY KEY,"
+            " quiet_hours_start TEXT,"
+            " quiet_hours_end TEXT,"
+            " tier1_channel TEXT NOT NULL DEFAULT 'telegram',"
+            " tier2_channel TEXT NOT NULL DEFAULT 'telegram',"
+            " tier3_channel TEXT NOT NULL DEFAULT 'sms',"
+            " tz TEXT DEFAULT 'UTC'"
+            ");\n"
+        ),
+        reversal_sql="DROP TABLE IF EXISTS escalation_policy;\n",
+        description=(
+            "Z8 T4D: escalation_policy table for per-mission tier-routing + "
+            "quiet-hours-aware channel dispatch."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

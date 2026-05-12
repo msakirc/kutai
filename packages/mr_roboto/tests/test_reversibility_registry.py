@@ -67,6 +67,18 @@ def test_every_registry_verb_is_a_real_dispatcher_action() -> None:
         "propose_spec_patch",
         "sandbox_local_mode",
         "broader_egress",
+        # Z8 T4B on-call verbs — executed under the ``oncall_action``
+        # gateway (whitelist + cooldown check), not as top-level dispatcher
+        # actions. They share the reversibility taxonomy so the gate logic
+        # can consult per-verb tags after the gateway hands off.
+        "restart_service",
+        "rollback_to_last_green",
+        "scale_up",
+        "scale_down",
+        "drain_traffic",
+        "rotate_failed_key",
+        "archive_flake_test",
+        "escalate_to_founder",
     }
     for verb in VERB_REVERSIBILITY:
         if verb in EXEMPT:

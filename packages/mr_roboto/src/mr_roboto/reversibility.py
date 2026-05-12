@@ -139,6 +139,21 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "stripe_dispute_check": "full",  # read-only API + local checkpoint file
     "stripe_revenue_digest": "irreversible",  # posts to mission Telegram thread
     "tax_export_ledger": "irreversible",  # surfaces founder_action visible to user
+    # ---- Z8 T4B on-call action gateway ----------------------------------
+    # `oncall_action` is the dispatcher wrapper; the verb-specific
+    # reversibility lives below and is what the gate-logic should consult
+    # once a verb is in flight.
+    "oncall_action": "partial",  # gateway: real impact depends on the sub-verb
+    "restart_service": "partial",  # transient downtime; idempotent restart
+    "rollback_to_last_green": "irreversible",  # rolls live workspace back
+    "scale_up": "partial",  # cost impact; manually reversible via scale_down
+    "scale_down": "partial",  # may drop in-flight requests; scale_up restores
+    "drain_traffic": "partial",  # traffic redirect; reversible by re-enabling
+    "rotate_failed_key": "irreversible",  # old key invalidated; users see effect
+    "archive_flake_test": "full",  # local pytest.ini / xfail marker only
+    "escalate_to_founder": "irreversible",  # founder sees the alert
+    # ---- Z8 T4C phase 13 playbook generator -----------------------------
+    "generate_playbooks": "full",  # read-only mission inputs → artifact JSON
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

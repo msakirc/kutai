@@ -321,6 +321,10 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
     useful_iterations = 0
     empty_response_count = 0
 
+    # Self-critique sub-iteration counter.  Uses its own budget separate
+    # from MAX_SUB_CORRECTIONS so critique passes don't burn correction slots.
+    self_critique_passes = 0
+
     # Per-iter transport-failure accumulator. Phase C.2b: coulson owns the
     # failures list, passes to ``fatih_hoca.select`` on retry so failure-
     # adaptive scoring can exclude flaky models. Reset every outer iter —
@@ -746,14 +750,32 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 search_depth=_search_depth,
                 suppress_guards=_suppress_guards,
                 tool_calls=tool_calls,
+                self_critique_passes=self_critique_passes,
             )
             if correction and sub_corrections < MAX_SUB_CORRECTIONS:
                 guard_burns += 1
+                # Self-critique uses its own counter — increment separately
+                # so the critique pass does NOT consume a MAX_SUB_CORRECTIONS slot.
+                if correction.guard_name == "self_critique":
+                    self_critique_passes += 1
+                    logger.warning(
+                        f"[Task #{task_id}] [self_critique] "
+                        f"pass {self_critique_passes} (own budget, not consuming sub_corrections)"
+                    )
+                    await safe_log_conversation_p(profile,
+                        task_id, "system",
+                        "[self_critique] sub-iteration",
+                        None, 0,
+                    )
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": correction.message})
+                    # Do NOT increment sub_corrections — critique has its own budget
+                    continue  # inner loop — re-prompt LLM
                 logger.warning(
                     f"[Task #{task_id}] [{correction.guard_name}] "
                     f"sub-correction {sub_corrections + 1}/{MAX_SUB_CORRECTIONS}"
                 )
-                await safe_log_conversation_p(profile, 
+                await safe_log_conversation_p(profile,
                     task_id, "system",
                     f"[{correction.guard_name}] sub-correction",
                     None, 0,

@@ -35,6 +35,9 @@ _NO_POSTHOOKS_AGENT_TYPES: frozenset[str] = frozenset({
     # Spawning a grader on it would be judge-of-judge — same reasoning
     # as for "reviewer" above. Its verdict IS the gate.
     "code_reviewer",
+    # IntegrationReviewerAgent runs as a post-hook after multi-file expansion.
+    # Judge-of-judge reasoning: its verdict IS the integration gate.
+    "integration_reviewer",
 })
 
 
@@ -228,6 +231,20 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "SQLite stack: direct apply via sqlite3. "
             "Postgres: testcontainers (opt-in via enable_testcontainers). "
             "Unknown stack: alembic offline mode (syntax check only)."
+        ),
+    ),
+    # Z3 T2C — integration_review.
+    "integration_review": PostHookSpec(
+        kind="integration_review",
+        verb="integration_reviewer",
+        default_severity="blocker",
+        # No auto-wire triggers: injected by the expander as a sibling step
+        # on multi-file expansions, not by file-pattern auto-wiring.
+        auto_wire_triggers=[],
+        description=(
+            "Cross-file consistency review after multi-file feature expansion. "
+            "AST signature mechanical pre-check (extract_signatures) feeds "
+            "context into LLM integration_reviewer."
         ),
     ),
 }

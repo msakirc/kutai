@@ -134,6 +134,14 @@ REFLECTION_BLOCKS: dict[str, str] = {
         "4. ASSERT messages helpful (not bare `assert x`)?\n"
         "If any 'no' — keep iterating."
     ),
+    "integration_reviewer": (
+        "Self-check before final_answer:\n"
+        "1. Did you check EVERY file listed in the signatures context?\n"
+        "2. Are ARITY mismatches from the pre-check all addressed or explained?\n"
+        "3. Any IMPORT that references a symbol not in the exports list?\n"
+        "4. Did you verify route/event/schema WIRING (not just file existence)?\n"
+        "If any concern unresolved — emit FAIL with specific file+line."
+    ),
 }
 
 _GENERIC_REFLECTION_BLOCK = (

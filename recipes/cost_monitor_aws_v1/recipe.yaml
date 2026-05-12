@@ -1,0 +1,23 @@
+name: cost_monitor_aws
+version: v1
+kind: cost_monitor
+description: "Pull daily AWS Cost Explorer totals and check for slope anomalies."
+requires:
+  tech_stack:
+    - "aws"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  notes: notes.md
+prompts: {}
+lessons_domain: cost_monitor
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  VENDOR: "aws"
+  ENDPOINT: "/cost_explorer"
+  DAILY_THRESHOLD_USD: "50.0"
+entry_points:
+  notes: notes.md

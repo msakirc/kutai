@@ -88,6 +88,32 @@ async def check_alerts() -> None:
     except Exception:
         pass
 
+    # Rule 4 (Z8 T5D): vendor cost-slope anomaly.
+    # Reads optional ``_vendor_cost_history`` runtime_state slot — populated
+    # by ``cost_pull`` executor when it persists today's USD figure. The
+    # detector flags >2.5σ jumps over the trailing 14d.
+    try:
+        history_state = runtime_state.get("vendor_cost_history") or {}
+        if isinstance(history_state, dict) and history_state:
+            from src.ops.cost_anomaly import is_anomaly
+            for vendor_id, vstate in history_state.items():
+                if not isinstance(vstate, dict):
+                    continue
+                today = float(vstate.get("today_usd") or 0.0)
+                history = vstate.get("history_14d") or []
+                if not isinstance(history, list):
+                    continue
+                if await is_anomaly(vendor_id, today, [float(x) for x in history]):
+                    if _should_fire(f"cost_slope:{vendor_id}"):
+                        await _send_alert(
+                            "📈 Vendor Cost Spike",
+                            f"{vendor_id}: today ${today:.2f} is >2.5σ above "
+                            f"the trailing {len(history)}d mean",
+                            priority=4,
+                        )
+    except Exception:
+        pass
+
 
 async def _send_alert(title: str, message: str, priority: int = 3) -> None:
     """Send alert via Telegram."""

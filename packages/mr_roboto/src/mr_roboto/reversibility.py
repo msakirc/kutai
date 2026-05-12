@@ -165,6 +165,9 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "cron_cve_scan": "full",
     "secret_scan": "full",  # gitleaks read-only scan
     "cron_secret_scan": "full",
+    # ---- Z8 T5D cost monitor cron ---------------------------------------
+    "cost_pull": "full",  # vendor read-only cost API
+    "cron_cost_pull": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

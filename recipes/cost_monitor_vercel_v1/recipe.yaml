@@ -1,0 +1,24 @@
+name: cost_monitor_vercel
+version: v1
+kind: cost_monitor
+description: "Pull daily Vercel team usage and check for slope anomalies."
+requires:
+  tech_stack:
+    - "vercel"
+    - "nextjs"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  notes: notes.md
+prompts: {}
+lessons_domain: cost_monitor
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  VENDOR: "vercel"
+  ENDPOINT: "/v9/teams/{teamId}/usage"
+  DAILY_THRESHOLD_USD: "20.0"
+entry_points:
+  notes: notes.md

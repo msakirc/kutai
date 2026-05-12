@@ -1,0 +1,23 @@
+name: cost_monitor_stripe
+version: v1
+kind: cost_monitor
+description: "Pull daily Stripe balance_transactions and check for slope anomalies."
+requires:
+  tech_stack:
+    - "stripe"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  notes: notes.md
+prompts: {}
+lessons_domain: cost_monitor
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  VENDOR: "stripe"
+  ENDPOINT: "/v1/balance_transactions"
+  DAILY_THRESHOLD_USD: "100.0"
+entry_points:
+  notes: notes.md

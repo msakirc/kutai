@@ -2793,4 +2793,13 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action in ("cost_pull", "cron_cost_pull"):
+        # Z8 T5D — vendor cost pull via vendor_call + aggregation.
+        from mr_roboto.executors.cost_pull import run as _cost_run
+        try:
+            res = await _cost_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

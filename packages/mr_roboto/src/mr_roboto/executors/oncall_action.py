@@ -95,9 +95,32 @@ async def _stub_handler(verb: str, params: dict, mission_id: int) -> dict:
     return {"status": "ok", "verb": verb, "params": params, "stub": True}
 
 
-# Verb-specific sub-handlers; all stubs in v1 so behaviour is uniform.
-# Real adapters (rollback via git tag, restart via Render API, scale via
-# fly.io, etc.) land in T5 once vendor_call has the targeted methods.
+async def _escalate_handler(verb: str, params: dict, mission_id: int) -> dict:
+    """Z8 T5G — real wire-through for ``escalate_to_founder``.
+
+    Delegates to the dedicated ``escalate_to_founder`` mechanical executor
+    which resolves the channel against ``escalation_policy`` and dispatches
+    Telegram / SMS / log accordingly.
+    """
+    from .escalate_to_founder import run as ef_run
+    result = await ef_run({
+        "mission_id": mission_id,
+        "payload": params,
+    })
+    return {
+        "status": "ok" if result.get("ok") else "failed",
+        "verb": verb,
+        "channel": result.get("channel"),
+        "tier": result.get("tier"),
+        "founder_action_id": result.get("founder_action_id"),
+        "sms_sid": result.get("sms_sid"),
+        "stub": False,
+    }
+
+
+# Verb-specific sub-handlers. Most remain stubs in v1 (vendor-specific
+# automation requires real cloud deployments). ``escalate_to_founder`` is
+# real-wired in T5G — it resolves channel + dispatches Telegram/SMS/log.
 _SUB_HANDLERS: dict[str, Any] = {
     "restart_service": _stub_handler,
     "rollback_to_last_green": _stub_handler,
@@ -106,5 +129,5 @@ _SUB_HANDLERS: dict[str, Any] = {
     "drain_traffic": _stub_handler,
     "rotate_failed_key": _stub_handler,
     "archive_flake_test": _stub_handler,
-    "escalate_to_founder": _stub_handler,
+    "escalate_to_founder": _escalate_handler,
 }

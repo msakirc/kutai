@@ -1,4 +1,4 @@
-"""ADR-shape verifier — Tier 2 of Z1 (P3 + C7 + A8).
+"""ADR-shape verifier — Tier 2 of Z1 (P3 + C7 + A8) + Z3 T4A schema v2.
 
 Mechanical post-hook that reads an Architecture Decision Record (ADR) JSON
 artifact and asserts the universal Nygard-extended shape:
@@ -24,7 +24,24 @@ Validations
 5. ``chosen_option_id`` resolves to an option in ``options_considered``.
 6. ``supersedes_adr_id`` is null OR a string matching the ADR-ID pattern.
 7. ``_schema_version`` matches the expected version (default ``"1"``).
-8. ``falsification_signal`` non-empty.
+8. ``falsification_signal`` validated per schema version (see below).
+
+falsification_signal rules (Z3 T4A)
+-------------------------------------
+* ``null`` — always valid: signals the decision is inherently judgment-only
+  (e.g. REST vs GraphQL). T4B will route these to the LLM-only drift path.
+* ``_schema_version == "2"`` — REQUIRES v2 object form:
+  ``{"forbidden_imports": [...], "forbidden_patterns": [...],
+     "required_test_coverage": true|false}``
+  At least one key must be present and non-empty/non-None.
+  Key types: ``forbidden_imports``/``forbidden_patterns`` = list[str];
+  ``required_test_coverage`` = bool.
+* ``_schema_version == "1"`` (or missing/unknown) — lenient: accepts either
+  a non-empty string (original form) OR a valid v2 object (forward-compat).
+
+Back-compat window: ``_schema_version "1"`` is accepted for one mission
+cycle after the v2 rollout. The next planned mission run should drop v1
+acceptance and require v2 from all new ADRs.
 
 When ``require_cost_curve=True`` (used by the cost-curve verifier as a
 sanity backstop), every option must include ``monthly_cost_curve`` with
@@ -39,7 +56,8 @@ dict
     ``options_count`` (int), ``options_problems`` (list of dicts),
     ``orphan_chosen_option_id`` (bool), ``supersedes_invalid`` (bool),
     ``schema_version_mismatch`` (dict|None),
-    ``falsification_missing`` (bool).
+    ``falsification_missing`` (bool),
+    ``falsification_invalid`` (bool).
 """
 from __future__ import annotations
 
@@ -211,11 +229,48 @@ def verify_adr_shape(
     elif str(sv) != str(expected_schema_version):
         schema_mismatch = {"found": str(sv), "expected": str(expected_schema_version)}
 
+    # ── falsification_signal validation (Z3 T4A) ────────────────────────────
+    # Determine effective schema version for falsification rules.
+    # When expected_schema_version is "2" AND the ADR claims "2", enforce v2.
+    # Otherwise use lenient (v1-compat) mode.
     falsification = adr.get("falsification_signal")
-    falsification_missing = not bool(
-        (isinstance(falsification, str) and falsification.strip())
-        or (isinstance(falsification, dict) and falsification)
-    )
+    _effective_sv = str(sv) if sv is not None else "1"
+    _strict_v2 = (str(expected_schema_version) == "2" and _effective_sv == "2")
+
+    falsification_missing = False
+    falsification_invalid = False
+
+    if falsification is None:
+        # null is always valid — judgment-only ADR; T4B handles drift path.
+        pass
+    elif _strict_v2:
+        # v2 requires object form.
+        if not isinstance(falsification, dict):
+            falsification_invalid = True
+        else:
+            _valid_keys = {"forbidden_imports", "forbidden_patterns", "required_test_coverage"}
+            _bad_keys = set(falsification) - _valid_keys
+            _has_nonempty = False
+            _type_ok = True
+            for k, v in falsification.items():
+                if k in ("forbidden_imports", "forbidden_patterns"):
+                    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                        _type_ok = False
+                    elif v:  # non-empty list counts as present
+                        _has_nonempty = True
+                elif k == "required_test_coverage":
+                    if not isinstance(v, bool):
+                        _type_ok = False
+                    else:
+                        _has_nonempty = True
+            if not _type_ok or not _has_nonempty:
+                falsification_invalid = True
+    else:
+        # Lenient v1 mode: accept non-empty string OR valid v2 object.
+        is_str_ok = isinstance(falsification, str) and bool(falsification.strip())
+        is_obj_ok = isinstance(falsification, dict) and bool(falsification)
+        if not is_str_ok and not is_obj_ok:
+            falsification_missing = True
 
     ok = (
         not missing
@@ -227,6 +282,7 @@ def verify_adr_shape(
         and not supersedes_invalid
         and schema_mismatch is None
         and not falsification_missing
+        and not falsification_invalid
     )
 
     return {
@@ -241,4 +297,5 @@ def verify_adr_shape(
         "supersedes_invalid": supersedes_invalid,
         "schema_version_mismatch": schema_mismatch,
         "falsification_missing": falsification_missing,
+        "falsification_invalid": falsification_invalid,
     }

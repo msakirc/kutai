@@ -3616,6 +3616,9 @@
           "_schema_version": "1"
         }
       },
+      "produces": [
+        "mission_{mission_id}/.spec/layer_map.json"
+      ],
       "reversibility": "full"
     },
     {
@@ -3671,7 +3674,7 @@
             "reversal_cost",
             "supersedes_adr_id"
           ],
-          "_schema_version": "1"
+          "_schema_version": "2"
         }
       },
       "produces": [

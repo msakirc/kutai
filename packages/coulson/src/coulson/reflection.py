@@ -102,6 +102,35 @@ STACK_BLOCKS: dict[str, str] = {
 }
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# Layer-aware reminders — Z3 T4C
+# ────────────────────────────────────────────────────────────────────────────
+
+LAYER_BLOCKS: dict[str, str] = {
+    "domain": (
+        "## Layer reminder (domain)\n"
+        "This file is core domain. No framework imports allowed "
+        "(no fastapi, no flask, no nextjs, no SDKs). No I/O. Pure Python types only."
+    ),
+    "adapter": (
+        "## Layer reminder (adapter)\n"
+        "This file is an adapter. Translate between domain types and infra/SDK types only. "
+        "Don't leak domain types past the boundary OR infra types into domain."
+    ),
+    "infra": (
+        "## Layer reminder (infra)\n"
+        "This file is infrastructure. May import SDKs, ORMs, frameworks. "
+        "Don't import from domain.* — invert the dependency via adapter."
+    ),
+    "ui": (
+        "## Layer reminder (ui)\n"
+        "This file is UI. Pull data via hooks/services; no direct DB/HTTP from components."
+    ),
+    "test": "",
+    "unknown": "",
+}
+
+
 REFLECTION_BLOCKS: dict[str, str] = {
     "coder": (
         "Self-check before final_answer:\n"
@@ -186,6 +215,7 @@ def build_reflection_prompt(
     agent_name: str,
     iteration: int,
     stack: str | None = None,
+    layer: str | None = None,
 ) -> str:
     """Return a role-specific self-check checklist for *agent_name*.
 
@@ -201,6 +231,12 @@ def build_reflection_prompt(
         stack key exists in :data:`STACK_BLOCKS`, the relevant fragment is
         appended after the role block.  Multi-stack: each token is looked up
         independently; matched blocks are deduplicated and concatenated.
+    layer:
+        Optional layer tag from :func:`src.tools.inspect_layer.inspect_layer`
+        (one of ``"domain"``, ``"adapter"``, ``"infra"``, ``"ui"``,
+        ``"test"``, ``"unknown"``).  When set and :data:`LAYER_BLOCKS` has a
+        non-empty entry for it, the layer block is appended after stack
+        blocks (Z3 T4C).
     """
     block = REFLECTION_BLOCKS.get(agent_name, _GENERIC_REFLECTION_BLOCK)
     parts = [f"[iteration {iteration}] {block}"]
@@ -212,6 +248,11 @@ def build_reflection_prompt(
             if token and token not in seen and token in STACK_BLOCKS:
                 parts.append(STACK_BLOCKS[token])
                 seen.add(token)
+
+    if layer:
+        layer_block = LAYER_BLOCKS.get(layer.strip().lower(), "")
+        if layer_block:
+            parts.append(layer_block)
 
     return "\n\n".join(parts)
 

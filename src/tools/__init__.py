@@ -989,10 +989,23 @@ try:
 except Exception as e:
     logger.debug("MCP stub registration failed: %s", e)
 
+# Z3 T4C — layer-aware tooling
+from .inspect_layer import inspect_layer  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 TOOL_REGISTRY: dict[str, dict[str, Any]] = {
+    "inspect_layer": {
+        "function": inspect_layer,
+        "description": (
+            "Return architectural layer for a path. "
+            "Result: one of domain | adapter | infra | test | ui | unknown. "
+            "Resolution: spec override (.spec/layer_map.json) > heuristic table. "
+            "Args: path (str), workspace_path (str, optional)."
+        ),
+        "example": '{"action": "tool_call", "tool": "inspect_layer", "args": {"path": "src/domain/user.py"}}',
+    },
     # ── Shell ──────────────────────────────────────────────────────────────
     "shell": {
         "function": run_shell,

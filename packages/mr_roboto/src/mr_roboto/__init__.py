@@ -84,6 +84,7 @@ from mr_roboto.apply_migration import apply_migration
 from mr_roboto.inject_lessons import inject_lessons
 from mr_roboto.instantiate_recipe import instantiate_recipe_verb
 from mr_roboto.extract_signatures import extract_signatures
+from mr_roboto.check_adr_drift import check_adr_drift  # Z3 T4B
 
 __all__ = [
     "Action",
@@ -2720,6 +2721,34 @@ async def _run_dispatch(task: dict) -> Action:
         from mr_roboto.performance_review import performance_review as _perf
         try:
             res = await _perf(**payload)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "check_adr_drift":
+        # Z3 T4B — mechanical ADR drift gate.
+        from mr_roboto.check_adr_drift import check_adr_drift as _check_drift
+        try:
+            res = await _check_drift(
+                adr_register_path=str(payload.get("adr_register_path") or ""),
+                produced_files=list(payload.get("produced_files") or []),
+                workspace_path=payload.get("workspace_path") or None,
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "run_semgrep_layer_filtered":
+        # Z3 T4C — semgrep with layer-filter pre-pass (e.g. forbidden_in_domain).
+        from mr_roboto.run_semgrep_layer_filtered import run_semgrep_layer_filtered as _sgflt
+        try:
+            res = await _sgflt(
+                mission_id=payload.get("mission_id"),
+                target_files=list(payload.get("target_files") or []),
+                rule_pack_path=str(payload.get("rule_pack_path") or ""),
+                required_layer=str(payload.get("required_layer") or "domain"),
+                workspace_path=payload.get("workspace_path") or None,
+            )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

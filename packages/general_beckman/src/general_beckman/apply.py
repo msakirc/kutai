@@ -1510,6 +1510,27 @@ def _posthook_agent_and_payload(
                 "thresholds": source_ctx.get("perf_thresholds") or {},
             },
         })
+    if a.kind == "adr_drift_check":
+        # Z3 T4B — mechanical ADR drift gate.
+        workspace_path = source_ctx.get("workspace_path") or ""
+        register_path = source_ctx.get("adr_register_path") or ""
+        if workspace_path and not register_path:
+            # Use forward slash regardless of platform — downstream consumers
+            # treat the path as a POSIX-style artifact reference.
+            wp = workspace_path.rstrip("/\\")
+            register_path = f"{wp}/.adr/register.md"
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "adr_drift_check",
+            "executor": "mechanical",
+            "payload": {
+                "action": "check_adr_drift",
+                "adr_register_path": register_path,
+                "produced_files": produces,
+                "workspace_path": workspace_path,
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -3133,9 +3154,13 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         )
         return
 
-    # Z3 T3 — security/accessibility/contract/performance share the simple
-    # blocker-or-pass pattern (mechanical verb produces {findings, verdict}).
-    if a.kind in ("security_review", "accessibility_review", "contract_review", "performance_review"):
+    # Z3 T3 + T4B — security/accessibility/contract/performance/adr_drift_check
+    # share the simple blocker-or-pass pattern (mechanical verb produces
+    # {findings, verdict}).
+    if a.kind in (
+        "security_review", "accessibility_review", "contract_review",
+        "performance_review", "adr_drift_check",
+    ):
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
             feedback_prefix=f"{a.kind} gate",

@@ -454,5 +454,8 @@ def test_i2p_v3_adr_artifact_schema_carries_universal_fields():
     ):
         s = _step(wf, sid)
         sch = s["artifact_schema"][label]
-        assert sch["_schema_version"] == "1", sid
+        # Z3 T4A: step 4.4 bumped to v2 (structured falsification_signal).
+        # Other steps remain on v1 pending follow-up migration.
+        expected_version = "2" if sid == "4.4" else "1"
+        assert sch["_schema_version"] == expected_version, sid
         assert expected_required.issubset(set(sch["required_fields"])), sid

@@ -200,14 +200,16 @@ def _dial_get(ctx, key: str, default):
     - dict (legacy/test path that mimics step context)
     - None (no dials wired yet)
 
-    This helper smooths over all three so the registry lambdas can be
-    written once and dispatched either way.
+    Explicit None values in either source map back to *default* — None means
+    "no preference", not "force null".
     """
     if ctx is None:
         return default
     if isinstance(ctx, dict):
-        return ctx.get(key, default)
-    return getattr(ctx, key, default)
+        val = ctx.get(key, default)
+    else:
+        val = getattr(ctx, key, default)
+    return default if val is None else val
 
 
 POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
@@ -541,6 +543,24 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         description=(
             "lighthouse (web) or k6 (api) perf gate. Mode + thresholds in step "
             "context. Threshold breach → blocker."
+        ),
+    ),
+    # Z3 T4B — adr_drift_check (mechanical violation gate against ADR falsification_signal).
+    "adr_drift_check": PostHookSpec(
+        kind="adr_drift_check",
+        verb="check_adr_drift",
+        default_severity="blocker",
+        cost_band="cheap",
+        # When qa_dial != "off", scan all code files for ADR violations.
+        # Verb soft-skips when mission has no .adr/ directory.
+        auto_wire_triggers=lambda ctx: (
+            []
+            if _dial_get(ctx, "qa_dial", "standard") == "off"
+            else ["**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
+        ),
+        description=(
+            "Mechanical drift gate: parse ADR falsification_signal (v2 structured) "
+            "and scan produced files for forbidden imports/patterns/coverage gaps."
         ),
     ),
 }

@@ -2480,6 +2480,34 @@ async def init_db():
         ),
     )
 
+    # ── Z8 T3A: webhook_events dedup table ────────────────────────────────
+    # Tracks vendor webhook deliveries. Primary key (integration_id, event_id)
+    # makes duplicate POSTs a no-op. payload_hash captured for forensics.
+    await apply_migration(
+        version="2026-05-12-webhook-events",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS webhook_events ("
+            " integration_id TEXT NOT NULL,"
+            " event_id TEXT NOT NULL,"
+            " received_at TEXT NOT NULL,"
+            " payload_hash TEXT NOT NULL,"
+            " mission_id INTEGER,"
+            " processed_at TEXT,"
+            " PRIMARY KEY (integration_id, event_id)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_webhook_received "
+            "ON webhook_events(received_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_webhook_received;\n"
+            "DROP TABLE IF EXISTS webhook_events;\n"
+        ),
+        description=(
+            "Z8 T3A: webhook_events dedup table — (integration_id, event_id) "
+            "PK + received_at index. Records every vendor webhook delivery."
+        ),
+    )
+
     # ── Z3 T1C: review_density_json — founder dials per mission ───────────────
     # Stores a JSON blob of ReviewDensityDials fields.  NULL = all defaults
     # (conservative: standard/off/False/standard).  No backfill needed — NULL

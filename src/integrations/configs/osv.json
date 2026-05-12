@@ -1,0 +1,19 @@
+{
+  "service_name": "osv",
+  "base_url": "https://api.osv.dev",
+  "auth_type": "none",
+  "auth_header": "",
+  "auth_token_field": "",
+  "actions": {
+    "query": {
+      "method": "POST",
+      "path": "/v1/query",
+      "required_params": ["package"]
+    },
+    "querybatch": {
+      "method": "POST",
+      "path": "/v1/querybatch",
+      "required_params": ["queries"]
+    }
+  }
+}

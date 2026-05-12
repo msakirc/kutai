@@ -1,0 +1,22 @@
+name: cve_scan_docker
+version: v1
+kind: cve_scan
+description: "Scan Docker base images for known CVEs (delegates to trivy when present)."
+requires:
+  tech_stack:
+    - "docker"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  notes: notes.md
+prompts: {}
+lessons_domain: cve_scan
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  DOCKERFILE_PATH: "Dockerfile"
+  ECOSYSTEM: "Debian"
+entry_points:
+  notes: notes.md

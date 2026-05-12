@@ -2775,4 +2775,22 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action in ("cve_scan", "cron_cve_scan"):
+        # Z8 T5C — OSV.dev API CVE lookup.
+        from mr_roboto.executors.cve_scan import run as _cve_run
+        try:
+            res = await _cve_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action in ("secret_scan", "cron_secret_scan"):
+        # Z8 T5C — gitleaks subprocess wrapper.
+        from mr_roboto.executors.secret_scan import run as _sec_run
+        try:
+            res = await _sec_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

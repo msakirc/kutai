@@ -160,6 +160,11 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z8 T5B dependency hygiene cron ---------------------------------
     "dependency_scan": "full",  # pip-audit / npm audit, read-only
     "cron_dep_hygiene": "full",
+    # ---- Z8 T5C CVE + secret scan cron ----------------------------------
+    "cve_scan": "full",  # OSV.dev HTTP query, no writes
+    "cron_cve_scan": "full",
+    "secret_scan": "full",  # gitleaks read-only scan
+    "cron_secret_scan": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

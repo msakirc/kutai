@@ -1415,6 +1415,101 @@ def _posthook_agent_and_payload(
             "signatures": {},
             "mismatches": [],
         })
+    if a.kind == "security_review":
+        # Z3 T3A — composite mechanical: semgrep + bandit + npm audit.
+        produces = list(source_ctx.get("produces") or [])
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "security_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "security_review",
+                "target_files": produces,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "accessibility_review":
+        # Z3 T3B — axe-core scan against tunneled preview URL.
+        # URL resolved from .preview/last_preview_url.txt (T3B follow-up in
+        # emit_preview_url) with source_ctx fallback.
+        # "pending:" marker (hosting deferred) suppresses URL — axe soft-skips.
+        import os as _os
+        workspace_path = source_ctx.get("workspace_path") or ""
+        preview_url = source_ctx.get("preview_url") or ""
+        if workspace_path and not preview_url:
+            _last_url_path = _os.path.join(workspace_path, ".preview", "last_preview_url.txt")
+            try:
+                with open(_last_url_path, "r", encoding="utf-8") as _f:
+                    _read = _f.read().strip()
+                # Filter pending markers — only real URLs propagate downstream.
+                if _read.startswith("http://") or _read.startswith("https://"):
+                    preview_url = _read
+            except (OSError, FileNotFoundError):
+                pass
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "accessibility_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_axe",
+                "preview_url": preview_url,
+                "target_paths": produces,
+            },
+        })
+    if a.kind == "contract_review":
+        # Z3 T3C — schemathesis contract fuzz against running app.
+        import os as _os
+        workspace_path = source_ctx.get("workspace_path") or ""
+        spec_path = source_ctx.get("openapi_spec_path") or source_ctx.get("spec_path") or ""
+        if not spec_path and workspace_path:
+            _candidate = _os.path.join(workspace_path, "openapi.json")
+            if _os.path.exists(_candidate):
+                spec_path = _candidate
+        base_url = source_ctx.get("preview_url") or source_ctx.get("base_url") or ""
+        if workspace_path and not base_url:
+            _last_url_path = _os.path.join(workspace_path, ".preview", "last_preview_url.txt")
+            try:
+                with open(_last_url_path, "r", encoding="utf-8") as _f:
+                    base_url = _f.read().strip()
+            except (OSError, FileNotFoundError):
+                pass
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "contract_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_schemathesis",
+                "spec_path": spec_path,
+                "base_url": base_url,
+            },
+        })
+    if a.kind == "performance_review":
+        # Z3 T3C — opt-in lighthouse (web) or k6 (api).
+        import os as _os
+        workspace_path = source_ctx.get("workspace_path") or ""
+        mode = source_ctx.get("perf_mode") or "web"
+        preview_url = source_ctx.get("preview_url") or ""
+        if workspace_path and not preview_url:
+            _last_url_path = _os.path.join(workspace_path, ".preview", "last_preview_url.txt")
+            try:
+                with open(_last_url_path, "r", encoding="utf-8") as _f:
+                    preview_url = _f.read().strip()
+            except (OSError, FileNotFoundError):
+                pass
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "performance_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "performance_review",
+                "mode": mode,
+                "preview_url": preview_url,
+                "script_path": source_ctx.get("perf_script_path") or "",
+                "thresholds": source_ctx.get("perf_thresholds") or {},
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -2754,6 +2849,117 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
+async def _apply_simple_blocker_verdict(
+    kind: str,
+    source: dict,
+    ctx: dict,
+    pending: list[str],
+    verdict: PostHookVerdict,
+    feedback_prefix: str,
+) -> None:
+    """Z3 T3 — generic pass/fail handler for mechanical security/access/contract/perf hooks.
+
+    Pass: drop *kind* from pending; mark source completed when nothing left.
+    Fail: retry source with feedback; DLQ on attempts exhausted (bonus path honored).
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    skipped = bool(raw.get("skipped"))
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        if skipped:
+            logger.debug(f"{kind}: soft-skipped",
+                         source_id=verdict.source_task_id,
+                         reason=raw.get("reason") or "")
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None, next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", raw)
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Fail path.
+    findings = raw.get("findings") or []
+    findings_summary = "; ".join(
+        (f.get("why") or f.get("kind") or str(f))[:80]
+        for f in findings[:3]
+    )
+    error_str = f"{feedback_prefix}: {findings_summary}"[:500]
+    feedback = (
+        f"{feedback_prefix} failed. Fix the issues and re-emit. "
+        f"Findings: {findings_summary}"
+    )
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None and progress >= 0.5 and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id, status="pending",
+                worker_attempts=attempts, max_worker_attempts=max_attempts,
+                error=error_str, error_category="quality",
+                next_retry_at=None, context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(source, error=error_str or f"{kind} gate exhausted",
+                         category="quality", attempts=attempts)
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id, status="pending",
+        worker_attempts=attempts, error=error_str, error_category="quality",
+        next_retry_at=None, context=_json.dumps(ctx),
+    )
+
+
+# Z3 T3A — security_review verdict is a thin wrapper around the generic helper
+# above. Tests import this name directly.
+async def _apply_security_review_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    await _apply_simple_blocker_verdict(
+        kind="security_review", source=source, ctx=ctx, pending=pending,
+        verdict=verdict, feedback_prefix="security_review gate",
+    )
+
+
 async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     """Apply a post-hook verdict back to the source task."""
     import json as _json
@@ -2924,6 +3130,15 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     if a.kind == "verify_artifacts":
         await _apply_verify_artifacts_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    # Z3 T3 — security/accessibility/contract/performance share the simple
+    # blocker-or-pass pattern (mechanical verb produces {findings, verdict}).
+    if a.kind in ("security_review", "accessibility_review", "contract_review", "performance_review"):
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix=f"{a.kind} gate",
         )
         return
 

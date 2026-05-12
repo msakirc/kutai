@@ -191,6 +191,25 @@ class PostHookSpec:
 #   on real mission output — edit the rule packs to reduce noise before enabling
 #   in high-throughput missions.
 # ---------------------------------------------------------------------------
+
+def _dial_get(ctx, key: str, default):
+    """Read a dial value from a MissionDialContext OR plain dict OR None.
+
+    Z3 T3 callable auto_wire_triggers receive either:
+    - MissionDialContext (when expander calls via resolve_triggers)
+    - dict (legacy/test path that mimics step context)
+    - None (no dials wired yet)
+
+    This helper smooths over all three so the registry lambdas can be
+    written once and dispatched either way.
+    """
+    if ctx is None:
+        return default
+    if isinstance(ctx, dict):
+        return ctx.get(key, default)
+    return getattr(ctx, key, default)
+
+
 POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     "verify_artifacts": PostHookSpec(
         kind="verify_artifacts",
@@ -457,6 +476,71 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Cross-file consistency review after multi-file feature expansion. "
             "AST signature mechanical pre-check (extract_signatures) feeds "
             "context into LLM integration_reviewer."
+        ),
+    ),
+    # Z3 T3A — security_review composite (semgrep + bandit + npm audit).
+    "security_review": PostHookSpec(
+        kind="security_review",
+        verb="security_review",
+        default_severity="blocker",
+        cost_band="moderate",
+        # Callable: empty list when qa_dial=off; else source-file globs.
+        # Accepts MissionDialContext OR dict OR None (defaults to standard).
+        auto_wire_triggers=lambda ctx: (
+            []
+            if _dial_get(ctx, "qa_dial", "standard") == "off"
+            else ["*.py", "*.ts", "*.tsx", "*.js", "*.jsx", "requirements.txt", "package.json"]
+        ),
+        description=(
+            "Composite security gate: semgrep security.yml + bandit (Python) + "
+            "npm audit (JS). Aggregated severity-blocker verdict."
+        ),
+    ),
+    # Z3 T3B — accessibility_review via @axe-core/cli against tunneled preview.
+    "accessibility_review": PostHookSpec(
+        kind="accessibility_review",
+        verb="run_axe",
+        default_severity="blocker",
+        cost_band="heavy",
+        # Callable: when accessibility_dial=on → JSX/TSX globs; else empty.
+        # Accepts MissionDialContext OR dict OR None.
+        auto_wire_triggers=lambda ctx: (
+            ["*.tsx", "*.jsx"]
+            if _dial_get(ctx, "accessibility_dial", "off") == "on"
+            else []
+        ),
+        description=(
+            "axe-core a11y scan against tunneled preview URL. "
+            "critical/serious impact → blocker; moderate → warning; minor → info."
+        ),
+    ),
+    # Z3 T3C — contract_review via schemathesis.
+    "contract_review": PostHookSpec(
+        kind="contract_review",
+        verb="run_schemathesis",
+        default_severity="blocker",
+        cost_band="moderate",
+        auto_wire_triggers=lambda ctx: (
+            []
+            if _dial_get(ctx, "qa_dial", "standard") == "off"
+            else ["**/routes/*.py", "**/routers/*.py", "**/api/*.py"]
+        ),
+        description=(
+            "schemathesis contract fuzz against running app via openapi spec. "
+            "Any 5xx OR schema mismatch → blocker."
+        ),
+    ),
+    # Z3 T3C — performance_review (lighthouse OR k6 by payload mode).
+    "performance_review": PostHookSpec(
+        kind="performance_review",
+        verb="performance_review",
+        default_severity="blocker",
+        cost_band="heavy",
+        # Opt-in only via explicit post_hooks: ["performance_review"].
+        auto_wire_triggers=[],
+        description=(
+            "lighthouse (web) or k6 (api) perf gate. Mode + thresholds in step "
+            "context. Threshold breach → blocker."
         ),
     ),
 }

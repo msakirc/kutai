@@ -1,0 +1,144 @@
+# security.yml — Security guardrail rule pack (Z3 T3A)
+#
+# OWASP Top10-aligned patterns + secret detection.
+# Founders extend per-project by setting security_rule_pack in step context.
+#
+# Severity levels (semgrep → beckman):
+#   ERROR   → blocker  (CVSS >= 7 equivalent — hard failure)
+#   WARNING → warning  (lower-severity — surfaced, does not block)
+#   INFO    → info     (informational only)
+
+rules:
+
+  # -------------------------------------------------------------------------
+  # A03:2021 — Injection
+  # -------------------------------------------------------------------------
+
+  - id: sql-injection-format-string
+    patterns:
+      - pattern: |
+          $DB.execute("..." % $ARGS)
+      - pattern: |
+          $DB.execute("..." + $VAR)
+      - pattern: |
+          $DB.execute(f"...{$VAR}...")
+    message: >
+      Potential SQL injection: query assembled via string formatting/concatenation.
+      Use parameterised queries (cursor.execute(sql, params)) instead.
+    languages: [python]
+    severity: ERROR
+
+  - id: sql-injection-format-string-js
+    patterns:
+      - pattern: |
+          $DB.query(`...${$VAR}...`)
+      - pattern: |
+          $DB.execute(`...${$VAR}...`)
+    message: >
+      Potential SQL injection: query assembled via template literal with variable
+      interpolation. Use parameterised queries (e.g. $1/$2 placeholders) instead.
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  - id: command-injection
+    patterns:
+      - pattern: |
+          subprocess.call($CMD, shell=True)
+      - pattern: |
+          subprocess.run($CMD, shell=True)
+      - pattern: |
+          subprocess.Popen($CMD, shell=True)
+      - pattern: os.system($CMD)
+      - pattern: os.popen($CMD)
+    message: >
+      Potential command injection: user-controlled data passed to a shell command.
+      Avoid shell=True; pass a list of arguments instead. If shell is required,
+      sanitise and validate all inputs.
+    languages: [python]
+    severity: ERROR
+
+  - id: path-traversal
+    patterns:
+      - pattern: open(request.$ATTR + $PATH, ...)
+      - pattern: open($PREFIX + request.$ATTR, ...)
+    message: >
+      Potential path traversal: file path constructed from user-controlled input.
+      Validate and canonicalise paths with os.path.realpath(); reject paths that
+      escape the allowed root.
+    languages: [python]
+    severity: ERROR
+
+  # -------------------------------------------------------------------------
+  # A02:2021 — Cryptographic Failures
+  # -------------------------------------------------------------------------
+
+  - id: weak-crypto-md5
+    patterns:
+      - pattern: hashlib.md5(...)
+      - pattern: md5(...)
+    message: >
+      MD5 is cryptographically broken. Use SHA-256 (hashlib.sha256) or stronger
+      for security-sensitive hashing. MD5 is acceptable only for non-security
+      checksums (add a # nosec comment to suppress).
+    languages: [python]
+    severity: ERROR
+
+  - id: weak-crypto-sha1
+    patterns:
+      - pattern: hashlib.sha1(...)
+    message: >
+      SHA-1 is weak for cryptographic use. Prefer SHA-256 or SHA-3.
+      (Acceptable for git object IDs or non-security checksums — add # nosec.)
+    languages: [python]
+    severity: WARNING
+
+  # -------------------------------------------------------------------------
+  # A02:2021 — Hardcoded Secrets
+  # -------------------------------------------------------------------------
+
+  - id: hardcoded-aws-access-key
+    pattern-regex: "AKIA[0-9A-Z]{16}"
+    message: >
+      Possible hardcoded AWS Access Key ID (AKIA…). Rotate immediately and
+      move to environment variables or a secrets manager.
+    languages: [python, javascript, typescript, generic]
+    severity: ERROR
+
+  - id: hardcoded-jwt-token
+    pattern-regex: "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"
+    message: >
+      Possible hardcoded JWT token. Do not commit live tokens; use environment
+      variables or a vault.
+    languages: [python, javascript, typescript, generic]
+    severity: ERROR
+
+  - id: hardcoded-generic-api-key
+    patterns:
+      - pattern: $KEY = "sk-..."
+      - pattern: $KEY = "api_key_..."
+    message: >
+      Possible hardcoded API key (sk-… / api_key_… prefix). Move to environment
+      variables (.env file excluded from version control).
+    languages: [python, javascript, typescript]
+    severity: WARNING
+
+  # -------------------------------------------------------------------------
+  # A03:2021 — eval / exec misuse
+  # -------------------------------------------------------------------------
+
+  - id: eval-misuse
+    pattern: eval(...)
+    message: >
+      eval() executes arbitrary code and is a severe injection risk when the
+      argument contains user-controlled data. Replace with a safe alternative
+      (ast.literal_eval for literals, JSON parsing for data).
+    languages: [python, javascript, typescript]
+    severity: ERROR
+
+  - id: exec-misuse
+    pattern: exec(...)
+    message: >
+      exec() executes arbitrary Python code. Avoid with user-controlled input.
+      If used for plugin loading, restrict to a safe namespace and validate source.
+    languages: [python]
+    severity: WARNING

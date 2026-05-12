@@ -204,6 +204,15 @@ async def emit_preview_url(
         with open(os.path.join(workspace_path, ".tunnel.pid"), "w", encoding="utf-8") as f:
             f.write(f"{pid}\n")
 
+    # Z3 T3B follow-up: write a consumer-friendly artifact that downstream
+    # post-hooks (e.g. accessibility_review) can read to discover the URL.
+    # Written only when a real https:// URL is captured.
+    _preview_dir = os.path.join(workspace_path, ".preview")
+    os.makedirs(_preview_dir, exist_ok=True)
+    _last_url_file = os.path.join(_preview_dir, "last_preview_url.txt")
+    with open(_last_url_file, "w", encoding="utf-8") as f:
+        f.write(f"{url}\n")
+
     logger.info(
         f"preview_url emitted for mission {mission_id}: {url} (pid={pid})"
     )

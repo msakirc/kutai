@@ -10,7 +10,7 @@ ACTIVE_AGENTS = [
 LOW_TRAFFIC_AGENTS = [
     "assistant", "grader", "code_reviewer", "visual_reviewer",
     "shopping_advisor", "shopping_clarifier", "deal_analyst",
-    "product_researcher", "artifact_summarizer",
+    "product_researcher", "artifact_summarizer", "integration_reviewer",
 ]
 
 ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 21 total

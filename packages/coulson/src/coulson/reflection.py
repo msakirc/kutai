@@ -134,6 +134,20 @@ REFLECTION_BLOCKS: dict[str, str] = {
         "4. ASSERT messages helpful (not bare `assert x`)?\n"
         "If any 'no' — keep iterating."
     ),
+    "integration_reviewer": (
+        "Self-check before final_answer:\n"
+        "1. Did I check EVERY emitted file in the task, not just the ones "
+        "I read first?\n"
+        "2. Did I cross-reference SIGNATURES — caller argument names/order "
+        "vs callee parameter names/order?\n"
+        "3. Are ALL findings cited with both a file path AND a line number "
+        "(or symbol name if line unknown)?\n"
+        "4. For cross-file findings, did I cite BOTH file_a (caller/consumer) "
+        "and file_b (callee/definition)?\n"
+        "5. Did I check migration column names against model/schema field names?\n"
+        "If any 'no' — read the missing files and update findings before "
+        "emitting final_answer."
+    ),
 }
 
 _GENERIC_REFLECTION_BLOCK = (

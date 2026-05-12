@@ -4973,6 +4973,22 @@ class TelegramInterface:
                     # Unknown stage — clear and fall through.
                     logger.warning("regen pending: unknown stage", stage=stage)
 
+                # ── Z1 Tier 4B: propagate flow (B2 / inline button) ──
+                if cmd == "propagate":
+                    stage = pending_action.get("stage")
+                    if stage == "ask_change":
+                        mid = pending_action.get("mission_id")
+                        asset = pending_action.get("asset_path")
+                        change = (text or "").strip()
+                        if not change:
+                            await self._reply(update, "❌ Empty change description; aborted.")
+                            return
+                        # Reuse cmd_propagate by injecting args.
+                        context.args = [asset, *change.split()]
+                        await self.cmd_propagate(update, context)
+                        return
+                    logger.warning("propagate pending: unknown stage", stage=stage)
+
                 # ── B7+C16: visual ingest purpose-tap → enqueue mechanical task ──
                 if cmd == "_visual_purpose":
                     stripped = text.strip()
@@ -6458,6 +6474,32 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         await query.answer()
         data = query.data
 
+        # ── Z1 Tier 4B: propagate inline button ─────────────────────
+        # Format: `propagate:<mission_id>:<artifact_path>`
+        # On tap, stash a `_pending_action` so the next message becomes
+        # the change description (mirrors the /propagate <path> flow).
+        if data.startswith("propagate:"):
+            try:
+                _, mid_s, asset_path = data.split(":", 2)
+                mid = int(mid_s)
+            except (ValueError, IndexError):
+                await query.message.reply_text("❌ Bozuk propagate butonu.")
+                return
+            chat_id = update.effective_chat.id
+            self._pending_action[chat_id] = {
+                "command": "propagate",
+                "stage": "ask_change",
+                "mission_id": mid,
+                "asset_path": asset_path,
+                "ts": _time.time(),
+            }
+            await query.message.reply_text(
+                f"🎯 Describe the change to propagate from `{asset_path}` "
+                f"(mission #{mid}):",
+                parse_mode="Markdown",
+            )
+            return
+
         # ── Z1 Tier 4A: regen inline button ─────────────────────────
         # Format: `regen:<mission_id>:<base64-or-encoded-artifact-path>`
         # On tap, stash a `_pending_action` so the next message becomes
@@ -7115,8 +7157,15 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
     # --- Outbound notifications ---
 
-    async def send_notification(self, text: str, retries: int = 2):
-        """Send a notification message. Returns the sent Message or None."""
+    async def send_notification(self, text: str, retries: int = 2, reply_markup=None):
+        """Send a notification message. Returns the sent Message or None.
+
+        When ``reply_markup`` is None, attach the persistent ``REPLY_KEYBOARD``.
+        When the caller passes an explicit markup (e.g. ``InlineKeyboardMarkup``
+        for artifact-emit buttons), use that instead — Telegram only allows one
+        reply_markup per message and inline + reply markups are mutually
+        exclusive. The persistent keyboard remains attached to prior messages.
+        """
         import asyncio as _asyncio
 
         # Phase 8.3: Redact secrets from outgoing messages
@@ -7126,13 +7175,15 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except Exception:
             pass
 
+        markup = reply_markup if reply_markup is not None else REPLY_KEYBOARD
+
         for attempt in range(retries + 1):
             try:
                 msg = await self.app.bot.send_message(
                     chat_id=TELEGRAM_ADMIN_CHAT_ID,
                     text=text,
                     parse_mode="Markdown",
-                    reply_markup=REPLY_KEYBOARD,
+                    reply_markup=markup,
                 )
                 return msg
             except Exception as e:
@@ -7140,7 +7191,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 try:
                     msg = await self.app.bot.send_message(
                         chat_id=TELEGRAM_ADMIN_CHAT_ID, text=text,
-                        reply_markup=REPLY_KEYBOARD,
+                        reply_markup=markup,
                     )
                     return msg
                 except Exception:

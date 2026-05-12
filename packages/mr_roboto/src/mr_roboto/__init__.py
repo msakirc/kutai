@@ -1063,6 +1063,23 @@ async def _run_dispatch(task: dict) -> Action:
                     error=str(res.get("error") or "regen_artifact failed"),
                     result=res,
                 )
+            # Z1 Tier 4B — fire artifact-emit notification with inline buttons
+            # so the founder can iterate (re-regen with another change) or
+            # propagate the change downstream. Best-effort; failure here must
+            # not flip the regen action to failed.
+            try:
+                from mr_roboto._artifact_notify import enqueue_artifact_emit_notice
+                await enqueue_artifact_emit_notice(
+                    mission_id=int(mid) if mid is not None else 0,
+                    artifact_path=str(payload.get("artifact_path") or ""),
+                    change_description=str(change),
+                    new_version=str(res.get("new_version") or ""),
+                )
+            except Exception as _notify_exc:
+                logger = __import__(
+                    "logging"
+                ).getLogger("mr_roboto.regen_artifact")
+                logger.warning("artifact-emit notice enqueue failed: %s", _notify_exc)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

@@ -1,0 +1,27 @@
+name: synthetic_check_k6
+version: v1
+kind: synthetic_check
+description: "Run a k6 load script against a URL and diff p50/p95/p99 vs baseline."
+requires:
+  tech_stack:
+    - "fastapi"
+    - "fastapi+sqlite+nextjs"
+    - "express"
+    - "rails"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  script: smoke.js
+prompts: {}
+lessons_domain: synthetic_check
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  TARGET_URL: ""
+  VUS: "5"
+  DURATION: "30s"
+  REGRESSION_THRESHOLD_PCT: "10"
+entry_points:
+  script: smoke.js

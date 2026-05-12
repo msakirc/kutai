@@ -1,0 +1,25 @@
+name: synthetic_check_lighthouse
+version: v1
+kind: synthetic_check
+description: "Run Google Lighthouse against a URL, parse perf metrics, diff vs baseline."
+requires:
+  tech_stack:
+    - "nextjs"
+    - "fastapi+sqlite+nextjs"
+    - "react"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  notes: notes.md
+prompts: {}
+lessons_domain: synthetic_check
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  TARGET_URL: ""
+  REGRESSION_THRESHOLD_PCT: "10"
+  METRICS: "first_contentful_paint,largest_contentful_paint,total_blocking_time"
+entry_points:
+  notes: notes.md

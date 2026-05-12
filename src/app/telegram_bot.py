@@ -1886,6 +1886,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("quality_mode", self.cmd_quality_mode))
         self.app.add_handler(CommandHandler("dlq", self.cmd_dlq))
         self.app.add_handler(CommandHandler("rework", self.cmd_rework))
+        # Z3 T1C: review density founder dials
+        self.app.add_handler(CommandHandler("density", self.cmd_density))
         self.app.add_handler(CommandHandler("regen", self.cmd_regen))
         # Z1 Tier 4 (T4B): asset->spec propagation + two-way HTML edit reflection
         self.app.add_handler(CommandHandler("edit_html", self.cmd_edit_html))
@@ -3926,6 +3928,95 @@ class TelegramInterface:
                 "spec-first bet is holding._"
             )
 
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    # ─────────────────────────────────────────────────────────────────
+    # Z3 T1C — review density founder dials
+    # ─────────────────────────────────────────────────────────────────
+    async def cmd_density(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show or update review-density dials for the active mission.
+
+        Usage::
+
+          /density                  — show current dials + usage examples
+          /density <key> <value>    — set one dial; confirm + print full state
+
+        Valid keys and values::
+
+          qa_dial               quick | standard | strict
+          accessibility_dial    on | off
+          multi_file_expansion  true | false
+          integration_replay    quick | standard | strict
+
+        Example::
+
+          /density qa_dial strict
+          /density accessibility_dial on
+          /density multi_file_expansion true
+        """
+        from src.infra.db import get_active_missions
+        from src.workflows.review_density import get_dials, set_dial
+
+        # Resolve active mission
+        missions = await get_active_missions()
+        if not missions:
+            await self._reply(
+                update,
+                "No active mission. Start one with /mission first.",
+            )
+            return
+        mission = missions[0]
+        mission_id: int = mission["id"]
+        mission_title: str = mission.get("title") or f"mission #{mission_id}"
+
+        args = context.args or []
+
+        if not args:
+            # Show current dials
+            dials = await get_dials(mission_id)
+            lines = [
+                f"*Review density dials* — {mission_title} (#{mission_id})",
+                "",
+                f"  qa_dial: `{dials.qa_dial}`",
+                f"  accessibility_dial: `{dials.accessibility_dial}`",
+                f"  multi_file_expansion: `{dials.multi_file_expansion}`",
+                f"  integration_replay: `{dials.integration_replay}`",
+                "",
+                "*Usage:*",
+                "  `/density qa_dial quick|standard|strict`",
+                "  `/density accessibility_dial on|off`",
+                "  `/density multi_file_expansion true|false`",
+                "  `/density integration_replay quick|standard|strict`",
+            ]
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+            return
+
+        if len(args) < 2:
+            await self._reply(
+                update,
+                "Usage: `/density <key> <value>` — e.g. `/density qa_dial strict`",
+                parse_mode="Markdown",
+            )
+            return
+
+        key = args[0]
+        value_raw = args[1]
+
+        try:
+            updated = await set_dial(mission_id, key, value_raw)
+        except ValueError as e:
+            await self._reply(update, f"Invalid dial: {e}")
+            return
+
+        lines = [
+            f"Updated *{key}* = `{value_raw}` on {mission_title} (#{mission_id})",
+            "",
+            "*Current dials:*",
+            f"  qa_dial: `{updated.qa_dial}`",
+            f"  accessibility_dial: `{updated.accessibility_dial}`",
+            f"  multi_file_expansion: `{updated.multi_file_expansion}`",
+            f"  integration_replay: `{updated.integration_replay}`",
+        ]
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     # ─────────────────────────────────────────────────────────────────

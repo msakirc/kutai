@@ -9,6 +9,41 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Protocol, runtime_checkable
 
+
+# ---------------------------------------------------------------------------
+# MissionDialContext — Z3 T1A/T1C: founder-dial shape used by the resolver
+# and passed to post-hook expanders at expand-time (T2+ wire-up).
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MissionDialContext:
+    """Resolved founder dials for one mission.
+
+    Passed to post-hook expanders so they can adjust gate severity,
+    add/skip kinds, or promote warnings → blockers based on founder
+    settings.  Populated by ``src.workflows.review_density.get_dials``.
+
+    Fields
+    ------
+    qa_dial:
+        Overall QA intensity. ``quick`` skips expensive reviewers;
+        ``standard`` runs defaults; ``strict`` promotes warnings to
+        blockers and adds extra reviewer rounds.
+    accessibility_dial:
+        ``on`` → auto-wire a11y semgrep pack on JSX/TSX; ``off`` → skip.
+    multi_file_expansion:
+        ``True`` → expander breaks template steps into per-file sub-tasks
+        (T2 feature); ``False`` → single-call emission (default).
+    integration_replay:
+        ``quick|standard|strict`` — how thoroughly the integration
+        post-hook re-runs end-to-end tests after multi-file expansion.
+    """
+    qa_dial: str = "standard"
+    accessibility_dial: str = "off"
+    multi_file_expansion: bool = False
+    integration_replay: str = "standard"
+
+
 # Agent types that never need post-hooks:
 # - mechanical: not LLM output, nothing to grade/summarise
 # - shopping_pipeline, shopping_pipeline_v2: pipeline shells that

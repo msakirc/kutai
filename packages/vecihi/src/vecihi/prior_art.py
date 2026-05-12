@@ -658,6 +658,20 @@ async def find_prior_art(
             empty_count >= 3 and elapsed <= _FALLBACK_TIMEOUT
         )
         if should_fallback and cached:
+            # Z1 T6B telemetry on cache-hit fallback path.
+            try:
+                from yazbunu import get_logger as _yaz_logger
+                _yaz_logger("z1.prior_art").info(
+                    "z1_prior_art",
+                    sources_used=sources_used,
+                    rate_limit_hits_count=len(rate_limit_hits),
+                    cache_hit=True,
+                    ambition_tier=ambition_tier,
+                    keyword_count=len(domain_keywords),
+                    verdict=(cached or {}).get("verdict"),
+                )
+            except Exception:
+                pass
             return _annotate_cache_hit(
                 cached,
                 sources=cached.get("search_summary", {}).get(
@@ -706,6 +720,26 @@ async def find_prior_art(
     # Best-effort cache write (skip in pure-cache fallback)
     try:
         _write_cache(cache_key, report, ttl_hours=ttl_hours, db_path=db_path)
+    except Exception:  # pragma: no cover
+        pass
+
+    # Z1 T6B — yazbunu z1_prior_art telemetry. Single structured event per
+    # search; failure-soft (telemetry must not break search).
+    try:
+        from yazbunu import get_logger as _yaz_logger
+        _yaz_logger("z1.prior_art").info(
+            "z1_prior_art",
+            sources_used=sources_used,
+            rate_limit_hits_count=len(rate_limit_hits),
+            total_inspected=total_inspected,
+            attempted_count=len(attempted),
+            adjacent_count=len(adjacent),
+            graveyard_count=graveyard_count,
+            verdict=verdict,
+            cache_hit=False,
+            ambition_tier=ambition_tier,
+            keyword_count=len(domain_keywords),
+        )
     except Exception:  # pragma: no cover
         pass
 

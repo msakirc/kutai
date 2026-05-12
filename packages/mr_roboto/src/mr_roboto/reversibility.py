@@ -59,6 +59,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "spec_consistency_check": "full",
     "prior_art_min_coverage": "full",
     "verify_against_paraflow_goldens": "full",  # comparison only
+    "paraflow_audit_all": "full",  # iterates verify_against_paraflow_goldens
     "compliance_template_present": "full",
     "compliance_blocker_check": "full",
     "compliance_fingerprint_collection": "full",  # writes merged file, replayable

@@ -105,6 +105,60 @@ async def test_verify_unknown_archetype_returns_error(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_paraflow_audit_all_no_workspace_returns_zero(tmp_path):
+    from mr_roboto.verify_against_paraflow_goldens import paraflow_audit_all
+    res = await paraflow_audit_all(workspace_root=str(tmp_path / "missing"))
+    assert res["audited"] == 0
+    assert res["par"] == 0
+    assert res["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_paraflow_audit_all_skips_missions_without_marker(tmp_path, monkeypatch):
+    # Create one mission WITH marker, one WITHOUT
+    m1 = tmp_path / "mission_1"
+    _make_full_mission(m1)
+    (m1 / ".paraflow_archetype").write_text("truthrate\n", encoding="utf-8")
+    m2 = tmp_path / "mission_2"
+    _make_full_mission(m2)
+    # No marker on m2.
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(
+        "mr_roboto.verify_against_paraflow_goldens._persist", _noop
+    )
+
+    from mr_roboto.verify_against_paraflow_goldens import paraflow_audit_all
+    res = await paraflow_audit_all(workspace_root=str(tmp_path))
+    assert res["audited"] == 1
+    assert res["par"] == 1
+    assert len(res["results"]) == 1
+    assert res["results"][0]["mission_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_paraflow_audit_all_unknown_archetype_errors(tmp_path, monkeypatch):
+    m = tmp_path / "mission_5"
+    _make_full_mission(m)
+    (m / ".paraflow_archetype").write_text("nonsense_archetype\n", encoding="utf-8")
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(
+        "mr_roboto.verify_against_paraflow_goldens._persist", _noop
+    )
+
+    from mr_roboto.verify_against_paraflow_goldens import paraflow_audit_all
+    res = await paraflow_audit_all(workspace_root=str(tmp_path))
+    # audit ran but produced paraflow_gap for the unknown archetype
+    assert res["audited"] == 1
+    assert res["gaps"] == 1
+
+
+@pytest.mark.asyncio
 async def test_mr_roboto_run_dispatches_action(tmp_path, monkeypatch):
     mission = tmp_path / "mission_7"
     _make_full_mission(mission)

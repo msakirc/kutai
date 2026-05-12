@@ -2417,6 +2417,22 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "paraflow_audit_all":
+        # Z1 Tier 7B (C21) — workspace-wide weekly audit. Iterates
+        # missions with a `.paraflow_archetype` marker; per-mission
+        # verify call persists to paraflow_diff_log via the standard
+        # path. Returns summary counts for cron telemetry.
+        from mr_roboto.verify_against_paraflow_goldens import (
+            paraflow_audit_all as _audit_all,
+        )
+        try:
+            res = await _audit_all(
+                workspace_root=payload.get("workspace_root"),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "mark_green":
         # Z10 T3C — capture paired green checkpoint (git tag + DB snapshot +
         # Chroma snapshot + ledger row).

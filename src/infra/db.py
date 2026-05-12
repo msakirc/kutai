@@ -2508,6 +2508,36 @@ async def init_db():
         ),
     )
 
+    # ── Z8 T3E: integration_mappings — webhook → mission routing ─────────
+    # Maps an (integration_id, product_id) pair to a long-lived ongoing
+    # mission. Product_id NULL = catch-all for the integration. The
+    # webhook listener prefers the most specific match (non-NULL
+    # product_id) when both rows exist.
+    await apply_migration(
+        version="2026-05-12-integration-mappings",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS integration_mappings ("
+            " integration_id TEXT NOT NULL,"
+            " product_id TEXT,"
+            " mission_id INTEGER NOT NULL,"
+            " created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+            " PRIMARY KEY (integration_id, product_id, mission_id),"
+            " FOREIGN KEY (mission_id) REFERENCES missions(id)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_integration_mappings_integ "
+            "ON integration_mappings(integration_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_integration_mappings_integ;\n"
+            "DROP TABLE IF EXISTS integration_mappings;\n"
+        ),
+        description=(
+            "Z8 T3E: integration_mappings table — vendor webhooks route "
+            "to an ongoing mission scoped by optional product_id. NULL "
+            "product_id is the catch-all; specific product wins."
+        ),
+    )
+
     # ── Z3 T1C: review_density_json — founder dials per mission ───────────────
     # Stores a JSON blob of ReviewDensityDials fields.  NULL = all defaults
     # (conservative: standard/off/False/standard).  No backfill needed — NULL

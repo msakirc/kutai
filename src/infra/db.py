@@ -2363,6 +2363,21 @@ async def init_db():
         ),
     )
 
+    # ── Z3 T1C: review_density_json — founder dials per mission ───────────────
+    # Stores a JSON blob of ReviewDensityDials fields.  NULL = all defaults
+    # (conservative: standard/off/False/standard).  No backfill needed — NULL
+    # rows just return defaults from get_dials().
+    await apply_migration(
+        version="2026-05-12-missions-review-density",
+        sql="ALTER TABLE missions ADD COLUMN review_density_json TEXT;\n",
+        reversal_sql="ALTER TABLE missions DROP COLUMN review_density_json;\n",
+        description=(
+            "Z3 T1C: missions.review_density_json stores founder-dial JSON "
+            "(qa_dial, accessibility_dial, multi_file_expansion, "
+            "integration_replay).  NULL = all defaults."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

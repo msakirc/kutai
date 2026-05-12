@@ -65,10 +65,18 @@ async def webhook_inbound(integration_id: str, request: Request) -> dict:
     mission_id = await _route_to_mission(integration_id, payload)
     await mark_seen(integration_id, event_id, payload_hash, mission_id)
 
-    # Enqueue the alert_triage task on the ongoing lane. Beckman maps
-    # agent_type="alert_triage" → LANE_ONGOING automatically (lanes.py),
-    # but we also pass ``lane=`` explicitly to defend against future
-    # mapping drift.
+    # Enqueue the alert_triage task on the ongoing lane.
+    #
+    # Two conventions need to coexist:
+    #   * Mechanical execution path: agent_type="mechanical" → runner derives
+    #     to "mechanical" → mr_roboto.run dispatches on payload["action"].
+    #     payload is stored under ``context["payload"]``; Beckman's apply.py
+    #     `_mechanical_context` produces the same shape.
+    #   * Lane routing: the ``lane`` kwarg pinned to LANE_ONGOING wins over
+    #     ``pick_lane(agent_type)`` so mechanical alert_triage still lands
+    #     on the ongoing pool. The legacy mapping
+    #     ``pick_lane("alert_triage") == ongoing`` remains intact for any
+    #     direct LLM-agent caller, but the webhook path is mechanical.
     from general_beckman import enqueue
     from general_beckman.lanes import LANE_ONGOING
 
@@ -80,11 +88,15 @@ async def webhook_inbound(integration_id: str, request: Request) -> dict:
                 f"(event_id={event_id})."
             ),
             "mission_id": mission_id,
-            "agent_type": "alert_triage",
+            "agent_type": "mechanical",
             "context": {
-                "integration_id": integration_id,
-                "event_id": event_id,
-                "payload": payload,
+                "executor": "mechanical",
+                "payload": {
+                    "action": "alert_triage",
+                    "integration_id": integration_id,
+                    "event_id": event_id,
+                    "payload": payload,
+                },
             },
             "kind": "main_work",
         },

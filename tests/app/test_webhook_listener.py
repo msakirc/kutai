@@ -90,7 +90,7 @@ async def test_duplicate_event_returns_200_not_reprocessed(
     assert n == 1
 
     async with conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE agent_type='alert_triage'"
+        "SELECT COUNT(*) FROM tasks WHERE agent_type='mechanical'"
     ) as cur:
         (m,) = await cur.fetchone()
     assert m == 1
@@ -110,7 +110,7 @@ async def test_distinct_events_both_enqueue(tmp_path, monkeypatch, client):
 
     conn = await db_mod.get_db()
     async with conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE agent_type='alert_triage'"
+        "SELECT COUNT(*) FROM tasks WHERE agent_type='mechanical'"
     ) as cur:
         (m,) = await cur.fetchone()
     assert m == 2
@@ -129,7 +129,7 @@ async def test_alert_triage_lands_on_ongoing_lane(tmp_path, monkeypatch, client)
 
     conn = await db_mod.get_db()
     async with conn.execute(
-        "SELECT lane FROM tasks WHERE agent_type='alert_triage'"
+        "SELECT lane FROM tasks WHERE agent_type='mechanical'"
     ) as cur:
         row = await cur.fetchone()
     assert row is not None

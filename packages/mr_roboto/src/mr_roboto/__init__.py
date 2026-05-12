@@ -2660,4 +2660,13 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "alert_triage":
+        # Z8 T3D — webhook → severity classification (rule-based + LLM stub).
+        from mr_roboto.executors.alert_triage import run as _alert_triage_run
+        try:
+            res = await _alert_triage_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

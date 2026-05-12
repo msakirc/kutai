@@ -154,6 +154,9 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "escalate_to_founder": "irreversible",  # founder sees the alert
     # ---- Z8 T4C phase 13 playbook generator -----------------------------
     "generate_playbooks": "full",  # read-only mission inputs → artifact JSON
+    # ---- Z8 T5A backup_verify cron --------------------------------------
+    "backup_verify": "full",  # copy + read smoke SELECT, no external write
+    "cron_backup_verify": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

@@ -2757,4 +2757,13 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action in ("backup_verify", "cron_backup_verify"):
+        # Z8 T5A — sqlite copy + smoke SELECT, or postgres pg_restore.
+        from mr_roboto.executors.backup_verify import run as _bv_run
+        try:
+            res = await _bv_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

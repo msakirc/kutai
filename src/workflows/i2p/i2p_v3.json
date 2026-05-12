@@ -6244,8 +6244,10 @@
         "repo_visibility": "public"
       },
       "context": {
-        "estimated_output_tokens": 0
+        "estimated_output_tokens": 0,
+        "critic_action_name": "init_mission_github_repo"
       },
+      "post_hooks": ["critic_gate"],
       "produces": [
         "mission_{mission_id}/github_init_status.md"
       ],

@@ -313,6 +313,22 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "risk_if_wrong / validation_method / falsification_signal."
         ),
     ),
+    # Z1 T5C (B4) — standalone critic-gate post-hook. Inline critic-gate
+    # already fires inside git_commit + notify_user; this slot lets a
+    # workflow step declare `post_hooks: ["critic_gate"]` to bolt the gate
+    # onto any other step (e.g. irreversible vendor calls, public repo
+    # creation). action_name + target_payload are propagated from the
+    # source step's context.
+    "critic_gate": PostHookSpec(
+        kind="critic_gate",
+        verb="critic_gate",
+        default_severity="blocker",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 T5C — standalone critic-gate. Veto fails the post-hook "
+            "and the source step retries."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

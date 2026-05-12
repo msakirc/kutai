@@ -1364,6 +1364,26 @@ def _posthook_agent_and_payload(
                 ),
             },
         })
+    if a.kind == "critic_gate":
+        # Z1 T5C (B4) — standalone critic-gate post-hook. action_name +
+        # target_payload come from source_ctx so any step that declares
+        # `post_hooks: ["critic_gate"]` can pass the payload the critic
+        # should judge. mission_id flows through the source row.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "critic_gate",
+            "executor": "mechanical",
+            "payload": {
+                "action": "critic_gate",
+                "action_name": str(
+                    source_ctx.get("critic_action_name")
+                    or source_ctx.get("step_id")
+                    or "unknown"
+                ),
+                "target_payload": source_ctx.get("critic_target_payload"),
+                "mission_id": source.get("mission_id"),
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -2509,6 +2529,7 @@ _Z1_BLOCKER_KINDS: frozenset[str] = frozenset({
     "compliance_blocker_check",
     "prior_art_min_coverage",
     "verify_falsification_present",
+    "critic_gate",  # Z1 T5C — veto fails source
 })
 
 _Z1_WARNING_KINDS: frozenset[str] = frozenset({

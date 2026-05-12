@@ -4614,7 +4614,12 @@ class TelegramInterface:
             )
             return
 
-        # Subcommand: visibility <mission_id> <public|private>
+        # Subcommand: visibility <mission_id> <public|private> [--confirm]
+        # Z1 T6C — visibility flips are GitHub-side irreversible in
+        # practice (public→private leaves clones cached on github.com
+        # for ~7 days, doesn't unwind forks; private→public can leak
+        # mission notes). Default flow now requires confirmation via
+        # inline buttons; pass --confirm at the end to skip the prompt.
         if args and args[0] == "visibility":
             if len(args) < 3:
                 await self._reply(
@@ -4631,6 +4636,35 @@ class TelegramInterface:
             if vis not in ("public", "private"):
                 await self._reply(update, "Visibility must be public or private.")
                 return
+            skip_confirm = "--confirm" in args
+
+            if not skip_confirm:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                markup = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        f"✅ Confirm → {vis}",
+                        callback_data=f"gh_vis:y:{mid}:{vis}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Cancel", callback_data="gh_vis:n",
+                    ),
+                ]])
+                warning = (
+                    "Public → Private does NOT unwind forks or "
+                    "remove cached clones."
+                    if vis == "private"
+                    else "Private → Public reveals all committed "
+                    "mission files (charter, prd, screen plans, "
+                    "interview transcripts)."
+                )
+                await update.message.reply_text(
+                    f"⚠️ Confirm visibility flip\n\n"
+                    f"Mission #{mid} → *{vis}*\n\n_{warning}_",
+                    parse_mode="Markdown",
+                    reply_markup=markup,
+                )
+                return
+
             try:
                 from mr_roboto.init_mission_github_repo import (
                     set_repo_visibility,
@@ -6783,6 +6817,46 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         query = update.callback_query
         await query.answer()
         data = query.data
+
+        # ── Z1 T6C: github visibility flip confirmation ────────────
+        if data.startswith("gh_vis:"):
+            parts = data.split(":")
+            if parts[1] == "n":
+                await query.message.reply_text("❌ Visibility flip cancelled.")
+                return
+            if parts[1] == "y" and len(parts) >= 4:
+                try:
+                    mid = int(parts[2])
+                except (ValueError, IndexError):
+                    await query.message.reply_text("❌ Bad mission id.")
+                    return
+                vis = parts[3]
+                if vis not in ("public", "private"):
+                    await query.message.reply_text("❌ Bad visibility.")
+                    return
+                try:
+                    from mr_roboto.init_mission_github_repo import (
+                        set_repo_visibility,
+                    )
+                    res = await set_repo_visibility(
+                        mission_id=mid, visibility=vis
+                    )
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Flip failed: {e}"
+                    )
+                    return
+                if not res.get("ok"):
+                    await query.message.reply_text(
+                        f"❌ Flip failed: {res.get('error')}"
+                    )
+                    return
+                await query.message.reply_text(
+                    f"✅ mission #{mid} → {vis}\n{res.get('repo_url')}"
+                )
+                return
+            await query.message.reply_text("❌ Bozuk gh_vis butonu.")
+            return
 
         # ── Z1 Tier 6A: similar-missions review inline buttons ─────
         # Format:

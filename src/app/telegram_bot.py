@@ -1950,6 +1950,8 @@ class TelegramInterface:
         # Z6 T1D: founder_actions surface (real-world bridge handoff queue)
         self.app.add_handler(CommandHandler("actions", self.cmd_actions))
         self.app.add_handler(CommandHandler("action_done", self.cmd_action_done))
+        # Z8 T4D: ops log — show recent on-call agent actions per mission.
+        self.app.add_handler(CommandHandler("ops_log", self.cmd_ops_log))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_founder_action_callback,
             pattern=r"^fa_(done|inprogress|block)_\d+$",
@@ -8957,6 +8959,57 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             update,
             f"✅ founder_action #{action.id} marked done.",
         )
+
+    async def cmd_ops_log(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ):
+        """Z8 T4D — show recent on-call agent actions for a mission.
+
+        Usage: ``/ops_log <mission_id>``
+
+        Reads from ``registry_events`` (scope='action' rows written by the
+        per-action audit path). The registry stores ``payload_json`` as
+        ``{"payload": ..., "status": ...}`` — we extract ``status`` as the
+        per-row outcome cell.
+        """
+        if not context.args:
+            await self._reply(update, "Usage: /ops_log <mission_id>")
+            return
+        try:
+            mid = int(context.args[0])
+        except (TypeError, ValueError):
+            await self._reply(update, "mission_id must be an integer.")
+            return
+        from src.infra.db import get_db
+        import json as _json
+        db = await get_db()
+        async with db.execute(
+            "SELECT verb, reversibility, payload_json, timestamp "
+            "FROM registry_events "
+            "WHERE scope = 'action' AND mission_id = ? "
+            "ORDER BY id DESC LIMIT 20",
+            (mid,),
+        ) as cur:
+            rows = await cur.fetchall()
+        if not rows:
+            await self._reply(update, f"No on-call actions for mission {mid}.")
+            return
+        lines = [f"📒 *Ops log mission {mid}* (last {len(rows)})"]
+        for verb, rev, payload_json, ts in rows:
+            outcome = ""
+            try:
+                pj = _json.loads(payload_json) if payload_json else {}
+                outcome = str(pj.get("status") or "")
+            except Exception:
+                outcome = ""
+            parts = [f"`{verb or '?'}`"]
+            if rev:
+                parts.append(str(rev))
+            if outcome:
+                parts.append(outcome)
+            parts.append(str(ts))
+            lines.append("  " + " · ".join(parts))
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     async def _handle_founder_action_callback(self, update, context):
         """Inline-button handler for founder_action cards.

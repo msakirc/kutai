@@ -233,7 +233,17 @@ def expand_steps_to_tasks(
     """
     tasks: list[dict] = []
 
-    for step in steps:
+    # Mission-level template params applied uniformly to every step's
+    # `instruction`, `produces`, `payload`, and `done_when` fields.
+    # Without this pass the literal `{mission_id}` placeholder survives
+    # into the agent prompt + grounding guard's produces list, the agent
+    # invents a path (drops `.charter/`), and the verify post-hook reads
+    # the unsubstituted template path — both fail (mission 69 step 0.0z,
+    # 2026-05-14).
+    _mission_params = {"mission_id": str(mission_id) if mission_id is not None else ""}
+
+    for raw_step in steps:
+        step = _substitute_payload(raw_step, _mission_params)
         step_id = step["id"]
         phase = step.get("phase", "phase_0")
 

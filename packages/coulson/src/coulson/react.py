@@ -56,6 +56,7 @@ from .guards import (
     MAX_FORMAT_CORRECTIONS, MAX_SUB_CORRECTIONS,
     check_sub_iter_guards, get_search_depth,
 )
+from .grounding import extract_written_paths, unmatched_produces
 from .parsing import parse_action, parse_function_call, unwrap_final_answer
 from .reflection import self_reflect, build_reflection_prompt
 from .tools import (
@@ -739,6 +740,61 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             except ValueError as exc:
                 logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
 
+            # ── AUTO-PERSIST RECOVERY ──
+            # When agent emits final_answer with substantive markdown in
+            # `result` but never called write_file for the declared
+            # `produces`, write the result to disk instead of looping the
+            # grounding guard. Cloud LLMs frequently dump the artifact
+            # inline despite the _FILE_WRITE_PROMPT; punishing the agent
+            # wastes retries when the content is already correct.
+            # Production 2026-05-14 mission 69 step 0.1 product_charter:
+            # full charter dumped in result, grounding DLQ'd.
+            try:
+                _ap_action = parsed.get("action", "final_answer") if isinstance(parsed, dict) else "final_answer"
+                if _ap_action == "final_answer" and isinstance(_task_ctx, dict):
+                    _ap_produces = _task_ctx.get("produces") or []
+                    if isinstance(_ap_produces, list) and _ap_produces:
+                        _ap_written = extract_written_paths(tool_calls)
+                        _ap_missing = unmatched_produces(_ap_produces, _ap_written)
+                        # Auto-persist only when ALL produces are missing
+                        # (no partial write) and the result is substantive
+                        # markdown. Single-file produces only — multi-file
+                        # asks for distinct content per file.
+                        if (
+                            _ap_missing == _ap_produces
+                            and len(_ap_produces) == 1
+                            and isinstance(_ap_produces[0], str)
+                            and _ap_produces[0].endswith(".md")
+                        ):
+                            _ap_result = parsed.get("result", content)
+                            if not isinstance(_ap_result, str):
+                                _ap_result = ""
+                            if _ap_result and len(_ap_result.strip()) >= 500:
+                                from src.tools.workspace import WORKSPACE_DIR as _ap_ws
+                                import os as _ap_os, os.path as _ap_op
+                                _ap_rel = _ap_produces[0]
+                                _ap_abs = _ap_rel if _ap_op.isabs(_ap_rel) else _ap_op.join(_ap_ws, _ap_rel)
+                                try:
+                                    _ap_os.makedirs(_ap_op.dirname(_ap_abs), exist_ok=True)
+                                    with open(_ap_abs, "w", encoding="utf-8") as _ap_fh:
+                                        _ap_fh.write(_ap_result)
+                                    tool_calls.append({
+                                        "name": "write_file",
+                                        "args": {"path": _ap_rel, "content_len": len(_ap_result)},
+                                        "ok": True,
+                                        "auto_persist": True,
+                                    })
+                                    logger.info(
+                                        f"[Task #{task_id}] auto-persisted final_answer.result "
+                                        f"to {_ap_rel} ({len(_ap_result)} chars)"
+                                    )
+                                except OSError as _ap_exc:
+                                    logger.warning(
+                                        f"[Task #{task_id}] auto-persist failed for {_ap_rel}: {_ap_exc}"
+                                    )
+            except Exception as _ap_top_exc:
+                logger.debug(f"[Task #{task_id}] auto-persist skipped: {_ap_top_exc}")
+
             # ── SUB-ITERATION GUARD CHECK ──
             correction = check_sub_iter_guards(
                 profile=profile,
@@ -1234,11 +1290,28 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"Iteration {iteration + 2}/{effective_max_iterations}."
                 )
             else:
-                recovery_guidance = (
-                    f"## Tool Result (`{tool_name}`):\n\n"
-                    f"```\n{tool_output}\n```\n\n"
-                    f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
+                _produces = _task_ctx.get("produces") if isinstance(_task_ctx, dict) else None
+                _produces_done = (
+                    isinstance(_produces, list)
+                    and _produces
+                    and not unmatched_produces(_produces, extract_written_paths(tool_calls))
                 )
+                if _produces_done:
+                    recovery_guidance = (
+                        f"## Tool Result (`{tool_name}`):\n\n"
+                        f"```\n{tool_output}\n```\n\n"
+                        "All declared `produces` paths for this step are now "
+                        "written to disk. STOP calling tools. Emit "
+                        '`{"action": "final_answer", "result": "..."}` on the '
+                        "NEXT response — a short summary referencing the "
+                        "produced path. Do not re-write, re-read, or refine."
+                    )
+                else:
+                    recovery_guidance = (
+                        f"## Tool Result (`{tool_name}`):\n\n"
+                        f"```\n{tool_output}\n```\n\n"
+                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
+                    )
 
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": recovery_guidance})
@@ -1418,11 +1491,26 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 useful_iterations += 1
 
             is_next_last = (iteration + 2 >= effective_max_iterations)
-            combined = "\n\n".join(result_parts)
-            combined += (
-                f"\n\n{'LAST ITERATION — you MUST respond with final_answer now.' if is_next_last else 'Continue working.'}"
-                f" Iteration {iteration + 2}/{effective_max_iterations}."
+            _produces = _task_ctx.get("produces") if isinstance(_task_ctx, dict) else None
+            _produces_done = (
+                isinstance(_produces, list)
+                and _produces
+                and not unmatched_produces(_produces, extract_written_paths(tool_calls))
             )
+            combined = "\n\n".join(result_parts)
+            if _produces_done:
+                combined += (
+                    "\n\nAll declared `produces` paths for this step are now "
+                    "written to disk. STOP calling tools. Emit "
+                    '`{"action": "final_answer", "result": "..."}` on the '
+                    "NEXT response — a short summary referencing the produced "
+                    "path. Do not re-write, re-read, or refine."
+                )
+            else:
+                combined += (
+                    f"\n\n{'LAST ITERATION — you MUST respond with final_answer now.' if is_next_last else 'Continue working.'}"
+                    f" Iteration {iteration + 2}/{effective_max_iterations}."
+                )
 
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": combined})

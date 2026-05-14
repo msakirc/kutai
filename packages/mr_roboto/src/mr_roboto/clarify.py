@@ -213,6 +213,88 @@ async def clarify(task: dict) -> dict:
             "keyboard_sent": sent,
         }
 
+    # Artifact-confirm shape: inline the file content + send inline
+    # keyboard with OK / Regenerate / Edit buttons. Founder never has
+    # to open the file. Triggered by `attach_file_paths` in payload.
+    attach_paths = payload.get("attach_file_paths") or []
+    if attach_paths:
+        from src.tools.workspace import WORKSPACE_DIR
+        import os.path as _osp
+        mission_id_v = task.get("mission_id")
+        # Resolve chat_id (mirror variant_choice fallback chain).
+        chat_id = None
+        if mission_id_v is not None:
+            try:
+                from src.collaboration.blackboard import read_blackboard
+                arts = await read_blackboard(int(mission_id_v), "artifacts")
+                if isinstance(arts, dict):
+                    chat_id = arts.get("chat_id")
+            except Exception as exc:
+                logger.debug("clarify(attach) chat_id (blackboard) lookup failed: %s", exc)
+        if chat_id is None:
+            chat_id = task.get("chat_id")
+        if chat_id is None and mission_id_v is not None:
+            try:
+                from src.infra.db import get_db as _get_db
+                import json as _json2
+                _db = await _get_db()
+                _cur = await _db.execute(
+                    "SELECT context FROM missions WHERE id = ?", (mission_id_v,),
+                )
+                _row = await _cur.fetchone()
+                await _cur.close()
+                if _row and _row[0]:
+                    _mctx = _json2.loads(_row[0])
+                    if isinstance(_mctx, str):
+                        _mctx = _json2.loads(_mctx)
+                    chat_id = (_mctx or {}).get("chat_id")
+            except Exception as exc:
+                logger.debug("clarify(attach) chat_id (missions) lookup failed: %s", exc)
+
+        contents: list[tuple[str, str]] = []
+        for rel in attach_paths:
+            if not isinstance(rel, str) or not rel.strip():
+                continue
+            abs_p = rel if _osp.isabs(rel) else _osp.join(WORKSPACE_DIR, rel)
+            try:
+                with open(abs_p, encoding="utf-8") as fh:
+                    contents.append((rel, fh.read()))
+            except OSError as exc:
+                logger.warning("clarify(attach): read failed for %s: %s", abs_p, exc)
+                contents.append((rel, f"(could not read file: {exc})"))
+
+        question_text = payload.get("question") or "Confirm the draft below."
+        kind_tag = str(payload.get("kind") or "artifact_confirm")
+        regen_step = payload.get("regenerate_step_id") or ""
+        source_id = task.get("parent_task_id") or task["id"]
+
+        sent = False
+        if chat_id is not None:
+            try:
+                tg = get_telegram()
+                if tg is not None:
+                    await tg.send_artifact_confirm_keyboard(
+                        chat_id=int(chat_id),
+                        mission_id=int(mission_id_v) if mission_id_v else 0,
+                        task_id=int(source_id),
+                        kind=kind_tag,
+                        question=str(question_text),
+                        files=contents,
+                        regenerate_step_id=str(regen_step),
+                    )
+                    sent = True
+            except Exception as exc:
+                logger.exception("clarify(attach): send_artifact_confirm_keyboard failed: %s", exc)
+        if sent:
+            await update_task(int(source_id), status="waiting_human")
+        return {
+            "status": "needs_clarification",
+            "kind": kind_tag,
+            "attach_file_paths": attach_paths,
+            "keyboard_sent": sent,
+            "prompt": question_text,
+        }
+
     # Default: plain question clarify
     question = payload.get("question")
     if not question:

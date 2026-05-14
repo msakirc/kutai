@@ -20,7 +20,15 @@ logger = get_logger("agents.writer")
 
 
 def _detect_markdown_schema(task: dict) -> bool:
-    """Return True if the task's artifact_schema declares a markdown output."""
+    """Return True if the task's artifact_schema declares a markdown output.
+
+    Returns False when the step also declares a non-empty ``produces`` list.
+    In that case the grounding guard (coulson.guards.check_grounding_sub_iter)
+    requires an actual write_file call against the produces path — the inline
+    prompt would tell the agent "DO NOT call write_file" and the two paths
+    fight each other, exhausting iteration budgets (production 2026-05-14
+    mission 69 step 0.0z: 5 attempts × 3 model swaps × max_iterations_reached).
+    """
     ctx = task.get("context") or {}
     if isinstance(ctx, str):
         try:
@@ -30,6 +38,9 @@ def _detect_markdown_schema(task: dict) -> bool:
         except (json.JSONDecodeError, TypeError, ValueError):
             return False
     if not isinstance(ctx, dict):
+        return False
+    produces = ctx.get("produces")
+    if isinstance(produces, list) and produces:
         return False
     schema = ctx.get("artifact_schema")
     if not isinstance(schema, dict):

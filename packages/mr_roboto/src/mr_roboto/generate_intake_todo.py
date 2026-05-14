@@ -227,18 +227,62 @@ async def generate_intake_todo(task: dict) -> dict[str, Any]:
             "error": f"generate_intake_todo: write failed for {todo_path}: {exc}",
         }
 
-    # Hand control back to the founder via clarify-shape so beckman keeps
-    # the row in waiting_human (general_beckman.result_router lines 148-180).
     relative_path = (
         f"mission_{mission_id}/.intake/intake_todo.md"
     )
+    # Send inline file + [OK / Regenerate / Edit] keyboard via the same
+    # artifact-confirm helper used by reverse_pitch_confirm. Founder
+    # never has to open the file in a shell.
+    keyboard_sent = False
+    try:
+        from src.app.telegram_bot import get_telegram
+        from src.collaboration.blackboard import read_blackboard
+        from src.infra.db import get_db as _get_db
+        chat_id = None
+        try:
+            arts = await read_blackboard(int(mission_id), "artifacts")
+            if isinstance(arts, dict):
+                chat_id = arts.get("chat_id")
+        except Exception:
+            chat_id = None
+        if chat_id is None:
+            try:
+                import json as _json
+                _db = await _get_db()
+                _cur = await _db.execute(
+                    "SELECT context FROM missions WHERE id = ?", (mission_id,),
+                )
+                _row = await _cur.fetchone()
+                await _cur.close()
+                if _row and _row[0]:
+                    _mctx = _json.loads(_row[0])
+                    if isinstance(_mctx, str):
+                        _mctx = _json.loads(_mctx)
+                    chat_id = (_mctx or {}).get("chat_id")
+            except Exception:
+                pass
+        if chat_id is not None:
+            tg = get_telegram()
+            if tg is not None:
+                await tg.send_artifact_confirm_keyboard(
+                    chat_id=int(chat_id),
+                    mission_id=int(mission_id),
+                    task_id=int(task.get("id") or 0),
+                    kind="intake_todo_confirm",
+                    question="Intake todo draft below. Tap a button to confirm, regenerate, or edit.",
+                    files=[(relative_path, body)],
+                    regenerate_step_id="0.0a",
+                )
+                keyboard_sent = True
+    except Exception as exc:
+        logger.warning("intake_todo: artifact-confirm keyboard send failed: %s", exc)
     return {
         "status": "needs_clarification",
         "kind": "intake_todo",
         "todo_path": relative_path,
         "todo_path_abs": todo_path,
         "item_count": sum(1 for line in body.splitlines() if line.startswith("- [ ]")),
-        "keyboard_sent": True,
+        "keyboard_sent": keyboard_sent,
         "prompt": (
             "I drafted an intake todo at "
             f"`{relative_path}`. Reply OK to proceed, or send edits to "

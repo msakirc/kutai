@@ -691,12 +691,13 @@
       "id": "0.0z",
       "phase": "phase_0",
       "name": "reverse_pitch_draft",
-      "agent": "mechanical",
-      "executor": "mechanical",
+      "agent": "writer",
       "difficulty": "easy",
-      "tools_hint": [],
+      "tools_hint": [
+        "write_file"
+      ],
       "depends_on": [],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
       "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "raw_idea",
@@ -708,13 +709,8 @@
       "produces": [
         "mission_{mission_id}/.charter/reverse_pitch.md"
       ],
-      "payload": {
-        "action": "clarify",
-        "kind": "reverse_pitch_request",
-        "question": "Write a one-page launch press release for this product BEFORE we generate the charter. Include: (1) Headline (one line, customer-language), (2) Sub-head (one line clarifying who + outcome), (3) Customer quote (a real-feeling user quote about the value), (4) Founder quote (your one-line conviction), (5) FAQ (3-5 likely questions + answers). If you cannot write the customer quote, the product has no felt-need framing yet — reply with `acknowledgement: I am not building for users` only if this is a prototype-tier exploration; otherwise the mission self-aborts at $0."
-      },
-      "instruction": "Reverse-pitch / Amazon working-backwards artifact (Z1 A1). Founder authors a one-page press release: headline, sub-head, customer quote, founder quote, FAQ. Output is `mission_{mission_id}/.charter/reverse_pitch.md`. The charter (0.1) and the intake todo (0.0a) both consume it. If founder cannot write the customer quote, the mission is meant to abort cheaply.",
-      "done_when": "reverse_pitch.md exists with all required sections (headline / sub-head / customer quote / founder quote / FAQ) and no placeholder text.",
+      "instruction": "Draft the reverse-pitch / Amazon working-backwards artifact (Z1 A1) as a one-page launch press release. Write `mission_{mission_id}/.charter/reverse_pitch.md` with EXACTLY these five top-level sections in this order: `## Headline`, `## Sub-head`, `## Customer Quote`, `## Founder Quote`, `## FAQ`. The FAQ must contain 3-5 questions, each formatted as a `**Q: ...**` line followed by an `A: ...` line. Customer-language only — no marketing jargon. No placeholder text (TODO, TBD, lorem ipsum, <fill in>); the mechanical post-hook verify_reverse_pitch_shape rejects them. Ground the artifact in the founder pitch (mission.description) and the strategic_context input.\n\nAlso emit the JSON envelope for schema-version tracking:\n```json\n{\"_schema_version\": \"1\", \"path\": \"mission_{mission_id}/.charter/reverse_pitch.md\"}\n```",
+      "done_when": "reverse_pitch.md exists with all required sections (Headline / Sub-head / Customer Quote / Founder Quote / FAQ) and no placeholder text.",
       "artifact_schema": {
         "reverse_pitch": {
           "type": "markdown",
@@ -729,7 +725,8 @@
         }
       },
       "context": {
-        "ambition_tier_aware": true
+        "ambition_tier_aware": true,
+        "estimated_output_tokens": 2000
       },
       "reversibility": "full"
     },
@@ -763,6 +760,39 @@
       "reversibility": "full"
     },
     {
+      "id": "0.0z.confirm",
+      "phase": "phase_0",
+      "name": "reverse_pitch_confirm",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "0.0z.verify"
+      ],
+      "may_need_clarification": true,
+      "skip_when": "mission.legacy_pre_charter == '1'",
+      "input_artifacts": [
+        "reverse_pitch"
+      ],
+      "output_artifacts": [
+        "reverse_pitch_confirmed"
+      ],
+      "payload": {
+        "action": "clarify",
+        "kind": "reverse_pitch_confirm",
+        "attach_file_paths": [
+          "mission_{mission_id}/.charter/reverse_pitch.md"
+        ],
+        "regenerate_step_id": "0.0z",
+        "question": "Reverse pitch draft below. Tap a button to confirm, regenerate, or edit."
+      },
+      "instruction": "Founder confirmation gate for the AI-drafted reverse pitch (Z1 A1). Hands control back to the founder via Telegram keyboard. Reply OK → step completes and 0.0a (intake_todo) runs. Reply 'regenerate' → 0.0z re-fires with the founder's edits as context. Replacing the legacy founder-typed press-release flow per 2026-05-14 feedback.",
+      "done_when": "founder confirms via Telegram (clarify keyboard returns OK).",
+      "context": {},
+      "reversibility": "full"
+    },
+    {
       "id": "0.0a",
       "phase": "phase_0",
       "name": "generate_intake_todo",
@@ -771,7 +801,7 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "0.0z"
+        "0.0z.confirm"
       ],
       "may_need_clarification": true,
       "skip_when": "mission.legacy_pre_charter == '1'",
@@ -817,7 +847,7 @@
         "0.0a"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter == '1'",
+      "skip_when": "mission.legacy_pre_idea_dedup == '1'",
       "input_artifacts": [
         "raw_idea",
         "strategic_context",
@@ -852,7 +882,6 @@
         "find_similar_missions",
         "index_idea_fingerprint"
       ],
-      "skip_when": "mission.legacy_pre_idea_dedup == '1'",
       "reversibility": "full"
     },
     {
@@ -898,7 +927,7 @@
         "0.1"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter == '0'",
+      "skip_when": "mission.legacy_pre_charter != '1'",
       "input_artifacts": [
         "raw_idea_document"
       ],
@@ -1073,7 +1102,7 @@
         "0.3"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter == '0'",
+      "skip_when": "mission.legacy_pre_charter != '1'",
       "input_artifacts": [
         "raw_idea_document",
         "problem_statement",
@@ -1140,7 +1169,7 @@
         "0.4"
       ],
       "may_need_clarification": true,
-      "skip_when": "mission.legacy_pre_charter == '0'",
+      "skip_when": "mission.legacy_pre_charter != '1'",
       "input_artifacts": [
         "open_questions_list",
         "assumption_list"
@@ -6251,7 +6280,9 @@
         "estimated_output_tokens": 0,
         "critic_action_name": "init_mission_github_repo"
       },
-      "post_hooks": ["critic_gate"],
+      "post_hooks": [
+        "critic_gate"
+      ],
       "produces": [
         "mission_{mission_id}/github_init_status.md"
       ],

@@ -560,7 +560,11 @@ async def call(
         # supported between instances of 'NoneType' and 'int'" killed
         # 3 backend_tests / frontend_tests in succession.
         _model_cap = model.max_tokens if model.max_tokens is not None else 4096
-        _max_tokens = min(estimated_output_tokens * 2, _model_cap)
+        # Floor at 256: callers that forget to set estimated_output_tokens
+        # would otherwise send max_tokens=0, which Gemini rejects with
+        # "max_output_tokens must be positive" (production 2026-05-14
+        # critic_gate:notify_user). Cap is still respected.
+        _max_tokens = max(256, min(estimated_output_tokens * 2, _model_cap))
 
     # ── Per-request reasoning override ──
     # If a thinking-capable model is loaded with --reasoning on but this

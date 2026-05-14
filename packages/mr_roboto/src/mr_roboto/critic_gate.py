@@ -223,6 +223,7 @@ async def critic_gate(
             agent_type="critic",
             difficulty=2,
             messages=[{"role": "user", "content": prompt}],
+            estimated_output_tokens=512,
         )
         # Response is a dict with `content` key (legacy shape).
         if isinstance(resp, dict):

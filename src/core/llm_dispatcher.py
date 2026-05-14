@@ -462,13 +462,20 @@ class LLMDispatcher:
         # path (shared backoff ladder, 10-attempt cap). Single retry
         # surface — dispatcher just surfaces the failure.
         task_desc = task or agent_type or category.value
-        if is_overhead:
-            raise RuntimeError(
-                f"OVERHEAD call failed: {result.message}. Task: {task_desc}"
-            )
+        # Same exception shape for OVERHEAD + MAIN_WORK so orchestrator's
+        # ModelCallFailed handler (warning-level log + category-aware
+        # retry) catches both. Previously OVERHEAD raised RuntimeError →
+        # orchestrator's generic except branch logged as ERROR, which
+        # surfaced retryable 5xx blips to Telegram as 🟠 ERROR even when
+        # beckman successfully retried (production 2026-05-14 task
+        # #31081 Gemini 503).
         raise ModelCallFailed(
             call_id=task_desc,
-            last_error=result.message,
+            last_error=(
+                f"OVERHEAD call failed: {result.message}. Task: {task_desc}"
+                if is_overhead
+                else result.message
+            ),
             error_category=result.category,
         )
 

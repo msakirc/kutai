@@ -143,6 +143,53 @@ __all__ = [
 ]
 
 
+def _resolve_path_list(paths):
+    """Resolve verify_* `_paths` lists against WORKSPACE_DIR + flat fallback.
+
+    Workflow JSON declares workspace-relative paths
+    (`mission_<id>/.charter/foo.md`). Verifier helpers open with bare
+    `open(p)` against CWD — those are project root, not the workspace —
+    so the file is never found and the shape check reports "empty" /
+    "missing sections" even when the artifact is on disk.
+
+    Also handles the common drift where the agent wrote the file flat
+    (`mission_<id>/<basename>`) despite the declared subdir
+    (`mission_<id>/.charter/<basename>`). Cloud LLMs often skip the
+    subdir; this helper picks up the flat fallback so the verifier
+    doesn't false-fail when content exists.
+    """
+    if not paths:
+        return paths
+    from src.tools.workspace import WORKSPACE_DIR as _WSD
+    import os.path as _osp
+    out = []
+    for p in paths:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        if _osp.isabs(p):
+            out.append(p)
+            continue
+        candidate = _osp.join(_WSD, p)
+        if _osp.isfile(candidate):
+            out.append(candidate)
+            continue
+        # Flat fallback: agent wrote `mission_<id>/<basename>` instead of
+        # `mission_<id>/<subdir>/<basename>`.
+        norm = p.replace("\\", "/")
+        parts = norm.split("/", 1)
+        if (
+            len(parts) == 2
+            and parts[0].startswith("mission_")
+            and "/" in parts[1]
+        ):
+            flat = _osp.join(_WSD, parts[0], _osp.basename(norm))
+            if _osp.isfile(flat):
+                out.append(flat)
+                continue
+        out.append(candidate)
+    return out
+
+
 async def run(task: dict) -> Action:
     """Route a mechanical task to the appropriate executor.
 
@@ -572,7 +619,7 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = await _verify(
                 mission_id=task.get("mission_id"),
-                paths=payload.get("paths") or [],
+                paths=_resolve_path_list(payload.get("paths")) or [],
                 min_bytes=int(payload.get("min_bytes", 1)),
                 compile_check=bool(payload.get("compile_check", False)),
                 workspace_path=payload.get("workspace_path"),
@@ -626,7 +673,7 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = _verify_charter(
                 charter_text=payload.get("charter_text"),
-                charter_paths=payload.get("charter_paths"),
+                charter_paths=_resolve_path_list(payload.get("charter_paths")),
                 min_solutions=int(payload.get("min_solutions", 3)),
                 max_solutions=int(payload.get("max_solutions", 7)),
                 min_brand_keywords=int(payload.get("min_brand_keywords", 5)),
@@ -652,22 +699,9 @@ async def _run_dispatch(task: dict) -> Action:
             verify_reverse_pitch_shape as _verify_rp,
         )
         try:
-            _pp = payload.get("pitch_paths") or []
-            # Workflow JSON declares workspace-relative paths
-            # (`mission_<id>/.charter/...`). The verifier opens them with
-            # bare `open(p)` against CWD — which is the project root, not
-            # the workspace. Resolve here so the verifier sees real files.
-            from src.tools.workspace import WORKSPACE_DIR as _WSD
-            import os.path as _osp
-            _pp_abs = []
-            for _p in _pp:
-                if isinstance(_p, str) and _p and not _osp.isabs(_p):
-                    _pp_abs.append(_osp.join(_WSD, _p))
-                else:
-                    _pp_abs.append(_p)
             res = _verify_rp(
                 pitch_text=payload.get("pitch_text"),
-                pitch_paths=_pp_abs,
+                pitch_paths=_resolve_path_list(payload.get("pitch_paths")),
                 ambition_tier=str(payload.get("ambition_tier", "private_beta")),
             )
             if not res.get("ok"):
@@ -721,7 +755,7 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = _verify_ng(
                 non_goals_text=payload.get("non_goals_text"),
-                non_goals_paths=payload.get("non_goals_paths"),
+                non_goals_paths=_resolve_path_list(payload.get("non_goals_paths")),
                 min_items=int(payload.get("min_items", 3)),
                 max_items=int(payload.get("max_items", 7)),
             )
@@ -749,9 +783,9 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = _check_ng(
                 non_goals_text=payload.get("non_goals_text"),
-                non_goals_paths=payload.get("non_goals_paths"),
+                non_goals_paths=_resolve_path_list(payload.get("non_goals_paths")),
                 target_text=payload.get("target_text"),
-                target_paths=payload.get("target_paths"),
+                target_paths=_resolve_path_list(payload.get("target_paths")),
                 min_overlap_tokens=int(payload.get("min_overlap_tokens", 2)),
             )
             # This is a SOFT check — overlaps surface for the reviewer to
@@ -771,7 +805,7 @@ async def _run_dispatch(task: dict) -> Action:
             res = _verify_adr(
                 adr_text=payload.get("adr_text"),
                 adr_obj=payload.get("adr_obj"),
-                adr_paths=payload.get("adr_paths"),
+                adr_paths=_resolve_path_list(payload.get("adr_paths")),
                 expected_schema_version=str(
                     payload.get("expected_schema_version", "1")
                 ),
@@ -829,7 +863,7 @@ async def _run_dispatch(task: dict) -> Action:
             res = _verify_curve(
                 adr_text=payload.get("adr_text"),
                 adr_obj=payload.get("adr_obj"),
-                adr_paths=payload.get("adr_paths"),
+                adr_paths=_resolve_path_list(payload.get("adr_paths")),
             )
             if not res.get("ok"):
                 return Action(
@@ -854,7 +888,7 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = _verify_cp(
                 positioning_text=payload.get("positioning_text"),
-                positioning_paths=payload.get("positioning_paths"),
+                positioning_paths=_resolve_path_list(payload.get("positioning_paths")),
             )
             if not res.get("ok"):
                 return Action(
@@ -881,7 +915,7 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = _verify_is(
                 script_text=payload.get("script_text"),
-                script_paths=payload.get("script_paths"),
+                script_paths=_resolve_path_list(payload.get("script_paths")),
                 min_questions=int(payload.get("min_questions", 5)),
                 max_questions=int(payload.get("max_questions", 7)),
             )
@@ -1137,7 +1171,7 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = _annotate(
                 html_text=payload.get("html_text"),
-                html_paths=payload.get("html_paths"),
+                html_paths=_resolve_path_list(payload.get("html_paths")),
                 artifact_slug=payload.get("artifact_slug"),
             )
             if not res.get("ok"):
@@ -1991,7 +2025,7 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = _verify_sp(
                 plan_text=payload.get("plan_text"),
-                plan_paths=payload.get("plan_paths"),
+                plan_paths=_resolve_path_list(payload.get("plan_paths")),
             )
             if not res.get("ok"):
                 return Action(
@@ -2015,7 +2049,7 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = _verify_html(
                 html_text=payload.get("html_text"),
-                html_paths=payload.get("html_paths"),
+                html_paths=_resolve_path_list(payload.get("html_paths")),
                 design_tokens=payload.get("design_tokens"),
             )
             if not res.get("ok"):
@@ -2038,7 +2072,7 @@ async def _run_dispatch(task: dict) -> Action:
         )
         try:
             res = _verify_consistency(
-                screen_plan_paths=payload.get("screen_plan_paths"),
+                screen_plan_paths=_resolve_path_list(payload.get("screen_plan_paths")),
                 screen_plans=payload.get("screen_plans"),
                 shared_shell_components=payload.get("shared_shell_components"),
             )

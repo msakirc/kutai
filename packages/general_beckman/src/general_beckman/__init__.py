@@ -878,10 +878,26 @@ async def enqueue(
         return task_id
 
     # ── inline-wait path ───────────────────────────────────────────────────
+    # Keep the PARENT task's heartbeat fresh while we wait on the child.
+    # The child's runner sets the heartbeat contextvar to the child id,
+    # so the parent goes silent and the orchestrator's no-progress watchdog
+    # kills it at 300s even though work is happening. Wrap every inline
+    # wait — grade_task and other beckman.enqueue(await_inline=True)
+    # callers all suffered from this; only dispatcher.request had its own
+    # wrapper (production 2026-05-14 mission 69 grader task #31203:
+    # 6× watchdog kills × 5 min = 30 min wasted before DLQ).
+    try:
+        from src.core import heartbeat as _hb_inline
+        _inline_keepalive_cm = _hb_inline.keepalive
+    except Exception:
+        _inline_keepalive_cm = None
     loop = asyncio.get_event_loop()
     fut: asyncio.Future[TaskResult] = loop.create_future()
     _inline_waiters[task_id] = fut
     try:
+        if _inline_keepalive_cm is not None:
+            async with _inline_keepalive_cm():
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
         return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
     except asyncio.TimeoutError:
         _inline_waiters.pop(task_id, None)

@@ -1246,10 +1246,45 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             import os
             from ...tools.workspace import WORKSPACE_DIR
             artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+            # Build candidate paths from BOTH the legacy `<output>.<ext>`
+            # convention AND the step's declared `produces` list (which
+            # may include subdirs like `.charter/`, `.intake/`). Without
+            # the produces-derived candidates, a step that writes to
+            # `.charter/product_charter.md` is never found by the
+            # `mission_<id>/product_charter.md` probe, and result-only
+            # validation runs against whatever the agent emitted on retry
+            # (production 2026-05-14 mission 69 step 0.1: full charter on
+            # disk at .charter/ subdir, result was a short blurb, schema
+            # validation said all 5 sections missing).
+            _produces = ctx.get("produces") or []
             file_parts = []
+            _seen_paths: set[str] = set()
+            for entry in _produces:
+                if isinstance(entry, str) and entry:
+                    rel = entry
+                    abs_p = rel if os.path.isabs(rel) else os.path.join(WORKSPACE_DIR, rel)
+                    if abs_p in _seen_paths:
+                        continue
+                    _seen_paths.add(abs_p)
+                    if os.path.isfile(abs_p):
+                        try:
+                            with open(abs_p, "r", encoding="utf-8") as f:
+                                fc = f.read()
+                            fc = _unwrap_envelope(fc)
+                            if len(fc) > 100:
+                                file_parts.append(fc)
+                                logger.info(
+                                    f"[Workflow Hook] Found produces "
+                                    f"'{rel}' ({len(fc)} chars)"
+                                )
+                        except OSError:
+                            pass
             for name in output_names:
                 for ext in (".json", ".md", ".txt"):
                     fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                    if fpath in _seen_paths:
+                        continue
+                    _seen_paths.add(fpath)
                     if os.path.isfile(fpath):
                         with open(fpath, "r", encoding="utf-8") as f:
                             file_content = f.read()
@@ -1312,6 +1347,44 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 current_ok = bool(output_value) and _parses_ok(output_value)
                 if not current_ok and _parses_ok(best_file):
                     output_value = best_file
+                else:
+                    # Markdown schemas — JSON-parse gate is meaningless.
+                    # Adopt the workspace file when it is materially longer
+                    # than the result AND contains required-section markers
+                    # the result is missing. Keeps the JSON-truncation guard
+                    # above for JSON schemas while letting markdown
+                    # validation see the on-disk artifact.
+                    _schema = ctx.get("artifact_schema") or {}
+                    _markdown_schema = None
+                    if isinstance(_schema, dict):
+                        for _v in _schema.values():
+                            if isinstance(_v, dict) and _v.get("type") == "markdown":
+                                _markdown_schema = _v
+                                break
+                    if _markdown_schema is not None:
+                        _req_sections = _markdown_schema.get("required_sections") or []
+                        def _has_all_sections(text: str) -> bool:
+                            tl = (text or "").lower()
+                            for s in _req_sections:
+                                sl = s.lower()
+                                if not (
+                                    f"# {sl}" in tl
+                                    or f"**{sl}**" in tl
+                                    or f"\n{sl}\n" in tl
+                                ):
+                                    return False
+                            return bool(_req_sections)
+                        if (
+                            len(best_file) > max(500, len(output_value or "") * 2)
+                            and _has_all_sections(best_file)
+                            and not _has_all_sections(output_value or "")
+                        ):
+                            logger.info(
+                                "[Workflow Hook] Adopted workspace markdown artifact "
+                                f"({len(best_file)} chars) over short result "
+                                f"({len(output_value or '')} chars) for schema validation"
+                            )
+                            output_value = best_file
         except Exception as e:
             logger.debug(f"[Workflow Hook] Workspace artifact recovery failed: {e}")
 

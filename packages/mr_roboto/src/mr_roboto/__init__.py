@@ -652,9 +652,22 @@ async def _run_dispatch(task: dict) -> Action:
             verify_reverse_pitch_shape as _verify_rp,
         )
         try:
+            _pp = payload.get("pitch_paths") or []
+            # Workflow JSON declares workspace-relative paths
+            # (`mission_<id>/.charter/...`). The verifier opens them with
+            # bare `open(p)` against CWD — which is the project root, not
+            # the workspace. Resolve here so the verifier sees real files.
+            from src.tools.workspace import WORKSPACE_DIR as _WSD
+            import os.path as _osp
+            _pp_abs = []
+            for _p in _pp:
+                if isinstance(_p, str) and _p and not _osp.isabs(_p):
+                    _pp_abs.append(_osp.join(_WSD, _p))
+                else:
+                    _pp_abs.append(_p)
             res = _verify_rp(
                 pitch_text=payload.get("pitch_text"),
-                pitch_paths=payload.get("pitch_paths"),
+                pitch_paths=_pp_abs,
                 ambition_tier=str(payload.get("ambition_tier", "private_beta")),
             )
             if not res.get("ok"):

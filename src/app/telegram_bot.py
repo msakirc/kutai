@@ -1972,6 +1972,9 @@ class TelegramInterface:
             self._handle_mission_event_callback,
             pattern=r"^(confirm|event):",
         ))
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_artifact_confirm_callback, pattern=r"^rpc:",
+        ))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
         # B7+C16: founder photo upload → mission .intake/visuals/ + clarify-shape
@@ -5487,7 +5490,47 @@ class TelegramInterface:
                         pass
                 # Fall through to normal routing
             else:
-                cmd = pending_action["command"]
+                # ── Artifact-inline-edit: next message is the rewritten
+                # markdown for the attached file. Overwrite + regenerate.
+                if pending_action.get("kind") == "artifact_edit_inline":
+                    if (text or "").strip().lower() in ("/cancel", "cancel"):
+                        await self._reply(update, "Edit cancelled.")
+                        return
+                    import os as _os, os.path as _osp
+                    from src.tools.workspace import WORKSPACE_DIR
+                    files = pending_action.get("files") or []
+                    mission_id = int(pending_action.get("mission_id") or 0)
+                    task_id = int(pending_action.get("task_id") or 0)
+                    regen_step = str(pending_action.get("regenerate_step_id") or "")
+                    if not files:
+                        await self._reply(update, "❌ No attached file to overwrite.")
+                        return
+                    rel = files[0]
+                    abs_p = rel if _osp.isabs(rel) else _osp.join(WORKSPACE_DIR, rel)
+                    try:
+                        _os.makedirs(_osp.dirname(abs_p), exist_ok=True)
+                        with open(abs_p, "w", encoding="utf-8") as fh:
+                            fh.write(text)
+                    except OSError as e:
+                        await self._reply(update, f"❌ Write failed: {e}")
+                        return
+                    # Edit = founder's text IS the final artifact. Mark
+                    # confirm task completed; DO NOT reset the writer step
+                    # (that would overwrite the founder's edits).
+                    from src.infra.db import update_task as _update_task
+                    try:
+                        await _update_task(task_id, status="completed", result='{"confirmed": true, "edited_inline": true}')
+                    except Exception as e:
+                        logger.exception(f"artifact_edit_inline complete failed: {e}")
+                        await self._reply(update, f"❌ Complete failed: {e}")
+                        return
+                    await self._reply(update,
+                        f"✅ Overwrote `{rel}` and accepted as final. Mission advancing.",
+                        parse_mode="Markdown",
+                    )
+                    return
+
+                cmd = pending_action.get("command") or ""
                 if cmd == "_todo_help":
                     self._last_todo_help = pending_action
                     await self.cmd__todo_help(update, context)
@@ -7208,7 +7251,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     await query.message.reply_text("❌ Bozuk branch butonu.")
                     return
                 try:
-                    from src.infra.db import get_db
                     db = await get_db()
                     await db.execute(
                         "UPDATE missions SET branched_from_mission_id = ? "
@@ -8398,6 +8440,162 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "options": options,
             "base_label": base_label,
         }
+
+    async def send_artifact_confirm_keyboard(
+        self,
+        *,
+        chat_id: int,
+        mission_id: int,
+        task_id: int,
+        kind: str,
+        question: str,
+        files: list,
+        regenerate_step_id: str = "",
+    ) -> None:
+        """Inline artifact preview + [OK / Regenerate / Edit] keyboard.
+
+        Founder never has to leave Telegram. callback_data shape:
+            rpc:<verb>:<mission_id>:<task_id>
+        with verb in {OK, RE, ED}. step_id stays in _pending_action so
+        Regenerate can reset the right step.
+        """
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        TELEGRAM_LIMIT = 3900
+        header = f"❓ *{kind.replace('_',' ').title()}* — Task #{task_id}\n\n{question}\n"
+        body_blocks: list[str] = []
+        for rel, content in (files or []):
+            content = content or ""
+            label = f"\n📄 `{rel}`\n"
+            block = f"{label}```markdown\n{content}\n```\n"
+            body_blocks.append(block)
+        full = header + "".join(body_blocks)
+        # Truncate if over Telegram limit — keep header + truncated marker.
+        if len(full) > TELEGRAM_LIMIT:
+            avail = TELEGRAM_LIMIT - len(header) - 100
+            joined = "".join(body_blocks)
+            full = header + joined[:avail] + "\n…(truncated — open file to read full)\n"
+        buttons = [[
+            InlineKeyboardButton("✅ OK", callback_data=f"rpc:OK:{mission_id}:{task_id}"),
+            InlineKeyboardButton("♻️ Regenerate", callback_data=f"rpc:RE:{mission_id}:{task_id}"),
+            InlineKeyboardButton("✏️ Edit", callback_data=f"rpc:ED:{mission_id}:{task_id}"),
+        ]]
+        try:
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=full,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode="Markdown",
+            )
+        except Exception as exc:
+            # Markdown parse can fail on backticks inside content; retry plain.
+            logger.warning(f"send_artifact_confirm_keyboard markdown send failed: {exc}; retrying plain")
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=full,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+        self._pending_action[chat_id] = {
+            "kind": "artifact_confirm",
+            "confirm_kind": kind,
+            "mission_id": mission_id,
+            "task_id": task_id,
+            "regenerate_step_id": regenerate_step_id,
+            "files": [rel for rel, _ in (files or [])],
+        }
+
+    async def _handle_artifact_confirm_callback(self, update, context):
+        """Dispatch rpc:OK / rpc:RE / rpc:ED for artifact-confirm flow."""
+        query = update.callback_query
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        data = query.data or ""
+        parts = data.split(":")
+        if len(parts) < 4 or parts[0] != "rpc":
+            return
+        verb = parts[1]
+        try:
+            mission_id = int(parts[2])
+            task_id = int(parts[3])
+        except ValueError:
+            return
+        chat_id = query.message.chat_id
+
+        pending = self._pending_action.get(chat_id) or {}
+        regen_step = pending.get("regenerate_step_id") or ""
+        files = pending.get("files") or []
+
+        from src.infra.db import get_db, update_task
+        db = await get_db()
+
+        if verb == "OK":
+            await update_task(task_id, status="completed", result='{"confirmed": true}')
+            await query.edit_message_reply_markup(reply_markup=None)
+            await self.app.bot.send_message(chat_id=chat_id, text=f"✅ Confirmed task #{task_id}. Mission advancing.")
+            self._pending_action.pop(chat_id, None)
+            return
+
+        if verb == "RE":
+            # Reset the originating writer step (if known) AND this confirm
+            # step so the workflow re-runs draft + verify + confirm.
+            try:
+                if regen_step:
+                    await db.execute(
+                        "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
+                        "error_category=NULL, started_at=NULL, completed_at=NULL "
+                        "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?",
+                        (mission_id, regen_step),
+                    )
+                # Reset the verify sibling too if present (`<regen>.verify`).
+                if regen_step:
+                    await db.execute(
+                        "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
+                        "error_category=NULL, started_at=NULL, completed_at=NULL "
+                        "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?",
+                        (mission_id, regen_step + ".verify"),
+                    )
+                # Reset this confirm task back to pending so it re-fires
+                # after regeneration.
+                await db.execute(
+                    "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
+                    "error_category=NULL, started_at=NULL, completed_at=NULL "
+                    "WHERE id=?",
+                    (task_id,),
+                )
+                await db.commit()
+            except Exception as exc:
+                logger.exception(f"rpc:RE failed: {exc}")
+                await self.app.bot.send_message(chat_id=chat_id, text=f"❌ Regenerate failed: {exc}")
+                return
+            await query.edit_message_reply_markup(reply_markup=None)
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=f"♻️ Regenerating step `{regen_step or '?'}` for mission #{mission_id}.",
+                parse_mode="Markdown",
+            )
+            self._pending_action.pop(chat_id, None)
+            return
+
+        if verb == "ED":
+            # Stash edit intent. Next message from this chat → write content
+            # to the (first) attached file, then reset writer for regenerate.
+            self._pending_action[chat_id] = {
+                "kind": "artifact_edit_inline",
+                "mission_id": mission_id,
+                "task_id": task_id,
+                "regenerate_step_id": regen_step,
+                "files": files,
+            }
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "✏️ Paste your edited version of the artifact as the NEXT message.\n"
+                    "I'll overwrite the file with what you send and re-run the step.\n"
+                    "Send `/cancel` to abort."
+                ),
+            )
+            return
 
     # ─── Z10 T2B (D3): mission-event reaction handler ────────────────
     async def _handle_mission_event_callback(self, update, context):

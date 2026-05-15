@@ -3373,6 +3373,65 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T4 A8: FAQ flywheel + quote harvest executors ────────────────────────
+
+    if action == "faq_regen":
+        # Z7 T4 A8 — weekly FAQ regen (A8 + A8.r1 multilingual).
+        # Pulls last 7d of low-confidence/escalated tickets, groups by language,
+        # LLM-clusters, drafts FAQ entries for clusters > 3, emits founder_actions.
+        from src.app.jobs.faq_regen import run_faq_regen
+        try:
+            res = await run_faq_regen()
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"faq_regen: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "quote_harvest":
+        # Z7 T4 A8 — monthly quote harvest.
+        # Scans positive tickets; emits consent founder_action per candidate.
+        from src.app.jobs.quote_harvest import run_quote_harvest
+        try:
+            res = await run_quote_harvest()
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"quote_harvest: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "documentation_gap_detect":
+        # Z7 T4 A8 — documentation_gap_detect posthook handler.
+        # Semantic-search question against per-language support_docs collection;
+        # writes docs_gap_log row when no match found.
+        try:
+            import importlib
+            _mod = importlib.import_module(
+                "general_beckman.posthook_handlers.documentation_gap_detect"
+            )
+            source_task_id = payload.get("source_task_id")
+            source_task: dict = {}
+            if source_task_id:
+                try:
+                    from src.infra.db import get_task as _get_task
+                    source_task = await _get_task(source_task_id) or {}
+                except Exception:
+                    pass
+            res = await _mod.handle(source_task, {})
+            if res.get("status") == "fail":
+                return Action(status="failed", error=str(res), result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     # ── Z7 T4 A10: CRM data-layer mechanical verbs ───────────────────────────
 
     if action == "crm/add_contact":
@@ -4009,6 +4068,8 @@ async def _run_dispatch(task: dict) -> Action:
                 mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
                 step_id=str(step_id if (step_id := payload.get("step_id")) else task.get("id") or ""),
                 routes=list(payload.get("routes")) if payload.get("routes") else None,
+                components=list(payload.get("components")) if payload.get("components") else None,
+                capture_mode=str(payload.get("capture_mode") or "viewport"),
                 produces=list(payload.get("produces")) if payload.get("produces") else None,
                 workspace_path=payload.get("workspace_path") or None,
             )

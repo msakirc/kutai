@@ -3447,6 +3447,36 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T4 A8: docs_gap_log — documentation gap tracker ──────────────────────
+    # One row per escalation where no matching support_doc was found via semantic
+    # search. Weekly faq_regen digest surfaces gap clusters; A0 briefing appends
+    # a summary when gaps exist. product_id NOT NULL per-product scoping.
+    # matched_doc_id nullable — NULL means no match found (the gap case).
+    await apply_migration(
+        version="2026-05-16-z7-docs-gap-log",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS docs_gap_log ("
+            " gap_id       INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id   TEXT NOT NULL,"
+            " question     TEXT NOT NULL,"
+            " matched_doc_id TEXT,"          # NULL = no match (the gap)
+            " logged_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_docs_gap_log_product_logged "
+            "ON docs_gap_log(product_id, logged_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_docs_gap_log_product_logged;\n"
+            "DROP TABLE IF EXISTS docs_gap_log;\n"
+        ),
+        description=(
+            "Z7 T4 A8: docs_gap_log — documentation gap tracker. One row per "
+            "escalation where semantic search found no matching support_doc. "
+            "matched_doc_id NULL = gap. Weekly faq_regen surfaces clusters; "
+            "A0 briefing appends digest. product_id NOT NULL (per-product scoping)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

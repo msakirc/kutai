@@ -1682,6 +1682,19 @@ def _posthook_agent_and_payload(
                 "status_kind": source_ctx.get("status_kind") or "investigating",
             },
         })
+    if a.kind == "documentation_gap_detect":
+        # Z7 T4 A8 — documentation_gap_detect: semantic-search question against
+        # per-language support_docs collection; writes docs_gap_log row when no match.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "question": source_ctx.get("question") or "",
+                "product_id": source_ctx.get("product_id") or "",
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -3552,6 +3565,21 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
             feedback_prefix="incident_update_review gate",
         )
+        return
+
+    # Z7 T4 A8 — documentation_gap_detect posthook verdict.
+    # Warning severity: advisory — logs docs gaps but doesn't block escalation.
+    # Always soft-drops the kind from pending and advances the source task.
+    if a.kind == "documentation_gap_detect":
+        import json as _json
+        from src.infra.db import update_task as _update_task
+        new_pending = [k for k in pending if k != a.kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await _update_task(a.source_task_id, status="completed",
+                               context=_json.dumps(ctx))
+        else:
+            await _update_task(a.source_task_id, context=_json.dumps(ctx))
         return
 
     if a.kind == "grade" and a.passed:

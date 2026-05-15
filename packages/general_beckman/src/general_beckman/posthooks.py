@@ -733,6 +733,24 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Handler: posthook_handlers/incident_update_review.py."
         ),
     ),
+    # ── Z7 T4 A8: documentation_gap_detect ───────────────────────────────────
+    # Fires on every support escalation. Semantic-searches the question against
+    # the per-language support_docs Chroma collection. No match → docs_gap_log
+    # row. Weekly faq_regen surfaces clusters; A0 briefing appends digest.
+    # Severity: warning (advisory — doesn't block the escalation path).
+    "documentation_gap_detect": PostHookSpec(
+        kind="documentation_gap_detect",
+        verb="documentation_gap_detect",
+        default_severity="warning",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T4 A8: fire on support escalation; semantic-search question against "
+            "per-language support_docs_<lang> Chroma collection; write docs_gap_log "
+            "row if no match found. Weekly faq_regen surfaces gap clusters. "
+            "Handler: posthook_handlers/documentation_gap_detect.py."
+        ),
+    ),
     # Z4 T3A — visual_review via vision-model diff against tunneled preview URL.
     # STATIC trigger list (not dial-gated): founder decision — always auto-wire
     # on frontend produces; the verb soft-skips when no preview URL is available.

@@ -283,6 +283,26 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 300,
         "payload": {"_executor": "meeting_brief_dispatch"},
     },
+    # Z7 T4 A8 — weekly FAQ regen (A8 + A8.r1 multilingual).
+    # Pulls last 7 days of low-confidence + escalated tickets, groups by language,
+    # LLM-clusters by topic (within-language only), drafts FAQ entries for
+    # clusters > 3, and surfaces founder_action "approve FAQ entry?" per draft.
+    # On approve: appends to faq_{lang}.md + re-indexes support_docs_{lang}.
+    {
+        "title": "faq_regen",
+        "description": "Weekly FAQ regen: cluster low-confidence/escalated tickets by language, draft FAQ entries for approval",
+        "interval_seconds": 604800,  # 7 days
+        "payload": {"_executor": "faq_regen"},
+    },
+    # Z7 T4 A8 — monthly quote harvest.
+    # Scans positive-resolution tickets; emits founder_action "request quote
+    # consent?" for each candidate; on consent, inserts into press_kit_quotes.
+    {
+        "title": "quote_harvest",
+        "description": "Monthly quote harvest: scan positive tickets, emit consent founder_action, insert into press_kit_quotes on approve",
+        "interval_seconds": 2592000,  # 30 days
+        "payload": {"_executor": "quote_harvest"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

@@ -50,9 +50,23 @@ def _threshold() -> float:
 
 
 def _resolve_workspace(mission_id: int, workspace_path: str | None) -> str:
+    from src.tools.workspace import WORKSPACE_DIR, get_mission_workspace
     if workspace_path:
+        # Callers frequently pass `mission_<id>` relative — resolve against
+        # WORKSPACE_DIR rather than CWD (project root) so disk lookups
+        # actually find the file. Production 2026-05-15 mission 69 task
+        # #31092 index_idea_fingerprint: payload had `workspace_path =
+        # "mission_69"`, function opened against CWD, returned "no idea
+        # text" despite charter being on disk at the right place.
+        if os.path.isabs(workspace_path) and os.path.isdir(workspace_path):
+            return workspace_path
+        candidate = os.path.join(WORKSPACE_DIR, workspace_path)
+        if os.path.isdir(candidate):
+            return candidate
+        # Last resort: trust the caller's string (will likely fail downstream
+        # but preserves backward compat for absolute paths that don't exist
+        # yet — e.g. test fixtures).
         return workspace_path
-    from src.tools.workspace import get_mission_workspace
     return get_mission_workspace(int(mission_id))
 
 

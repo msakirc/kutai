@@ -13,7 +13,7 @@ Free APIs registry (`src/tools/free_apis.py`) and MCP server discovery face the 
 Two gaps surfaced in v1 review and a real-world recon (`docs/superpowers/specs/2026-05-11-katalog-recon.md`) reshape this design:
 
 1. **Vetting at scale** — naive "per-artifact human approve" gate collapses under realistic discovery volumes (public-apis ~1.4k, awesome-mcp-servers ~1k, github_topic open-ended). Need tiered classifier + auto-checks + source-scout-with-founder-curate pattern.
-2. **Exposure rework** — pure "match → inject text / register tool" path leaves the leverage on the floor. Real benefit requires multiple exposure classes (preempt / prebind / tool / context / role_swap / rubric / sandbox / quarantine), each plugged into the right host (mr_roboto / coulson / fatih_hoca).
+2. **Exposure rework** — pure "match → inject text / register tool" path leaves leverage on the floor. Real benefit needs a small set of exposure classes (inject / tool / preempt / sandbox / quarantine) plus a dedicated thin **applicator** component that owns matching + exposure decisions, so katalog stays a pure catalog and Beckman stays pure task-lifecycle.
 
 ## Goals
 
@@ -22,7 +22,7 @@ Two gaps surfaced in v1 review and a real-world recon (`docs/superpowers/specs/2
 - Pluggable sources (extensible across registries)
 - Unified lifecycle for skills, APIs, MCPs (and future artifact types)
 - Recipes that can fast-forward whole scaffolding processes via mechanical preempt
-- Skills that act as finish-gate rubrics, agent role swaps, or pre-bound concrete actions — not just inert text
+- Skills exposed the right way: mechanical preempt, pre-bound concrete calls, scoped tools, or prompt injection (agent prompt or grader prompt) — not just inert context text
 - Autonomous source-scout + founder-curate flow: KutAI watches the world, founder swipes proposals
 
 ## Non-goals (v1)
@@ -72,13 +72,13 @@ Ranked for KutAI's surface (local Windows, shell + file + git push + cloud-API t
 Two tiers, both feed same `DemandSignal` queue with confidence stacking + dedupe by `source_step_pattern` (embedding-hashed) + cooldown:
 
 **Proactive** (decision boundaries, primary driver):
-1. **Planning sweep** — i2p workflow expands a mission, matcher runs per step during expansion; gaps trigger fetch before any agent runs
-2. **Step entry** — matcher runs at step start; below-θ on recipe-eligible step fires on-demand query
+1. **Planning sweep** — i2p workflow expands a mission, applicator runs per step during expansion; gaps trigger fetch before any agent runs
+2. **Step entry** — applicator runs at step start; below-θ on recipe-eligible step fires on-demand query
 3. **Agent tool-callable** — `katalog.check(intent)` exposed as ReAct tool; agent self-serves mid-iteration
 4. **Founder-initiated** — `/katalog discover "<intent>"` ad-hoc
 
 **Reactive** (backstop):
-5. **Explicit `recipe_hint` miss** — step JSON carries `recipe_hint`; matcher finds nothing above τ
+5. **Explicit `recipe_hint` miss** — step JSON carries `recipe_hint`; `katalog.query` returns nothing above τ
 6. **DLQ** — step exhausted retries; signal "something is missing"
 7. **Repeat-pattern across missions** — same embedded step description appears K times with no high-match score
 
@@ -113,58 +113,59 @@ Auto-checks (gate-zero, run on every artifact regardless of source trust):
 | diff_size (re-fetch) | T0 if first or <30% body change | T1 medium, T2 large |
 | windows_compat (chmod/sudo/apt/raw .sh/symlink) | T0 | T2 (mechanizable=false), T3 if `rm -rf /` style |
 
-Tier → exposure ceiling (matcher floors based on task confidence):
+Tier → exposure ceiling (applicator floors based on task confidence):
 
 | Tier | Eligible exposure classes |
 |---|---|
-| T0 | preempt, prebind, tool, context, role_swap, rubric |
-| T1 | prebind, tool, context, rubric (no preempt, no role_swap) |
-| T2 | sandbox, context-with-warning |
+| T0 | inject, tool, preempt |
+| T1 | inject, tool (no preempt) |
+| T2 | sandbox, inject-with-warning |
 | T3 | quarantine only |
 
 ### Auto-check policy ownership
 
 DB-only (no static YAML), seeded by migration. KutAI proposes additions via `katalog_policy_proposals` table; founder approves via Telegram. Same pattern across all lists: shell_allowlist, domain_allowlist, injection_regexes, mcp_pin_policy. Audit row per change.
 
-### Exposure classes (8 total)
+### Exposure classes (5 total)
 
-| Class | When | Mechanism | Host |
+A skill is matched, then exposed one of 5 ways. The applicator decides the class; the consumer places it.
+
+| Class | What | Decided by | Consumed by |
 |---|---|---|---|
-| `preempt` | T0 + mechanizable + match ≥ θ_hard | beckman routes task to mechanical lane; mr_roboto runs `executor.run_recipe`; LLM never called | matcher → beckman → mr_roboto |
-| `prebind` | T0/T1 + parametric template + match ≥ θ_med | matcher binds inputs from task ctx; emits concrete suggested call (not menu) | matcher |
-| `tool` | T1 + match ≥ θ_low | register as ad-hoc tool for this task only; not in global tool list | matcher → coulson |
-| `context` | match ≥ θ_min | inject as hint text in context (legacy `skills.find_relevant_skills` path) | matcher → coulson |
-| `role_swap` | `kind=agent_config` + match ≥ θ_hard | fatih_hoca replaces agent sys_prompt + tool list for this step; honors `model_hint` | matcher → fatih_hoca |
-| `rubric` | `kind=prompt_skill` with checklist | inject as **post-execution** check at finish-gate, not pre-execution context; skill becomes verifier | coulson finish-gate (G grounding) |
-| `sandbox` | T2 anything | tool wrapped in dry-run executor; first invocation produces diff, founder approves | mr_roboto |
-| `quarantine` | T3 | never exposed | — |
+| `inject` | skill content placed into a prompt. Render variants: prose hint / pre-bound concrete call ("prebind") / checklist. Subsumes old context + role_swap + rubric — all are "applicable skill text in a prompt", the only difference is which prompt and how rendered. | applicator | coulson (agent prompt) or `grade_task` (grader prompt) |
+| `tool` | register a callable scoped to this task (API verb / MCP tool / callable skill); not in the global tool list | applicator | coulson tool registry |
+| `preempt` | recipe runs mechanically, no LLM; applicator routes task to mechanical lane | applicator | mr_roboto |
+| `sandbox` | preempt but dry-run; first run produces a diff founder approves (T2) | applicator | mr_roboto |
+| `quarantine` | never exposed (T3) | — | — |
 
-### Prebind mechanism (the leverage class)
+**Why role_swap and rubric are not classes.** An `agent_config` artifact ("you are a backend architect…") is just skill content that, when applicable, changes the agent prompt — coulson injects it like any other skill. A checklist skill ("verify error handling") is skill content applicable to *grading* tasks — `grade_task` injects it into the grader prompt. Both are `inject`; the only variable is which prompt-builder does the placing. No separate fatih_hoca hook, no finish-gate plugin.
 
-Per-step pre-hook, multi-tier short-circuits to bound cost:
+**`applies_to`.** Each artifact carries `applies_to ∈ {execution, grading}` (inferred from kind: `agent_config`/`shell_recipe`/`procedure` → execution; checklist-shaped `prompt_skill` → grading; plain `prompt_skill` → execution). The applicator tags each `SkillApplication` with it; coulson consumes the `execution` slice, `grade_task` consumes the `grading` slice.
+
+### Prebind — a render mode of `inject` (not a class)
+
+When an `inject` exposure carries a parametric recipe (`shell_recipe` / `procedure` with `inputs_schema`), the applicator can render it as a **pre-bound concrete call** instead of prose — "prebind". Same exposure class (`inject`), better rendering: the agent sees `wasp-saas-init({name: workout-tracker, db: postgres})` to confirm rather than a tool to figure out.
+
+Arg-binding pipeline (owned by the applicator), multi-tier short-circuits:
 
 ```
-1. matcher.match(step) → ranked hits  [vector + score, no LLM]
-2. for each hit ≥ θ:
-   a. compute exposure_class from (tier × kind × confidence)
-   b. if class needs bound args (prebind, preempt):
-        - try static bind_from paths first → fill from task_ctx
-        - if all fields filled: done, no LLM
-        - if any null: check bind_cache (embedding-keyed)
-        - if cache hit ≥ 0.92: reuse args
-        - else: beckman.enqueue(BindTask, await_inline, lane=overhead)
-              → small model (Haiku-tier), constrained decode against inputs_schema
-              → return bound_args dict (may still have nulls; defaults fill)
-3. emit chosen exposure (bound suggested call, tool, context inject, …)
+for each matched parametric artifact:
+  - try static bind_from paths → fill from task_ctx
+  - if all fields filled: done, 0 LLM
+  - if any null: check bind_cache (embedding-keyed)
+  - if cache hit ≥ 0.92: reuse args, 0 LLM
+  - else: beckman.enqueue(BindTask, await_inline, lane=overhead)
+        → small model (Haiku-tier), constrained decode against inputs_schema
+        → return bound_args dict (may still have nulls; defaults fill)
 ```
 
 Cost ladder:
-- Most steps: no matcher hit → 0 LLM
-- Hit + all-static-bindable: 0 LLM
-- Hit + cache hit: 0 LLM (vector lookup only)
-- Hit + cold partial-static cache-miss: 1 small LLM call (~280 tokens)
+- No match → 0 LLM
+- Match + all-static-bindable → 0 LLM
+- Match + cache hit → 0 LLM (vector lookup only)
+- Match + cold partial-static cache-miss → 1 small LLM call (~280 tokens)
 
-Planning sweep pre-warms cache → step-entry stalls minimal. Async beckman.enqueue fires N binds in parallel during expansion, all overhead lane, no swap thrash.
+Planning sweep pre-warms cache → step-entry stalls minimal. The applicator fires N binds in parallel via `beckman.enqueue` during expansion, all overhead lane, no swap thrash. `preempt` reuses the same binding pipeline (a preempt recipe needs the same concrete args).
 
 ### Manifest synthesis (most artifacts in the wild lack katalog format)
 
@@ -174,17 +175,17 @@ Recon finding: 99% of public artifacts ship their own native format (SKILL.md fr
 - **Seed manifests** — hand-authored in `packages/katalog/seed/manifests/*.yaml` for top 20 known-good recipes (see Seed list below). T0, mechanizable=true where applicable, pristine `bind_from` paths.
 - **Adapter parsers** for structured sources (anthropics SKILL.md frontmatter, cookiecutter.json, public-apis table rows) — mechanical, no LLM
 - **LLM synthesis fallback** for unstructured sources (awesome-list bullets, freeform README) — Sonnet, ~700 tokens/artifact, ~$0.20–$1/month total at projected volume
-- **Naming**: `name_original` preserves upstream raw name; `name` is canonical `<source-slug>-<original>` (with rules to avoid `matlab-matlab-live-script` style); matcher embeds BOTH
+- **Naming**: `name_original` preserves upstream raw name; `name` is canonical `<source-slug>-<original>` (with rules to avoid `matlab-matlab-live-script` style); katalog indexes BOTH into the query embedding
 
 Synthesized artifacts default to T1/T2 (cannot reach T0 unless seed or canonical SKILL.md frontmatter source).
 
 ## Artifact types
 
-| Type | Schema shape | Activation cost | Dominant exposure classes (per recon) |
+| Type | Schema shape | Activation cost | Dominant exposure class (per recon) |
 |---|---|---|---|
-| skill | manifest + body + assets | none | context, rubric, role_swap (prompt_skill dominant in wild) |
-| api | endpoint + auth + rate_limit | none | tool (per-step budget cap ≤3) |
-| mcp | server cmd + env + tool list | process lifecycle | tool (on-demand process start + idle shutdown) |
+| skill | manifest + body + assets | none | `inject` (prompt_skill dominant in wild); `preempt` for the rare mechanizable shell_recipe |
+| api | endpoint + auth + rate_limit | none | `tool` (per-step budget cap ≤3) |
+| mcp | server cmd + env + tool list | process lifecycle | `tool` (on-demand process start + idle shutdown) |
 
 Skill kinds:
 - `internal_hint` — auto-grown routing hint (current `skills.py` content); body inline
@@ -197,28 +198,21 @@ Skill kinds:
 
 ### Package layout (mutable; firm at module-responsibility level)
 
+Two packages: `katalog` (pure catalog) and `applicator` (thin match+expose layer).
+
 ```
-packages/katalog/
+packages/katalog/                # pure catalog: discover, vet, index, store, query
   schema.py            # DB tables, manifest types
   contracts.py         # Plugin protocol (DiscoveryPlugin + AccessPlugin + SourceAdapter)
   trust.py             # source/owner allowlist, trust scoring, decay
-  index.py             # read API for matcher
-  matcher.py           # vector + hint match against unified index
+  index.py             # storage + read API
+  query.py             # query(task_ctx) -> ranked [Artifact]  (vector sim over embedding)
   tier_classifier.py   # source-cap × check-caps → min-tier
+  executor.py          # run_recipe — recipe execution (called by mr_roboto path)
   vetting/
     auto_checks.py     # 9 gate-zero checks
     policy.py          # DB-backed allowlists + proposal flow
     source_review.py   # collapsed per-source weekly digest
-  exposure/
-    preempt.py         # mr_roboto route
-    prebind.py         # matcher arg-binding + bind cache
-    rubric.py          # finish-gate plugin
-    role_swap.py       # fatih_hoca sys_prompt swap
-    sandbox.py         # dry-run wrapper
-    context.py         # legacy inject path
-    tool.py            # ad-hoc tool register
-  executor.py          # kind-dispatch executor
-  telemetry.py         # injection_count, success, latency, exposure-class A/B
   discovery/
     cron.py            # daily run (trusted sources)
     on_demand.py       # need-driven query
@@ -229,7 +223,7 @@ packages/katalog/
       github_path.py
       github_topic.py
       awesome_list_md.py
-      cookiecutter_template.py  # NEW (per recon)
+      cookiecutter_template.py
       public_apis_md.py
       web_markdown.py
       clawhub_api.py     # stub
@@ -239,9 +233,17 @@ packages/katalog/
     mcp.py
   seed/
     manifests/         # hand-authored top-20 seed manifests
+
+packages/applicator/             # thin: per-task match → exposure decision
+  apply.py             # entry: apply(task) → attach SkillApplication / route preempt
+  scoring.py           # confidence = vector_sim × source_trust × owner_trust × hint_bonus
+  exposure.py          # (tier × kind × confidence) → exposure class
+  binding.py           # prebind arg pipeline + bind cache
+  budget.py            # api/mcp budget caps
+  telemetry.py         # katalog_usage writes, exposure-class A/B
 ```
 
-Subdirs are guidance; implementation may resplit if a cleaner cut emerges.
+Subdirs are guidance; implementation may resplit if a cleaner cut emerges. The hard line: katalog never renders prompts or decides exposure; applicator never does DB discovery or vetting.
 
 ### Data model
 
@@ -266,7 +268,8 @@ CREATE TABLE katalog_index (
   body_excerpt TEXT,              -- first ~500 chars for embedding
   embedding BLOB,                 -- vector (multilingual-e5-base, 768d)
   vet_tier INTEGER,               -- 0..3
-  exposure_class TEXT,            -- 'preempt'|'prebind'|'tool'|'context'|'role_swap'|'rubric'|'sandbox'|'quarantine'
+  exposure_class TEXT,            -- 'inject'|'tool'|'preempt'|'sandbox'|'quarantine'
+  applies_to TEXT,                -- 'execution'|'grading' (inferred from kind)
   vet_state TEXT,                 -- legacy column kept for migration
   vet_hash TEXT,                  -- content hash at vetting time
   source_max INTEGER,             -- audit: source cap that fed final tier
@@ -290,7 +293,7 @@ CREATE TABLE katalog_usage (
   called BOOLEAN,
   succeeded BOOLEAN,
   latency_ms INTEGER,
-  conflict_loser BOOLEAN,         -- role_swap collision: was outranked by sibling
+  conflict_loser BOOLEAN,         -- same-slot collision: was outranked by sibling
   would_have_used INTEGER,        -- mid-mission escape: artifact id we wanted but couldn't wait for
   escape_reason TEXT,             -- 'awaiting_human' | 'rate_limited' | 'quota_exhausted' | 'hard_cap_10m'
   occurred_at TIMESTAMP
@@ -431,12 +434,12 @@ class DiscoveryPlugin(Protocol):
     def vet_checks(self, manifest: Manifest, body_path: Path) -> list[Issue]: ...
 
 class AccessPlugin(Protocol):
+    """Per-artifact-type query + binding. Lives in katalog (artifact knowledge).
+    Does NOT render prompts — that's the consumer's job."""
     artifact_type: str
-    def expose_to_agent(self, row: IndexRow, task_ctx: TaskContext, exposure_class: str) -> Exposure: ...
-    def execute(self, row: IndexRow, task_ctx: TaskContext, inputs: dict) -> Result: ...
-    def bind_args(self, row: IndexRow, task_ctx: TaskContext) -> dict | None: ...    # prebind
-    def as_rubric(self, row: IndexRow, output: str) -> list[Issue]: ...               # rubric
-    def as_sys_prompt(self, row: IndexRow) -> str | None: ...                         # role_swap
+    def to_application(self, row: IndexRow, task_ctx: TaskContext) -> SkillApplication: ...
+    def bind_args(self, row: IndexRow, task_ctx: TaskContext) -> dict | None: ...    # prebind/preempt
+    def execute(self, row: IndexRow, task_ctx: TaskContext, inputs: dict) -> Result: ...  # recipe run
 
 class SourceAdapter(Protocol):
     source_type: str
@@ -444,7 +447,7 @@ class SourceAdapter(Protocol):
     async def fetch(self, ref: ArtifactRef) -> Path: ...
 ```
 
-Plugins live in `katalog/plugins/<artifact>.py`. Default impls return None/[] so plugins opt into advanced exposures.
+Plugins live in `katalog/plugins/<artifact>.py`. `SkillApplication` is a structured object (artifact ref + exposure class + `applies_to` + payload data) — **not rendered prompt text**. Prompt-builders render it to their own format.
 
 ### Lifecycle
 
@@ -484,33 +487,51 @@ Plugins live in `katalog/plugins/<artifact>.py`. Default impls return None/[] so
    - Owner trust decays similarly
    - Vetted artifacts never deleted
 
-### Match + dispatch (hot path)
+### The applicator (separate thin component)
 
-Existing call site: `coulson/context.py:945` (currently `skills.find_relevant_skills`).
+Matching is **not** katalog's job (katalog = pure catalog) and **not** Beckman's job (Beckman = pure task-lifecycle). A dedicated thin component, the **applicator**, owns it.
 
-Replaced with `katalog.matcher.match(task) → list[Match]`:
+**Position**: invoked per-task in the orchestrator pump (pump is wiring, ~30 lines; this is wiring, not Beckman internals). Runs once per task, before dispatch.
 
-1. **Vector + hint** — vector similarity over `katalog_index.embedding` (both `name`+`name_original` indexed); hint_bonus when step carries `recipe_hint`
-2. **Score** — `confidence = vector_similarity × source_trust × owner_trust × hint_bonus`
-3. **Per-step API budget** — for `artifact_type=api`, cap surfaced count at 3 (default, configurable). Unselected APIs invisible to agent → no tool soup.
-4. **Branch on (tier × kind × confidence) → exposure_class**
-   - T0 + shell_recipe + mechanizable + conf ≥ θ_preempt → `preempt`
-   - T0/T1 + parametric + conf ≥ θ_prebind → `prebind` (run bind pipeline)
-   - T0 + agent_config + conf ≥ θ_role → `role_swap` (fatih_hoca prepends sys_prompt + applies `model_hint`)
-   - T0 + prompt_skill with checklist body → `rubric` (post-execution finish-gate)
-   - T1 + match ≥ θ_low → `tool` (ad-hoc register, scoped to this step)
-   - T2 + match → `sandbox`
-   - Otherwise + match ≥ θ_min → `context` (legacy inject)
-   - T3 → never surface
-5. **Emit decision record** to `katalog_usage` with `exposure_class` + `bind_args_json` for telemetry / A/B
+**Flow**:
 
-`θ_preempt > θ_prebind > θ_role > θ_low > θ_min`, tunable, per-source overrides allowed. Defaults conservative; lower based on success-rate telemetry.
+```
+applicator.apply(task) →
+  1. candidates = katalog.query(task_ctx)
+       # katalog owns the index — vector similarity over embedding
+       # (name + name_original), returns ranked [Artifact] with tier/kind/score
+  2. score: confidence = vector_sim × source_trust × owner_trust × hint_bonus
+       # hint_bonus when step carries recipe_hint
+  3. budget caps:
+       - artifact_type=api  → ≤3 surfaced per step
+       - mcp tools          → ≤3 per server, ≤6 per step total
+  4. per candidate, decide exposure_class from (tier × kind × confidence):
+       - T0 + shell_recipe + mechanizable + conf ≥ θ_preempt → preempt
+       - T2 anything                                         → sandbox
+       - T3                                                  → quarantine (drop)
+       - else                                                → inject or tool
+         (tool when artifact is a callable: api verb, mcp tool, callable skill;
+          inject otherwise — prose / prebind / checklist render variant)
+  5. bind args for preempt + parametric-inject (see Prebind pipeline)
+  6. preempt  → route task to mechanical lane (runner=katalog_recipe)
+     others   → attach list[SkillApplication] to task envelope, tagged applies_to
+  7. emit decision record → katalog_usage (exposure_class, bind_args_json)
+```
 
-**Multiple `role_swap` match conflict**: when 2+ `agent_config` artifacts score above `θ_role` on the same step, matcher picks highest-score deterministically; losers logged to `katalog_usage` with `exposed=false, conflict_loser=true`. `/katalog stats` surfaces an ambiguity report (top-K collision pairs per week) so founder can tune θ or disable the underperformer. No stacking, no fail-loud.
+`θ_preempt > θ_inject > θ_tool > θ_min`, tunable, per-source overrides. Defaults conservative; lowered on success-rate telemetry.
+
+**Consumers read the envelope, never call the applicator or katalog**:
+- `coulson` prompt build — reads `SkillApplication`s tagged `applies_to=execution`, renders into agent prompt
+- `grade_task` — reads `SkillApplication`s tagged `applies_to=grading`, renders into `GRADING_PROMPT`
+- `mr_roboto` — runs the recipe baked into the mechanical task payload
+
+**Multiple same-slot match conflict** (e.g. 2 `agent_config` skills both applicable to one step): applicator keeps highest-score deterministically; losers logged to `katalog_usage` with `conflict_loser=true`. `/katalog stats` surfaces a weekly ambiguity report so founder can tune θ or disable the weaker artifact. No stacking, no fail-loud.
+
+**Failure isolation**: applicator errors → graceful degrade (task proceeds with empty `SkillApplication` list); logged, never propagates.
 
 ### API + MCP specifics (beyond shared lifecycle)
 
-Most exposure-class machinery (preempt, prebind, role_swap, rubric) doesn't apply to api/mcp — they live almost entirely in `tool` exposure. Five api/mcp-specific behaviors required on top of base:
+api/mcp artifacts live almost entirely in the `tool` exposure class (`inject`/`preempt` are skill-shaped). Five api/mcp-specific behaviors required on top of base:
 
 **1. Auth env-var lifecycle**
 
@@ -630,7 +651,7 @@ Recon finding: `awesome-cookiecutter` README is 404-rotted. v1 drops it; seed co
 - `/katalog policy add <check> <key>` / `/katalog policy review` — policy proposals from KutAI observation; founder approves
 - `/katalog disable <id>` / `/katalog enable <id>` / `/katalog requeue <id>` (for T3)
 - `/katalog source promote <id> <tier>` / `/katalog owner promote <name>` — manual trust promotion
-- `/katalog stats` — A/B per exposure class (preempt vs prebind vs tool vs context vs rubric vs role_swap), success rates per source/owner
+- `/katalog stats` — A/B per exposure class (inject vs tool vs preempt vs sandbox) + inject render-variant (prose vs prebind vs checklist), success rates per source/owner, role-conflict ambiguity report
 - `/katalog discover "<intent>"` — founder-initiated demand signal (#4)
 - `/katalog scout <url>` — founder-mentioned candidate source
 - `/katalog auth missing` — artifacts blocked by missing env vars
@@ -638,57 +659,77 @@ Recon finding: `awesome-cookiecutter` README is 404-rotted. v1 drops it; seed co
 - `/katalog mcp status` — running MCP servers + health + tool counts
 - `/katalog mcp restart <id>` / `/katalog mcp kill <id>` — manual MCP process control
 
-### Wiring into existing KutAI
+### Interface contract
 
-- **`coulson/context.py`** — replace `skills.find_relevant_skills` with `katalog.matcher.match`. Internal hints stay (flow through unified matcher).
-- **`coulson/finish_gate.py`** — register `rubric` exposure plugin hook (G grounding pattern); when matched rubric artifact attached to step, run `as_rubric(row, output)` at finish-gate.
-- **`mr_roboto`** — add `run_recipe` action delegating to `katalog.executor.run_recipe`; add `sandbox_run` action for T2 dry-run wrapping.
-- **`general_beckman`** — scheduled jobs: `katalog.discovery.cron.daily_run()`, `katalog.discovery.source_scout.scan()`, `katalog.exposure.prebind.warm_cache()` (planning-time pre-warm). Recipe-lane routing: when matcher returns `preempt`, beckman routes task to mechanical lane with `runner=katalog_recipe`. `BindTask` overhead-lane handler routes through dispatcher with constrained decode.
-- **`fatih_hoca`** — add katalog query in sys_prompt-build path; when matched `role_swap` artifact, prepend `as_sys_prompt(row)` + honor `model_hint`.
-- **`src/memory/skills.py`** — keep auto-capture from successful tasks; redirect writes into `katalog_index` with `kind=internal_hint`. Existing rows migrate via one-shot script.
-- **`src/app/telegram_bot.py`** — add `/katalog ...` command group + callback handlers for source-candidate + policy-proposal + per-artifact buttons.
-- **`workflow_engine` / i2p**: per-step `recipe_lookup: true|false` flag (default true for scaffold/auth/api/deploy/test-setup/migration phases; false for design/architecture/debugging/synthesis). `recipe_hint` field passed to matcher.
+**Dependency graph** — katalog has exactly one direct importer (the applicator); Beckman is untouched by katalog logic:
+
+```
+orchestrator pump ──> applicator ──> katalog.query()        (the only katalog import)
+                          │     ──> beckman.enqueue(BindTask)  (overhead-lane bind)
+                          ├─> preempt:  route task → mechanical lane
+                          └─> else:     attach list[SkillApplication] to task envelope
+
+coulson       ──reads──> task.skills (applies_to=execution)   renders into agent prompt
+grade_task    ──reads──> task.skills (applies_to=grading)     renders into GRADING_PROMPT
+mr_roboto     ──reads──> recipe baked into mechanical payload
+beckman       ── scheduled jobs only: katalog.daily_discovery / source_scout_scan
+```
+
+- **katalog** = pure catalog. Public API: `query(task_ctx) -> list[Artifact]`, `daily_discovery()`, `source_scout_scan()`, `capture_hint(task, outcome)`, `run_recipe(recipe_id, args)`. No prompt rendering, no placement logic.
+- **applicator** = thin. Owns match scoring, exposure-class decision, budget caps, arg-binding, conflict resolution, `katalog_usage` telemetry. Imports katalog. Invoked by orchestrator pump.
+- **beckman** = unchanged. Runs katalog cron jobs as scheduled tasks; handles `BindTask` on overhead lane. No skill matching.
+- **coulson / grade_task** = consume `task.skills` off the envelope; render to their own prompt format. Import neither katalog nor applicator.
+- **mr_roboto** = runs `preempt` recipe steps baked into the mechanical task payload (shell exec it already does); add `sandbox_run` action for T2 dry-run wrap.
+- **`src/memory/skills.py`** = keep auto-capture; redirect writes into `katalog_index` (`kind=internal_hint`). Kept as thin shim returning `task.skills` filtered to `inject` until coulson fully migrated.
+- **`src/app/telegram_bot.py`** = `/katalog ...` command group + callbacks.
+- **`workflow_engine` / i2p** = per-step `recipe_lookup: true|false` (default true for scaffold/auth/api/deploy/test-setup/migration; false for design/architecture/debugging/synthesis); `recipe_hint` field.
+
+**Rendering ownership**: `SkillApplication` is structured data, not text. coulson renders it for agent prompts; `grade_task` renders it for grader prompts. Each prompt-builder owns its own format — the applicator never knows prompt conventions.
 
 ### Migration
 
-1. Create all new tables (`katalog_index`, `katalog_usage`, `katalog_sources`, `katalog_owners`, `katalog_disabled_imports`, `katalog_bind_cache`, `katalog_mcp_processes`, `katalog_policy`, `katalog_policy_proposals`, `katalog_source_candidates`, `katalog_demand_signals`)
+1. Create all 13 new tables (`katalog_index`, `katalog_usage`, `katalog_sources`, `katalog_owners`, `katalog_disabled_imports`, `katalog_bind_cache`, `katalog_mcp_processes`, `katalog_mcp_tools`, `katalog_secrets`, `katalog_policy`, `katalog_policy_proposals`, `katalog_source_candidates`, `katalog_demand_signals`)
 2. Seed `katalog_policy` with baseline allowlists (shell: npx/git/cookiecutter/npm/pip/uvx; injection_regex set; domain_allowlist starter)
 3. Seed `katalog_owners` with `anthropics`, `obra`, `wshobson`, `cookiecutter`, `matlab` (trusted)
 4. Seed `katalog_sources` with 5 canonical sources (`github:anthropics/skills@/skills`, `github:obra/superpowers@/skills`, etc.), all `discovery_mode=cron`
 5. Seed `katalog_disabled_imports` with known rejects (using-superpowers, using-git-worktrees, mcp-browser-use, joke-APIs)
 6. Drop seed manifests into `packages/katalog/seed/manifests/*.yaml` (top-20, hand-authored)
-7. Migration script: copy `skills` rows → `katalog_index` (`artifact_type='skill'`, `kind='internal_hint'`, exposure_class='context', tier=T0, source='internal'), embed `description+strategy_summary`
+7. Migration script: copy `skills` rows → `katalog_index` (`artifact_type='skill'`, `kind='internal_hint'`, exposure_class='inject', tier=T0, source='internal'), embed `description+strategy_summary`
 8. First discovery cron run pulls canonical sources, auto-tiers; source-scout cron starts proposing untrusted candidates
-9. Old `skills.py` API kept as thin shim until coulson/grading paths fully migrate
+9. Old `skills.py` API kept as thin shim (returns `task.skills` filtered to `inject`) until coulson/grading paths fully migrate
 
 ## Seed manifest list (v1 ship)
 
 Hand-author in `packages/katalog/seed/manifests/`. Ranked by `usability × value` per recon:
 
-1. `anthropics-pdf` — prompt_skill, T0, rubric+context
-2. `anthropics-docx` — prompt_skill, T0
-3. `anthropics-xlsx` — prompt_skill, T0
-4. `anthropics-pptx` — prompt_skill, T0
-5. `anthropics-mcp-builder` — prompt_skill, T0, role_swap-capable
-6. `anthropics-skill-creator` — prompt_skill, T0 (self-grow)
-7. `anthropics-claude-api` — prompt_skill, T0 (cross-link to caveman plugin)
-8. `superpowers-brainstorming` — prompt_skill, T0
-9. `superpowers-tdd` — prompt_skill, T0 (wire into coder reflection)
-10. `superpowers-systematic-debugging` — prompt_skill, T0 (wire into fixer)
-11. `superpowers-writing-plans` — prompt_skill, T0
-12. `superpowers-subagent-driven-development` — prompt_skill, T0
-13. `superpowers-verification-before-completion` — prompt_skill, T0, rubric-capable
-14. `wshobson-backend-architect` — agent_config, T0, role_swap
-15. `wshobson-security-auditor` — agent_config, T0, role_swap
-16. `wshobson-performance-engineer` — agent_config, T0, role_swap
-17. `wshobson-test-automator` — agent_config, T0, role_swap
-18. `cc-pypackage` — shell_recipe, T1, mechanizable=true, prebind-capable
-19. `cc-django` — shell_recipe, T1, mechanizable=true (post-gen hook audit needed)
-20. `cc-data-science` — shell_recipe, T1, mechanizable=true
+All exposed via `inject` unless noted. `applies_to` in parens.
+
+1. `anthropics-pdf` — prompt_skill, T0 (execution)
+2. `anthropics-docx` — prompt_skill, T0 (execution)
+3. `anthropics-xlsx` — prompt_skill, T0 (execution)
+4. `anthropics-pptx` — prompt_skill, T0 (execution)
+5. `anthropics-mcp-builder` — prompt_skill, T0 (execution)
+6. `anthropics-skill-creator` — prompt_skill, T0 (execution; self-grow)
+7. `anthropics-claude-api` — prompt_skill, T0 (execution; cross-link to caveman plugin)
+8. `superpowers-brainstorming` — prompt_skill, T0 (execution)
+9. `superpowers-tdd` — prompt_skill, T0 (execution; wire into coder reflection)
+10. `superpowers-systematic-debugging` — prompt_skill, T0 (execution; wire into fixer)
+11. `superpowers-writing-plans` — prompt_skill, T0 (execution)
+12. `superpowers-subagent-driven-development` — prompt_skill, T0 (execution)
+13. `superpowers-verification-before-completion` — prompt_skill checklist, T0 (grading)
+14. `wshobson-backend-architect` — agent_config, T0 (execution)
+15. `wshobson-security-auditor` — agent_config, T0 (execution)
+16. `wshobson-performance-engineer` — agent_config, T0 (execution)
+17. `wshobson-test-automator` — agent_config, T0 (execution)
+18. `cc-pypackage` — shell_recipe, T1, mechanizable=true (execution; prebind/preempt)
+19. `cc-django` — shell_recipe, T1, mechanizable=true (execution; post-gen hook audit needed)
+20. `cc-data-science` — shell_recipe, T1, mechanizable=true (execution)
 
 ## Open issues (defer to plan, not blocking design)
 
-- Threshold defaults (θ_preempt, θ_prebind, θ_role, θ_low, θ_min) — start strict, lower based on telemetry
+- Threshold defaults (θ_preempt, θ_inject, θ_tool, θ_min) — start strict, lower based on telemetry
+- `applicator` package vs module — thin enough to be a module; plan author decides packaging
+- `applies_to` inference edge cases — a `prompt_skill` that's useful both as execution guidance and grading rubric (dual-tag allowed?)
 - Multi-file skill vetting UX (anthropics xlsx has helper Python files) — file tree + per-file approve vs all-or-nothing
 - Rate limit handling for GitHub API in source adapters (gh CLI vs raw REST; auth required for high volume)
 - LLM-assisted prompt-injection vetting beyond regex (v1.1)
@@ -701,32 +742,33 @@ Hand-author in `packages/katalog/seed/manifests/`. Ranked by `usability × value
 - `mechanizable` flag authority — adapter inference (presence of `invocation.steps`) plus vetter override; seed manifests explicit
 - Bash-vs-PowerShell normalization for cookiecutter post-gen hooks on Windows
 - Demand-signal cooldown windows — start at 7d per source_step_pattern
-- Failure isolation: matcher errors → graceful degrade (step proceeds without recipe), logged but never propagates exception
-- Recipe drift residual on `tool` exposure — model paraphrasing shell into freehand python. Accepted residual risk; higher classes (preempt/prebind) are antidote when applicable.
+- Recipe drift residual on `tool` exposure — model paraphrasing shell into freehand python. Accepted residual risk; `preempt` + prebind-rendered `inject` are the antidote when applicable.
 
 ## Testing strategy
 
 - **Unit**: each source adapter against fixture HTTP responses; each parser against frozen sample artifacts
 - **Unit**: each auto-check against positive/negative fixtures (shell with `chmod`, injection regex hits, etc.)
-- **Unit**: tier_classifier — verify `min` semantics across all combinations
-- **Unit**: each plugin's `parse_manifest` / `vet_checks` / `expose_to_agent` / `execute` / `bind_args` / `as_rubric` / `as_sys_prompt`
-- **Integration**: end-to-end fetch → synthesize → tier → enable → match → expose, with mocked sources for all 6 adapter types
+- **Unit**: tier_classifier — verify `min(max(source,owner), *checks)` semantics across all combinations
+- **Unit**: each plugin's `parse_manifest` / `vet_checks` / `to_application` / `bind_args` / `execute`
+- **Unit**: applicator — scoring, exposure-class decision per (tier × kind × confidence) tuple, budget caps, conflict resolution, failure-isolation graceful degrade
+- **Integration**: end-to-end fetch → synthesize → tier → enable → query → applicator → SkillApplication, mocked sources for all 6 adapter types
 - **Integration**: prebind flow — static-only, cache-hit, LLM-fallback (mocked beckman)
-- **Integration**: exposure-class branching — verify each (tier, kind, confidence) tuple routes to the right class
-- **Telemetry**: assert `katalog_usage` rows written on each match with correct `exposure_class`
-- **Migration**: existing `skills` rows readable via new matcher with byte-identical context-injection output for `exposure_class=context`
+- **Integration**: envelope round-trip — applicator attaches `task.skills`; coulson reads `execution` slice, `grade_task` reads `grading` slice
+- **Telemetry**: assert `katalog_usage` rows written on each apply with correct `exposure_class`
+- **Migration**: existing `skills` rows readable via `skills.py` shim with byte-identical injection output for `exposure_class=inject`
 - **Recon-driven**: replay sampled artifacts from recon (~120) through synthesis pipeline; verify tier distributions match recon predictions
 
 ## Success criteria (v1 ship)
 
-- All 11 tables created + migration runs cleanly
-- 20 seed manifests installed and matched against ≥3 i2p missions
+- All 13 tables created + migration runs cleanly
+- `katalog` and `applicator` ship as separate components; katalog imported only by applicator; beckman carries no skill-matching logic
+- 20 seed manifests installed; applicator matches them against ≥3 i2p missions
 - 6 source adapters operational; `github_path` + `public_apis_md` + `cookiecutter_template` fully mechanical (no LLM in steady state)
 - Anthropics/skills + obra/superpowers fully imported via discovery cron (47+ artifacts)
 - Source-scout proposes ≥3 new sources within first week; Telegram UX functional
 - At least one `preempt` end-to-end on a real i2p mission (cookiecutter scaffold)
-- At least one `prebind` end-to-end with cache-hit on second mission
-- At least one `rubric` end-to-end (anthropics-verification-before-completion against a finish-gate)
-- At least one `role_swap` end-to-end (wshobson-backend-architect on a backend-design step)
-- Existing internal-hint matching produces byte-identical context-injection output post-migration
-- `/katalog stats` shows per-exposure-class A/B (preempt vs prebind vs tool vs context vs rubric vs role_swap success rates) across ≥3 missions
+- `inject` exercised in all 3 render variants: prose hint, prebind concrete-call (with cache-hit on 2nd mission), grading checklist
+- `inject` reaches the grader: `superpowers-verification-before-completion` checklist injected into `GRADING_PROMPT` via `task.skills` envelope (applies_to=grading)
+- agent_config `inject` end-to-end: `wshobson-backend-architect` content shapes a backend-design step's agent prompt
+- Existing internal-hint matching produces byte-identical injection output post-migration
+- `/katalog stats` shows per-exposure-class A/B across ≥3 missions

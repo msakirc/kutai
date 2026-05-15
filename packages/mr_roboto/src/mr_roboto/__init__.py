@@ -1877,6 +1877,20 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "mine_dlq_patterns":
+        # Z9 Growth T3D — weekly DLQ feedback hook. Mines recurring failure
+        # patterns from the dead-letter queue and writes dlq_pattern
+        # growth_events that surface in the analytics digest. Idempotent.
+        from src.infra.dlq_feedback import mine_dlq_patterns
+        try:
+            count = await mine_dlq_patterns()
+            return Action(
+                status="completed",
+                result={"ok": True, "patterns_count": int(count)},
+            )
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "mission_event_drain":
         # Z10 T2B: drain T1C confirmations + T2A budget alerts → mission_events.
         from mr_roboto.mission_event_drain import run as drain_run

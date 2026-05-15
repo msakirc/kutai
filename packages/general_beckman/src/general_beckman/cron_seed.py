@@ -205,6 +205,16 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 86400,  # 24h
         "payload": {"_executor": "emit_dlq_lessons"},
     },
+    # Z9 Growth T3D — weekly DLQ feedback hook. Mines recurring failure
+    # patterns from the dead-letter queue and writes dlq_pattern
+    # growth_events so they surface in the weekly analytics digest (T2).
+    # Weekly cadence aligns with the digest cycle; idempotent per pattern_key.
+    {
+        "title": "dlq_signal_review",
+        "description": "Weekly DLQ pattern-mining — emit dlq_pattern growth_events for recurring failures",
+        "interval_seconds": 604800,  # 7d
+        "payload": {"_executor": "mine_dlq_patterns"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

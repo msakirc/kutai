@@ -14,6 +14,11 @@ conflicts_with: []
 post_hooks:
   - imports_check
   - pattern_lint
+# Z9 T5A — optional cohort gate. When set, the track_event shims tag every
+# event with the active segment AND only emit events for users matching the
+# predicate. Unset (the default) → events fire for the whole user base.
+# Free-form expression evaluated against the analytics context's segment.
+segment_predicate: null
 templates:
   client: client.template.ts
   server: server.template.py

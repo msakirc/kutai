@@ -2001,6 +2001,28 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "validate_target_segment":
+        # Z9 T5A — cohort-awareness nag: WARN (never block) when a Phase 8+
+        # mission reaches the implementation backlog with no explicit
+        # mission.context['target_segment']. Back-fills the 'any' default.
+        from mr_roboto.executors.validate_target_segment import (
+            run as _val_seg,
+        )
+        try:
+            res = await _val_seg(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        f"validate_target_segment: "
+                        f"{res.get('error') or 'failed'}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "monitoring_check":
         from mr_roboto.executors.monitoring_check import run as monitoring_check_run
         try:

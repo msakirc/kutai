@@ -88,6 +88,7 @@ from mr_roboto.check_adr_drift import check_adr_drift  # Z3 T4B
 from mr_roboto.integration_replay import integration_replay  # Z3 T5
 from mr_roboto.integration_bisect import integration_bisect  # Z3 T5
 from mr_roboto.visual_review import visual_review  # Z4 T2B
+from mr_roboto.capture_screenshots import capture_screenshots  # Z4 T1A
 
 __all__ = [
     "Action",
@@ -142,6 +143,7 @@ __all__ = [
     "instantiate_recipe_verb",
     "extract_signatures",
     "visual_review",
+    "capture_screenshots",
 ]
 
 
@@ -3434,6 +3436,95 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T4 B4: meeting brief auto-generation verbs ────────────────────────
+
+    if action == "meeting/brief":
+        # Z7 B4 — LLM-bound brief generation (MAIN_WORK lane).
+        # Pulls: last 5 interactions, open follow-ups, optional A11/B2 data.
+        # Writes brief_md to meetings row; surfaces result as founder_action card.
+        # Degrades gracefully if A11 (mentions) or B2 (changelog) are absent.
+        from src.app.meetings import build_brief_context, compose_brief_md
+        try:
+            meeting_id = int(payload.get("meeting_id") or 0)
+            product_id = str(payload.get("product_id") or "default")
+
+            ctx = await build_brief_context(meeting_id=meeting_id, product_id=product_id)
+
+            # Request LLM talking points via beckman (MAIN_WORK lane).
+            # For now compose the brief with a structural stub; the beckman
+            # enqueue pattern produces talking points asynchronously.
+            # When the LLM response arrives it updates brief_md via a follow-up
+            # mechanical step.  This verb completes the data-gathering phase.
+            brief_md = compose_brief_md(ctx)
+
+            # Persist brief_md to meetings row
+            from src.infra.db import get_db
+            db = await get_db()
+            await db.execute(
+                "UPDATE meetings SET brief_md=?, brief_generated_at=strftime('%Y-%m-%d %H:%M:%S','now') "
+                "WHERE meeting_id=?",
+                (brief_md, meeting_id),
+            )
+            await db.commit()
+
+            # Surface as a Telegram notify (best-effort)
+            try:
+                from src.app.telegram_bot import get_telegram
+                import os
+                tg = get_telegram()
+                if tg is not None:
+                    admin_chat = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
+                    if admin_chat:
+                        contact = ctx.get("contact") or {}
+                        name = contact.get("display_name") or "Contact"
+                        header = f"Meeting Brief — {name} in 30min\n\n"
+                        await tg.app.bot.send_message(
+                            chat_id=int(admin_chat),
+                            text=header + brief_md[:3800],
+                        )
+            except Exception as _notify_exc:
+                pass  # best-effort; never fail the verb
+
+            return Action(
+                status="completed",
+                result={"meeting_id": meeting_id, "brief_length": len(brief_md)},
+            )
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "meeting/outcome_prompt":
+        # Z7 B4 — surface a founder_action card asking for meeting outcome.
+        # Non-LLM mechanical: creates the card and returns.
+        from src.app.meetings import emit_outcome_prompt
+        try:
+            meeting_id = int(payload.get("meeting_id") or 0)
+            product_id = str(payload.get("product_id") or "default")
+            res = await emit_outcome_prompt(meeting_id=meeting_id, product_id=product_id)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"meeting/outcome_prompt: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "meeting_brief_dispatch":
+        # Z7 B4 — 5-min cron: brief generation window + outcome prompt phase.
+        from src.app.jobs.meeting_brief_dispatch import run_meeting_brief_dispatch
+        try:
+            res = await run_meeting_brief_dispatch()
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"meeting_brief_dispatch: failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     # ── Z7 T3B — demo pipeline verbs (A3 + A3.r1) ────────────────────────────
 
     if action == "demo/storyboard":
@@ -3842,6 +3933,25 @@ async def _run_dispatch(task: dict) -> Action:
             res = await _disclosure_timer(payload)
             if res.get("status") == "error":
                 return Action(status="failed", error=res.get("error") or "disclosure_timer failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "capture_screenshots":
+        # Z4 T1A — capture preview screenshots across breakpoints + color modes.
+        from mr_roboto.capture_screenshots import (
+            capture_screenshots as _capture_screenshots,
+        )
+        try:
+            res = await _capture_screenshots(
+                mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
+                step_id=str(step_id if (step_id := payload.get("step_id")) else task.get("id") or ""),
+                routes=list(payload.get("routes")) if payload.get("routes") else None,
+                produces=list(payload.get("produces")) if payload.get("produces") else None,
+                workspace_path=payload.get("workspace_path") or None,
+            )
+            if res.get("ok") is False:
+                return Action(status="failed", error=res.get("error") or "capture_screenshots failed", result=res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

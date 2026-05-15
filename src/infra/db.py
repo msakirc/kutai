@@ -2665,6 +2665,118 @@ async def init_db():
         ),
     )
 
+    # ── Z9 T1A: growth zone foundation — hypotheses / experiment_variants /
+    # growth_events ──────────────────────────────────────────────────────────
+    # Three tables backing the Z9 growth zone (analytics, hypothesis verdict
+    # loop, A/B experiments). Kept separate from registry_events so Z8 oncall
+    # queries stay clean. Timestamp columns store SQLite space-separated
+    # datetime ('YYYY-MM-DD HH:MM:SS') — never datetime.isoformat() (T-form);
+    # see CLAUDE.md scheduled_tasks pitfall.
+    #
+    # hypotheses: prediction-side store. predicted_json={metric,direction,
+    #   magnitude}; actual_json gets {..,p_value} once a verdict is recorded.
+    #   dedup_key = feature_slug + metric_name; refuted verdicts set
+    #   suppressed_until = now + 90d so the same pair isn't re-predicted.
+    await apply_migration(
+        version="2026-05-15-z9-hypotheses",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS hypotheses ("
+            " id              INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id      INTEGER,"
+            " feature         TEXT,"
+            " predicted_json  TEXT,"
+            " actual_json     TEXT,"
+            " verdict         TEXT    NOT NULL DEFAULT 'pending',"
+            " window_seconds  INTEGER,"
+            " measured_at     TEXT,"
+            " dedup_key       TEXT,"
+            " suppressed_until TEXT,"
+            " created_at      TEXT    DEFAULT (datetime('now')),"
+            " FOREIGN KEY (mission_id) REFERENCES missions(id)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_hypotheses_mission "
+            "ON hypotheses(mission_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_hypotheses_dedup_key "
+            "ON hypotheses(dedup_key);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_hypotheses_dedup_key;\n"
+            "DROP INDEX IF EXISTS idx_hypotheses_mission;\n"
+            "DROP TABLE IF EXISTS hypotheses;\n"
+        ),
+        description=(
+            "Z9 T1A: hypotheses table — prediction-side store for the growth "
+            "hypothesis/verdict loop. verdict pending|confirmed|refuted|"
+            "inconclusive; refuted pairs suppressed_until now+90d."
+        ),
+    )
+
+    # experiment_variants: A/B variant ledger (populated from T5). status
+    #   active|winner|loser|stopped; retired_at set when status leaves active.
+    await apply_migration(
+        version="2026-05-15-z9-experiment-variants",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS experiment_variants ("
+            " id              INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id      INTEGER,"
+            " hypothesis_id   INTEGER,"
+            " variant_name    TEXT,"
+            " assignment_rule TEXT,"
+            " status          TEXT    NOT NULL DEFAULT 'active',"
+            " shipped_at      TEXT,"
+            " retired_at      TEXT,"
+            " created_at      TEXT    DEFAULT (datetime('now')),"
+            " FOREIGN KEY (mission_id) REFERENCES missions(id),"
+            " FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_experiment_variants_mission "
+            "ON experiment_variants(mission_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_experiment_variants_hypothesis "
+            "ON experiment_variants(hypothesis_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_experiment_variants_hypothesis;\n"
+            "DROP INDEX IF EXISTS idx_experiment_variants_mission;\n"
+            "DROP TABLE IF EXISTS experiment_variants;\n"
+        ),
+        description=(
+            "Z9 T1A: experiment_variants table — A/B variant ledger. "
+            "status active|winner|loser|stopped; populated by Z9 T5."
+        ),
+    )
+
+    # growth_events: append-only growth telemetry log. kind is free-form
+    #   ('metric_emit', 'backlog_candidate', 'dlq_pattern', 'verdict', ...);
+    #   properties_json holds the kind-specific payload; segment is nullable.
+    await apply_migration(
+        version="2026-05-15-z9-growth-events",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS growth_events ("
+            " id              INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " mission_id      INTEGER,"
+            " kind            TEXT,"
+            " properties_json TEXT,"
+            " segment         TEXT,"
+            " occurred_at     TEXT    DEFAULT (datetime('now')),"
+            " FOREIGN KEY (mission_id) REFERENCES missions(id)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_growth_events_mission_occurred "
+            "ON growth_events(mission_id, occurred_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_growth_events_kind "
+            "ON growth_events(kind);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_growth_events_kind;\n"
+            "DROP INDEX IF EXISTS idx_growth_events_mission_occurred;\n"
+            "DROP TABLE IF EXISTS growth_events;\n"
+        ),
+        description=(
+            "Z9 T1A: growth_events table — append-only growth telemetry log "
+            "(metric_emit / backlog_candidate / dlq_pattern / verdict). "
+            "Separate from registry_events to keep Z8 oncall queries clean."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.
@@ -5890,6 +6002,245 @@ async def resolve_confirmation(
         "WHERE id = ?",
         (verdict, confirmation_id),
     )
+    await db.commit()
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Z9 T1A — growth zone CRUD helpers (hypotheses / experiment_variants /
+# growth_events)
+# ───────────────────────────────────────────────────────────────────────────
+#
+# Schema lives in init_db() (apply_migration 2026-05-15-z9-*). These async
+# helpers mirror the recipe_pin_log / mission_lessons conventions: JSON blobs
+# are json.dumps()'d on the way in and json.loads()'d on the way out; all
+# timestamp columns store SQLite space-separated datetime via datetime('now')
+# or strftime("%Y-%m-%d %H:%M:%S") — never datetime.isoformat() (T-form).
+
+_HYP_SUPPRESSION_DAYS = 90
+
+
+async def insert_hypothesis(
+    mission_id: int | None,
+    feature: str,
+    predicted: dict,
+    window_seconds: int,
+    dedup_key: str,
+) -> int:
+    """Insert a new pending hypothesis row. Returns the new row id.
+
+    Refuses (returns -1) if a row with the same ``dedup_key`` is still
+    suppressed — i.e. has ``suppressed_until`` in the future. A refuted
+    feature/metric pair is not re-predicted until its 90-day cool-off ends.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT 1 FROM hypotheses "
+        "WHERE dedup_key = ? AND suppressed_until IS NOT NULL "
+        "AND suppressed_until > datetime('now') LIMIT 1",
+        (dedup_key,),
+    )
+    if await cur.fetchone():
+        logger.info(
+            "insert_hypothesis: refused (dedup_key %s still suppressed)",
+            dedup_key,
+        )
+        return -1
+
+    cur = await db.execute(
+        "INSERT INTO hypotheses "
+        "(mission_id, feature, predicted_json, verdict, window_seconds, "
+        " dedup_key) "
+        "VALUES (?, ?, ?, 'pending', ?, ?)",
+        (
+            mission_id,
+            feature,
+            json.dumps(predicted or {}),
+            window_seconds,
+            dedup_key,
+        ),
+    )
+    await db.commit()
+    return cur.lastrowid or 0
+
+
+async def record_hypothesis_verdict(
+    hypothesis_id: int,
+    actual: dict,
+    verdict: str,
+) -> None:
+    """Record a verdict on a hypothesis.
+
+    Sets ``actual_json``, ``verdict`` and stamps ``measured_at`` with the
+    current SQLite datetime. When ``verdict == 'refuted'`` also sets
+    ``suppressed_until`` to now + 90 days so the feature/metric pair is
+    not re-predicted during the cool-off window.
+    """
+    db = await get_db()
+    measured_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    suppressed_until = None
+    if verdict == "refuted":
+        suppressed_until = (
+            datetime.now() + timedelta(days=_HYP_SUPPRESSION_DAYS)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+    await db.execute(
+        "UPDATE hypotheses "
+        "SET actual_json = ?, verdict = ?, measured_at = ?, "
+        "    suppressed_until = ? "
+        "WHERE id = ?",
+        (
+            json.dumps(actual or {}),
+            verdict,
+            measured_at,
+            suppressed_until,
+            hypothesis_id,
+        ),
+    )
+    await db.commit()
+
+
+async def get_pending_hypotheses(
+    mission_id: int | None = None,
+) -> list[dict]:
+    """Return hypotheses with ``verdict='pending'`` (most recent first).
+
+    ``mission_id=None`` returns pending hypotheses across all missions.
+    ``predicted_json`` / ``actual_json`` are decoded back to dicts.
+    """
+    db = await get_db()
+    if mission_id is not None:
+        cur = await db.execute(
+            "SELECT * FROM hypotheses "
+            "WHERE verdict = 'pending' AND mission_id = ? "
+            "ORDER BY created_at DESC, id DESC",
+            (mission_id,),
+        )
+    else:
+        cur = await db.execute(
+            "SELECT * FROM hypotheses "
+            "WHERE verdict = 'pending' "
+            "ORDER BY created_at DESC, id DESC"
+        )
+    rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    result = []
+    for row in rows:
+        d = dict(zip(cols, row))
+        for k in ("predicted_json", "actual_json"):
+            try:
+                d[k] = json.loads(d[k]) if d.get(k) else None
+            except Exception:
+                pass
+        result.append(d)
+    return result
+
+
+async def insert_growth_event(
+    mission_id: int | None,
+    kind: str,
+    properties: dict,
+    segment: str | None = None,
+) -> int:
+    """Append a row to ``growth_events``. Returns the new row id.
+
+    ``properties`` is JSON-serialized into ``properties_json``;
+    ``occurred_at`` defaults to the current SQLite datetime.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "INSERT INTO growth_events "
+        "(mission_id, kind, properties_json, segment) "
+        "VALUES (?, ?, ?, ?)",
+        (mission_id, kind, json.dumps(properties or {}), segment),
+    )
+    await db.commit()
+    return cur.lastrowid or 0
+
+
+async def get_growth_events(
+    mission_id: int | None = None,
+    kind: str | None = None,
+    since: str | None = None,
+) -> list[dict]:
+    """Return growth_events rows filtered by mission / kind / time.
+
+    ``since`` is an inclusive SQLite datetime string ('YYYY-MM-DD HH:MM:SS').
+    Any combination of filters may be omitted. ``properties_json`` is decoded
+    back to a dict. Most recent first.
+    """
+    db = await get_db()
+    clauses = []
+    params: list = []
+    if mission_id is not None:
+        clauses.append("mission_id = ?")
+        params.append(mission_id)
+    if kind is not None:
+        clauses.append("kind = ?")
+        params.append(kind)
+    if since is not None:
+        clauses.append("occurred_at >= ?")
+        params.append(since)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    cur = await db.execute(
+        "SELECT * FROM growth_events" + where
+        + " ORDER BY occurred_at DESC, id DESC",
+        tuple(params),
+    )
+    rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    result = []
+    for row in rows:
+        d = dict(zip(cols, row))
+        try:
+            d["properties_json"] = (
+                json.loads(d["properties_json"])
+                if d.get("properties_json")
+                else None
+            )
+        except Exception:
+            pass
+        result.append(d)
+    return result
+
+
+async def insert_variant(
+    mission_id: int | None,
+    hypothesis_id: int | None,
+    variant_name: str,
+    assignment_rule: str,
+) -> int:
+    """Insert an ``experiment_variants`` row (status='active'). Returns id."""
+    db = await get_db()
+    cur = await db.execute(
+        "INSERT INTO experiment_variants "
+        "(mission_id, hypothesis_id, variant_name, assignment_rule, status) "
+        "VALUES (?, ?, ?, ?, 'active')",
+        (mission_id, hypothesis_id, variant_name, assignment_rule),
+    )
+    await db.commit()
+    return cur.lastrowid or 0
+
+
+async def update_variant_status(variant_id: int, status: str) -> None:
+    """Update an experiment variant's status.
+
+    When ``status`` is a terminal state ('winner' | 'loser' | 'stopped')
+    ``retired_at`` is stamped with the current SQLite datetime. Setting it
+    back to 'active' clears ``retired_at``.
+    """
+    db = await get_db()
+    if status in ("winner", "loser", "stopped"):
+        retired_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await db.execute(
+            "UPDATE experiment_variants "
+            "SET status = ?, retired_at = ? WHERE id = ?",
+            (status, retired_at, variant_id),
+        )
+    else:
+        await db.execute(
+            "UPDATE experiment_variants "
+            "SET status = ?, retired_at = NULL WHERE id = ?",
+            (status, variant_id),
+        )
     await db.commit()
 
 

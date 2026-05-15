@@ -1979,6 +1979,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("attention", self.cmd_attention))
         # Z7 T1D (B9) — external comms audit log search
         self.app.add_handler(CommandHandler("audit_comms", self.cmd_audit_comms))
+        # Z7 T2A — email-send shared service (config/upgrade/test)
+        self.app.add_handler(CommandHandler("email", self.cmd_email))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -4819,6 +4821,143 @@ class TelegramInterface:
                 f" m={r.get('source_mission_id')}"
             )
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_email(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T2A — Email-send shared service management.
+
+        Subcommands:
+          /email config <product_id>            — show provider config for product
+          /email upgrade <product_id>           — flip tier from 'free' to 'paid'
+          /email test <product_id> <address>    — send a test email to <address>
+        """
+        args = context.args or []
+        if not args:
+            await self._reply(
+                update,
+                "Usage:\n"
+                "`/email config <product_id>` — show email config\n"
+                "`/email upgrade <product_id>` — flip tier free→paid\n"
+                "`/email test <product_id> <addr>` — send test email",
+                parse_mode="Markdown",
+            )
+            return
+
+        sub = args[0].lower()
+
+        if sub == "config":
+            if len(args) < 2:
+                await self._reply(update, "Usage: `/email config <product_id>`", parse_mode="Markdown")
+                return
+            product_id = args[1]
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+                cur = await db.execute(
+                    "SELECT provider, from_domain, api_key_ref, monthly_quota, tier, created_at "
+                    "FROM product_email_config WHERE product_id = ?",
+                    (product_id,),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    await self._reply(update, f"No email config found for product `{product_id}`.", parse_mode="Markdown")
+                    return
+                provider, from_domain, api_key_ref, monthly_quota, tier, created_at = row
+                msg = (
+                    f"*Email config for* `{product_id}`\n"
+                    f"Provider: `{provider}`\n"
+                    f"Tier: `{tier}`\n"
+                    f"From domain: `{from_domain or '(not set)'}`\n"
+                    f"API key ref: `{api_key_ref or '(not set)'}`\n"
+                    f"Monthly quota: `{monthly_quota or 'unlimited'}`\n"
+                    f"Created: `{created_at}`"
+                )
+                await self._reply(update, msg, parse_mode="Markdown")
+            except Exception as e:
+                await self._reply(update, f"Error: {e}")
+
+        elif sub == "upgrade":
+            if len(args) < 2:
+                await self._reply(update, "Usage: `/email upgrade <product_id>`", parse_mode="Markdown")
+                return
+            product_id = args[1]
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+                cur = await db.execute(
+                    "UPDATE product_email_config SET tier = 'paid', updated_at = datetime('now') "
+                    "WHERE product_id = ?",
+                    (product_id,),
+                )
+                await db.commit()
+                if cur.rowcount == 0:
+                    await self._reply(update, f"No email config found for product `{product_id}`.", parse_mode="Markdown")
+                else:
+                    await self._reply(
+                        update,
+                        f"Email tier for `{product_id}` flipped to *paid*.\n"
+                        "Remember to set a paid provider (postmark/ses) and API key ref.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as e:
+                await self._reply(update, f"Error: {e}")
+
+        elif sub == "test":
+            if len(args) < 3:
+                await self._reply(
+                    update,
+                    "Usage: `/email test <product_id> <email_address>`",
+                    parse_mode="Markdown",
+                )
+                return
+            product_id = args[1]
+            addr = args[2]
+            try:
+                from src.integrations.email.service import send_email
+                result = await send_email(
+                    product_id=product_id,
+                    to=addr,
+                    subject=f"[KutAI Test] Email from product {product_id}",
+                    body_md=(
+                        f"This is a test email sent from KutAI for product `{product_id}`.\n\n"
+                        "If you received this, email delivery is working correctly."
+                    ),
+                    idempotency_key=f"test-{product_id}-{addr}",
+                )
+                status = result.get("status", "unknown")
+                msg_id = result.get("message_id")
+                if status == "sent":
+                    await self._reply(
+                        update,
+                        f"Test email sent to `{addr}`.\n"
+                        f"Provider: `{result.get('provider')}`\n"
+                        f"Message ID: `{msg_id}`",
+                        parse_mode="Markdown",
+                    )
+                elif status == "quota_blocked":
+                    await self._reply(
+                        update,
+                        f"Send blocked — quota exhausted ({result.get('sent_count')}/{result.get('quota')} this month).",
+                    )
+                elif status == "suppressed":
+                    await self._reply(
+                        update,
+                        f"Address `{addr}` is suppressed (reason: {result.get('reason')}).",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await self._reply(
+                        update,
+                        f"Send failed (status={status}): {result.get('error') or result}",
+                    )
+            except Exception as e:
+                await self._reply(update, f"Error sending test email: {e}")
+
+        else:
+            await self._reply(
+                update,
+                "Unknown subcommand. Use: `config`, `upgrade`, or `test`.",
+                parse_mode="Markdown",
+            )
 
     async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Z1 audit-log inspector — view recent rows of write-only Z1 logs.

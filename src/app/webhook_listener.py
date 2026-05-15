@@ -48,6 +48,55 @@ async def webhook_health() -> dict:
     return {"status": "ok"}
 
 
+# ── Z7 T2A — Email provider webhook routes ─────────────────────────────────
+# Routes: POST /webhook/email/{provider}/{product_id}
+# Covers: open, click, bounce, unsub, complaint, delivery for
+#         brevo and resend (free-tier adapters).
+# Signature verification is intentionally skipped here (the generic
+# /webhook/{integration_id} route does sig verification via webhook_signing.py;
+# email webhooks are typically unsigned or use a shared secret that can be
+# added to webhook_signing.py when wired to a real domain).
+
+
+@app.post("/webhook/email/{provider}/{product_id}")
+async def email_webhook_inbound(
+    provider: str, product_id: str, request: Request
+) -> dict:
+    """Receive and process email provider webhook events.
+
+    Accepts Brevo / Resend (and future Postmark / SES) delivery events.
+    Normalises via the provider adapter, persists to email_events, and
+    adds to email_suppression on bounce / complaint / unsub.
+
+    Dedup is NOT applied here (email webhooks rarely re-deliver the same
+    event unlike ops webhooks); if needed, wrap in already_seen/mark_seen.
+    """
+    try:
+        raw = await request.body()
+        payload = __import__("json").loads(raw) if raw else {}
+    except (ValueError, Exception) as exc:
+        raise HTTPException(status_code=400, detail=f"bad json: {exc}") from exc
+
+    try:
+        from src.integrations.email.service import handle_webhook_event
+
+        await handle_webhook_event(
+            product_id=product_id,
+            provider=provider,
+            raw_payload=payload,
+        )
+    except Exception as exc:
+        logger.error(
+            "email webhook handler error",
+            provider=provider,
+            product_id=product_id,
+            exc=str(exc),
+        )
+        raise HTTPException(status_code=500, detail="handler error") from exc
+
+    return {"status": "accepted", "provider": provider, "product_id": product_id}
+
+
 @app.post("/webhook/{integration_id}")
 async def webhook_inbound(integration_id: str, request: Request) -> dict:
     raw = await request.body()

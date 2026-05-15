@@ -2932,6 +2932,102 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T2A: email-send shared service tables ─────────────────────────────
+
+    # product_email_config: per-product email provider configuration.
+    #   provider: 'brevo' | 'resend' | 'postmark' | 'ses'
+    #   from_domain: sender domain (e.g. 'example.com')
+    #   api_key_ref: key name in the credential_store (not the key itself)
+    #   monthly_quota: max emails/month (NULL = unlimited)
+    #   tier: 'free' | 'paid'  — default 'free' per founder decision 2026-05-15
+    await apply_migration(
+        version="2026-05-15-z7-product-email-config",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS product_email_config ("
+            " id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id  TEXT NOT NULL UNIQUE,"
+            " provider    TEXT NOT NULL DEFAULT 'brevo',"
+            " from_domain TEXT,"
+            " api_key_ref TEXT,"
+            " monthly_quota INTEGER,"
+            " tier        TEXT NOT NULL DEFAULT 'free',"
+            " created_at  TIMESTAMP DEFAULT (datetime('now')),"
+            " updated_at  TIMESTAMP DEFAULT (datetime('now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_product_email_config_product "
+            "ON product_email_config(product_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_product_email_config_product;\n"
+            "DROP TABLE IF EXISTS product_email_config;\n"
+        ),
+        description=(
+            "Z7 T2A: product_email_config — per-product email provider config "
+            "(provider=brevo|resend|postmark|ses, tier=free|paid, api_key_ref → "
+            "credential_store, monthly_quota guard)."
+        ),
+    )
+
+    # email_events: immutable log of every email event (sent / open / click /
+    #   bounce / unsub / complaint / delivery).  Quota counting queries this
+    #   table for event_type='sent' within the current calendar month.
+    await apply_migration(
+        version="2026-05-15-z7-email-events",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS email_events ("
+            " id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id  TEXT NOT NULL,"
+            " event_type  TEXT NOT NULL,"   # sent|open|click|bounce|unsub|complaint|delivery
+            " recipient   TEXT NOT NULL,"
+            " provider    TEXT,"
+            " message_id  TEXT,"
+            " occurred_at TIMESTAMP DEFAULT (datetime('now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_events_product_type_occurred "
+            "ON email_events(product_id, event_type, occurred_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_events_recipient "
+            "ON email_events(recipient);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_email_events_recipient;\n"
+            "DROP INDEX IF EXISTS idx_email_events_product_type_occurred;\n"
+            "DROP TABLE IF EXISTS email_events;\n"
+        ),
+        description=(
+            "Z7 T2A: email_events — append-only log of email send + webhook "
+            "events (sent/open/click/bounce/unsub/complaint/delivery). "
+            "Quota guard counts event_type='sent' for the current month."
+        ),
+    )
+
+    # email_suppression: per-product suppression list.
+    #   Recipients added here are silently skipped by service.send_email.
+    #   Populated automatically from bounce / complaint / unsub webhooks.
+    await apply_migration(
+        version="2026-05-15-z7-email-suppression",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS email_suppression ("
+            " id         INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id TEXT NOT NULL,"
+            " email      TEXT NOT NULL,"
+            " reason     TEXT NOT NULL,"   # bounce|complaint|unsub|manual
+            " added_at   TIMESTAMP DEFAULT (datetime('now')),"
+            " UNIQUE(product_id, email)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_suppression_product_email "
+            "ON email_suppression(product_id, email);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_email_suppression_product_email;\n"
+            "DROP TABLE IF EXISTS email_suppression;\n"
+        ),
+        description=(
+            "Z7 T2A: email_suppression — per-product suppression list "
+            "(bounce/complaint/unsub/manual). UNIQUE(product_id, email) prevents "
+            "duplicates. service.send_email checks before any send."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

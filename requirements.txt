@@ -111,3 +111,4 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 pytest-aiohttp>=1.0.0
 
 semgrep==1.96.0  # Linux/Mac only; Windows hits soft-skip path
+Pillow>=10.0.0  # Z4 visual-review: WebP thumbnail compression for Telegram album

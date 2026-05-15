@@ -463,6 +463,7 @@ async def visual_review(
         "verdict": verdict,
         "findings": all_findings,
         "skipped": False,
+        "captured_paths": list(captured_paths),
     }
 
 

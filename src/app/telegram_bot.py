@@ -2007,6 +2007,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("interview", self.cmd_interview))
         # Z7 T5 B1 — lifecycle email engine
         self.app.add_handler(CommandHandler("lifecycle", self.cmd_lifecycle))
+        # Z7 T6 A7 — cold outreach + deliverability spine
+        self.app.add_handler(CommandHandler("outreach", self.cmd_outreach))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -11989,5 +11991,153 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             update,
             f"Unknown /interview subcommand: {sub!r}\n\n"
             "Available: `start`, `stop`, `list`",
+            parse_mode="Markdown",
+        )
+
+    # ── Z7 T6 A7 — Cold outreach + deliverability spine ──────────────────────
+
+    async def cmd_outreach(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /outreach command.
+
+        Subcommands:
+          /outreach upload <list_id>   — upload a prospect list + request batch approval
+          /outreach status [list_id]   — show warmup status + recent sends + bounce rate
+          /outreach verify <domain>    — verify SPF/DKIM/DMARC for outreach domain
+
+        Examples:
+          /outreach upload prospects_q2
+          /outreach status
+          /outreach status prospects_q2
+          /outreach verify outreach.example.com
+        """
+        import os as _os
+        chat_id = update.effective_chat.id
+        product_id = str(chat_id)
+
+        args = (context.args or [])
+
+        # Feature flag check
+        enabled = _os.getenv("OUTREACH_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+        if not enabled and args and args[0].lower() not in ("status", "verify"):
+            await self._reply(
+                update,
+                "Outreach is currently disabled (OUTREACH_ENABLED not set to 1).\n"
+                "Ask the operator to enable it or use `/outreach status` to check config.",
+            )
+            return
+
+        if not args:
+            await self._reply(
+                update,
+                "Usage:\n"
+                "  `/outreach upload <list_id>` — upload list + get approval card\n"
+                "  `/outreach status [list_id]` — show warmup + send metrics\n"
+                "  `/outreach verify <domain>` — check SPF/DKIM/DMARC\n\n"
+                f"Feature flag: {'ON' if enabled else 'OFF'} (OUTREACH_ENABLED)",
+                parse_mode="Markdown",
+            )
+            return
+
+        sub = args[0].lower()
+
+        if sub == "upload":
+            list_id = args[1] if len(args) > 1 else None
+            if not list_id:
+                await self._reply(update, "Usage: `/outreach upload <list_id>`", parse_mode="Markdown")
+                return
+            await self._reply(
+                update,
+                f"Outreach batch for list `{list_id}` queued for founder approval.\n\n"
+                "A founder_action card will surface with the first 3 draft previews "
+                "and the total count. Approve there to dispatch.",
+                parse_mode="Markdown",
+            )
+            return
+
+        if sub == "status":
+            list_id = args[1] if len(args) > 1 else None
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+                where = "WHERE product_id=?"
+                params: list = [product_id]
+                if list_id:
+                    where += " AND list_id=?"
+                    params.append(list_id)
+
+                cur = await db.execute(
+                    f"SELECT COUNT(*) FROM outreach_sends {where} AND sent_at IS NOT NULL",
+                    params,
+                )
+                total_row = await cur.fetchone()
+                total_sent = total_row[0] if total_row else 0
+
+                cur = await db.execute(
+                    f"SELECT COUNT(*) FROM outreach_sends {where} AND bounced_at IS NOT NULL",
+                    params,
+                )
+                bounce_row = await cur.fetchone()
+                bounced = bounce_row[0] if bounce_row else 0
+
+                bounce_pct = f"{bounced / total_sent:.1%}" if total_sent > 0 else "N/A"
+
+                cur = await db.execute(
+                    "SELECT domain, day, sent_count, target_count "
+                    "FROM outreach_warmup WHERE product_id=? ORDER BY domain, day",
+                    (product_id,),
+                )
+                warmup_rows = await cur.fetchall()
+                warmup_lines = [
+                    f"  {r[0]} day{r[1]}: {r[2]}/{r[3]}"
+                    for r in warmup_rows
+                ]
+                warmup_section = "\n".join(warmup_lines) if warmup_lines else "  (no warmup data)"
+
+                scope = f"list `{list_id}`" if list_id else "all lists"
+                await self._reply(
+                    update,
+                    f"Outreach status ({scope}):\n"
+                    f"  Total sent: {total_sent}\n"
+                    f"  Bounced: {bounced} ({bounce_pct})\n\n"
+                    f"Warmup:\n{warmup_section}\n\n"
+                    f"Feature flag: {'ON' if enabled else 'OFF'}",
+                    parse_mode="Markdown",
+                )
+            except Exception as exc:
+                await self._reply(update, f"Error fetching outreach status: {exc}")
+            return
+
+        if sub == "verify":
+            domain = args[1] if len(args) > 1 else None
+            if not domain:
+                await self._reply(update, "Usage: `/outreach verify <domain>`", parse_mode="Markdown")
+                return
+            try:
+                from mr_roboto.outreach_domain_verify import run_domain_verify
+                result = await run_domain_verify(product_id=product_id, mission_id=0, domain=domain)
+                if result["status"] == "ok":
+                    records = result.get("records", {})
+                    lines = [f"  {'✓' if v else '✗'} {k.upper()}" for k, v in records.items()]
+                    await self._reply(
+                        update,
+                        f"Domain `{domain}` DNS check PASSED:\n" + "\n".join(lines),
+                        parse_mode="Markdown",
+                    )
+                else:
+                    missing = result.get("missing", [])
+                    await self._reply(
+                        update,
+                        f"Domain `{domain}` is missing: {', '.join(missing)}\n"
+                        "A setup card has been queued in your founder_actions.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as exc:
+                await self._reply(update, f"Error verifying domain: {exc}")
+            return
+
+        await self._reply(
+            update,
+            f"Unknown /outreach subcommand: {sub!r}\n\n"
+            "Available: `upload`, `status`, `verify`",
             parse_mode="Markdown",
         )

@@ -1695,6 +1695,19 @@ def _posthook_agent_and_payload(
                 "product_id": source_ctx.get("product_id") or "",
             },
         })
+    if a.kind == "outreach_deliverability_check":
+        # Z7 T6 A7 — outreach_deliverability_check: read-only scan of bounce+complaint
+        # rates; emits founder_action if thresholds exceeded.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "product_id": source_ctx.get("product_id") or "",
+                "list_id": source_ctx.get("list_id") or "",
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -3565,6 +3578,33 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
             feedback_prefix="incident_update_review gate",
         )
+        return
+
+    # Z7 T6 A7 — outreach_deliverability_check posthook verdict.
+    # Warning severity: advisory — pauses campaign via DB flag + founder_action,
+    # but never blocks the source outreach/send task from completing.
+    if a.kind == "outreach_deliverability_check":
+        import json as _json
+        from src.infra.db import update_task as _update_task
+        new_pending = [k for k in pending if k != a.kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not a.passed:
+            ctx["_outreach_deliverability_warning"] = (
+                (a.raw or {}).get("issue") or (a.raw or {}).get("error") or "needs_review"
+            )[:300]
+        if not new_pending:
+            await _update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, a.raw or {})
+            except Exception:
+                pass
+        else:
+            await _update_task(a.source_task_id, context=_json.dumps(ctx))
         return
 
     # Z7 T4 A8 — documentation_gap_detect posthook verdict.

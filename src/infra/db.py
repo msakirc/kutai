@@ -3712,6 +3712,76 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T6 A7: outreach_warmup — ramp-curve enforcement ───────────────────────
+    # One row per (product_id, domain, day) combination. Warmup curve: day1=50/day
+    # ramping to day14=500/day. outreach/send checks sent_count < target_count before
+    # dispatching. product_id NOT NULL (per-product scoping, founder decision 2026-05-15).
+    await apply_migration(
+        version="2026-05-16-z7-outreach-warmup",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS outreach_warmup ("
+            " warmup_id    INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id   TEXT    NOT NULL,"
+            " domain       TEXT    NOT NULL,"
+            " day          INTEGER NOT NULL,"       # 1-based day in warmup ramp
+            " sent_count   INTEGER NOT NULL DEFAULT 0,"
+            " target_count INTEGER NOT NULL DEFAULT 50,"
+            " created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " UNIQUE(product_id, domain, day)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_outreach_warmup_product_domain "
+            "ON outreach_warmup(product_id, domain);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_outreach_warmup_product_domain;\n"
+            "DROP TABLE IF EXISTS outreach_warmup;\n"
+        ),
+        description=(
+            "Z7 T6 A7: outreach_warmup — domain warm-up ramp table. "
+            "UNIQUE(product_id, domain, day). sent_count < target_count required "
+            "for outreach/send to proceed. Ramp: day1=50 → day14=500/day. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
+    # ── Z7 T6 A7: outreach_sends — cold outreach send log ────────────────────────
+    # One row per outbound cold outreach email. send_id is the canonical handle
+    # passed in Reply-To + X-Send-ID headers so handle_reply can match webhook events.
+    # replied_at set by handle_reply; opened_at/bounced_at set by webhook receivers.
+    # product_id NOT NULL (per-product scoping, founder decision 2026-05-15).
+    await apply_migration(
+        version="2026-05-16-z7-outreach-sends",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS outreach_sends ("
+            " send_id      INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id   TEXT    NOT NULL,"
+            " list_id      TEXT,"
+            " target_email TEXT    NOT NULL,"
+            " template_id  TEXT,"
+            " sent_at      TEXT,"
+            " opened_at    TEXT,"
+            " replied_at   TEXT,"
+            " bounced_at   TEXT"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_outreach_sends_product_sent "
+            "ON outreach_sends(product_id, sent_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_outreach_sends_list "
+            "ON outreach_sends(list_id, product_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_outreach_sends_list;\n"
+            "DROP INDEX IF EXISTS idx_outreach_sends_product_sent;\n"
+            "DROP TABLE IF EXISTS outreach_sends;\n"
+        ),
+        description=(
+            "Z7 T6 A7: outreach_sends — cold outreach send log. "
+            "send_id matched in Reply-To / X-Send-ID headers for A7.r1 reply-handling. "
+            "opened_at/replied_at/bounced_at recorded from ESP webhooks. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

@@ -89,6 +89,12 @@ from mr_roboto.integration_replay import integration_replay  # Z3 T5
 from mr_roboto.integration_bisect import integration_bisect  # Z3 T5
 from mr_roboto.visual_review import visual_review  # Z4 T2B
 from mr_roboto.capture_screenshots import capture_screenshots  # Z4 T1A
+# Z7 T6 A7 — cold outreach + deliverability spine (A7 + A7.r1)
+import mr_roboto.outreach_send as outreach_send_module  # noqa: F401
+import mr_roboto.outreach_handle_reply as outreach_handle_reply_module  # noqa: F401
+import mr_roboto.outreach_draft as outreach_draft_module  # noqa: F401
+import mr_roboto.outreach_deliverability_check as outreach_deliverability_check_module  # noqa: F401
+import mr_roboto.outreach_domain_verify as outreach_domain_verify_module  # noqa: F401
 
 __all__ = [
     "Action",
@@ -4282,6 +4288,81 @@ async def _run_dispatch(task: dict) -> Action:
                 workspace_path=payload.get("workspace_path") or None,
                 routes=list(payload.get("routes")) if payload.get("routes") else None,
                 produces=list(payload.get("produces")) if payload.get("produces") else None,
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    # ── Z7 T6 A7 — cold outreach verbs ──────────────────────────────────────
+    if action == "outreach/send":
+        try:
+            from mr_roboto.outreach_send import run_outreach_send
+            res = await run_outreach_send(
+                product_id=payload.get("product_id") or "",
+                list_id=payload.get("list_id") or "",
+                target_email=payload.get("target_email") or "",
+                template_id=payload.get("template_id") or "",
+                subject=payload.get("subject") or "",
+                body_md=payload.get("body_md") or "",
+                postal_address=payload.get("postal_address") or "",
+                unsubscribe_base_url=payload.get("unsubscribe_base_url") or "",
+                jurisdiction=payload.get("jurisdiction"),
+                has_explicit_opt_in=bool(payload.get("has_explicit_opt_in", False)),
+            )
+            if res.get("status") in ("error",):
+                return Action(status="failed", error=res.get("error") or "outreach/send failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "outreach/handle_reply":
+        try:
+            from mr_roboto.outreach_handle_reply import run_outreach_handle_reply
+            res = await run_outreach_handle_reply(
+                product_id=payload.get("product_id") or "",
+                send_id=int(payload.get("send_id") or 0),
+                reply_body=payload.get("reply_body") or "",
+                reply_from=payload.get("reply_from") or "",
+                mission_id=task.get("mission_id"),
+            )
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "outreach/handle_reply failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "outreach/draft":
+        try:
+            from mr_roboto.outreach_draft import run_outreach_draft
+            res = await run_outreach_draft(
+                product_id=payload.get("product_id") or "",
+                mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
+                prospect_data=payload.get("prospect_data") or {},
+                template_id=payload.get("template_id") or "",
+                list_id=payload.get("list_id") or "",
+            )
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "outreach/draft failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "outreach_deliverability_check":
+        try:
+            from mr_roboto.outreach_deliverability_check import handle as _dc_handle
+            res = await _dc_handle(task, payload)
+            # warning posthook: never fails the source
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="completed", result={"status": "skip", "reason": str(e)})
+
+    if action == "outreach/domain_verify":
+        try:
+            from mr_roboto.outreach_domain_verify import run_domain_verify
+            res = await run_domain_verify(
+                product_id=payload.get("product_id") or "",
+                mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
+                domain=payload.get("domain") or "",
             )
             return Action(status="completed", result=res)
         except Exception as e:

@@ -256,6 +256,18 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "reviews/draft_reply": "full",
     # Daily cron: polls + classifies; idempotent; fully reversible.
     "reviews_poll_daily": "full",
+    # ---- Z7 T6 A7 cold outreach + deliverability spine (A7 + A7.r1) ---------
+    # outreach/draft: LLM enqueue → idempotent write to beckman queue; full.
+    "outreach/draft": "full",
+    # outreach/send: real email sent to prospect → recipient sees it; irreversible.
+    "outreach/send": "irreversible",
+    # outreach/handle_reply: DB writes + optional suppression; no external publish;
+    # log_interaction append-only. fully reversible.
+    "outreach/handle_reply": "full",
+    # outreach_deliverability_check: read-only scan + advisory founder_action.
+    "outreach_deliverability_check": "full",
+    # outreach/domain_verify: DNS read-only + optional founder_action. full.
+    "outreach/domain_verify": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

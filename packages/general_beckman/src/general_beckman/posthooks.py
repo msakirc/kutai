@@ -768,6 +768,24 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Handler: posthook_handlers/changelog_freshness.py."
         ),
     ),
+    # ── Z7 T6 A7: outreach_deliverability_check ──────────────────────────────
+    # Fires after an outreach/send batch completes. Checks bounce rate + complaint
+    # rate for the product+list. If thresholds exceeded, pauses campaign and
+    # surfaces a founder_action. Severity: warning (advisory; doesn't block
+    # the send batch itself — retrospective check).
+    "outreach_deliverability_check": PostHookSpec(
+        kind="outreach_deliverability_check",
+        verb="outreach_deliverability_check",
+        default_severity="warning",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T6 A7: post-send deliverability health check. "
+            "Bounce rate >5% or complaint rate >0.1% → campaign paused + "
+            "founder_action surfaced. Read-only scan; advisory verdict. "
+            "Handler: mr_roboto.outreach_deliverability_check."
+        ),
+    ),
     # Z4 T3A — visual_review via vision-model diff against tunneled preview URL.
     # STATIC trigger list (not dial-gated): founder decision — always auto-wire
     # on frontend produces; the verb soft-skips when no preview URL is available.

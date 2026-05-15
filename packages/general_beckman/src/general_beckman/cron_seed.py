@@ -227,6 +227,31 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 86400,  # 24h
         "payload": {"_executor": "verdict_window_sweep"},
     },
+    # Z9 Growth T5C — weekly feature sunset scorer. Computes per-feature
+    # usage from the last 30d of growth_events (+ recipe_pin_log catalog)
+    # and writes sunset_candidate growth_events for features whose distinct-
+    # user reach is below the founder-set threshold yet still cost money to
+    # maintain. Pure deterministic math — no LLM. The founder reviews
+    # candidates via /sunset and approves a deprecation mission via
+    # /approve_sunset; the cron never spawns a mission itself.
+    {
+        "title": "sunset_score_recompute",
+        "description": "Weekly feature sunset scorer — write sunset_candidate growth_events for low-usage non-zero-cost features",
+        "interval_seconds": 604800,  # 7d
+        "payload": {"_executor": "score_sunset"},
+    },
+    # Z9 Growth T5C — weekly roadmap / north-star sync. Reads the
+    # success_metrics artifact and checks the declared north-star metric
+    # against recent reality; writes a northstar_review growth_events row
+    # when the metric is undefined, untracked, or flat — prompting the
+    # founder to refine it. Sibling to sunset_score_recompute (distinct
+    # i2p loop: 15.13 technical_debt_tracking vs 15.14 roadmap_update).
+    {
+        "title": "roadmap_northstar_sync",
+        "description": "Weekly north-star staleness check — write northstar_review when the declared metric is stale or flat",
+        "interval_seconds": 604800,  # 7d
+        "payload": {"_executor": "roadmap_sync"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

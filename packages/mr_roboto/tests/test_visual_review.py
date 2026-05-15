@@ -66,6 +66,8 @@ def _patch_vision_and_artifacts(vision_return=None, artifact_return=None):
 
 @pytest.mark.asyncio
 async def test_empty_captured_paths_soft_skip():
+    """T3C: empty captured_paths triggers auto-capture; with no preview URL
+    capture soft-skips → visual_review also soft-skips with 'no preview'."""
     from mr_roboto.visual_review import visual_review
 
     result = await visual_review(
@@ -77,7 +79,8 @@ async def test_empty_captured_paths_soft_skip():
     assert result["skipped"] is True
     assert result["verdict"] == "pass"
     assert result["findings"] == []
-    assert "no captured screenshots" in result["reason"]
+    # T3C: reason is now "no preview" (capture_screenshots found no URL)
+    assert "no preview" in result["reason"] or "captured" in result["reason"]
 
 
 @pytest.mark.asyncio
@@ -443,3 +446,138 @@ async def test_threshold_override_changes_severity():
     # ΔE=6.2 < threshold=10 → not blocker; fall through to "warning"
     assert result["findings"][0]["severity"] == "warning"
     assert result["verdict"] == "pass"
+
+
+# ---------------------------------------------------------------------------
+# Z4 T3C — self-capture (empty/None captured_paths calls capture_screenshots)
+# ---------------------------------------------------------------------------
+
+
+def _patch_capture_fn(monkeypatch, mock_fn):
+    """Patch capture_screenshots in sys.modules['mr_roboto.capture_screenshots'].
+
+    visual_review does ``from mr_roboto.capture_screenshots import
+    capture_screenshots as _capture`` lazily at call time. Since mr_roboto.__init__
+    imports capture_screenshots (the function) and shadows the name, we must patch
+    via sys.modules to reach the actual submodule object.
+    """
+    import sys
+    import importlib
+    # Ensure the submodule is loaded
+    importlib.import_module("mr_roboto.capture_screenshots")
+    cs_mod = sys.modules["mr_roboto.capture_screenshots"]
+    monkeypatch.setattr(cs_mod, "capture_screenshots", mock_fn)
+
+
+@pytest.mark.asyncio
+async def test_t3c_none_captured_paths_calls_capture(monkeypatch):
+    """T3C: None captured_paths → capture_screenshots is called (mocked)."""
+    from mr_roboto.visual_review import visual_review
+
+    captured_png_path = "/fake/ws/step1/home_light_375.png"
+
+    mock_capture = AsyncMock(return_value={
+        "ok": True,
+        "skipped": False,
+        "captured_paths": [captured_png_path],
+        "route_count": 1,
+        "frame_count": 1,
+    })
+
+    _patch_capture_fn(monkeypatch, mock_capture)
+
+    with _patch_vision_and_artifacts(vision_return='{"findings":[]}'):
+        result = await visual_review(
+            mission_id=5,
+            step_id="step_capture_test",
+            captured_paths=None,
+            routes=["/home"],
+            produces=["pages/index.tsx"],
+            workspace_path="/fake/ws",
+        )
+
+    mock_capture.assert_awaited_once()
+    call_kwargs = mock_capture.call_args.kwargs
+    assert call_kwargs["mission_id"] == 5
+    assert call_kwargs["step_id"] == "step_capture_test"
+    assert call_kwargs["routes"] == ["/home"]
+    assert call_kwargs["produces"] == ["pages/index.tsx"]
+    assert call_kwargs["workspace_path"] == "/fake/ws"
+
+    assert result["skipped"] is False
+    assert result["verdict"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_t3c_empty_list_captured_paths_calls_capture(monkeypatch):
+    """T3C: empty list captured_paths → capture_screenshots is called."""
+    from mr_roboto.visual_review import visual_review
+
+    mock_capture = AsyncMock(return_value={
+        "ok": True,
+        "skipped": False,
+        "captured_paths": [],  # capture returns empty → soft-skip
+        "route_count": 0,
+        "frame_count": 0,
+    })
+
+    _patch_capture_fn(monkeypatch, mock_capture)
+
+    result = await visual_review(
+        mission_id=1,
+        step_id="step_no_frames",
+        captured_paths=[],
+    )
+
+    mock_capture.assert_awaited_once()
+    assert result["skipped"] is True
+    assert result["verdict"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_t3c_capture_soft_skip_propagates(monkeypatch):
+    """T3C: when capture soft-skips (no preview URL), visual_review soft-skips too."""
+    from mr_roboto.visual_review import visual_review
+
+    mock_capture = AsyncMock(return_value={
+        "ok": True,
+        "skipped": True,
+        "reason": "no real preview_url available",
+        "captured_paths": [],
+    })
+
+    _patch_capture_fn(monkeypatch, mock_capture)
+
+    result = await visual_review(
+        mission_id=2,
+        step_id="step_no_preview",
+        captured_paths=None,
+    )
+
+    assert result["skipped"] is True
+    assert result["verdict"] == "pass"
+    assert "no preview" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_t3c_provided_paths_skips_capture(monkeypatch):
+    """T3C: when captured_paths is a non-empty list, capture_screenshots is NOT called."""
+    from mr_roboto.visual_review import visual_review
+
+    mock_capture = AsyncMock()
+    _patch_capture_fn(monkeypatch, mock_capture)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        captured = os.path.join(tmpdir, "home_light_375.png")
+        _fake_png(captured)
+
+        with _patch_vision_and_artifacts(vision_return='{"findings":[]}'):
+            result = await visual_review(
+                mission_id=3,
+                step_id="step_direct",
+                captured_paths=[captured],
+                workspace_path=tmpdir,
+            )
+
+    mock_capture.assert_not_awaited()
+    assert result["skipped"] is False

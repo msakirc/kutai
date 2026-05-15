@@ -6308,6 +6308,41 @@ async def update_variant_status(variant_id: int, status: str) -> None:
     await db.commit()
 
 
+async def get_variants(
+    mission_id: int | None = None,
+    hypothesis_id: int | None = None,
+    status: str | None = None,
+) -> list[dict]:
+    """Return ``experiment_variants`` rows filtered by mission / hypothesis.
+
+    Z9 T5D — read surface for the A/B harness (verdict evaluation,
+    retire_variant, /experiment Telegram command). Any combination of
+    filters may be omitted; ``status`` narrows to one lifecycle state.
+    Most recent first.
+    """
+    db = await get_db()
+    clauses: list = []
+    params: list = []
+    if mission_id is not None:
+        clauses.append("mission_id = ?")
+        params.append(mission_id)
+    if hypothesis_id is not None:
+        clauses.append("hypothesis_id = ?")
+        params.append(hypothesis_id)
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    cur = await db.execute(
+        "SELECT * FROM experiment_variants" + where
+        + " ORDER BY created_at DESC, id DESC",
+        tuple(params),
+    )
+    rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in rows]
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Z10 T2A — cost transparency wiring
 # ───────────────────────────────────────────────────────────────────────────

@@ -7363,6 +7363,30 @@
    "reversibility": "full"
   },
   {
+   "id": "8.0ab",
+   "phase": "phase_8",
+   "name": "assign_ab_variants",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "difficulty": "easy",
+   "tools_hint": [
+    "assign_variant"
+   ],
+   "depends_on": [
+    "8.0ns"
+   ],
+   "may_need_clarification": false,
+   "payload": {
+    "action": "assign_variant"
+   },
+   "instruction": "Z9 T5D — A/B is default-on for every Phase 8+ feature mission. Split the mission into control + treatment variants in experiment_variants, wire a 50/50 PostHog multivariate feature-flag via vendor_call, and attach the variants to the Phase-7 hypothesis (7.0y). Insufficient-N guard: if PostHog daily-active < 100 the split is skipped (ab_skipped_low_n growth_event), the feature ships at 100% rollout and the hypothesis still stands. Honours mission.context['use_ab']=false (set by /experiment_disable) as an opt-out. The Bayesian winner is computed later by the verdict pipeline; auto-rollback of a loser still needs a founder /experiment_ship or /experiment_rollback. NO LLM.",
+   "done_when": "result.ok == true (split=true assigns variants; split=false is also a pass when insufficient-N or opted out).",
+   "context": {
+    "estimated_output_tokens": 0
+   },
+   "reversibility": "partial"
+  },
+  {
    "id": "8.0",
    "phase": "phase_8",
    "name": "implementation_backlog_initialization",
@@ -7374,7 +7398,8 @@
    ],
    "depends_on": [
     "7.17",
-    "8.0ns"
+    "8.0ns",
+    "8.0ab"
    ],
    "may_need_clarification": false,
    "input_artifacts": [
@@ -11252,8 +11277,8 @@
    "output_artifacts": [
     "technical_debt_register"
    ],
-   "instruction": "Track technical debt: TODO/FIXME/HACK comments, deprecated API usage, outdated patterns, test coverage gaps, architecture limitations, implementation shortcuts. Score each by risk and effort. Produce prioritized list for sprint planning.",
-   "done_when": "technical_debt_register exists.",
+   "instruction": "Track technical debt AND run the feature-lifecycle (sunset) loop. First, the debt register: TODO/FIXME/HACK comments, deprecated API usage, outdated patterns, test coverage gaps, architecture limitations, implementation shortcuts — score each by risk and effort and produce a prioritized list for sprint planning. Second, review the feature-sunset queue: the weekly mechanical `sunset_score_recompute` cron scores every shipped feature by usage (distinct-user reach over the last 30d, from growth_events + recipe_pin_log) against maintenance cost (cost_band), and writes `sunset_candidate` growth_events for features whose usage is below the founder-set threshold (default <1% of active users) yet still cost money to maintain. The founder reviews these via the Telegram /sunset command; a feature deprecation is founder-gated (the /approve_sunset pattern, mirroring /approve) and is NEVER auto-executed — only the founder spawns the one deprecation mission. Summarize which features are sunset candidates and why (usage_rate, cost_band, the inspectable breakdown), and fold confirmed-low-value features into the technical_debt_register as deprecation candidates so they enter sprint planning alongside debt items.",
+   "done_when": "technical_debt_register exists; sunset candidates have been reviewed and any founder-approved deprecations are reflected in the register.",
    "type": "recurring",
    "trigger": "Monthly",
    "artifact_schema": {
@@ -11297,8 +11322,8 @@
    "output_artifacts": [
     "quarterly_roadmap"
    ],
-   "instruction": "Update product roadmap: reassess feature priorities based on user data and feedback, adjust capacity based on velocity, update strategic direction, plan technical investments, project timelines. Trigger needs_clarification for human approval.",
-   "done_when": "quarterly_roadmap exists with human approval.",
+   "instruction": "Update product roadmap AND run the north-star sync. First, north-star sync: the weekly mechanical `roadmap_northstar_sync` cron reads the success_metrics artifact (step 2.9) and checks the declared north_star_metric against recent reality — it writes a `northstar_review` growth_events row when the metric is undefined (never set), untracked (declared but no growth_events measure it in the last 30d), or flat (its readings have not moved across the window). Review any open northstar_review rows: a stale north-star means the roadmap is steering by an outdated or unmeasured compass. If the north-star is stale, refine it — pick a metric that is both tracked and still has room to grow, and update success_metrics accordingly. Second, update the product roadmap: reassess feature priorities based on user data and feedback, adjust capacity based on velocity, update strategic direction (anchored on the now-current north-star), plan technical investments, project timelines. Trigger needs_clarification for human approval.",
+   "done_when": "quarterly_roadmap exists with human approval; any stale north-star flagged by northstar_review has been reviewed and refined.",
    "type": "recurring",
    "trigger": "Quarterly",
    "artifact_schema": {

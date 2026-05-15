@@ -27,6 +27,11 @@ What it does
    (``source_kind='hypothesis_verdict'``). ``confirmed`` needs no lesson.
 6. Write a ``growth_events`` row ``kind='verdict'``.
 7. On ``confirmed`` — fire the reinforce nudge (T4E).
+8. Z9 T5D — if the mission ran an A/B split (``experiment_variants`` rows),
+   measure each arm and write an ``ab_result`` ``growth_events`` row with
+   the Bayesian winner. Auto-rollback of a confident loser still needs a
+   founder gate (``/experiment_ship`` / ``/experiment_rollback``) — this
+   step only *computes* the winner, it never retires a variant.
 """
 from __future__ import annotations
 
@@ -226,6 +231,119 @@ async def _reinforce_winning_model(
         return None
 
 
+# ── A/B result evaluation (T5D — Bayesian winner pick) ─────────────────────
+
+
+async def _pull_variant_metric(task: dict, metric: str, variant: str) -> float | None:
+    """Pull one A/B arm's metric value via PostHog get_insight.
+
+    A real PostHog ``get_insight`` is filtered by the ``variant`` property.
+    In mock mode the series is identical across arms — so the verdict task
+    (or a test) may inject explicit per-arm values under
+    ``payload['variant_metrics'] = {'control': x, 'treatment': y}`` which
+    take precedence. Returns None when neither path yields a number.
+    """
+    payload = task.get("payload") or {}
+    injected = payload.get("variant_metrics")
+    if isinstance(injected, dict) and variant in injected:
+        v = injected[variant]
+        if _is_num(v):
+            return float(v)
+    sub = {
+        "mission_id": task.get("mission_id"),
+        "id": task.get("id"),
+        "context": {
+            "post_hook": {
+                "service": "posthog",
+                "action": "get_insight",
+                "params": {"project_id": "default", "insight_id": 1,
+                           "metric": metric, "variant": variant},
+            }
+        },
+    }
+    try:
+        from mr_roboto.executors.vendor_call import run as vendor_call_run
+        env = await vendor_call_run(sub)
+    except Exception:  # noqa: BLE001
+        return None
+    if not (isinstance(env, dict) and env.get("ok")):
+        return None
+    result = env.get("result") or {}
+    inner = result.get("result") if isinstance(result, dict) else None
+    if isinstance(inner, list) and inner:
+        first = inner[0]
+        if isinstance(first, dict) and isinstance(first.get("data"), list):
+            data = [float(x) for x in first["data"] if _is_num(x)]
+            if data:
+                return data[-1]
+    return None
+
+
+async def _evaluate_ab(
+    task: dict, mission_id: int | None, hyp_id: int, metric: str
+) -> dict | None:
+    """If the mission ran an A/B split, compute the Bayesian winner.
+
+    Writes an ``ab_result`` growth_event and returns its payload, or None
+    when the mission had no variants. Deterministic — no LLM.
+    """
+    if mission_id is None:
+        return None
+    try:
+        from src.infra.db import get_variants, insert_growth_event
+        from src.growth.ab_result import evaluate_ab
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("ab eval imports failed", error=str(exc))
+        return None
+
+    variants = await get_variants(mission_id=mission_id)
+    if not variants:
+        return None
+    has_control = any(
+        str(v.get("variant_name") or "").lower() == "control" for v in variants
+    )
+    has_treatment = any(
+        str(v.get("variant_name") or "").lower() == "treatment"
+        for v in variants
+    )
+    if not (has_control and has_treatment):
+        return None
+
+    control_m = await _pull_variant_metric(task, metric, "control")
+    treatment_m = await _pull_variant_metric(task, metric, "treatment")
+    if control_m is None or treatment_m is None:
+        logger.info("ab eval: missing arm metric — skipping winner pick")
+        return None
+
+    ab = evaluate_ab(control_metric=control_m, treatment_metric=treatment_m)
+    result = {
+        "hypothesis_id": hyp_id,
+        "metric": metric,
+        "winner": ab.winner,
+        "confident": ab.confident,
+        "p_treatment_better": ab.p_treatment_better,
+        "p_control_better": ab.p_control_better,
+        "control_metric": ab.control_metric,
+        "treatment_metric": ab.treatment_metric,
+        "relative_lift": ab.relative_lift,
+        "model": ab.model,
+        "founder_gate": (
+            "confident winner — founder must run /experiment_ship or "
+            "/experiment_rollback; no auto-retire"
+            if ab.confident else "inconclusive — no winner yet"
+        ),
+    }
+    try:
+        await insert_growth_event(mission_id, "ab_result", result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ab_result event failed", error=str(exc))
+    logger.info(
+        "ab eval complete mission=%s winner=%s confident=%s",
+        mission_id, ab.winner, ab.confident,
+    )
+    return result
+
+
 # ── main entrypoint ────────────────────────────────────────────────────────
 
 
@@ -325,6 +443,14 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("verdict growth_event write failed", error=str(exc))
 
+    # 8. Z9 T5D — A/B result evaluation. If this mission ran an A/B split,
+    # pick the Bayesian winner and write an ab_result event. Mechanical.
+    ab_result: dict | None = None
+    try:
+        ab_result = await _evaluate_ab(task, mission_id, hyp_id, metric)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ab evaluation failed", error=str(exc))
+
     logger.info(
         "record_verdict complete",
         hypothesis_id=hyp_id,
@@ -332,6 +458,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
         verdict=vr.verdict,
         p_held=vr.p_held,
         reinforced_model=reinforced_model,
+        ab_winner=(ab_result or {}).get("winner"),
     )
     return {
         "ok": True,
@@ -343,6 +470,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
         "actual": actual,
         "baseline": baseline,
         "reinforced_model": reinforced_model,
+        "ab_result": ab_result,
     }
 
 

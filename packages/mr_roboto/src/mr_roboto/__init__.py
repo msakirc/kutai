@@ -1933,6 +1933,40 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "score_sunset":
+        # Z9 T5C — deterministic feature-lifecycle scorer. Computes per-feature
+        # usage from growth_events + recipe_pin_log; writes sunset_candidate
+        # rows for low-usage non-zero-cost features. Pure math, no LLM.
+        from mr_roboto.executors.score_sunset import run as _sunset_run
+        try:
+            res = await _sunset_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"score_sunset: {res.get('error') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "roadmap_sync":
+        # Z9 T5C — north-star sync. Reads the success_metrics artifact and
+        # checks the declared north-star against recent reality; writes a
+        # northstar_review row when it is undefined / untracked / flat.
+        from mr_roboto.executors.roadmap_sync import run as _roadmap_run
+        try:
+            res = await _roadmap_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"roadmap_sync: {res.get('error') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "record_hypothesis":
         # Z9 T4A — capture the mission's predicted metric impact as a
         # pending hypotheses row at Phase 7 spec finalization. Pure
@@ -3128,6 +3162,8 @@ async def _run_dispatch(task: dict) -> Action:
         # Z9 T4D — pull the actual metric, compute a Bayesian verdict,
         # persist it, mirror refuted/inconclusive to mission_lessons, and
         # fire the reinforce loop on confirmed. Deterministic — no LLM.
+        # Z9 T5D also runs A/B result evaluation here when the mission had
+        # experiment_variants rows.
         from mr_roboto.executors.record_verdict import run as _record_verdict_run
         try:
             res = await _record_verdict_run(task)
@@ -3135,6 +3171,41 @@ async def _run_dispatch(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=f"record_verdict: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "assign_variant":
+        # Z9 T5D/T5E — split a Phase-8+ feature mission into control +
+        # treatment variants, wire a PostHog feature-flag, honour the
+        # insufficient-N guard (<100 DAU → 100% rollout). Deterministic —
+        # no LLM. A/B winner math reuses src/growth/verdict_stats.py.
+        from mr_roboto.executors.assign_variant import run as _assign_variant_run
+        try:
+            res = await _assign_variant_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"assign_variant: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "retire_variant":
+        # Z9 T5D/T5E — mark winner/loser variants and flip the PostHog
+        # flag (winner → 100%, loser → 0%). Founder-gated: invoked only by
+        # /experiment_ship and /experiment_rollback, never auto-fired.
+        from mr_roboto.executors.retire_variant import run as _retire_variant_run
+        try:
+            res = await _retire_variant_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"retire_variant: {res.get('reason') or 'failed'}",
                     result=res,
                 )
             return Action(status="completed", result=res)

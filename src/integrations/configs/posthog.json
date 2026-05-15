@@ -30,6 +30,21 @@
       "method": "GET",
       "path": "/api/projects/{project_id}/insights/{insight_id}/",
       "required_params": ["project_id", "insight_id"]
+    },
+    "create_feature_flag": {
+      "method": "POST",
+      "path": "/api/projects/{project_id}/feature_flags/",
+      "required_params": ["project_id", "key"]
+    },
+    "update_feature_flag": {
+      "method": "PATCH",
+      "path": "/api/projects/{project_id}/feature_flags/{flag_id}/",
+      "required_params": ["project_id", "flag_id"]
+    },
+    "get_active_users": {
+      "method": "GET",
+      "path": "/api/projects/{project_id}/insights/trend/",
+      "required_params": ["project_id"]
     }
   },
   "mock_responses": {
@@ -61,6 +76,19 @@
     },
     "get_insight": {
       "id": 1, "name": "Mock Insight", "result": [{"label": "metric", "data": [10, 12, 15, 14]}]
+    },
+    "create_feature_flag": {
+      "id": 7001, "key": "mock_experiment_flag", "active": true,
+      "filters": {"multivariate": {"variants": [
+        {"key": "control", "rollout_percentage": 50},
+        {"key": "treatment", "rollout_percentage": 50}
+      ]}}
+    },
+    "update_feature_flag": {
+      "id": 7001, "key": "mock_experiment_flag", "active": true
+    },
+    "get_active_users": {
+      "result": [{"label": "Active users", "data": [240, 248, 252, 250], "count": 250}]
     }
   }
 }

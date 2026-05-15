@@ -23,6 +23,8 @@ from typing import Any
 
 from src.infra.logging_config import get_logger
 
+from .preview_url import is_real_url
+
 logger = get_logger("mr_roboto.run_schemathesis")
 
 
@@ -132,6 +134,10 @@ async def run_schemathesis(
         return _soft_skip("spec_path not provided")
     if not base_url:
         return _soft_skip("base_url not provided")
+    if not is_real_url(base_url):
+        return _soft_skip(
+            f"base_url not a real http(s) URL (pending or blank): {base_url!r}"
+        )
     if not _os.path.exists(spec_path):
         return _soft_skip(f"spec_path not found: {spec_path}")
 

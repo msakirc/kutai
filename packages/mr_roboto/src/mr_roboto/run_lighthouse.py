@@ -27,6 +27,8 @@ from typing import Any
 
 from src.infra.logging_config import get_logger
 
+from .preview_url import is_real_url
+
 logger = get_logger("mr_roboto.run_lighthouse")
 
 _DEFAULT_THRESHOLDS: dict[str, float] = {
@@ -88,6 +90,10 @@ async def run_lighthouse(
     """
     if not preview_url:
         return _soft_skip("preview_url not provided")
+    if not is_real_url(preview_url):
+        return _soft_skip(
+            f"preview_url not a real http(s) URL (pending or blank): {preview_url!r}"
+        )
 
     try:
         npx_exe = _locate_lighthouse()

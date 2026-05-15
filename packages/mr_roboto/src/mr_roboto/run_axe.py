@@ -32,6 +32,8 @@ from typing import Any
 
 from src.infra.logging_config import get_logger
 
+from .preview_url import is_real_url as _is_real_url
+
 logger = get_logger("mr_roboto.run_axe")
 
 # Impacts that map to severity=blocker
@@ -46,15 +48,6 @@ def _impact_to_severity(impact: str) -> str:
     if impact in _WARNING_IMPACTS:
         return "warning"
     return "info"
-
-
-def _is_real_url(url: str | None) -> bool:
-    if not url:
-        return False
-    stripped = url.strip()
-    if stripped.startswith("pending:"):
-        return False
-    return stripped.startswith("http://") or stripped.startswith("https://")
 
 
 def _axe_available() -> bool:

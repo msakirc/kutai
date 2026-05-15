@@ -45,6 +45,25 @@ _context: dict[str, Any] = {
 }
 _initialized = False
 
+# Z9 T5A — optional cohort gate. When the analytics_instrumentation recipe
+# declares `segment_predicate`, the recipe applier substitutes it here. When
+# set, track_event tags every event with the active segment AND only emits
+# for users whose segment matches the predicate. None -> no gate.
+# RECIPE_PARAM:SEGMENT_PREDICATE=null
+SEGMENT_PREDICATE: Optional[str] = None
+
+
+def _segment_matches() -> bool:
+    """True when the active segment satisfies SEGMENT_PREDICATE.
+
+    A None predicate always matches (no cohort gate). The predicate is
+    matched literally against ``_context['segment']``; recipe appliers may
+    replace this body with a richer expression for custom cohorts.
+    """
+    if SEGMENT_PREDICATE is None:
+        return True
+    return _context.get("segment") == SEGMENT_PREDICATE
+
 
 def set_analytics_context(
     *,
@@ -53,8 +72,13 @@ def set_analytics_context(
     variant: Optional[str] = None,
     segment: Optional[str] = None,
     business_model: Optional[str] = None,
+    account_id: Optional[str] = None,
 ) -> None:
-    """Populate the metadata block attached to every subsequent track_event."""
+    """Populate the metadata block attached to every subsequent track_event.
+
+    ``account_id`` (Z9 T5B) is the B2B account/org identifier — attached to
+    every event alongside ``distinct_id`` when ``business_model == 'b2b'``.
+    """
     if mission_id is not None:
         _context["mission_id"] = mission_id
     if feature_id is not None:
@@ -65,6 +89,8 @@ def set_analytics_context(
         _context["segment"] = segment
     if business_model is not None:
         _context["business_model"] = business_model
+    if account_id is not None:
+        _context["account_id"] = account_id
 
 
 def init_analytics() -> None:
@@ -115,15 +141,23 @@ def track_event(
         Event-specific properties.
 
     Auto-attaches: mission_id, feature_id, variant, segment, business_model.
+    For business_model "b2b" it additionally attaches account_id.
+
+    Z9 T5A — when SEGMENT_PREDICATE is set, the event is dropped for users
+    whose segment does not match (cohort gate).
     """
+    business_model = _context.get("business_model", "b2c")
     enriched: dict[str, Any] = dict(properties or {})
     enriched["mission_id"] = _context.get("mission_id", "unknown")
     enriched["feature_id"] = _context.get("feature_id", "unknown")
-    enriched["business_model"] = _context.get("business_model", "b2c")
+    enriched["business_model"] = business_model
     if "variant" in _context:
         enriched["variant"] = _context["variant"]
     if "segment" in _context:
         enriched["segment"] = _context["segment"]
+    # Z9 T5B — B2B events carry the account/org id alongside distinct_id.
+    if business_model == "b2b" and "account_id" in _context:
+        enriched["account_id"] = _context["account_id"]
 
     if not _initialized or _posthog is None:
         import logging
@@ -131,5 +165,8 @@ def track_event(
         logging.getLogger("analytics").warning(
             "track_event(%s) dropped - PostHog not initialized.", name
         )
+        return
+    # Z9 T5A — cohort gate: skip emission for non-matching segments.
+    if not _segment_matches():
         return
     _posthog.capture(distinct_id=distinct_id, event=name, properties=enriched)

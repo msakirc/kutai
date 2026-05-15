@@ -16,7 +16,11 @@
  *
  * Every emitted event auto-attaches (handled by track_event in the shims):
  *   mission_id, feature_id, variant (if A/B active), segment (if cohort
- *   targeting active), business_model.
+ *   targeting active), business_model, and account_id (when
+ *   business_model is "b2b" — Z9 T5B).
+ *
+ * Z9 T5A — when the recipe declares a `segment_predicate`, the shims gate
+ * emission: events fire only for users whose segment matches the predicate.
  */
 
 /** AARRR funnel stage an event belongs to. */

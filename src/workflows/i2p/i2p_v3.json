@@ -2533,8 +2533,8 @@
    "output_artifacts": [
     "success_metrics"
    ],
-   "instruction": "Define KPIs using AARRR: Acquisition, Activation, Retention, Revenue, Referral. For each: name, formula, data_source, target_value, measurement_frequency. Define north_star_metric with justification.",
-   "done_when": "success_metrics exists with AARRR metrics, targets, measurement methods, and a north star metric identified.",
+   "instruction": "Define KPIs using AARRR: Acquisition, Activation, Retention, Revenue, Referral. For each: name, formula, data_source, target_value, measurement_frequency. Define north_star_metric with justification.\n\nZ9 T5B — also classify the product's business_model as one of 'b2b' | 'b2c' | 'hybrid' (default 'b2c' if genuinely ambiguous). B2B north-stars tilt toward MRR / churn / seats; B2C toward activation / retention / referral — let this shape the AARRR target choices. Z9 T5A — also declare target_segment ('paid_users' | 'new_signups' | 'week2_churners' | 'any'): WHO this product's growth metrics primarily track. Emit both as success_metrics fields so they flow into mission.context.",
+   "done_when": "success_metrics exists with AARRR metrics, targets, measurement methods, a north star metric, business_model, and target_segment identified.",
    "artifact_schema": {
     "success_metrics": {
      "type": "object",
@@ -2573,6 +2573,12 @@
          "type": "string"
         }
        }
+      },
+      "business_model": {
+       "type": "string"
+      },
+      "target_segment": {
+       "type": "string"
       }
      },
      "_schema_version": "1"
@@ -7363,6 +7369,30 @@
    "reversibility": "full"
   },
   {
+   "id": "8.0seg",
+   "phase": "phase_8",
+   "name": "validate_target_segment",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "difficulty": "easy",
+   "tools_hint": [
+    "validate_target_segment"
+   ],
+   "depends_on": [
+    "8.0ns"
+   ],
+   "may_need_clarification": false,
+   "payload": {
+    "action": "validate_target_segment"
+   },
+   "instruction": "Z9 T5A — cohort-awareness nag. Check mission.context['target_segment'] ('paid_users' | 'new_signups' | 'week2_churners' | 'any', set at i2p step 2.9). When a Phase 8+ mission reaches the implementation backlog with no explicit target_segment, emit a WARNING (never a block) and back-fill the explicit 'any' default. A growth change scoped to everyone is rarely intentional. NO LLM.",
+   "done_when": "result.ok == true (warned=true when target_segment was absent is still a pass — this is a warn-only nag, never a block).",
+   "context": {
+    "estimated_output_tokens": 0
+   },
+   "reversibility": "full"
+  },
+  {
    "id": "8.0",
    "phase": "phase_8",
    "name": "implementation_backlog_initialization",
@@ -7374,7 +7404,8 @@
    ],
    "depends_on": [
     "7.17",
-    "8.0ns"
+    "8.0ns",
+    "8.0seg"
    ],
    "may_need_clarification": false,
    "input_artifacts": [

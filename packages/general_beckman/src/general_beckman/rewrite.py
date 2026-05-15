@@ -99,9 +99,21 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
             inner = {}
         # `all_ok` is the verify_artifacts convention; Z1 + Z2 mechanical
         # post-hooks (compliance_template_present, prior_art_min_coverage,
-        # etc.) emit `ok` instead. Accept either so future hooks don't have
-        # to rename their result keys.
-        passed = bool(inner.get("all_ok") or inner.get("ok"))
+        # etc.) emit `ok`; check_grounding emits `passed`. Accept all three
+        # so future hooks don't have to rename their result keys.
+        #
+        # The missing `passed` alias caused an infinite retry loop: the
+        # grounding post-hook returned {"passed": true, "missing": []}, but
+        # `inner.get("all_ok") or inner.get("ok")` evaluated to None → the
+        # synthesised PostHookVerdict was always passed=False → the source
+        # task retried forever, spawning a fresh grade post-hook each cycle
+        # (production 2026-05-15 mission 70 writer #43432: 4 loops, error
+        # text literally said "0 produces slot(s) ungrounded. missing=[]").
+        passed = bool(
+            inner.get("all_ok")
+            or inner.get("ok")
+            or inner.get("passed")
+        )
         return [
             a,
             PostHookVerdict(

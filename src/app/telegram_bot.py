@@ -9436,12 +9436,81 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     async def cmd_hypothesis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Z9 T1D stub — hypothesis registry (wired in Z9 T4)."""
-        logger.info("/hypothesis invoked (Z9 T1D stub)")
-        await self._reply(
-            update,
-            "Hypothesis registry — arrives with Z9 T4.",
+        """Z9 T4E — list pending hypotheses + recent verdicts.
+
+        Pending rows show the predicted metric impact and when their
+        measurement window closes; recent verdicts show confirmed /
+        refuted / inconclusive outcomes. The verdict loop runs
+        mechanically (daily verdict_window_sweep cron) — this command is
+        the founder's read surface for the next-iteration /approve gate.
+        """
+        logger.info("/hypothesis invoked (Z9 T4E)")
+        try:
+            from datetime import datetime, timedelta
+            from src.infra.db import get_pending_hypotheses, get_growth_events
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
+
+        pending = await get_pending_hypotheses() or []
+        verdicts = await get_growth_events(kind="verdict", limit=10) or []
+
+        def _fmt_pred(pred):
+            if not isinstance(pred, dict):
+                return "?"
+            metric = pred.get("metric", "?")
+            direction = pred.get("direction", "?")
+            mag = pred.get("magnitude")
+            mag_s = f" {mag}" if mag is not None else ""
+            return f"{metric} {direction}{mag_s}"
+
+        def _window_close(h):
+            created = h.get("created_at")
+            window = h.get("window_seconds")
+            if not created or not window:
+                return "unknown"
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    dt = datetime.strptime(str(created)[:19], fmt)
+                    close = dt + timedelta(seconds=int(window))
+                    return close.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    continue
+            return "unknown"
+
+        lines = ["🔬 *Hypotheses*\n"]
+        lines.append("*Pending* — predictions awaiting their verdict window:")
+        if pending:
+            for h in pending[:10]:
+                lines.append(
+                    f"• *#{h.get('id')}* `{h.get('feature','?')}` — "
+                    f"predicts {_fmt_pred(h.get('predicted_json'))}; "
+                    f"window closes {_window_close(h)}"
+                )
+        else:
+            lines.append("  _none — no open predictions._")
+
+        lines.append("\n*Recent verdicts:*")
+        if verdicts:
+            icon = {"confirmed": "✅", "refuted": "❌", "inconclusive": "➖"}
+            for v in verdicts:
+                p = v.get("properties") or {}
+                vd = p.get("verdict", "?")
+                lines.append(
+                    f"{icon.get(vd, '•')} *{vd}* — `{p.get('feature','?')}` / "
+                    f"`{p.get('metric','?')}` "
+                    f"(measured {p.get('observed_lift', 0.0):+.1%}, "
+                    f"P held {p.get('p_held', 0.0):.2f})"
+                )
+        else:
+            lines.append("  _none recorded yet._")
+
+        lines.append(
+            "\n_Confirmed verdicts reinforce the winning model; refuted "
+            "pairs are suppressed 90 days. The next iteration stays "
+            "founder-gated — use /approve._"
         )
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     async def cmd_backlog(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Z9 T3C — list top-N scored backlog candidates.

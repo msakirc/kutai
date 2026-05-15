@@ -1483,6 +1483,8 @@ async def init_db():
         )
     """)
     # Idempotent column add for pre-Phase-2c / pre-Task-5 / pre-Task-15 databases.
+    # ``reinforce`` (Z9 T4E) holds a confirmed-verdict score nudge — see
+    # record_reinforce_nudge() / fatih_hoca.grading.reinforce_bonus().
     for col_name, col_type in (
         ("pool", "TEXT"),
         ("urgency", "REAL"),
@@ -1490,6 +1492,7 @@ async def init_db():
         ("error_category", "TEXT"),
         ("provider", "TEXT"),
         ("outcome", "TEXT"),
+        ("reinforce", "REAL"),
     ):
         try:
             await db.execute(f"ALTER TABLE model_pick_log ADD COLUMN {col_name} {col_type}")
@@ -6208,6 +6211,59 @@ async def get_growth_events(
         d["properties"] = decoded
         result.append(d)
     return result
+
+
+# Z9 T4E — reinforce loop. A confirmed hypothesis verdict bumps the model
+# that built the winning feature: a small, decaying nudge so old wins fade
+# and the loop never locks in an early winner. The nudge is written as a
+# dedicated ``model_pick_log`` row (call_category='reinforce', reinforce
+# column carries the +bonus) — fatih_hoca.grading.reinforce_bonus() reads
+# these rows and folds a time-decayed sum into the model's perf_score.
+REINFORCE_NUDGE: float = 0.05  # founder-decided: +0.05 per confirmed verdict
+
+
+async def record_reinforce_nudge(
+    model: str,
+    *,
+    task_name: str = "hypothesis_verdict",
+    amount: float = REINFORCE_NUDGE,
+    provider: str = "local",
+    hypothesis_id: int | None = None,
+) -> None:
+    """Write a confirmed-verdict reinforce nudge for ``model``.
+
+    Fire-and-forget telemetry — never raises into the caller. The row is a
+    ``model_pick_log`` entry tagged ``call_category='reinforce'`` with the
+    bonus stored in the ``reinforce`` column. Fatih Hoca's grading layer
+    sums these with a 50%-per-30-day decay so the influence fades.
+    """
+    if not model:
+        return
+    try:
+        db = await get_db()
+        snapshot = f"hypothesis_id={hypothesis_id}" if hypothesis_id else ""
+        await db.execute(
+            "INSERT INTO model_pick_log "
+            "(task_name, picked_model, picked_score, call_category, "
+            " candidates_json, snapshot_summary, success, provider, "
+            " outcome, reinforce) "
+            "VALUES (?, ?, ?, 'reinforce', '[]', ?, 1, ?, 'reinforce', ?)",
+            (
+                task_name,
+                model,
+                0.0,
+                snapshot,
+                provider,
+                float(amount),
+            ),
+        )
+        await db.commit()
+        logger.info(
+            "reinforce nudge recorded model=%s amount=%.3f hyp=%s",
+            model, amount, hypothesis_id,
+        )
+    except Exception as e:  # noqa: BLE001 — telemetry must never propagate
+        logger.warning("record_reinforce_nudge failed: %s", e)
 
 
 async def insert_variant(

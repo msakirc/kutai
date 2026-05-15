@@ -11136,8 +11136,8 @@
     "feature_design",
     "feature_implementation"
    ],
-   "instruction": "Write feature specification for highest-priority item: problem statement, target persona, proposed solution, acceptance criteria, out-of-scope, technical considerations. Create UX/UI design building on existing design_handoff patterns. Implement: database migrations, API endpoints, frontend components, tests, documentation updates. Feature should be behind a feature flag.",
-   "done_when": "feature_specification, feature_design, and feature_implementation exist.",
+   "instruction": "Close the hypothesis verdict loop before opening the next iteration. First, review verdicts: read the mission's hypotheses (predicted metric impact + recorded verdict) and mission_lessons rows with source_kind='hypothesis_verdict'. Confirmed verdicts validated the bet; refuted verdicts are suppressed for 90 days; inconclusive verdicts need tighter measurement. Summarize what the last iteration's predictions actually delivered. The founder reviews these via the Telegram /hypothesis command; the next-iteration feature is founder-gated (the /approve pattern) and is NOT auto-spawned. Then, for the founder-approved highest-priority item only: write feature specification (problem statement, target persona, proposed solution, acceptance criteria, out-of-scope, technical considerations); create UX/UI design building on existing design_handoff patterns; implement database migrations, API endpoints, frontend components, tests, documentation updates. Feature should be behind a feature flag, and the spec must record a predicted metric impact (metric, direction, magnitude) so a new hypothesis can be recorded for the next verdict cycle.",
+   "done_when": "Prior-iteration hypothesis verdicts and hypothesis_verdict lessons have been reviewed and summarized; and feature_specification, feature_design, and feature_implementation exist for the founder-approved next item.",
    "artifact_schema": {
     "feature_specification": {
      "type": "markdown",

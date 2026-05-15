@@ -215,6 +215,18 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 604800,  # 7d
         "payload": {"_executor": "mine_dlq_patterns"},
     },
+    # Z9 Growth T4C — daily verdict window sweeper. Scans every pending
+    # hypothesis and enqueues a record_verdict mechanical task for each one
+    # whose measurement window has closed (created_at + window_seconds <=
+    # now). Restart-safe: re-derives "due" from the DB each tick, so no
+    # per-hypothesis scheduled rows are needed. Idempotent — a recorded
+    # verdict flips verdict away from 'pending' so later sweeps skip it.
+    {
+        "title": "verdict_window_sweep",
+        "description": "Daily scan of pending hypotheses — enqueue verdict checks for closed measurement windows",
+        "interval_seconds": 86400,  # 24h
+        "payload": {"_executor": "verdict_window_sweep"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

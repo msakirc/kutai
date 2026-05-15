@@ -9577,12 +9577,15 @@
       "agent": "implementer",
       "difficulty": "medium",
       "tools_hint": [
+        "pick_recipe",
+        "instantiate_recipe",
         "shell",
         "write_file",
         "read_file",
         "edit_file"
       ],
       "depends_on": [
+        "2.9",
         "13.1"
       ],
       "may_need_clarification": false,
@@ -9595,10 +9598,11 @@
       "output_artifacts": [
         "analytics_integration",
         "event_tracking",
-        "analytics_dashboards"
+        "analytics_dashboards",
+        "analytics_instrumentation"
       ],
-      "instruction": "Integrate product analytics tool (Mixpanel, Amplitude, PostHog, or GA4). Implement event tracking for key user actions: signup, onboarding steps, core feature usage, conversion events, engagement events, error events. Ensure analytics respects cookie consent. Configure conversion funnels, retention cohorts, feature adoption tracking, and KPI dashboard.",
-      "done_when": "analytics_integration, event_tracking, and analytics_dashboards exist.",
+      "instruction": "Instrument the product with standardized launch-time analytics so post-launch Growth digests have data. Use the analytics_instrumentation/v1 recipe (PostHog). Steps: (1) pick_recipe / instantiate_recipe analytics_instrumentation v1 - this writes the posthog-js client shim (track_event helper for web), the posthog-python server shim (track_event for backend), and the events module carrying the standard AARRR event taxonomy. (2) Read the success_metrics artifact from step 2.9; for EACH entry in success_metrics.aarrr_metrics, determine its AARRR funnel stage and map it to the matching standard event name(s): acquisition -> landing_view/signup_started/signup_completed; activation -> first_value_event (rename per product); retention -> session_started (attach day_of_cohort); revenue -> checkout_started/checkout_completed/subscription_created/subscription_cancelled; referral -> share_initiated/share_completed/invite_redeemed. (3) Insert track_event(name, properties) calls at the code sites that realize each metric's formula - web shim for browser-observable events, server shim for webhook-confirmed events (checkout_completed, subscription_*, signup_completed). (4) Wire initAnalytics() at app bootstrap and setAnalyticsContext() with mission_id/feature_id/business_model; every event auto-attaches mission_id, feature_id, variant, segment, business_model. (5) PostHog init reads POSTHOG_API_KEY / POSTHOG_HOST (NEXT_PUBLIC_ prefixed on the web side). (6) Configure conversion funnels, retention cohorts and a KPI dashboard tied to success_metrics.north_star_metric. Respect cookie consent. Record every instrumented event name and every file created/edited in the analytics_instrumentation artifact.",
+      "done_when": "analytics_integration, event_tracking, analytics_dashboards and analytics_instrumentation exist; analytics_instrumentation lists the instrumented event names and the shim files created, with at least one event mapped per success_metrics.aarrr_metrics entry.",
       "artifact_schema": {
         "analytics_integration": {
           "type": "object",
@@ -9619,6 +9623,31 @@
             "funnels",
             "dashboards"
           ]
+        },
+        "analytics_instrumentation": {
+          "type": "object",
+          "required_fields": [
+            "recipe",
+            "instrumented_events",
+            "files_created"
+          ],
+          "fields": {
+            "recipe": {
+              "type": "string"
+            },
+            "instrumented_events": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "files_created": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
         }
       },
       "context": {

@@ -27,9 +27,9 @@ from typing import Any
 _FRONT_MATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 _PLACEHOLDER_PATTERNS = (
-    r"\bTODO\b",
-    r"\bTBD\b",
-    r"\bFIXME\b",
+    r"(?-i:\bTODO\b)",
+    r"(?-i:\bTBD\b)",
+    r"(?-i:\bFIXME\b)",
     r"<[A-Za-z][^>]{0,40}>",
     r"\[(?:fill[- ]in|placeholder|insert)[^\]]*\]",
     r"\bLorem ipsum\b",

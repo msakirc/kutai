@@ -39,9 +39,15 @@ REQUIRED_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 _PLACEHOLDER_PATTERNS = (
-    r"\bTODO\b",
-    r"\bTBD\b",
-    r"\bFIXME\b",
+    # TODO / TBD / FIXME are placeholder MARKERS only when written
+    # uppercase — `(?-i:...)` scopes case-sensitivity so the surrounding
+    # IGNORECASE flag doesn't apply. Lowercase "todo" is a real domain
+    # word (this product line builds to-do apps); flagging it as a
+    # placeholder DLQ'd mission 70 step 0.0z.verify on a clean reverse
+    # pitch (2026-05-15).
+    r"(?-i:\bTODO\b)",
+    r"(?-i:\bTBD\b)",
+    r"(?-i:\bFIXME\b)",
     r"<[A-Za-z][^>]{0,40}>",
     r"\[(?:fill[- ]in|placeholder|insert|name|company)[^\]]*\]",
     r"\bLorem ipsum\b",

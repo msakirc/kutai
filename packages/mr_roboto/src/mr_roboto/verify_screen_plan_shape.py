@@ -53,9 +53,9 @@ _H2_RE = re.compile(r"^##\s+(.*?)\s*$", re.MULTILINE)
 _H3_RE = re.compile(r"^###\s+(.*?)\s*$", re.MULTILINE)
 
 _PLACEHOLDER_PATTERNS = (
-    r"\bTODO\b",
-    r"\bTBD\b",
-    r"\bFIXME\b",
+    r"(?-i:\bTODO\b)",
+    r"(?-i:\bTBD\b)",
+    r"(?-i:\bFIXME\b)",
     r"<[A-Za-z][^>]{0,40}>",
     r"\[(?:fill[- ]in|placeholder|insert)[^\]]*\]",
     r"\bLorem ipsum\b",

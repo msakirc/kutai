@@ -53,9 +53,9 @@ REQUIRED_SOLUTION_FIELDS = (
 
 # Strings that almost always indicate template/placeholder leftovers.
 _PLACEHOLDER_PATTERNS = (
-    r"\bTODO\b",
-    r"\bTBD\b",
-    r"\bFIXME\b",
+    r"(?-i:\bTODO\b)",
+    r"(?-i:\bTBD\b)",
+    r"(?-i:\bFIXME\b)",
     r"<[A-Za-z][^>]{0,40}>",        # <fill in>, <name>, <one-line>
     r"\[(?:fill[- ]in|placeholder|insert)[^\]]*\]",
     r"\bLorem ipsum\b",

@@ -1861,6 +1861,8 @@ class TelegramInterface:
         # Z8 T1D — /stop_ops <mission_id> revokes an ongoing mission.
         self.app.add_handler(CommandHandler("stop_ops", self.cmd_stop_ops))
         self.app.add_handler(CommandHandler("digest", self.cmd_digest))
+        # Z9 T2C — /digest_now force-fires the weekly growth digest cron.
+        self.app.add_handler(CommandHandler("digest_now", self.cmd_digest_now))
         self.app.add_handler(CommandHandler("debug", self.cmd_debug))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))
         self.app.add_handler(CommandHandler("resetall", self.cmd_reset_all))
@@ -2598,6 +2600,118 @@ class TelegramInterface:
             await self.orchestrator.daily_digest()
         else:
             await self._reply(update,"Orchestrator not connected.")
+        # Z9 T2C — append the latest stored weekly growth digest.
+        await self._send_growth_digest_section(update)
+
+    async def _send_growth_digest_section(self, update: Update) -> None:
+        """Z9 T2C — surface the most recent stored weekly growth digest.
+
+        Reads the latest ``growth_events`` row with ``kind="weekly_digest"``
+        (written by the digest synthesis agent's on_complete continuation).
+        Sent through ``_reply`` so the persistent keyboard survives.
+        """
+        try:
+            from src.infra.db import get_growth_events
+
+            rows = await get_growth_events(kind="weekly_digest")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("growth digest fetch failed: %s", exc)
+            return
+        if not rows:
+            await self._reply(
+                update,
+                "📈 *Growth*\n\nNo weekly digest yet — one is generated "
+                "weekly after a product launches. Use /digest_now to "
+                "force-fire it for the latest launched mission.",
+                parse_mode="Markdown",
+            )
+            return
+        latest = rows[0]
+        props = latest.get("properties_json") or {}
+        markdown = ""
+        if isinstance(props, dict):
+            markdown = str(props.get("markdown") or "").strip()
+        iso_yw = props.get("iso_year_week") if isinstance(props, dict) else None
+        header = f"📈 *Growth — weekly digest*"
+        if iso_yw:
+            header += f" ({iso_yw})"
+        body = markdown or "_Digest content unavailable._"
+        msg = f"{header}\n\n{body}"
+        # Telegram 4096-char cap — chunk if needed.
+        if len(msg) > 4000:
+            for i in range(0, len(msg), 4000):
+                await self._reply(update, msg[i:i + 4000], parse_mode="Markdown")
+        else:
+            await self._reply(update, msg, parse_mode="Markdown")
+
+    async def cmd_digest_now(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T2C — force-fire the weekly analytics_digest cron action.
+
+        Enqueues the ``analytics_digest`` mechanical task immediately for the
+        most recently launched mission (or a mission id given as an arg).
+        The mechanical does the data pull and enqueues the synthesis agent;
+        the result lands as a ``weekly_digest`` growth event minutes later.
+        """
+        mission_id = None
+        if context.args:
+            try:
+                mission_id = int(context.args[0])
+            except (TypeError, ValueError):
+                await self._reply(
+                    update, "Usage: /digest_now [mission_id]"
+                )
+                return
+        try:
+            from src.infra.db import get_db
+
+            db = await get_db()
+            if mission_id is None:
+                # Most recent mission with an analytics_digest cron armed.
+                cur = await db.execute(
+                    "SELECT id FROM missions "
+                    "WHERE cursor LIKE '%analytics_digest%' "
+                    "ORDER BY id DESC LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if not row:
+                    # Fall back to the most recent mission overall.
+                    cur = await db.execute(
+                        "SELECT id FROM missions ORDER BY id DESC LIMIT 1"
+                    )
+                    row = await cur.fetchone()
+                if not row:
+                    await self._reply(
+                        update, "No missions found to run a digest for."
+                    )
+                    return
+                mission_id = int(row[0])
+
+            from general_beckman import enqueue
+            from general_beckman.apply import _mechanical_context
+
+            task_id = await enqueue(
+                {
+                    "title": f"digest_now: analytics_digest (mid={mission_id})",
+                    "description": "Founder-triggered weekly growth digest.",
+                    "agent_type": "mechanical",
+                    "context": _mechanical_context(
+                        "analytics_digest", mission_id=mission_id
+                    ),
+                    "depends_on": [],
+                    "mission_id": mission_id,
+                }
+            )
+            await self._reply(
+                update,
+                f"📈 Weekly growth digest queued for mission #{mission_id} "
+                f"(task #{task_id}). The synthesized digest will appear "
+                f"under /digest shortly.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cmd_digest_now failed: %s", exc)
+            await self._reply(
+                update, f"Could not queue digest: {exc}"
+            )
 
     async def cmd_debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show ALL tasks with full status details."""

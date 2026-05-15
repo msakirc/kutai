@@ -652,6 +652,33 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Stub handler: posthook_handlers/audit_completeness_check.py."
         ),
     ),
+    # ── Z7 T3B: demo pipeline posthooks (A3 + A3.r1) ────────────────────────
+    "demo_artifact_check": PostHookSpec(
+        kind="demo_artifact_check",
+        verb="demo_artifact_check",
+        default_severity="blocker",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T3B (A3): verify demo pipeline output — all cut files exist "
+            "(cuts/30s.mp4, cuts/60s.mp4, cuts/3min.mp4), duration within ±10% "
+            "of target, and .vtt captions file is present. "
+            "Handler: posthook_handlers/demo_artifact_check.py."
+        ),
+    ),
+    "demo_accessibility_check": PostHookSpec(
+        kind="demo_accessibility_check",
+        verb="demo_accessibility_check",
+        default_severity="blocker",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T3B (A3.r1): validate demo accessibility manifest completeness — "
+            "alt_texts non-empty, audio_description_track present, "
+            "keyboard_nav_variant non-empty. "
+            "Handler: posthook_handlers/demo_accessibility_check.py."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

@@ -10261,6 +10261,114 @@
    "context": {}
   },
   {
+   "id": "13.demo_storyboard",
+   "phase": "phase_13",
+   "name": "demo_storyboard",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "reversibility": "full",
+   "difficulty": "easy",
+   "tools_hint": [],
+   "skip_when": "goal does not include public_demo",
+   "depends_on": [
+    "13.14.git_commit_green"
+   ],
+   "payload": {
+    "action": "demo/storyboard"
+   },
+   "post_hooks": ["demo_artifact_check"],
+   "instruction": "Z7 T3B A3 — generate demo storyboard from mission spec via LLM. Produces workspace/demo/storyboard.json with ordered scenes (target_seconds, viewport_state, narrator_text). Only runs when mission goal includes public_demo.",
+   "done_when": "demo/storyboard.json written with at least 2 scenes.",
+   "produces": ["demo/storyboard.json"],
+   "context": {}
+  },
+  {
+   "id": "13.demo_record",
+   "phase": "phase_13",
+   "name": "demo_record",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "reversibility": "full",
+   "difficulty": "easy",
+   "tools_hint": [],
+   "skip_when": "goal does not include public_demo",
+   "depends_on": [
+    "13.demo_storyboard"
+   ],
+   "payload": {
+    "action": "demo/record"
+   },
+   "instruction": "Z7 T3B A3 — record each storyboard scene with Playwright --video on. Produces raw per-scene .webm files in workspace/demo/raw/. Only runs when mission goal includes public_demo.",
+   "done_when": "Raw scene recordings written to demo/raw/.",
+   "context": {}
+  },
+  {
+   "id": "13.demo_caption",
+   "phase": "phase_13",
+   "name": "demo_caption",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "reversibility": "full",
+   "difficulty": "easy",
+   "tools_hint": [],
+   "skip_when": "goal does not include public_demo",
+   "depends_on": [
+    "13.demo_storyboard"
+   ],
+   "payload": {
+    "action": "demo/caption"
+   },
+   "instruction": "Z7 T3B A3 — generate script-driven WebVTT captions from storyboard narrator_text. Produces demo/demo.vtt. No speech-to-text — purely script-driven. Only runs when mission goal includes public_demo.",
+   "done_when": "demo/demo.vtt written and starts with WEBVTT header.",
+   "produces": ["demo/demo.vtt"],
+   "context": {}
+  },
+  {
+   "id": "13.demo_edit",
+   "phase": "phase_13",
+   "name": "demo_edit",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "reversibility": "full",
+   "difficulty": "easy",
+   "tools_hint": [],
+   "skip_when": "goal does not include public_demo",
+   "depends_on": [
+    "13.demo_record",
+    "13.demo_caption"
+   ],
+   "payload": {
+    "action": "demo/edit"
+   },
+   "post_hooks": ["demo_artifact_check"],
+   "instruction": "Z7 T3B A3 — concat + trim scene recordings into three cuts via ffmpeg: cuts/30s.mp4 (30s), cuts/60s.mp4 (60s), cuts/3min.mp4 (3min). Only runs when mission goal includes public_demo.",
+   "done_when": "cuts/30s.mp4, cuts/60s.mp4, cuts/3min.mp4 all exist.",
+   "produces": ["demo/cuts/30s.mp4", "demo/cuts/60s.mp4", "demo/cuts/3min.mp4"],
+   "context": {}
+  },
+  {
+   "id": "13.demo_accessibility",
+   "phase": "phase_13",
+   "name": "demo_accessibility_pass",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "reversibility": "full",
+   "difficulty": "easy",
+   "tools_hint": [],
+   "skip_when": "goal does not include public_demo",
+   "depends_on": [
+    "13.demo_storyboard"
+   ],
+   "payload": {
+    "action": "demo/accessibility_pass"
+   },
+   "post_hooks": ["demo_accessibility_check"],
+   "instruction": "Z7 T3B A3.r1 — generate demo accessibility manifest: alt_texts per scene, audio_description_track for visual-only scenes, keyboard_nav_variant walkthrough. Produces demo/accessibility_manifest.json. Only runs when mission goal includes public_demo.",
+   "done_when": "demo/accessibility_manifest.json written with all three sections.",
+   "produces": ["demo/accessibility_manifest.json"],
+   "context": {}
+  },
+  {
    "id": "14.1",
    "phase": "phase_14",
    "name": "launch_planning",

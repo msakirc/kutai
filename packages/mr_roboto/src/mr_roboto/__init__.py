@@ -3353,4 +3353,127 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T3B — demo pipeline verbs (A3 + A3.r1) ────────────────────────────
+
+    if action == "demo/storyboard":
+        # Generate a demo storyboard (ordered scenes) from product spec via LLM.
+        from mr_roboto.demo_storyboard import run as _demo_storyboard
+        try:
+            res = await _demo_storyboard(
+                mission_id=payload.get("mission_id"),
+                spec_text=payload.get("spec_text") or "",
+                workspace_path=payload.get("workspace_path") or "",
+                parent_task_id=task.get("id"),
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error") or "demo/storyboard failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "demo/record":
+        # Record each storyboard scene with Playwright --video on.
+        from mr_roboto.demo_record import run as _demo_record
+        try:
+            res = await _demo_record(
+                mission_id=payload.get("mission_id"),
+                workspace_path=payload.get("workspace_path") or "",
+                storyboard_path=payload.get("storyboard_path") or "",
+                base_url=payload.get("base_url") or "",
+                playwright_timeout=float(payload.get("playwright_timeout") or 300.0),
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error") or "demo/record failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "demo/edit":
+        # Concat + trim scene recordings into three cut lengths via ffmpeg.
+        from mr_roboto.demo_edit import run as _demo_edit
+        try:
+            res = await _demo_edit(
+                mission_id=payload.get("mission_id"),
+                workspace_path=payload.get("workspace_path") or "",
+                storyboard_path=payload.get("storyboard_path") or "",
+                scene_recordings=payload.get("scene_recordings") or [],
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error") or "demo/edit failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "demo/caption":
+        # Generate script-driven WebVTT captions from storyboard narrator_text.
+        from mr_roboto.demo_caption import run as _demo_caption
+        try:
+            res = await _demo_caption(
+                mission_id=payload.get("mission_id"),
+                workspace_path=payload.get("workspace_path") or "",
+                storyboard_path=payload.get("storyboard_path") or "",
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error") or "demo/caption failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "demo/accessibility_pass":
+        # A3.r1 — generate accessibility manifest (alt text, audio-desc, keyboard-nav).
+        from mr_roboto.demo_accessibility_pass import run as _demo_a11y
+        try:
+            res = await _demo_a11y(
+                mission_id=payload.get("mission_id"),
+                workspace_path=payload.get("workspace_path") or "",
+                storyboard_path=payload.get("storyboard_path") or "",
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error") or "demo/accessibility_pass failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action in ("demo_artifact_check", "demo_accessibility_check"):
+        # Z7 T3B posthook handlers — route through general_beckman.posthook_handlers.
+        try:
+            import importlib
+            _mod = importlib.import_module(
+                f"general_beckman.posthook_handlers.{action}"
+            )
+            source_task_id = payload.get("source_task_id")
+            source_task: dict = {}
+            if source_task_id:
+                try:
+                    from src.infra.db import get_task as _get_task
+                    _src = await _get_task(int(source_task_id))
+                    if _src:
+                        source_task = dict(_src)
+                except Exception:
+                    pass
+            import json as _json
+            src_ctx: dict = {}
+            raw_ctx = source_task.get("context") or {}
+            if isinstance(raw_ctx, str):
+                try:
+                    src_ctx = _json.loads(raw_ctx)
+                except Exception:
+                    src_ctx = {}
+            elif isinstance(raw_ctx, dict):
+                src_ctx = dict(raw_ctx)
+            for _k in (
+                "workspace_path", "demo_cuts", "demo_vtt_path", "demo_cut_targets",
+                "demo_accessibility_manifest_path",
+            ):
+                if payload.get(_k):
+                    src_ctx.setdefault(_k, payload[_k])
+            source_task["context"] = src_ctx
+
+            res = await _mod.handle(source_task, {})
+            if res.get("status") == "failed":
+                return Action(status="failed", error=str(res.get("error") or res), result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

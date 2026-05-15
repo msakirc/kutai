@@ -175,6 +175,12 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z8 T5D cost monitor cron ---------------------------------------
     "cost_pull": "full",  # vendor read-only cost API
     "cron_cost_pull": "full",
+    # ---- Z7 T3B demo pipeline verbs (A3 + A3.r1) --------------------------
+    "demo/storyboard": "full",        # writes storyboard.json to workspace; git-reversible
+    "demo/record": "full",            # writes raw .webm per scene; git-reversible
+    "demo/edit": "full",              # writes cuts/*.mp4; git-reversible
+    "demo/caption": "full",           # writes demo.vtt; git-reversible
+    "demo/accessibility_pass": "full", # writes accessibility_manifest.json; git-reversible
     # ---- Z9 growth verbs (registered T1C; implemented T2-T5) ------------
     "inject_north_star": "full",  # writes north-star row; deletable
     "emit_metric": "full",  # append-only metric row

@@ -1599,6 +1599,24 @@ def _posthook_agent_and_payload(
                 "privacy_policy_path": source_ctx.get("privacy_policy_path") or "",
             },
         })
+    if a.kind in ("demo_artifact_check", "demo_accessibility_check"):
+        # Z7 T3B — demo pipeline posthook handlers (A3 + A3.r1).
+        # Route to general_beckman.posthook_handlers.<kind> via mr_roboto dispatcher.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "workspace_path": source_ctx.get("workspace_path") or "",
+                "demo_cuts": source_ctx.get("demo_cuts") or {},
+                "demo_vtt_path": source_ctx.get("demo_vtt_path") or "",
+                "demo_cut_targets": source_ctx.get("demo_cut_targets") or {},
+                "demo_accessibility_manifest_path": (
+                    source_ctx.get("demo_accessibility_manifest_path") or ""
+                ),
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -3414,6 +3432,15 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 pass
         else:
             await _update_task(a.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Z7 T3B — demo pipeline posthook verdicts (A3 + A3.r1).
+    # Both are blockers (per registry default_severity).
+    if a.kind in ("demo_artifact_check", "demo_accessibility_check"):
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix=f"{a.kind} gate",
+        )
         return
 
     if a.kind == "grade" and a.passed:

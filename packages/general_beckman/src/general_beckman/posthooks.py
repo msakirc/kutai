@@ -85,6 +85,10 @@ _NO_POSTHOOKS_AGENT_TYPES: frozenset[str] = frozenset({
     # Its verdict IS the gate — same judge-of-judge reasoning as
     # code_reviewer. Chain another reviewer-typed step for extra QA.
     "integration_reviewer",
+    # AdrDriftJudgeAgent is the LLM gray-zone consumer for ADRs whose
+    # falsification_signal cannot be checked mechanically. Its verdict IS
+    # the gate — judge-of-judge would loop forever.
+    "adr_drift_judge",
 })
 
 
@@ -543,6 +547,22 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         description=(
             "lighthouse (web) or k6 (api) perf gate. Mode + thresholds in step "
             "context. Threshold breach → blocker."
+        ),
+    ),
+    # Z3 R3 — adr_drift_judge (LLM gray-zone consumer for ADRs without
+    # mechanical falsification_signals). Spawned by apply.py after a passing
+    # mechanical adr_drift_check that flagged judgment_only_adr_ids — never
+    # auto-wired directly.
+    "adr_drift_judge": PostHookSpec(
+        kind="adr_drift_judge",
+        verb="adr_drift_judge",
+        default_severity="blocker",
+        cost_band="moderate",
+        auto_wire_triggers=[],
+        description=(
+            "LLM verdict on ADRs whose falsification_signal is a free-form "
+            "sentence / null / unknown shape. Spawned only by apply.py after "
+            "the mechanical check returns judgment_only_adr_ids."
         ),
     ),
     # Z3 T5 — integration_replay (rerun suite against prior commits in shuffle; bisect on red).

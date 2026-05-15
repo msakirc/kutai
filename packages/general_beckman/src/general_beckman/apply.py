@@ -934,7 +934,7 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
     if posthook_kind in (
         "security_review", "accessibility_review", "contract_review",
         "performance_review", "adr_drift_check", "integration_replay",
-        "integration_review",
+        "integration_review", "adr_drift_judge",
     ):
         source_ctx["_pending_posthooks"] = [
             k for k in (source_ctx.get("_pending_posthooks") or [])
@@ -3027,6 +3027,84 @@ async def _apply_security_review_verdict(
     )
 
 
+async def _maybe_spawn_adr_drift_judge(
+    *, source: dict, verdict: PostHookVerdict
+) -> None:
+    """Z3 R3 — spawn adr_drift_judge LLM task for judgment_only ADRs.
+
+    Reads ``verdict.raw.judgment_only_adr_ids`` (populated by check_adr_drift
+    when an ADR's falsification_signal is v1-string / null / unknown-shape).
+    Enqueues a single ``adr_drift_judge`` task carrying the ADR ids + paths
+    + produced_files. Subsequent verdict goes through the simple_blocker path
+    because the judge's post-hook kind is also in the blocker tuple.
+
+    Verdict precedence:
+        mechanical-fail  >  judge-fail  >  judge-pass
+
+    Because we only spawn the judge when mechanical *passed*, the mechanical-
+    fail leg never reaches here — the source has already been retried/DLQ'd.
+    """
+    raw = verdict.raw or {}
+    judgment_ids: list[str] = list(raw.get("judgment_only_adr_ids") or [])
+    if not judgment_ids:
+        return
+
+    import json as _json
+    from src.infra.db import add_task, update_task
+
+    source_ctx = _parse_ctx(source)
+    workspace_path = source_ctx.get("workspace_path") or ""
+    produced = list(source_ctx.get("produces") or [])
+
+    # Resolve adr_paths from workspace .adr/ dir.
+    adr_paths: dict[str, str] = {}
+    if workspace_path:
+        import os as _os
+        adr_dir = _os.path.join(workspace_path, ".adr")
+        for adr_id in judgment_ids:
+            candidate = _os.path.join(adr_dir, f"{adr_id}.json")
+            if _os.path.isfile(candidate):
+                adr_paths[adr_id] = candidate
+
+    judge_ctx = {
+        "source_task_id": source.get("id"),
+        "posthook_kind": "adr_drift_judge",
+        "adr_ids": judgment_ids,
+        "adr_paths": adr_paths,
+        "produced_files": produced,
+        "workspace_path": workspace_path,
+    }
+
+    # Mark adr_drift_judge as pending on the source so verdict-time
+    # bookkeeping flows through the same simple_blocker path.
+    pending = list(source_ctx.get("_pending_posthooks") or [])
+    if "adr_drift_judge" not in pending:
+        pending.append("adr_drift_judge")
+    source_ctx["_pending_posthooks"] = pending
+    await update_task(
+        source.get("id"),
+        status="ungraded",
+        context=_json.dumps(source_ctx),
+    )
+
+    await add_task(
+        title=f"ADR drift judge for {len(judgment_ids)} judgment_only ADR(s)",
+        description=(
+            "Judge whether the produced files drift from the listed ADRs. "
+            "Read each ADR + relevant files; emit per-ADR verdict."
+        ),
+        agent_type="adr_drift_judge",
+        context=_json.dumps(judge_ctx),
+        mission_id=source.get("mission_id"),
+    )
+
+    logger.info(
+        "adr_drift_judge spawned",
+        source_id=source.get("id"),
+        adr_count=len(judgment_ids),
+    )
+
+
 async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     """Apply a post-hook verdict back to the source task."""
     import json as _json
@@ -3206,11 +3284,23 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     if a.kind in (
         "security_review", "accessibility_review", "contract_review",
         "performance_review", "adr_drift_check", "integration_replay",
+        "adr_drift_judge",
     ):
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
             feedback_prefix=f"{a.kind} gate",
         )
+        # Z3 R3 — ADR drift gray-zone path: when mechanical check passed but
+        # some ADRs were judgment_only, spawn an LLM judge to inspect them.
+        # Best-effort — failure to spawn never blocks the verdict path.
+        if a.kind == "adr_drift_check" and a.passed:
+            try:
+                await _maybe_spawn_adr_drift_judge(source=source, verdict=a)
+            except Exception as _exc:
+                logger.debug(
+                    "adr_drift_judge spawn skipped",
+                    source_id=source.get("id"), error=str(_exc),
+                )
         return
 
     if a.kind == "grounding":

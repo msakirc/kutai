@@ -22,6 +22,7 @@ from .grader import GraderAgent
 from .code_reviewer import CodeReviewerAgent
 from .artifact_summarizer import ArtifactSummarizerAgent
 from .integration_reviewer import IntegrationReviewerAgent
+from .adr_drift_judge import AdrDriftJudgeAgent
 from .oncall_agent import OncallAgent
 from .support_tier1 import SupportTier1Agent
 
@@ -48,6 +49,7 @@ AGENT_REGISTRY = {
     "code_reviewer": CodeReviewerAgent(),
     "artifact_summarizer": ArtifactSummarizerAgent(),
     "integration_reviewer": IntegrationReviewerAgent(),
+    "adr_drift_judge": AdrDriftJudgeAgent(),
     "oncall_agent": OncallAgent(),
     "support_tier1": SupportTier1Agent(),
 }

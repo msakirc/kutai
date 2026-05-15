@@ -306,6 +306,7 @@ class WorkflowRunner:
         initial_input: Optional[dict] = None,
         title: Optional[str] = None,
         existing_codebase_path: Optional[str] = None,
+        chat_id: Optional[int] = None,
     ) -> int:
         """Load a workflow, create a mission, expand steps, and insert tasks.
 
@@ -344,6 +345,16 @@ class WorkflowRunner:
         }
         if initial_input:
             mission_context["initial_input"] = initial_input
+        # chat_id is load-bearing: every human gate (clarify / confirm /
+        # request_interview_data) resolves the founder's Telegram chat
+        # from missions.context.chat_id. Without it, mr_roboto.clarify
+        # can't send the keyboard, returns keyboard_sent=False, the
+        # clarify action handler completes the task instead of parking
+        # it waiting_human, and the mission silently blows past every
+        # founder gate (production 2026-05-15 mission 70: founder never
+        # saw the reverse-pitch confirm, mission ran to phase 1 alone).
+        if chat_id is not None:
+            mission_context["chat_id"] = chat_id
 
         mission_id = await add_mission(
             title=mission_title,

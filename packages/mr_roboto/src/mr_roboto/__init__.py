@@ -1775,6 +1775,15 @@ async def _run_dispatch(task: dict) -> Action:
                     and res.get("status") == "needs_clarification"
                     and res.get("keyboard_sent")):
                 return Action(status="needs_clarification", result=res)
+            # A clarify gate that returned `failed` (e.g. could not reach
+            # the founder) must surface as failed — completing it would
+            # silently skip a human approval gate.
+            if isinstance(res, dict) and res.get("status") == "failed":
+                return Action(
+                    status="failed",
+                    error=str(res.get("error") or "clarify failed"),
+                    result=res,
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

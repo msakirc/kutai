@@ -1422,6 +1422,7 @@ class TelegramInterface:
                     workflow_name="i2p_v3",
                     initial_input={"raw_idea": description, "product_name": description[:50]},
                     title=description[:80],
+                    chat_id=chat_id,
                 )
                 await self._reply(update,
                     f"🔄 Workflow mission #{mission_id} oluşturuldu!\n"

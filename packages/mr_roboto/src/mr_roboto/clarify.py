@@ -287,12 +287,29 @@ async def clarify(task: dict) -> dict:
                 logger.exception("clarify(attach): send_artifact_confirm_keyboard failed: %s", exc)
         if sent:
             await update_task(int(source_id), status="waiting_human")
+            return {
+                "status": "needs_clarification",
+                "kind": kind_tag,
+                "attach_file_paths": attach_paths,
+                "keyboard_sent": True,
+                "prompt": question_text,
+            }
+        # Keyboard could NOT be sent (no chat_id, Telegram down). A human
+        # confirmation gate that can't reach the human must NOT silently
+        # complete — that skips founder approval entirely. Fail so the
+        # mission halts at the gate; the founder fixes the chat wiring
+        # and retries from DLQ. Production 2026-05-15 mission 70: a
+        # missing chat_id let 0.0z.confirm complete and the mission ran
+        # to phase 1 with no founder approval.
         return {
-            "status": "needs_clarification",
+            "status": "failed",
             "kind": kind_tag,
-            "attach_file_paths": attach_paths,
-            "keyboard_sent": sent,
-            "prompt": question_text,
+            "error": (
+                "clarify gate could not reach the founder "
+                f"(chat_id unresolved for mission {mission_id_v}); "
+                "human approval gate cannot be skipped"
+            ),
+            "keyboard_sent": False,
         }
 
     # Default: plain question clarify

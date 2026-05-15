@@ -190,6 +190,72 @@ def _resolve_path_list(paths):
     return out
 
 
+async def _emit_bisect_lesson(
+    *,
+    mission_id,
+    stack: str,
+    bisect_result: dict,
+    source_task_id=None,
+) -> None:
+    """Z3 R4 — write a rich mission_lessons row after integration_bisect.
+
+    pattern  = "break at <sha8>: <failing_test>" (truncated)
+    fix      = "suspect: <cluster_dir> (<count> files)\\n<diff_shortstat>"
+    severity = "blocker"
+    domain   = "integration_replay"
+    source_ref records breaking_pair / cluster / shortstat / subject for
+    later forensics.
+    """
+    from src.infra.mission_lessons import upsert_mission_lesson
+
+    pair = bisect_result.get("breaking_pair") or []
+    if len(pair) != 2:
+        return
+    commit_a, commit_b = pair[0], pair[1]
+
+    failing_test = (bisect_result.get("failing_test") or "").strip()
+    cluster = bisect_result.get("file_cluster") or []
+    shortstat = (bisect_result.get("diff_shortstat") or "").strip()
+    subject = (bisect_result.get("commit_subject") or "").strip()
+    changed = bisect_result.get("changed_files") or []
+
+    sha8 = (commit_b or "")[:8]
+    if failing_test:
+        # Strip the leading "FAILED " marker pytest emits.
+        ft = failing_test.replace("FAILED", "").strip()[:80]
+        pattern = f"break at {sha8}: {ft}"
+    else:
+        pattern = f"break at {sha8}: {subject[:80] or 'unknown'}"
+
+    fix_parts: list[str] = []
+    if cluster:
+        top = cluster[0]
+        fix_parts.append(
+            f"suspect: {top.get('dir')} ({top.get('count')} file{'s' if top.get('count', 0) != 1 else ''})"
+        )
+    if shortstat:
+        fix_parts.append(shortstat)
+    fix = "\n".join(fix_parts)[:300]
+
+    await upsert_mission_lesson(
+        stack=stack or "unknown",
+        domain="integration_replay",
+        pattern=pattern[:120],
+        fix=fix,
+        severity="blocker",
+        source_kind="bisect_break",
+        source_ref={
+            "mission_id": mission_id,
+            "source_task_id": source_task_id,
+            "breaking_pair": [commit_a, commit_b],
+            "commit_subject": subject[:200],
+            "file_cluster": cluster,
+            "changed_files": changed[:20],
+            "diff_shortstat": shortstat,
+        },
+    )
+
+
 async def run(task: dict) -> Action:
     """Route a mechanical task to the appropriate executor.
 
@@ -2811,6 +2877,21 @@ async def _run_dispatch(task: dict) -> Action:
                 suite_glob=str(payload.get("suite_glob") or "tests/integration/**"),
                 workspace_path=str(payload.get("workspace_path") or ""),
             )
+            # Z3 R4 — emit mission_lessons row when a breaking_pair is found.
+            # Best-effort: never let lesson-emit failure cascade.
+            try:
+                if res.get("breaking_pair") and payload.get("mission_id"):
+                    await _emit_bisect_lesson(
+                        mission_id=payload.get("mission_id"),
+                        stack=str(payload.get("stack") or "unknown"),
+                        bisect_result=res,
+                        source_task_id=payload.get("source_task_id"),
+                    )
+            except Exception as _lesson_exc:
+                from src.infra.logging_config import get_logger as _gl
+                _gl("mr_roboto.integration_bisect").debug(
+                    "lesson emit skipped: %s", _lesson_exc
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

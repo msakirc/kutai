@@ -1952,6 +1952,13 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("action_done", self.cmd_action_done))
         # Z8 T4D: ops log — show recent on-call agent actions per mission.
         self.app.add_handler(CommandHandler("ops_log", self.cmd_ops_log))
+        # --- Z9 growth (T1D stubs) — reserve the founder-track command surface ---
+        self.app.add_handler(CommandHandler("northstar", self.cmd_northstar))
+        self.app.add_handler(CommandHandler("hypothesis", self.cmd_hypothesis))
+        self.app.add_handler(CommandHandler("backlog", self.cmd_backlog))
+        self.app.add_handler(CommandHandler("sunset", self.cmd_sunset))
+        self.app.add_handler(CommandHandler("experiment", self.cmd_experiment))
+        self.app.add_handler(CommandHandler("approve", self.cmd_approve))
         self.app.add_handler(CommandHandler("ask", self.cmd_ask))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_founder_action_callback,
@@ -9209,6 +9216,60 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             parts.append(str(ts))
             lines.append("  " + " · ".join(parts))
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    # --- Z9 growth (stubs) ---
+    # Reserve the founder-track command surface so Z9 T2-T5 can fill the
+    # bodies without colliding with an existing command name. Each stub
+    # just replies via _reply() naming the tier that delivers it.
+
+    async def cmd_northstar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T1D stub — north-star metric tracking (wired in Z9 T4)."""
+        logger.info("/northstar invoked (Z9 T1D stub)")
+        await self._reply(
+            update,
+            "North-star metric tracking — arrives with Z9 T4.",
+        )
+
+    async def cmd_hypothesis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T1D stub — hypothesis registry (wired in Z9 T4)."""
+        logger.info("/hypothesis invoked (Z9 T1D stub)")
+        await self._reply(
+            update,
+            "Hypothesis registry — arrives with Z9 T4.",
+        )
+
+    async def cmd_backlog(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T1D stub — signal-driven backlog (wired in Z9 T3)."""
+        logger.info("/backlog invoked (Z9 T1D stub)")
+        await self._reply(
+            update,
+            "Signal-driven backlog — arrives with Z9 T3.",
+        )
+
+    async def cmd_sunset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T1D stub — feature sunset candidates (wired in Z9 T5)."""
+        logger.info("/sunset invoked (Z9 T1D stub)")
+        await self._reply(
+            update,
+            "Feature sunset candidates — arrives with Z9 T5.",
+        )
+
+    async def cmd_experiment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T1D stub — A/B experiment status (wired in Z9 T5)."""
+        logger.info("/experiment invoked (Z9 T1D stub)")
+        await self._reply(
+            update,
+            "A/B experiment status — arrives with Z9 T5.",
+        )
+
+    async def cmd_approve(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T1D stub — backlog candidate approval (wired in Z9 T3)."""
+        logger.info("/approve invoked (Z9 T1D stub)")
+        await self._reply(
+            update,
+            "Backlog candidate approval — arrives with Z9 T3.",
+        )
+    # --- end Z9 growth (stubs) ---
 
     async def cmd_ask(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE,

@@ -6338,6 +6338,30 @@
    "reversibility": "full"
   },
   {
+   "id": "7.0y",
+   "phase": "phase_7",
+   "name": "record_hypothesis",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "difficulty": "easy",
+   "tools_hint": [
+    "record_hypothesis"
+   ],
+   "depends_on": [
+    "7.0z"
+   ],
+   "may_need_clarification": false,
+   "payload": {
+    "action": "record_hypothesis"
+   },
+   "instruction": "Z9 T4A — at Phase 7 spec finalization, capture the mission's predicted metric impact as a pending hypotheses row so a later verdict can check whether the prediction held. Deterministic spec parsing (regex/heuristic for '<metric> <direction> <magnitude>'); window resolved via per-metric default table (activation/acquisition 7d, retention 30d, revenue/referral 14d, latency/error_rate 3d, default 14d). Pure refactor / doc-only missions are flagged (hypothesis_skipped growth_event) but not blocked. NO LLM.",
+   "done_when": "A hypotheses row exists for this mission, OR the mission was flagged non-measurable / suppressed (result.ok == true in all cases).",
+   "context": {
+    "estimated_output_tokens": 0
+   },
+   "reversibility": "full"
+  },
+  {
    "id": "7.0a",
    "phase": "phase_7",
    "name": "stripe_scaffold",
@@ -7315,6 +7339,30 @@
    "reversibility": "full"
   },
   {
+   "id": "8.0ns",
+   "phase": "phase_8",
+   "name": "inject_north_star",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "difficulty": "easy",
+   "tools_hint": [
+    "inject_north_star"
+   ],
+   "depends_on": [
+    "8.0z"
+   ],
+   "may_need_clarification": false,
+   "payload": {
+    "action": "inject_north_star"
+   },
+   "instruction": "Z9 T4B — read the success_metrics artifact (created at step 2.9, otherwise never re-read) and merge north_star_metric + aarrr_metrics into mission.context['north_star'] so Phase 8+ feature-scoring steps (implementation backlog, recipe choice, mission ranking) see the product's north-star. Mirrors inject_lessons. Idempotent; graceful when no artifact (injected=false). NO LLM.",
+   "done_when": "result.ok == true (injected=true when a success_metrics artifact exists, injected=false is also a pass).",
+   "context": {
+    "estimated_output_tokens": 0
+   },
+   "reversibility": "full"
+  },
+  {
    "id": "8.0",
    "phase": "phase_8",
    "name": "implementation_backlog_initialization",
@@ -7325,7 +7373,8 @@
     "write_file"
    ],
    "depends_on": [
-    "7.17"
+    "7.17",
+    "8.0ns"
    ],
    "may_need_clarification": false,
    "input_artifacts": [

@@ -1933,6 +1933,40 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "record_hypothesis":
+        # Z9 T4A — capture the mission's predicted metric impact as a
+        # pending hypotheses row at Phase 7 spec finalization. Pure
+        # deterministic spec parsing, NO LLM.
+        from mr_roboto.executors.record_hypothesis import run as _rec_hyp
+        try:
+            res = await _rec_hyp(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"record_hypothesis: {res.get('error') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "inject_north_star":
+        # Z9 T4B — read the success_metrics artifact (i2p step 2.9) and
+        # merge north_star_metric + aarrr_metrics into mission.context so
+        # Phase 8+ feature-scoring steps see the north-star. Mechanical.
+        from mr_roboto.executors.inject_north_star import run as _inj_ns
+        try:
+            res = await _inj_ns(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"inject_north_star: {res.get('error') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "monitoring_check":
         from mr_roboto.executors.monitoring_check import run as monitoring_check_run
         try:

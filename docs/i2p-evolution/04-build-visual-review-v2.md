@@ -7,6 +7,19 @@ end-to-end, fixes 8 stale claims and 6 schema-level errors, picks the posthook s
 actual `PostHookSpec` / `MissionDialContext` API, and lays out a batched tier plan that piggybacks
 on existing infra.
 
+## Founder decisions (locked 2026-05-15)
+
+These are settled — the tier plan and gaps below are written to honor them.
+
+1. **No `visual_dial`.** Visual review is a normal task, not a founder-toggled one. It auto-wires on any step producing frontend files (like `grounding` / `test_run`), soft-skips when no real preview URL. → `auto_wire_triggers` is a static glob list, not a dial-gated callable. G6 (dial registration) is **deleted**.
+2. **No special cost handling.** visual_review goes through Beckman like every task — same mission budget, same Fatih Hoca model selection by cost/quality. No per-mission visual budget, no z6 cost-ack. The old G "cost ceiling" concern is dropped.
+3. **Strict severity thresholds.** Color ΔE > 4 → blocker; element shift > 2px → blocker; missing named component → blocker; **wrong font size → blocker** (promoted from warning); shadow/micro-spacing → info. Tunable in `.kutay/visual.yaml`; strict is the default.
+4. **Founder approves every first frame**, at **per-breakpoint** granularity — Telegram surfaces each width (375/768/1280/1920) separately; founder can approve desktop and reject mobile. No auto-save of first frame as baseline.
+5. **Breakpoints: 375 / 768 / 1280 / 1920.**
+6. **Both light AND dark mode captured, always.** 2 modes × 4 breakpoints = 8 captures + 8 vision calls per route per step. Not opt-in.
+7. **Diff/audit prompts: agent drafts, no founder review checkpoint.** T2 does not pause.
+8. Low-stakes defaults (agent-decided): keep `visual_reviewer` agent class for ad-hoc `/task`; extend `analyze_image` signature (not a new tool); keep `.visual/captured/` in workspace, no rotation; cross-mission baselines repo-committed at `.visual_baseline/` (git LFS if it grows); `mission_lessons` dedup_key route-scoped `frontend:visual:{route}:{component}:{kind}`; retry budget = 3 (same as other heavy posthooks); PII redaction via `[data-pii]` overlay, per-step opt-out; framework inference Next-style in T1, others T5; Telegram WebP thumbnails ≤80KB, one album per step.
+
 ## What changed since v1
 
 Hard-audit of the tree on 2026-05-15 (`grep -rn` over `packages/` and `src/`; read of
@@ -35,8 +48,8 @@ These are mistakes in the prior v2 surface I'd written, caught by the deeper aud
 2. **`PostHookSpec` has no `blockers`, `requires_inputs`, `skip_when_pending_inputs`, or `auto_wire_on_produces` fields.** Real fields: `kind`, `verb`, `default_severity`, `cost_band`, `auto_wire_triggers`, `description`. Pending-URL handling is the verb's responsibility (run_axe.py:134 `if not _is_real_url(preview_url): ... skipped=True`); not a registry field.
 3. **`auto_wire_triggers` callable form** receives `MissionDialContext | dict | None`; resolved via `_dial_get(ctx, key, default)` helper (posthooks.py:195). The dial-off case returns `[]` to suppress wiring entirely.
 4. **Severity vocab inside findings**: `blocker | warning | info` — matches run_axe. Driver-level severities (critical/serious/moderate/minor in axe) are mapped via `_impact_to_severity`. visual_review needs an equivalent: map model's 4-tier verdict → 3-tier finding severity.
-5. **Dial registration**: `visual_dial` doesn't exist. Add to `_ALLOWED` (`src/workflows/review_density.py:30`) + `ReviewDensityDials` dataclass (line 42) + `MissionDialContext` (posthooks.py:18). `accessibility_dial` is the precedent.
-6. **`analyze_image` signature** takes ONE filepath (vision.py:7). For (captured, baseline) pair diff, either extend to accept `list[str]` (build multi-image messages array) or write a sibling `compare_images`. Extending is cleaner — single tool serves single-image audit + pairwise diff. visual_brief.md ingest already passes a single image, so backward-compat via positional kwarg.
+5. ~~Dial registration~~ — **moot**: founder decision 1 dropped `visual_dial`. visual_review auto-wires unconditionally on frontend globs (static list). No `MissionDialContext` / `review_density.py` edits needed.
+6. **`analyze_image` signature** takes ONE filepath (vision.py:7). For (captured, baseline) pair diff, extend to accept `list[str]` (build multi-image messages array). Single tool serves single-image audit + pairwise diff; backward-compat via positional kwarg. (Decision 8: extend, not a new tool.)
 
 ## What stays from v1
 
@@ -82,7 +95,7 @@ These are mistakes in the prior v2 surface I'd written, caught by the deeper aud
 - For each (captured, baseline) pair: ONE vision call via `analyze_image(filepaths=[captured, baseline], question=DIFF_PROMPT)` returning structured JSON.
 - For frames without baseline (first frame in mission): single-image audit `analyze_image(filepaths=[captured], question=AUDIT_PROMPT)`. Same call site, different prompt.
 - Parse JSON → finding dicts shaped `{severity, file, url, impact, why, source, kind, component, breakpoint, route, expected, observed}`.
-- Apply local severity rules over model-emitted hints: color delta-E > 8 → blocker; layout shift > 4px → blocker; named-component-missing → blocker; brand-token violation → blocker; typography off-scale → warning; shadow/micro-spacing → info.
+- Apply local severity rules over model-emitted hints (STRICT — founder decision 3): color ΔE > 4 → blocker; layout shift > 2px → blocker; named-component-missing → blocker; brand-token violation → blocker; wrong font size → blocker; shadow/micro-spacing → info. Thresholds in `.kutay/visual.yaml`.
 - `has_blocker = any(f["severity"]=="blocker" for f in findings)`; `verdict = "fail" if has_blocker else "pass"`.
 - Soft-skip path for `vision_capability_unavailable` (reuse `_is_vision_capability_unavailable` from `ingest_visual.py:155` — import, don't copy).
 - Soft-skip path for no captured frames (G1 already skipped).
@@ -96,7 +109,7 @@ These are mistakes in the prior v2 surface I'd written, caught by the deeper aud
 - No Storybook (Z1 lock).
 - Disk cleanup: `mission_{id}/.visual/captured/{step_id}/` retained per mission for replay; `kill_preview_url` does NOT touch `.visual/`.
 
-**G5. No `visual_review` PostHookSpec entry.** Concrete row to add to `posthooks.py::POST_HOOK_REGISTRY`:
+**G5. No `visual_review` PostHookSpec entry.** Concrete row to add to `posthooks.py::POST_HOOK_REGISTRY` (static auto-wire per founder decision 1 — no dial):
 
 ```python
 # Z4 T3A — visual_review against tunneled preview.
@@ -105,40 +118,30 @@ These are mistakes in the prior v2 surface I'd written, caught by the deeper aud
     verb="visual_review",
     default_severity="blocker",
     cost_band="heavy",
-    # Callable: when visual_dial=on → frontend globs; else empty.
-    # Accepts MissionDialContext OR dict OR None.
-    auto_wire_triggers=lambda ctx: (
-        ["*.tsx", "*.jsx", "*.vue", "*.svelte"]
-        if _dial_get(ctx, "visual_dial", "off") == "on"
-        else []
-    ),
+    # Always auto-wire on frontend produces. Verb soft-skips when no
+    # real preview URL — same as run_axe. No dial.
+    auto_wire_triggers=["*.tsx", "*.jsx", "*.vue", "*.svelte"],
     description=(
         "vision-model diff against tunneled preview URL. "
-        "blocker findings (color/layout/missing-component) → fail; "
-        "warning (typography) / info (shadow) do not block."
+        "blocker findings (color/layout/font-size/missing-component) → fail; "
+        "shadow/micro-spacing info does not block."
     ),
 ),
 ```
 
-**G6. No `visual_dial` in `MissionDialContext` or `ReviewDensityDials`.** Required edits:
-- `src/workflows/review_density.py:30` `_ALLOWED["visual_dial"] = {"on", "off"}`
-- `ReviewDensityDials` dataclass: add `visual_dial: str = "off"` (line 42)
-- `get_dials` loop at line 86: add `"visual_dial"` to the iteration key tuple
-- `packages/general_beckman/src/general_beckman/posthooks.py:18` `MissionDialContext` dataclass: add `visual_dial: str = "off"`
-- `to_mission_dial_context` mapper (line 182): include `visual_dial=dials.visual_dial`
-- Migration: existing rows return default `"off"`; no schema migration needed (JSON column).
+**G6.** ~~Deleted~~ — founder decision 1 dropped `visual_dial`. No `MissionDialContext` / `review_density.py` edits.
 
 **G7. No expander auto-wire for multi-file expansion.** When `multi_file_expansion=on`, the expander breaks template steps into per-file sub-tasks (Z3 T2). visual_review wired naively would fire per sub-file — N vision calls when 1 suffices. Mitigation: `integration_review` precedent — `auto_wire_triggers=[]` on registry, but expander injects on parent integration step. For visual_review: keep the auto_wire callable for non-multifile path; suppress wiring inside per-file sub-tasks; expander injects visual_review as sibling on the parent integration step. Add suppression flag to `_auto_wire_posthooks` or check `context.parent_step_id`.
 
 **G8. No posthook-fail retry context injection.** On visual_review fail, source frontend step retries — but without the visual diff, agent re-emits same broken code. Apply.py's retry path already feeds posthook output into source step's failure context (Z2 T6 pattern). visual_review must emit findings in the standard envelope; apply.py picks it up. Verify: trace `_apply_posthook_verdict` → ensure findings appear in retry context as `visual_diff` (named) so agent prompt builder can render them.
 
-**G9. No founder action for baseline approval.** Z2 T6 founder_actions pattern (z6_admission) tracks `founder_actions_emitted` but per-action registry not yet enumerated. Net-add Telegram command `/approve_baseline {mission_id} {step_id}` that copies `mission_{id}/.visual/captured/{step_id}/*.png` → `mission_{id}/.visual/baseline/`. Best place: extend `src/app/telegram_bot.py` command handlers OR add to z6 founder_actions registry (preferred if registry exists; check before T4).
+**G9. No founder action for baseline approval.** Founder decision 4: approval is **per-breakpoint** — so it cannot be a flat slash command, it needs an inline keyboard. Net-add: visual_review's Telegram album carries one approve button per (route, mode, breakpoint) frame; the callback copies that single captured frame → `mission_{id}/.visual/baseline/`. Best place: extend `src/app/telegram_bot.py` callback handler (the `handle_callback` path), reusing the `accessibility_review` surface precedent if one exists.
 
 **G10. No Telegram thread surface for visual diffs.** Each visual_review run emits a Telegram message with thumbnails + structured summary. Bandwidth concern: 4 breakpoints × thumbnail ≈ 200KB/step. Compress to ≤80KB each (PNG → WebP, max dim 600px) before send. Place: `src/app/telegram_bot.py` posthook notification path (search for existing `accessibility_review` surface — likely the precedent).
 
 ### Founder-territory gaps (unchanged from v1)
 
-- Sprint-0 design baseline approval — first-frame manual approval via /approve_baseline.
+- Sprint-0 design baseline approval — every first frame approved per-breakpoint via the Telegram inline keyboard.
 - Severity calibration ("this color is fine") — founder reaction in Telegram → `upsert_mission_lesson(stack="frontend", domain="visual", pattern=f"{component}:{kind}", lesson="...", source_kind="founder_reaction")`. dedup_key collapses repeated lessons.
 - Final taste call on ambiguous diffs — escalation via existing posthook needs_review surface (no new path).
 
@@ -151,15 +154,13 @@ These are mistakes in the prior v2 surface I'd written, caught by the deeper aud
     verb="visual_review",
     default_severity="blocker",
     cost_band="heavy",
-    auto_wire_triggers=lambda ctx: (
-        ["*.tsx", "*.jsx", "*.vue", "*.svelte"]
-        if _dial_get(ctx, "visual_dial", "off") == "on"
-        else []
-    ),
+    # Static — always auto-wire on frontend produces. No dial.
+    # Verb soft-skips when no real preview URL (run_axe pattern).
+    auto_wire_triggers=["*.tsx", "*.jsx", "*.vue", "*.svelte"],
     description=(
         "vision-model diff against tunneled preview URL. "
-        "Color/layout/missing-component blockers fail; typography "
-        "warnings + shadow info do not block."
+        "Color/layout/font-size/missing-component blockers fail; "
+        "shadow + micro-spacing info does not block."
     ),
 ),
 ```
@@ -190,7 +191,7 @@ These are mistakes in the prior v2 surface I'd written, caught by the deeper aud
    Rejected: integration_review already established the "fire on parent integration step, not per sub-task" pattern (posthooks.py:469, `auto_wire_triggers=[]` + expander-injected). visual_review follows same; auto-wire path fires only when not in multi-file sub-task.
 
 8. **Pin the vision model.**
-   Rejected: capabilities.py already requires `Cap.VISION=1.0` for `visual_reviewer` agent_type. Fatih Hoca's selector picks the best vision-capable model available per cost. Pinning would defeat per-mission cost dial. Cost ceiling enforcement: ~4 routes × 4 breakpoints × $0.005 ≈ $0.08/step × 20 frontend steps ≈ $1.60/mission. Heavy cost_band keeps it dial-gated by default.
+   Rejected: capabilities.py already requires `Cap.VISION=1.0` for `visual_reviewer` agent_type. Fatih Hoca's selector picks the best vision-capable model available per cost. Pinning would defeat cost-aware selection. Cost is just normal task budget (founder decision 2) — no special ceiling.
 
 9. **CSS-selector-cropped per-component capture in T1.**
    Rejected for T1; useful later. Default = full-page-per-breakpoint. Per-component (selector-based) extension lands in T5 if mission types demand it.
@@ -200,32 +201,32 @@ These are mistakes in the prior v2 surface I'd written, caught by the deeper aud
 ```
 step "build login form" (frontend code emit, produces ["src/pages/login.tsx"])
   │
-  │ expander auto-wires (visual_dial=on):
+  │ expander auto-wires (static — no dial):
   │   post_hooks = ["grounding", "visual_review", ...]
   │
   ├── mr_roboto: capture_screenshots (sibling mechanical, injected after step)
   │    reads: mission_{id}/.preview/last_preview_url.txt
   │    inputs: produces.routes (declared) OR inferred ("/login" from path)
-  │    output: mission_{id}/.visual/captured/{step_id}/login_{375,768,1280,1920}.png
+  │    output: mission_{id}/.visual/captured/{step_id}/login_{light,dark}_{375,768,1280,1920}.png
+  │            (2 modes × 4 breakpoints = 8 frames per route)
   │    soft-skip: not is_real_url(url) → {ok: true, skipped: true, reason: "no preview"}
   │
-  ├── posthook visual_review (cost-gated, dial-gated)
+  ├── posthook visual_review
   │    reads: captured paths + baseline paths (if any) + design_tokens artifact
   │    one vision call per (captured, baseline) pair via analyze_image(list, DIFF_PROMPT)
-  │    first-mission frames: single-image audit against tokens
-  │    output: {verdict, findings, skipped, reason}
+  │    no baseline yet → single-image audit against tokens + spec
+  │    output: {verdict, findings, skipped, reason}   (strict severity rules)
   │    on fail: source step retries with apply.py-injected `visual_diff` context
-  │              (rendered in agent prompt: "## Visual findings:\n- /login@375 ...")
+  │              (rendered in agent prompt: "## Visual findings:\n- /login@375 light ...")
   │
   └── on first-pass success: founder Telegram thread
-       message: thumbnails + structured summary
+       album: WebP thumbnails ≤80KB, one per (mode,breakpoint) + structured summary
+       per-breakpoint approve buttons (founder can approve desktop, reject mobile)
        reactions: 👍 / ❌ this color is fine / 🔧 broken
-       reactions → mission_lessons.upsert(stack="frontend", domain="visual",
-                                          pattern=f"{component}:{kind}",
-                                          dedup_key=auto)
-       founder /approve_baseline {mission_id} {step_id}:
-         copy mission_{id}/.visual/captured/{step_id}/*.png
-           → mission_{id}/.visual/baseline/
+       reactions → upsert_mission_lesson(stack="frontend", domain="visual",
+                                         pattern=f"{route}:{component}:{kind}")
+       founder approves a breakpoint:
+         copy that captured frame → mission_{id}/.visual/baseline/
 ```
 
 ## Determinism / flake mitigations (T1+T2 must include)
@@ -236,14 +237,14 @@ step "build login form" (frontend code emit, produces ["src/pages/login.tsx"])
 - **Random data** (UUID-shaped IDs, randomized order): pass deterministic seed via `add_init_script({Math.random})` stub. Configurable; default seed enabled.
 - **Font rendering jitter** (sub-pixel hinting): accepted noise; severity rules don't trigger on micro-diffs.
 - **Locale/timezone**: `page.context.set_default_timeout` + `Accept-Language: en-US`; document as known constraint.
-- **Light/dark mode**: capture light by default. If step declares `produces.color_modes: ["light", "dark"]`, capture both per breakpoint (2× cost).
+- **Light/dark mode**: capture BOTH always (founder decision 6) — `page.emulate_media({color_scheme})` for each. 2 modes × 4 breakpoints = 8 frames per route.
 - **Auth-gated routes**: if step declares `produces.requires_auth: true`, run scenario from `tests/e2e/*.spec.ts` (record_demo precedent at `_resolve_scenario_path`) to authenticate, then navigate. Otherwise default = unauthenticated.
 
 ## Privacy / security
 
 - **PII in screenshots**: test data may show realistic-looking emails/names. Mitigation: redact via Playwright `evaluate` overlay before capture (replace `[data-pii]` content with `█`); document as known risk for T2 unless step opts out.
 - **Secrets in URLs**: cloudflared URL contains opaque random subdomain; no token in path. preview_url.txt may contain pending placeholder strings — sanitized by `is_real_url` filter before logging.
-- **Vision API upload**: captured PNGs go to the vision provider (could be cloud — Claude Vision / GPT-4o per Fatih Hoca selection). Cloud uploads gated by `visual_dial=on` + `cost_band=heavy` + Telegram preview cost ack (z6).
+- **Vision API upload**: captured PNGs go to the vision provider (could be cloud — Claude Vision / GPT-4o per Fatih Hoca selection). Treated as a normal task cost; no extra gate (founder decision 2).
 
 ## Migration / order of operations
 
@@ -251,7 +252,7 @@ Net-add only. No deprecation.
 
 - `visual_reviewer` agent class stays callable via `/task visual_reviewer ...` for ad-hoc single-image audits and diagram review.
 - `analyze_image` extended to accept multi-image; backward-compatible (single-string filepath still works → wrap to list internally).
-- New posthook `visual_review` is opt-in via `visual_dial=on` (default off); existing missions see zero behavior change.
+- New posthook `visual_review` auto-wires on frontend produces and soft-skips when no preview URL — missions without a preview see no behavior change; missions with one get visual review for free.
 - New step field `produces.routes` is additive; expander falls back to glob-based inference when absent.
 
 ## Tier plan (batched, no pauses)
@@ -272,18 +273,17 @@ Founder does irreplaceable 10% (sprint-0 baseline approval, severity calibration
 - Tests: vision capability missing → skipped; first-frame audit (no baseline); diff happy path; degenerate vision output via dogru_mu_samet; structured finding parse.
 
 **T3 — Registry + auto-wire (CANONICAL-FIRST: T1+T2 must land to main before T3 dispatches per [canonical-first-for-tier3plus](../../../memory/feedback_canonical_first_for_tier3plus.md)).**
-- T3A. `visual_review` PostHookSpec entry in `posthooks.py::POST_HOOK_REGISTRY`.
-- T3B. `visual_dial` added to `_ALLOWED` (review_density.py), `ReviewDensityDials` dataclass, `MissionDialContext`, `to_mission_dial_context`. `/density` Telegram command surfaces it.
-- T3C. Expander auto-wire test against frontend globs with `visual_dial=on` → wires; with `off` → no wire.
-- T3D. Multi-file expansion suppression — wire visual_review on parent integration step only (not per sub-file). Reuses `integration_review` injection point.
-- T3E. apply.py retry-context injection: ensure visual_review findings flow into source step retry as `visual_diff` named context. (Likely already works via generic posthook-fail path; T3E = verification + test, not new code.)
+- T3A. `visual_review` PostHookSpec entry in `posthooks.py::POST_HOOK_REGISTRY` — static `auto_wire_triggers` (no dial per founder decision 1).
+- T3B. Expander auto-wire test against frontend globs → always wires; soft-skip verified when no preview URL.
+- T3C. Multi-file expansion suppression — wire visual_review on parent integration step only (not per sub-file). Reuses `integration_review` injection point.
+- T3D. apply.py retry-context injection: ensure visual_review findings flow into source step retry as `visual_diff` named context. (Likely already works via generic posthook-fail path; T3D = verification + test, not new code.)
 - Tests: registry kind count +1 (= 26 total); expander idempotency; sub-file suppression; retry context contains findings.
 
 **T4 — Founder loop.**
-- T4A. Telegram thread surface (Z10 cross-cutting): visual_review run emits message with WebP thumbnails (≤80KB each) + structured summary + reaction buttons.
-- T4B. `/approve_baseline {mission_id} {step_id}` Telegram command + handler: copy `mission_{id}/.visual/captured/{step_id}/*.png` → `mission_{id}/.visual/baseline/`. Idempotent.
-- T4C. Reaction handler → `upsert_mission_lesson(stack="frontend", domain="visual", pattern=f"{component}:{kind}", ...)`. Wire into existing reaction-callback infrastructure (search telegram_bot.py for `accessibility_review` reaction precedent).
-- Tests: thumbnail size cap, /approve_baseline idempotency, lesson dedup_key collision.
+- T4A. Telegram thread surface (Z10 cross-cutting): visual_review run emits an album of WebP thumbnails (≤80KB each, one per mode×breakpoint) + structured summary + **per-breakpoint** approve buttons (founder decision 4).
+- T4B. Baseline approval handler: founder approves a single (route, mode, breakpoint) frame → copy that captured frame → `mission_{id}/.visual/baseline/`. Per-breakpoint granular; idempotent. (Telegram callback button, not a slash command — granular approval needs the inline keyboard.)
+- T4C. Reaction handler → `upsert_mission_lesson(stack="frontend", domain="visual", pattern=f"{route}:{component}:{kind}", ...)` (route-scoped dedup_key per decision 8). Wire into existing reaction-callback infrastructure (search telegram_bot.py for `accessibility_review` reaction precedent).
+- Tests: thumbnail size cap, per-breakpoint approval idempotency, lesson dedup_key collision.
 
 **T5 — Cross-mission baseline + Z5 handoff.**
 - T5A. `.visual_baseline/` repo-root store + version control + `tokens_changed` detection (hash `design_tokens.json` at extract time).
@@ -309,7 +309,7 @@ Founder does irreplaceable 10% (sprint-0 baseline approval, severity calibration
 - **Per-route inference per framework.** Next.js, Remix, SvelteKit each have different routing conventions. T1B will need a small table. Punt: hardcode Next-style (`pages/foo.tsx` → `/foo`, `app/foo/page.tsx` → `/foo`) in T1; extend in T5 if needed.
 - **Container vs host playwright.** Locked to host (public cloudflared URL). Founder local debugging can run host-direct without container assumption.
 - **Baseline drift after token change.** Hash `design_tokens.json` at extract time; mismatch → regenerate cross-mission baselines (T5A). Per-mission baselines stay (founder-approved per mission).
-- **Cost ceiling per mission.** ~4 routes × 4 breakpoints × ~$0.005 ≈ $0.08/step × ~20 frontend steps ≈ $1.60/mission. `cost_band=heavy` + `visual_dial=off` default keeps it gated. Per-mission ceiling enforced via existing z6_admission cost-ack on `heavy` posthooks (memory `[Z6 COMPLETE]`).
+- **Cost.** Resolved (founder decision 2) — visual review is a normal task on the normal mission budget; Fatih Hoca picks the model by cost/quality. Rough scale: ~routes × 8 frames (2 modes × 4 breakpoints) × one vision call each. No special ceiling, no ack.
 - **CSS-selector crop vs full-page.** Default full-page in T1; selector crop opt-in via `produces.components` in T5.
 - **Cross-browser.** Only Chromium in T1 (matches record_demo). Firefox/WebKit capture deferred.
 - **Auth scenarios.** Reuse `tests/e2e/*.spec.ts` per record_demo's `_resolve_scenario_path`. If absent and step needs auth, soft-skip with `requires_auth: scenario_missing` reason.
@@ -327,4 +327,12 @@ Founder does irreplaceable 10% (sprint-0 baseline approval, severity calibration
 
 ## Updates
 
-- 2026-05-15 — v2 written. Re-audit corrected 8 stale v1 claims + 6 schema-level errors in the prior v2 draft (cost_band literal, PostHookSpec field names, severity vocab, dial registration, analyze_image signature, multi-file expansion injection). Concrete file paths + line numbers throughout. Tier plan replaces v1 Phase A–D. Adjacent infra (preview_url, ingest_visual, run_axe template, mission_lessons, cost_band, dial-aware auto_wire) all shipped; remaining work is two mechanicals + one `analyze_image` extension + one PostHookSpec + new `visual_dial` field + auto-wire suppression for multi-file + founder loop. Cost math: ~$1.60/mission worst case at heavy cost_band, dial-off by default.
+- 2026-05-15 — v2 written. Re-audit corrected 8 stale v1 claims + 6 schema-level errors in the prior v2 draft (cost_band literal, PostHookSpec field names, severity vocab, dial registration, analyze_image signature, multi-file expansion injection). Concrete file paths + line numbers throughout. Tier plan replaces v1 Phase A–D.
+- 2026-05-15 — founder decisions locked (see "Founder decisions" section): no `visual_dial` (always auto-wire), no special cost handling (normal task budget), STRICT severity (ΔE>4 / >2px / font-size all block), per-breakpoint first-frame approval, breakpoints 375/768/1280/1920, both light+dark always, agent drafts prompts with no review checkpoint. G6 deleted; auto_wire is a static glob list; T3 dropped the dial-registration sub-task.
+- 2026-05-16 — **Z4 COMPLETE.** All 5 tiers shipped. 101 Z4 tests pass.
+  - T1 — `capture_screenshots` verb (8 frames/route, host playwright, determinism injection) + `produces.routes` schema + `_infer_routes_from_produces`. Commit 6ebb5446 (merge).
+  - T2 — `analyze_image` multi-image extension + `visual_review` verb (run_axe-shaped envelope, strict severity, DIFF/AUDIT modes) + `.kutay/visual.yaml`. Commit b0c517e1.
+  - T3 — `visual_review` PostHookSpec (static auto-wire on frontend globs) + apply.py wiring (`_posthook_agent_and_payload` branch + both kind tuples) + self-capture (verb calls `capture_screenshots` when no `captured_paths`). Commits 8dac5fee→7e7fcf23. T3F (multi-file suppression) skipped — soft-skips harmlessly on previewless sub-tasks.
+  - T4 — `_visual_review_notify` verb (WebP album ≤80KB, per-breakpoint approve buttons) + `visrev:approve` / `visrev:cal` Telegram callbacks → baseline copy + `upsert_mission_lesson`. Commits 2163e349, f880e3dd, 55223ad3 (+ Pillow dep, `captured_paths` in verb result).
+  - T5 — cross-mission baseline store (`.visual_baseline/{token_hash}/`, repo-committed) + `tokens_changed` signal + per-component selector crop (opt-in) + `capture_mode="device"` Z5 stub. Commits 5f490111→e1015482.
+  - Known pre-existing breakage (NOT Z4): `get_artifact_store` missing from `src/workflows/engine/artifacts.py` — 12 importers + `test_clarify_variant` red. Out of Z4 scope.

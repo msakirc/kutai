@@ -3071,4 +3071,40 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "verdict_window_sweep":
+        # Z9 T4C — daily sweep of pending hypotheses; enqueues a
+        # record_verdict mechanical task for each closed measurement
+        # window. Mechanical orchestration only — NO direct LLM call.
+        from mr_roboto.executors.verdict_window_sweep import (
+            run as _verdict_sweep_run,
+        )
+        try:
+            res = await _verdict_sweep_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"verdict_window_sweep: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "record_verdict":
+        # Z9 T4D — pull the actual metric, compute a Bayesian verdict,
+        # persist it, mirror refuted/inconclusive to mission_lessons, and
+        # fire the reinforce loop on confirmed. Deterministic — no LLM.
+        from mr_roboto.executors.record_verdict import run as _record_verdict_run
+        try:
+            res = await _record_verdict_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"record_verdict: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

@@ -1,6 +1,6 @@
-# Katalog Recon — Real-world artifacts shape, quality, value
+# Yalayut Recon — Real-world artifacts shape, quality, value
 
-**Status:** recon (input to katalog synthesis pipeline lock-in)
+**Status:** recon (input to yalayut synthesis pipeline lock-in)
 **Date:** 2026-05-14 (filename keeps 05-11 per request)
 **Method:** Read GitHub raw contents directly via `curl https://api.github.com` (gh CLI unauthenticated in env, fell back to public REST + raw URLs). WebFetch used for awesome-list READMEs that don't render well as raw markdown. Sampled ~120 artifacts across 6 sources; read full body for ~12, frontmatter-only for the rest.
 
@@ -107,7 +107,7 @@ FLAG: high-value; we already ship coulson reflection for this; risk of duplicate
 
 # 4. using-superpowers
 RAW: description: "...establishes how to find and use skills..."
-SYN: REJECT — boilerplate meta-skill; circular import (we don't use superpowers tool, we use katalog)
+SYN: REJECT — boilerplate meta-skill; circular import (we don't use superpowers tool, we use yalayut)
 FLAG: NEGATIVE — vendor only at user request
 
 # 5. using-git-worktrees
@@ -319,7 +319,7 @@ SYN: REJECT
 FLAG: NEGATIVE — "humanize AI text" tools encode anti-LLM-fingerprinting tricks → adversarial to KutAI's quality grader
 ```
 
-**Adapter recommendation.** `github_topic` adapter with **2-stage trust gate**: (1) auto-vet only if owner ∈ trusted_set (anthropics, obra, matlab, vercel-labs, cloudflare, stripe, expo, openai, figma, huggingface); (2) all others enqueue to `katalog_pending`. LLM-fallback for description→intent_keywords on most. **Default T2 (require explicit approval per artifact).**
+**Adapter recommendation.** `github_topic` adapter with **2-stage trust gate**: (1) auto-vet only if owner ∈ trusted_set (anthropics, obra, matlab, vercel-labs, cloudflare, stripe, expo, openai, figma, huggingface); (2) all others enqueue to `yalayut_pending`. LLM-fallback for description→intent_keywords on most. **Default T2 (require explicit approval per artifact).**
 
 ---
 
@@ -327,14 +327,14 @@ FLAG: NEGATIVE — "humanize AI text" tools encode anti-LLM-fingerprinting trick
 
 ### Top-20 seed-manifest priorities (`usability × value`, ranked)
 
-Order = recommend ship in first katalog batch. All T0 unless noted.
+Order = recommend ship in first yalayut batch. All T0 unless noted.
 
 1. anthropics-pdf (extract/merge/split/forms — high freq in KutAI doc workflows)
 2. anthropics-docx (Turkish e-commerce docs, contract drafts)
 3. anthropics-xlsx (shopping comparison tables, mission reports)
 4. anthropics-pptx (presentation gen)
 5. anthropics-mcp-builder (we build MCPs; meta-leverage)
-6. anthropics-skill-creator (recursive: katalog can self-grow)
+6. anthropics-skill-creator (recursive: yalayut can self-grow)
 7. anthropics-claude-api (already in caveman plugin; cross-link not re-vendor)
 8. superpowers-brainstorming (matches existing brainstorming flow)
 9. superpowers-tdd (wire into coder agent reflection)
@@ -423,13 +423,13 @@ Realistic monthly inflow:
 
 ---
 
-## Synthesis impact on the katalog design doc
+## Synthesis impact on the yalayut design doc
 
 The 2026-05-09 design doc holds up well; recon refines a few points:
 
 1. **Manifest's `invocation.steps` is authored locally, not lifted.** Sampled SKILL.md files have NO `invocation` blocks. Our `shell_recipe` kind manifests will be **constructed by us** (or via LLM) from README scraping for cookiecutter / MCP install snippets. Confirm: that's already the design assumption — adapters synthesize manifests, they don't expect them on disk.
 
-2. **`name_original` must be a first-class manifest field.** Not in current schema. Add: `name_original TEXT` to `katalog_index`. Matcher embeds both name strings.
+2. **`name_original` must be a first-class manifest field.** Not in current schema. Add: `name_original TEXT` to `yalayut_index`. Matcher embeds both name strings.
 
 3. **Adapter count = 6, not 5.** Add `cookiecutter_template` as distinct from `github_path` (different parse logic — JSON not YAML frontmatter).
 
@@ -441,4 +441,4 @@ The 2026-05-09 design doc holds up well; recon refines a few points:
 
 7. **Awesome-cookiecutter list is unreliable / 404 at documented URL.** Either rebuild the list locally via `topic:cookiecutter-template` search OR drop awesome-list ingestion for cookiecutter entirely and seed templates manually. Recommend the latter for v1.
 
-No design-breaking issues. Recon validates the "lazy fetch + vet + plugin per artifact_type" core. Top-20 seed list above unblocks katalog v1 implementation.
+No design-breaking issues. Recon validates the "lazy fetch + vet + plugin per artifact_type" core. Top-20 seed list above unblocks yalayut v1 implementation.

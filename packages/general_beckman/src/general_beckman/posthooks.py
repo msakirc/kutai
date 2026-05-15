@@ -596,6 +596,62 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "and scan produced files for forbidden imports/patterns/coverage gaps."
         ),
     ),
+    # ── Z7 T1.0: humanish-layers posthook reservations ──────────────────────
+    # Four new kinds, each with an isolated stub handler in
+    # posthook_handlers/<kind>.py so parallel feature agents (A0, A5, A6,
+    # B5/B9) can each edit exactly one file without merge conflicts.
+    # All are opt-in (no auto_wire_triggers) — workflows declare them
+    # explicitly on steps that produce outbound copy / briefing artifacts.
+    "briefing_compose": PostHookSpec(
+        kind="briefing_compose",
+        verb="briefing_compose",
+        default_severity="warning",   # advisory; doesn't block the source step
+        cost_band="moderate",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T1.0 (A0): compose a mission briefing row in mission_briefings "
+            "for the founder after a major milestone completes. "
+            "Stub handler: posthook_handlers/briefing_compose.py."
+        ),
+    ),
+    "brand_voice_lint": PostHookSpec(
+        kind="brand_voice_lint",
+        verb="brand_voice_lint",
+        default_severity="blocker",
+        cost_band="moderate",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T1.0 (A5): lint produced copy artifacts against brand-voice rules "
+            "from docs/templates/brand_voices/. Fails on prohibited terms or "
+            "out-of-range Flesch-Kincaid/sentence-length. "
+            "Stub handler: posthook_handlers/brand_voice_lint.py."
+        ),
+    ),
+    "copy_compliance_review": PostHookSpec(
+        kind="copy_compliance_review",
+        verb="copy_compliance_review",
+        default_severity="blocker",
+        cost_band="moderate",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T1.0 (A6): review produced copy for channel-specific compliance "
+            "(disclaimers, banned words, max-length) using "
+            "docs/templates/channel_rules/. "
+            "Stub handler: posthook_handlers/copy_compliance_review.py."
+        ),
+    ),
+    "audit_completeness_check": PostHookSpec(
+        kind="audit_completeness_check",
+        verb="audit_completeness_check",
+        default_severity="warning",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T1.0 (B5/B9): assert all required briefing and external_comms_log "
+            "rows were emitted for the mission; surface gaps to founder. "
+            "Stub handler: posthook_handlers/audit_completeness_check.py."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

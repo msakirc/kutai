@@ -2780,6 +2780,158 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T1.0: humanish-layers foundation schema ────────────────────────────
+    # product_id convention: TEXT column = root mission_id of the i2p mission
+    # that produced the product. No formal product entity exists; this is an
+    # app-level FK (TEXT, not INTEGER, to future-proof non-sequential IDs).
+
+    # 1. mission_briefings — daily/completion briefings summarising what the
+    #    system did so the founder can stay informed without reading raw logs.
+    await apply_migration(
+        version="2026-05-15-z7-mission-briefings",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS mission_briefings ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            # product_id = root i2p mission id (TEXT; app-level FK to missions.id)
+            " product_id TEXT NOT NULL,"
+            " mission_id TEXT,"
+            " kind TEXT NOT NULL,"        # 'completion' | 'daily'
+            " body_md TEXT,"
+            " founder_minutes_saved_estimate INTEGER,"
+            " prepared_at TIMESTAMP,"
+            " read_at TIMESTAMP,"         # nullable — NULL = not yet read
+            " acted_on TEXT"              # JSON blob, nullable
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_mission_briefings_product_prepared "
+            "ON mission_briefings(product_id, prepared_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_mission_briefings_product_prepared;\n"
+            "DROP TABLE IF EXISTS mission_briefings;\n"
+        ),
+        description=(
+            "Z7 T1.0: mission_briefings table (kind=completion|daily). "
+            "product_id = root i2p mission id (TEXT app-level FK). "
+            "founder_minutes_saved_estimate tracks ROI of automation."
+        ),
+    )
+
+    # 2. external_comms_log — immutable audit trail for every outbound
+    #    communication (email, tweet, blog post, press release, etc.).
+    #    content_md stores gzip+base64 of the body to keep the row compact.
+    #    reversibility mirrors founder_actions (full|partial|irreversible).
+    await apply_migration(
+        version="2026-05-15-z7-external-comms-log",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS external_comms_log ("
+            " log_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id TEXT NOT NULL,"
+            " sent_at TIMESTAMP,"
+            " channel TEXT NOT NULL,"     # see VALID_CHANNELS in app code
+            " recipient TEXT,"            # nullable (broadcast channels)
+            " recipient_count INTEGER DEFAULT 1,"
+            " content_hash TEXT,"
+            " content_md TEXT,"           # gzip+base64 of body
+            " source_mission_id TEXT,"
+            " source_action_id INTEGER,"
+            " vendor_call_id INTEGER,"    # FK action_confirmations.id (app-level)
+            " reversibility TEXT,"        # full|partial|irreversible
+            " revoked_at TIMESTAMP,"
+            " revoke_reason TEXT"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_external_comms_log_product_sent "
+            "ON external_comms_log(product_id, sent_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_external_comms_log_content_hash "
+            "ON external_comms_log(content_hash);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_external_comms_log_content_hash;\n"
+            "DROP INDEX IF EXISTS idx_external_comms_log_product_sent;\n"
+            "DROP TABLE IF EXISTS external_comms_log;\n"
+        ),
+        description=(
+            "Z7 T1.0: external_comms_log — immutable audit trail for outbound "
+            "comms (email/tweet/reddit_post/hn_post/ph_post/linkedin_post/"
+            "press_release/blog_post/sms/webhook). content_md=gzip+b64 body."
+        ),
+    )
+
+    # 3. mission_events: add founder_minutes_saved column.
+    await apply_migration(
+        version="2026-05-15-z7-mission-events-minutes-saved",
+        sql=(
+            "ALTER TABLE mission_events "
+            "ADD COLUMN founder_minutes_saved INTEGER;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE mission_events "
+            "DROP COLUMN founder_minutes_saved;\n"
+        ),
+        description=(
+            "Z7 T1.0: mission_events.founder_minutes_saved (nullable INTEGER). "
+            "Set by the briefing_compose posthook after analysing what was done."
+        ),
+    )
+
+    # 4. founder_actions: add priority / defer_until / expires_at columns.
+    #    priority valid values: p0_blocking / p1_today / p2_this_week /
+    #    p3_when_idle — enforced by app code, not DB constraint (consistent
+    #    with repo style; see founder_actions module for the validation layer).
+    await apply_migration(
+        version="2026-05-15-z7-founder-actions-priority-defer",
+        sql=(
+            "ALTER TABLE founder_actions "
+            "ADD COLUMN priority TEXT DEFAULT 'p2_this_week';\n"
+            "ALTER TABLE founder_actions "
+            "ADD COLUMN defer_until TIMESTAMP;\n"
+            "ALTER TABLE founder_actions "
+            "ADD COLUMN expires_at TIMESTAMP;\n"
+        ),
+        reversal_sql=(
+            "ALTER TABLE founder_actions DROP COLUMN expires_at;\n"
+            "ALTER TABLE founder_actions DROP COLUMN defer_until;\n"
+            "ALTER TABLE founder_actions DROP COLUMN priority;\n"
+        ),
+        description=(
+            "Z7 T1.0: founder_actions.priority (p0_blocking|p1_today|"
+            "p2_this_week|p3_when_idle, default p2_this_week) + defer_until "
+            "(snooze timestamp) + expires_at (auto-cancel deadline). "
+            "Priority validated by app code, not CHECK constraint."
+        ),
+    )
+
+    # 5. founder_attention_log: add card_id / surfaced_at / acted_at /
+    #    deferred_to / attention_minutes columns.
+    #    card_id is an app-level FK to founder_actions.id; INTEGER, nullable
+    #    (legacy rows pre-date this column and have NULL card_id).
+    await apply_migration(
+        version="2026-05-15-z7-founder-attention-log-card",
+        sql=(
+            "ALTER TABLE founder_attention_log "
+            "ADD COLUMN card_id INTEGER;\n"           # FK founder_actions.id
+            "ALTER TABLE founder_attention_log "
+            "ADD COLUMN surfaced_at TIMESTAMP;\n"
+            "ALTER TABLE founder_attention_log "
+            "ADD COLUMN acted_at TIMESTAMP;\n"        # nullable
+            "ALTER TABLE founder_attention_log "
+            "ADD COLUMN deferred_to TIMESTAMP;\n"     # nullable
+            "ALTER TABLE founder_attention_log "
+            "ADD COLUMN attention_minutes INTEGER;\n"  # nullable
+        ),
+        reversal_sql=(
+            "ALTER TABLE founder_attention_log DROP COLUMN attention_minutes;\n"
+            "ALTER TABLE founder_attention_log DROP COLUMN deferred_to;\n"
+            "ALTER TABLE founder_attention_log DROP COLUMN acted_at;\n"
+            "ALTER TABLE founder_attention_log DROP COLUMN surfaced_at;\n"
+            "ALTER TABLE founder_attention_log DROP COLUMN card_id;\n"
+        ),
+        description=(
+            "Z7 T1.0: founder_attention_log extended for attention-UX: "
+            "card_id (FK founder_actions), surfaced_at, acted_at, deferred_to, "
+            "attention_minutes. Legacy rows remain valid (NULL in new columns)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

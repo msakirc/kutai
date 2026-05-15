@@ -301,6 +301,13 @@ def expand_steps_to_tasks(
                 p for p in produces if _is_valid_produces_entry(p)
             ]
 
+        # Optional URL routes for visual-capture steps (Z4 T1B).
+        # A step may declare `routes: ["/", "/about"]` alongside `produces` so
+        # the capture_screenshots verb skips Next.js inference entirely.
+        routes = step.get("routes")
+        if routes and isinstance(routes, list):
+            context["routes"] = [r for r in routes if isinstance(r, str) and r.strip()]
+
         # Post-hooks declared on the step. Combined with the default ["grade"]
         # (or [] when policy excludes it) by determine_posthooks.
         post_hooks = step.get("post_hooks")

@@ -87,6 +87,7 @@ from mr_roboto.extract_signatures import extract_signatures
 from mr_roboto.check_adr_drift import check_adr_drift  # Z3 T4B
 from mr_roboto.integration_replay import integration_replay  # Z3 T5
 from mr_roboto.integration_bisect import integration_bisect  # Z3 T5
+from mr_roboto.capture_screenshots import capture_screenshots  # Z4 T1A
 
 __all__ = [
     "Action",
@@ -140,6 +141,7 @@ __all__ = [
     "pick_recipe",
     "instantiate_recipe_verb",
     "extract_signatures",
+    "capture_screenshots",
 ]
 
 

@@ -262,9 +262,11 @@ async def visual_review(
     *,
     mission_id: int,
     step_id: str,
-    captured_paths: list[str],
+    captured_paths: list[str] | None = None,
     baseline_dir: str | None = None,
     workspace_path: str | None = None,
+    routes: list[str] | None = None,
+    produces: list[str] | None = None,
 ) -> dict[str, Any]:
     """Visual diff / audit verb.
 
@@ -275,21 +277,45 @@ async def visual_review(
     step_id:
         Workflow step identifier (used for logging).
     captured_paths:
-        List of absolute paths to captured screenshot files.
+        List of absolute paths to captured screenshot files.  When empty or
+        ``None``, ``capture_screenshots`` is called automatically (T3C).
     baseline_dir:
         Directory containing baseline PNG files. Defaults to
         ``mission_{id}/.visual/baseline/`` under WORKSPACE_DIR.
     workspace_path:
         Override for WORKSPACE_DIR (used in tests / custom setups).
+    routes:
+        Explicit URL routes to capture (forwarded to ``capture_screenshots``
+        when self-capture is triggered).  Ignored when ``captured_paths`` is
+        already provided.
+    produces:
+        Step produces list (forwarded to ``capture_screenshots`` so it can
+        infer Next.js routes).  Ignored when ``captured_paths`` is provided.
 
     Returns
     -------
     dict with keys: ``verdict``, ``findings``, ``skipped``, ``reason`` (if skipped).
     """
     if not captured_paths:
-        reason = "no captured screenshots"
-        logger.warning("visual_review soft-skip: %s (step=%s)", reason, step_id)
-        return {"verdict": "pass", "findings": [], "skipped": True, "reason": reason}
+        # T3C — auto-capture: call capture_screenshots when no paths provided.
+        from mr_roboto.capture_screenshots import (  # lazy; avoids import cycle
+            capture_screenshots as _capture,
+        )
+        cap_result = await _capture(
+            mission_id=mission_id,
+            step_id=step_id,
+            routes=routes,
+            produces=produces,
+            workspace_path=workspace_path,
+        )
+        if cap_result.get("skipped") or not cap_result.get("captured_paths"):
+            skip_reason = cap_result.get("reason") or "no preview"
+            logger.warning(
+                "visual_review soft-skip: capture skipped (%s) step=%s",
+                skip_reason, step_id,
+            )
+            return {"verdict": "pass", "findings": [], "skipped": True, "reason": "no preview"}
+        captured_paths = cap_result["captured_paths"]
 
     # Load thresholds from .kutay/visual.yaml
     thresholds = _load_thresholds()

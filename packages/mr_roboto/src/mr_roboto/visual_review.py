@@ -342,6 +342,27 @@ async def visual_review(
     except Exception as exc:
         logger.debug("visual_review: artifact load failed (best-effort): %s", exc)
 
+    # T5A — compute token hash + write it; build cross-mission baseline dir.
+    from mr_roboto.visual_baseline import (  # lazy — keeps import cheap
+        token_hash as _token_hash,
+        cross_mission_baseline_dir as _cross_mission_baseline_dir,
+        tokens_changed as _tokens_changed,
+        _write_token_hash,
+    )
+    thash = _token_hash(design_tokens)
+    # Derive repo root: packages/mr_roboto/src/mr_roboto → climb 4 levels
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _repo_root = _here
+    for _ in range(4):
+        _repo_root = os.path.dirname(_repo_root)
+    _cross_dir: str | None = _cross_mission_baseline_dir(_repo_root, thash)
+
+    # Persist token hash + warn when it changed.
+    _ws_for_hash = os.path.join(workspace_path, f"mission_{mission_id}")
+    if _tokens_changed(_ws_for_hash, thash):
+        pass  # warning already logged by tokens_changed
+    _write_token_hash(_ws_for_hash, thash)
+
     # Build enriched AUDIT prompt with spec context if available
     audit_prompt = _build_audit_prompt(design_tokens, screen_specs)
 
@@ -374,8 +395,14 @@ async def visual_review(
     for captured_path in captured_paths:
         file_meta = _parse_filename(captured_path)
 
-        # Determine mode: DIFF if baseline exists, AUDIT otherwise
-        baseline_path = _find_baseline(captured_path, baseline_dir)
+        # Determine mode: DIFF if baseline exists, AUDIT otherwise.
+        # T5A: resolution order — per-mission baseline → cross-mission → None (AUDIT)
+        from mr_roboto.visual_baseline import resolve_baseline as _resolve_baseline
+        baseline_path = _resolve_baseline(
+            os.path.basename(captured_path),
+            mission_baseline_dir=baseline_dir,
+            cross_dir=_cross_dir,
+        )
 
         if baseline_path is not None:
             # DIFF mode: compare captured vs baseline

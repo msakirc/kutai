@@ -55,7 +55,7 @@ success_metrics {
 | Table | Status | Z9 use |
 |---|---|---|
 | `model_pick_log` | shipped | template for hypothesis_log shape |
-| `recipe_pick_log` | shipped (Z2 T6F) | bind recipe→outcome for sunset scoring |
+| `recipe_pin_log` | shipped (Z2 T6F) | bind recipe→outcome for sunset scoring |
 | `mission_lessons` | shipped (Z2 T4) | mirror verdict-side of hypotheses |
 | `scheduled_tasks` + `registry_events` | shipped (Z8) | cron + event log |
 | `cost_budgets` (per-scope) | shipped | hypothesis cost gating per mission |
@@ -84,14 +84,14 @@ Existing kinds Z9 leverages: `find_similar_missions`, `surface_prior_mission_hin
 |---|---|---|---|
 | 1 | "phase 14 ends the workflow" | Phase 15 exists with 17 stubs; Phase 13.4 has analytics_integration stub | Z9 implements existing stubs, claims 10 of them; invents no new phase |
 | 2 | "step ~2.5 success_metrics" | Actually step 2.9 | corrected refs throughout |
-| 3 | "no analytics" | true outward; self-analytics (model_pick_log/recipe_pick_log/mission_lessons) is the pattern to mirror | mirror outward + add "internal health" section in digest |
+| 3 | "no analytics" | true outward; self-analytics (model_pick_log/recipe_pin_log/mission_lessons) is the pattern to mirror | mirror outward + add "internal health" section in digest |
 | 4 | "no hypothesis registry" | true — but mission_lessons is verdict store | narrow hypotheses table for prediction-side; verdicts mirror to mission_lessons (`source_kind="hypothesis_verdict"`, dedup_key=feature+metric) |
 | 5 | "Posthog adapter needed" | Z6 vendor_call + IntegrationRegistry ready | one IntegrationRegistry entry + recipe template; no new infra |
 | 6 | "weekly cron infra needed" | Z8 shipped mission_cron + scheduled_tasks; action dispatch is free-form | one `mission_cron.arm("analytics_digest", 604800)` call |
 | 7 | "A/B harness Phase C" | premature without trust in digest loop + cohort framing | move A/B to **T5**, gate behind founder /experiment_enable opt-in |
 | 8 | "cost transparency cross to Z10" | Z3 cost_band already buckets cheap/moderate/heavy in posthooks; Z10 done | thread cost_band × north_star_relevance into hypothesis scoring NOW |
 | 9 | "no cohort awareness" | mission.context is free-form JSON — no migration to add target_segment | additive only; warn-only validator |
-| 10 | "feature lifecycle absent" | true — but recipe_pick_log + model_pick_log are the data sources for usage analysis | sunset scorer queries existing logs, no new tracking |
+| 10 | "feature lifecycle absent" | true — but recipe_pin_log + model_pick_log are the data sources for usage analysis | sunset scorer queries existing logs, no new tracking |
 | 11 | "8.0 backlog one-shot" | true; DLQ /dead /revive is manual | T3 backlog-from-signal cron rewrites at every digest cycle |
 | 12 | (missing) | Telegram /digest already exists | T2 **extends** /digest with growth section; no command collision |
 | 13 | (missing) | Sentry webhook intake shipped (Z8) | T3 signal classifier subscribes to same webhook stream |
@@ -244,7 +244,7 @@ Founder track: /hypothesis lists pending + recent verdicts; /confirm <id> gates 
 
 **T5C — Phase 15.15 technical_debt_tracking + 15.16 roadmap_update (sunset + north-star sync).**
 - Sunset scorer (cron `sunset_score_recompute` weekly):
-  - Query `recipe_pick_log` + `growth_events` for feature usage in last 30d
+  - Query `recipe_pin_log` + `growth_events` for feature usage in last 30d
   - Score: `feature_usage_rate × maintenance_cost_band`; below threshold → surface as sunset candidate
   - Telegram /sunset lists candidates; founder /approve_sunset → mission spawn for deprecation
 - Roadmap sync: weekly read of success_metrics; if north-star definition changed, prompt founder for refinement
@@ -344,6 +344,21 @@ Every event auto-attaches: `mission_id`, `feature_id`, `variant` (if T5 active),
 - PII handling → **redact at intake, aggregates-only downstream** (resolved)
 - A/B harness default → **default-on once T5 lands** (founder decision 2026-05-15); every feature ships behind flag; /experiment_disable to opt out per mission; supersedes earlier opt-in framing
 - Hypothesis scope → **all Phase 8+ missions** (founder decision 2026-05-15); every mission predicts impact; bug-fixes/perf/refactor missions also predict (e.g. "fix conversion drop X%"); classifier-asks model rejected to avoid LLM-per-spec cost
+
+### Secondary decisions (founder-accepted 2026-05-15)
+
+- Vault for posthog keys → **env var pattern** (`KUTAI_<PROVIDER>_API_KEY`); central vault deferred until multi-product
+- Mock mode default → **always-mock when `KUTAI_ENV != prod`**; `KUTAI_VENDOR_LIVE=1` forces real calls
+- PII redaction scope → **emails + IPs + addresses + phones**; UUIDs stay (recipe-controlled if sensitive)
+- DLQ feedback hook frequency → **weekly** (aligns with digest cycle)
+- Self-analytics in digest → **default-visible compact**; founder `/digest_brief` hides internal-health section
+- Reinforce-loop strength → confirmed verdict bumps `model_pick_log` score **+0.05 with 50%-per-30d decay** (old wins fade)
+- A/B flag adapter → **posthog flags v1**; GrowthBook adapter deferred until cohort targeting needed
+- Sunset threshold → **<1% usage + non-zero cost** v1; founder-configurable
+- Recipe sunset → **features only v1**; recipe-template sunset deferred to future Z9-T6 if `recipe_pin_log` shows bad templates
+- B2B event level → attach **both `account_id` + `user_id`** when business_model=b2b
+- Pricing A/B confirmation → **full-params typed confirm** (`/confirm pricing <amount> <interval> <window>`) per [[project_z10_complete]] irreversible_money
+- Cost ceiling per Z9 cron mission → **inherit Z10 mission ceiling**; founder `/budget_cap_growth` if Z9 over-burns
 
 ## Agent task brief (T1 dispatch)
 

@@ -12,8 +12,10 @@ Score formula (inspectable — the breakdown is stored on every candidate)::
             × age_decay / cost_band_weight
 
   - frequency           = count of signals in the (label, domain) cluster
-  - revenue_impact      = heuristic weight from the label
-  - north_star_relevance= 0..1 from the mission success_metrics, else 0.5
+  - revenue_impact      = heuristic weight from the label; Z9 T5B picks a
+                          b2b / b2c / hybrid table by mission.business_model
+  - north_star_relevance= 0..1 from the mission success_metrics, else 0.5,
+                          scaled by a b2b/b2c/hybrid multiplier (Z9 T5B)
   - age_decay           = recency weight, 1.0 (today) decaying toward ~0.3
   - cost_band_weight    = cheap=1, moderate=2, heavy=3 (label/domain estimate)
 
@@ -51,6 +53,9 @@ _DEFAULT_TOP_N = 10
 # Revenue-impact heuristic per label. pricing_feedback / churn_signal hit the
 # wallet directly; bugs hurt retention; feature requests are upside; praise
 # and spam carry ~no backlog value.
+#
+# This is the B2C-default table — kept as the module-level constant so legacy
+# callers and tests that don't pass a business_model see unchanged behaviour.
 _REVENUE_IMPACT = {
     "churn_signal": 1.0,
     "pricing_feedback": 0.9,
@@ -59,6 +64,48 @@ _REVENUE_IMPACT = {
     "praise": 0.05,
     "spam": 0.0,
 }
+
+# Z9 T5B — business-model-aware revenue-impact tables. B2B revenue is
+# concentrated (one churned account = many lost seats / large MRR), so churn
+# and pricing dominate even harder, and a single bug can threaten a renewal.
+# B2C revenue is diffuse and volume-driven, so feature requests (top-of-funnel
+# growth) carry relatively more weight. "hybrid" sits between the two.
+_REVENUE_IMPACT_BY_MODEL = {
+    "b2b": {
+        "churn_signal": 1.0,
+        "pricing_feedback": 0.95,
+        "bug": 0.85,
+        "feature_request": 0.42,
+        "praise": 0.05,
+        "spam": 0.0,
+    },
+    "b2c": dict(_REVENUE_IMPACT),
+    "hybrid": {
+        "churn_signal": 1.0,
+        "pricing_feedback": 0.92,
+        "bug": 0.78,
+        "feature_request": 0.46,
+        "praise": 0.05,
+        "spam": 0.0,
+    },
+}
+
+# Z9 T5B — business-model relevance multiplier applied to north_star_relevance.
+# B2B north-stars (MRR / seats / churn) align tightly with the same churn /
+# pricing signals the classifier surfaces, so backlog clusters score as more
+# north-star-relevant; B2C is the 1.0 baseline. Kept modest (< 1.11) so the
+# per-label revenue_impact ordering still dominates the score.
+_NORTH_STAR_MODEL_WEIGHT = {
+    "b2b": 1.08,
+    "b2c": 1.0,
+    "hybrid": 1.04,
+}
+
+
+def _normalize_business_model(value) -> str:
+    """Coerce a raw business_model value to b2b | b2c | hybrid (default b2c)."""
+    bm = str(value or "").strip().lower()
+    return bm if bm in ("b2b", "b2c", "hybrid") else "b2c"
 
 # Cost-band estimate per label — how expensive the resulting mission is.
 # bugs are usually cheap point-fixes; feature work is heavy.
@@ -108,21 +155,26 @@ def _cost_band(label: str, domain: str) -> str:
     return band
 
 
-async def _north_star_relevance(mission_id) -> float:
-    """0..1 relevance pulled from the mission success_metrics, else 0.5.
+async def _north_star_and_model(mission_id) -> tuple[float, str]:
+    """Return ``(north_star_relevance, business_model)`` for the mission.
 
     success_metrics lives in mission.context (artifact from step 2.9). When
     a north_star_metric is defined the cluster is treated as more relevant
     (0.8); a bare success_metrics block yields 0.65; nothing → 0.5 default.
+
+    Z9 T5B — business_model is read from mission.context['business_model']
+    or success_metrics.business_model, defaulting to 'b2c'.
     """
     if mission_id is None:
-        return 0.5
+        return 0.5, "b2c"
+    relevance = 0.5
+    business_model = "b2c"
     try:
         from src.infra.db import get_mission
 
         mission = await get_mission(mission_id)
         if not mission:
-            return 0.5
+            return 0.5, "b2c"
         import json as _json
 
         ctx_raw = mission.get("context") or "{}"
@@ -131,12 +183,17 @@ async def _north_star_relevance(mission_id) -> float:
         bb = ctx.get("blackboard") or {}
         sm = sm or (bb.get("success_metrics") if isinstance(bb, dict) else {}) or {}
         if isinstance(sm, dict) and sm.get("north_star_metric"):
-            return 0.8
-        if sm:
-            return 0.65
+            relevance = 0.8
+        elif sm:
+            relevance = 0.65
+        # business_model: context key wins, success_metrics field is fallback.
+        raw_bm = ctx.get("business_model")
+        if raw_bm is None and isinstance(sm, dict):
+            raw_bm = sm.get("business_model")
+        business_model = _normalize_business_model(raw_bm)
     except Exception as exc:  # noqa: BLE001
         _log.debug("north_star lookup failed", error=str(exc))
-    return 0.5
+    return relevance, business_model
 
 
 def compute_score(
@@ -178,7 +235,18 @@ async def run(task: dict) -> dict:
         return {"ok": True, "candidates": 0, "scored": []}
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    ns_relevance = await _north_star_relevance(mission_id)
+    base_ns_relevance, business_model = await _north_star_and_model(mission_id)
+    # Z9 T5B — payload may override the business_model (e.g. ad-hoc /task).
+    if payload.get("business_model"):
+        business_model = _normalize_business_model(payload.get("business_model"))
+    # Apply the business-model relevance multiplier (clamped to 1.0 ceiling).
+    ns_relevance = min(
+        1.0,
+        base_ns_relevance * _NORTH_STAR_MODEL_WEIGHT.get(business_model, 1.0),
+    )
+    revenue_table = _REVENUE_IMPACT_BY_MODEL.get(
+        business_model, _REVENUE_IMPACT
+    )
 
     # Cluster by (label, domain). spam/praise produce ~0 scores naturally
     # via the revenue_impact heuristic — no special-casing needed.
@@ -208,7 +276,7 @@ async def run(task: dict) -> dict:
     scored = []
     for (label, domain), c in clusters.items():
         frequency = len(c["external_ids"]) or len(c["decays"])
-        revenue_impact = _REVENUE_IMPACT.get(label, 0.3)
+        revenue_impact = revenue_table.get(label, 0.3)
         # Cluster age_decay = mean of member decays (recent cluster scores up).
         age_decay = (
             sum(c["decays"]) / len(c["decays"]) if c["decays"] else 0.6
@@ -229,6 +297,7 @@ async def run(task: dict) -> dict:
             "age_decay": round(age_decay, 3),
             "cost_band": cost_band,
             "cost_band_weight": cost_band_weight,
+            "business_model": business_model,
             "expression": (
                 f"{frequency} × {revenue_impact:.2f} × {ns_relevance:.2f} "
                 f"× {age_decay:.2f} / {cost_band_weight} = {score:.3f}"

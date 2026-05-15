@@ -733,6 +733,21 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Handler: posthook_handlers/incident_update_review.py."
         ),
     ),
+    # Z4 T3A — visual_review via vision-model diff against tunneled preview URL.
+    # STATIC trigger list (not dial-gated): founder decision — always auto-wire
+    # on frontend produces; the verb soft-skips when no preview URL is available.
+    "visual_review": PostHookSpec(
+        kind="visual_review",
+        verb="visual_review",
+        default_severity="blocker",
+        cost_band="heavy",
+        auto_wire_triggers=["*.tsx", "*.jsx", "*.vue", "*.svelte"],
+        description=(
+            "vision-model diff against tunneled preview URL. "
+            "Color/layout/font-size/missing-component blockers fail; "
+            "shadow + micro-spacing info does not block."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

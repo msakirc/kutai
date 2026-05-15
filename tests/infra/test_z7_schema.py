@@ -192,8 +192,9 @@ def test_z7_posthook_stubs_importable():
 
 
 @pytest.mark.asyncio
-async def test_z7_posthook_stubs_return_ok():
-    """Stub handlers must return {status: ok} when called with dummy args."""
+async def test_z7_posthook_handlers_degrade_gracefully():
+    """Real handlers, called with minimal input and no DB/metadata, must not
+    crash and must return a valid status (graceful degradation)."""
     from general_beckman.posthook_handlers import briefing_compose
     from general_beckman.posthook_handlers import brand_voice_lint
     from general_beckman.posthook_handlers import copy_compliance_review
@@ -201,6 +202,7 @@ async def test_z7_posthook_stubs_return_ok():
 
     dummy_task = {"id": 1, "mission_id": 42}
     dummy_result = {}
+    valid = {"ok", "skip", "warning", "failed", "fail"}
     for mod in (
         briefing_compose,
         brand_voice_lint,
@@ -208,7 +210,8 @@ async def test_z7_posthook_stubs_return_ok():
         audit_completeness_check,
     ):
         result = await mod.handle(dummy_task, dummy_result)
-        assert result.get("status") == "ok", (
+        assert isinstance(result, dict), f"{mod.__name__}.handle must return a dict"
+        assert result.get("status") in valid, (
             f"{mod.__name__}.handle returned unexpected status: {result}"
         )
 

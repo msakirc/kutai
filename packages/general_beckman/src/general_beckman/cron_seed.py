@@ -252,6 +252,16 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 604800,  # 7d
         "payload": {"_executor": "roadmap_sync"},
     },
+    # Z7 A0 — daily founder briefing at 09:00. Aggregates in-flight missions,
+    # pending founder_actions, cost burn. Idempotent (same-day row guard).
+    # cron_expression beats interval_seconds because "09:00 local" requires
+    # a wall-clock anchor rather than a rolling offset.
+    {
+        "title": "daily_briefing",
+        "description": "Daily 09:00 founder briefing: in-flight missions, pending actions, cost burn",
+        "cron_expression": "0 9 * * *",
+        "payload": {"_executor": "daily_briefing"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

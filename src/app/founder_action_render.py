@@ -5,8 +5,14 @@ Each founder_action surfaces in the mission thread as a card with:
   - Inline buttons: ``In Progress``, ``Done``, ``Block``
   - Kind-specific cues (credential paste hint, cost confirm, etc.)
 
-Pure functions — no IO. The bot wiring layer picks up the (text, markup)
-tuple and posts via ``post_to_mission_thread``.
+Z7 A0 addition — render_briefing(briefing_row, weekly_minutes_saved=None):
+  Formats a mission_briefings row into a Telegram-ready Markdown string.
+  Sections: phase summary / changed files / deferred / cost / recovered-failures.
+  Includes a weekly founder_minutes_saved rollup when weekly_minutes_saved provided.
+  Contains a clearly-marked placeholder where the attention-budget queue will be
+  rendered (owned by a separate agent; returns empty string until wired).
+
+Pure functions — no IO. The bot wiring layer picks up the text and posts it.
 """
 from __future__ import annotations
 
@@ -132,3 +138,92 @@ def render_action_card(action: dict) -> tuple[str, InlineKeyboardMarkup]:
             ],
         ]
     return text, InlineKeyboardMarkup(kb_rows)
+
+
+# ---------------------------------------------------------------------------
+# Z7 A0 — Briefing card renderer
+# ---------------------------------------------------------------------------
+
+def _render_attention_section(product_id: str) -> str:
+    """Placeholder: render the attention-budget queue for product_id.
+
+    *** INSERTION POINT — attention-budget queue ***
+    Another agent (Z7 attention-budget owner) will replace this stub with real
+    logic that surfaces prioritised founder_actions from the attention queue.
+    Until wired, returns empty string so render_briefing is unblocked.
+
+    Import is defensive: if the attention module is absent (not yet shipped),
+    this function silently returns "".
+    """
+    try:
+        from src.app.attention_budget import render_queue  # type: ignore
+        return render_queue(product_id)
+    except (ImportError, AttributeError):
+        return ""
+
+
+def render_briefing(
+    briefing_row: dict,
+    *,
+    weekly_minutes_saved: int | None = None,
+) -> str:
+    """Format a mission_briefings DB row into a Telegram-ready Markdown string.
+
+    Args:
+        briefing_row: dict with at minimum keys: kind, body_md,
+            founder_minutes_saved_estimate, product_id.
+        weekly_minutes_saved: if provided, appends a weekly ROI rollup section.
+
+    Returns:
+        Markdown text string. Never raises — falls back to a minimal string
+        on any unexpected input so the bot send never crashes.
+    """
+    try:
+        kind = briefing_row.get("kind", "briefing")
+        product_id = str(briefing_row.get("product_id") or "")
+        mission_id = briefing_row.get("mission_id")
+        body_md = briefing_row.get("body_md") or "_(no content)_"
+        minutes_saved = briefing_row.get("founder_minutes_saved_estimate")
+        prepared_at = briefing_row.get("prepared_at") or ""
+
+        # Header
+        if kind == "completion":
+            header = f"*Mission Completion Briefing*"
+            if mission_id:
+                header += f" — Mission #{mission_id}"
+        else:
+            header = "*Daily Briefing*"
+        if prepared_at:
+            # Trim to date+time without seconds for readability
+            prepared_str = str(prepared_at)[:16]
+            header += f"\n_{prepared_str}_"
+
+        parts: list[str] = [header, "", body_md]
+
+        # Founder minutes saved (this briefing)
+        if minutes_saved is not None and int(minutes_saved) > 0:
+            parts.append(
+                f"\n*Time saved this mission:* {int(minutes_saved)} min "
+                f"({int(minutes_saved) // 60}h {int(minutes_saved) % 60}m)"
+            )
+
+        # Weekly rollup
+        if weekly_minutes_saved is not None:
+            hours = weekly_minutes_saved // 60
+            mins = weekly_minutes_saved % 60
+            parts.append(
+                f"*Weekly founder time saved:* {weekly_minutes_saved} min "
+                f"({hours}h {mins}m)"
+            )
+
+        # *** ATTENTION BUDGET QUEUE — placeholder section ***
+        # Owned by Z7 attention-budget agent. Returns "" until wired.
+        attention_section = _render_attention_section(product_id)
+        if attention_section:
+            parts.append(attention_section)
+
+        return "\n".join(parts)
+
+    except Exception as exc:  # noqa: BLE001
+        # Never let a rendering error crash the bot send path.
+        return f"*Briefing* _(render error: {exc})_"

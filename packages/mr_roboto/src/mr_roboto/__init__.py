@@ -3243,11 +3243,52 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "audit_completeness_check":
+        # Z7 B9 — hourly completeness check (invoked as a standalone
+        # mechanical action by the audit cron, not as a per-step posthook).
+        # Finds vendor_call rows with reversibility != 'full' that have no
+        # external_comms_log row within the window; raises an ops alert per gap.
+        from mr_roboto.audit_log import pending_audit_gaps
+        try:
+            window_minutes = int(payload.get("window_minutes", 5))
+            gaps = await pending_audit_gaps(window_minutes=window_minutes)
+            if not gaps:
+                return Action(status="completed", result={"gaps_found": 0, "ok": True})
+            from mr_roboto.executors.escalate_to_founder import run as _ef_run
+            alerts_sent = 0
+            for gap in gaps:
+                try:
+                    await _ef_run({
+                        "mission_id": gap.get("mission_id"),
+                        "payload": {
+                            "severity": "high",
+                            "title": "Audit gap: external send not logged",
+                            "summary": (
+                                f"vendor_call id={gap.get('vendor_call_id')} "
+                                f"verb={gap.get('verb')!r} at {gap.get('created_at')} "
+                                f"has no external_comms_log row after {window_minutes}min. "
+                                "Manual audit required."
+                            ),
+                        },
+                    })
+                    alerts_sent += 1
+                except Exception as _ae:
+                    from src.infra.logging_config import get_logger as _gl
+                    _gl("mr_roboto.audit_completeness_check").error(
+                        "audit_completeness_check: alert failed for gap %s: %s",
+                        gap.get("vendor_call_id"), _ae,
+                    )
+            return Action(
+                status="completed",
+                result={"gaps_found": len(gaps), "alerts_sent": alerts_sent, "ok": True},
+            )
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action in (
         "copy_compliance_review",
         "brand_voice_lint",
         "briefing_compose",
-        "audit_completeness_check",
     ):
         # Z7 T1.0 — humanish-layers posthook handlers.
         # Each handler lives in general_beckman.posthook_handlers.<action>.
@@ -3291,6 +3332,23 @@ async def _run_dispatch(task: dict) -> Action:
             res = await _mod.handle(source_task, {})
             if res.get("status") == "fail":
                 return Action(status="failed", error=str(res), result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "daily_briefing":
+        # Z7 A0 — daily founder briefing: aggregates in-flight missions,
+        # pending founder_actions, cost burn; writes mission_briefings kind=daily.
+        # Idempotent: no-ops if today's row already exists.
+        from src.app.jobs.daily_briefing import run_daily_briefing
+        try:
+            res = await run_daily_briefing()
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"daily_briefing: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

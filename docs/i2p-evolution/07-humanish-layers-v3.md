@@ -72,6 +72,33 @@ founder-minutes-saved per mission**. Three sub-zones:
 - **Cross-cutting** — founder briefing surface, attention budget queue,
   audit log, brand voice + copy compliance lint, consent ledger.
 
+## Resource model (founder decisions, 2026-05-15)
+
+Founder confirmed: KutAI is a **non-stop pipeline producing N isolated
+products**. Z7 is **per-product** — each product has its own CRM,
+press kits, launches, changelog, incidents, mentions, email
+templates/sequences, reviews, brand voices, consent records, and ESP
+account+domain. **No cross-product CRM** (D14 stays deferred).
+
+But **shared infrastructure, not reinvented per product**:
+
+| Shared (KutAI infra layer, built once) | Isolated (per-product data) |
+|---|---|
+| `src/integrations/email/` provider-abstracted send service | ESP account + sending domain + DKIM |
+| `src/util/lang.py` langdetect | per-language Chroma collections |
+| brand-voice lint engine, copy-compliance rule engine | `brand_voices/{audience}.md`, `channel_rules/` instances |
+| recipe library, posthook registry, mr_roboto verbs | recipe *invocations*, posthook *runs* |
+| oncall_agent handler-registry, mission templates | mention sources, launch instances |
+| email template *schema*, crisis playbook *templates* | template/sequence/send rows, crisis_events rows |
+
+Rule: **engines and schemas shared; data and accounts per-product.**
+This is already KutAI's package architecture — Z7 follows it.
+
+Founder is **solo** — single attention budget (B5), B6 escalation
+chain is founder + counsel only, A0 briefing to one Telegram chat.
+No `assignee` routing, no per-member budgets, no incident-commander
+rotation. Drops that machinery from T1/T4.
+
 ## Net consequence
 
 v3 ships in **6 tiers**, ~12 weeks total, parallel-safe within tier:
@@ -604,21 +631,41 @@ publish creates audit_log row within 5min.
 
 ### T2 — Shared-infra dependency layer (~1 week, 2 agents)
 
-- **T2A — Email-send shared service.** New `src/integrations/email/`
-  with provider-abstracted `send(to, subject, body_md, headers,
-  template_id, idempotency_key)`. Initial provider: Postmark
-  (transactional reliability) or Resend (modern API).
-  SPF/DKIM/DMARC config docs + setup founder_action. Shared
-  webhook receiver dispatch for open/click/bounce/unsub events.
-  Suppression-list base (used by A7 + B1). Test mode (sends to
-  founder-only inbox).
+- **T2A — Email-send shared service (free-tier-first, per-product
+  provider).** New `src/integrations/email/` with provider-abstracted
+  `send(to, subject, body_md, headers, template_id, idempotency_key)`.
+  Founder decision (2026-05-15): **no paid email until a product
+  makes money** — provider is chosen per-product at setup, default to
+  a free tier.
+  - **Provider registry**: each provider is a config-driven adapter
+    (`providers/{brevo,resend,postmark,ses}.py`) implementing the
+    same `send` + webhook contract. New per-product config row
+    `product_email_config`: `product_id, provider, from_domain,
+    api_key_ref (credential_store), monthly_quota, tier ('free' | 'paid')`.
+  - **Free defaults**: Brevo (300 emails/day, free forever — best for
+    low steady volume) or Resend free (3k/mo, 100/day — best DX).
+    Founder picks per product via setup founder_action; recommend
+    Brevo for lifecycle/transactional (daily cap fits drip cadence),
+    Resend if founder wants the modern API.
+  - **Paid upgrade path**: when a product has revenue, founder flips
+    `tier='paid'` via `/email upgrade <product>` — same adapter,
+    higher quota, no code change. Postmark/SES become options then.
+  - **Quota guard**: shared sender enforces per-product
+    `monthly_quota`; over-quota queues sends to next window + surfaces
+    A0 card "product X near email cap — upgrade tier?".
+  SPF/DKIM/DMARC config docs + per-product setup founder_action.
+  Shared webhook receiver dispatch for open/click/bounce/unsub
+  events (routed by product_id). Suppression-list base, per-product
+  (used by A7 + B1). Test mode (sends to founder-only inbox).
 - **T2B — Multilingual base.** Install langdetect, add
   `src/util/lang.py`, per-language Chroma collection helper, per-language
   artifact path convention (`faq_{lang}.md`). Used by A8.r1.
 
-Acceptance: T2A sends test email via Postmark sandbox, webhook
-records open event into receiver. T2B detects language of synthetic
-TR + EN tickets, routes to per-language collection.
+Acceptance: T2A sends test email via the free-tier provider
+(Brevo/Resend) sandbox for a sample product config, webhook records
+open event into receiver routed by product_id, quota guard blocks an
+over-cap send. T2B detects language of synthetic TR + EN tickets,
+routes to per-language collection.
 
 ### T3 — Bursty side (~2 weeks, 5 agents)
 
@@ -713,12 +760,22 @@ unlisted; second launch consumes first launch's lessons.
 | B8 | `external_reviews` | — | `reviews/poll/{g2,capterra,trustpilot,appstore,playstore,producthunt,...}`, `reviews/{classify,draft_reply}` | `reviews_poll_daily` | — |
 | B9 | `external_comms_log` | `audit_completeness_check` (29) | `audit_log` wrapper | — | — |
 
-**Net:** 15 new tables, 11 new posthooks (registry 25→36), ~32 new
+**Net:** 16 new tables, 11 new posthooks (registry 25→36), ~32 new
 mr_roboto actions, 11 new jobs, 3 new mission templates.
 
-Plus shared infra (T2): `src/integrations/email/` (provider-abstracted),
-`src/util/lang.py` (langdetect wrapper), per-language Chroma collection
-pattern. Plus refactor (T6): `oncall_agent` handler-registry lift.
+**Per-product scoping (founder decision 2026-05-15).** Every Z7 table
+above carries a `product_id` column (FK to the product's
+mission-graph root). All CRM / press / launch / email / incident /
+mention / review data is product-scoped — no cross-product joins.
+The 16th table is `product_email_config` (per-product ESP provider +
+domain + quota + tier; see T2A). Webhook receivers, suppression
+lists, attention budget, and audit log all filter by `product_id`.
+
+Plus shared infra (T2): `src/integrations/email/` (provider-abstracted,
+free-tier-first, per-product provider registry — Brevo/Resend free
+defaults, Postmark/SES paid upgrade), `src/util/lang.py` (langdetect
+wrapper), per-language Chroma collection pattern. Plus refactor (T6):
+`oncall_agent` handler-registry lift.
 
 ---
 
@@ -796,10 +853,11 @@ Carried from v2 (resolved with defaults in v2 — re-stated below):
 
 **New (v3):**
 
-- **Email provider choice (T2A).** Postmark (transactional gold-standard,
-  $15/mo for 10k) vs. Resend (modern API, $20/mo for 50k) vs. SES
-  (cheapest, hardest setup). Lean Postmark for first ship; abstraction
-  allows switch.
+- **Email provider choice (T2A). RESOLVED 2026-05-15.** Founder: no
+  paid email until a product earns. Provider is per-product, free-tier
+  by default (Brevo 300/day forever, or Resend free 3k/mo). Provider
+  registry + `product_email_config` row; paid upgrade (Postmark/SES)
+  is a per-product `tier` flip when revenue justifies.
 - **Status page hosting (B3).** Self-hosted (route in main app) vs.
   external (statuspage.io, $29/mo) vs. open-source (Cachet self-host).
   Lean self-hosted route in main app — minimal infra, full control,
@@ -810,16 +868,20 @@ Carried from v2 (resolved with defaults in v2 — re-stated below):
 - **Reviews platforms scope (B8).** Free APIs only v1 (G2 free tier,
   AppStore RSS, PlayStore unofficial) vs. paid (G2 full, Trustpilot
   Pro). Lean free + scrape-fallback v1.
-- **Attention budget enforcement strictness (B5).** Hard-block over
-  budget vs. soft-warn vs. notify-only. Lean soft-warn for first
-  month then re-evaluate from KPI signal.
-- **B6 marketing freeze blast radius.** Pause all in-flight A2 / B1 /
-  B2 sends, or only same-product? Lean all (crisis is rare; safer to
-  over-pause).
-- **Per-product vs. per-org Z7 instances.** If founder has multiple
-  products, are these all per-product or shared at-org? v3 assumes
-  per-product (each mission-graph isolated); cross-product CRM
-  (shared journalists across products) deferred to D-series follow-up.
+- **Attention budget enforcement strictness (B5). RESOLVED 2026-05-15.**
+  Soft-warn: all cards surface, over-budget p1/p2/p3 flagged
+  "beyond today's budget" + pushed below the fold in A0. p0 always
+  surfaces. No withholding. Re-evaluate from KPI signal after month 1.
+- **B6 marketing freeze blast radius. RESOLVED 2026-05-15.** Products
+  are isolated (founder decision), so a crisis freezes only the
+  affected product's in-flight A2/B1/B2 sends — other products keep
+  running. `crisis_events.product_id` scopes the freeze.
+- **Per-product vs. per-org Z7 instances. RESOLVED 2026-05-15.**
+  Founder: KutAI is a non-stop pipeline of N isolated products.
+  Z7 is per-product; D14 cross-product CRM stays deferred. Shared:
+  KutAI's infra layer (email service, langdetect, lint engines,
+  recipes, mr_roboto verbs, oncall_agent, mission templates). See
+  Resource model section above.
 
 ---
 
@@ -854,11 +916,22 @@ When picking up this doc:
 
 ## Updates
 
+- 2026-05-15 (v3, founder decisions) — 4 decisions resolved:
+  (1) build order = default T1→T6;
+  (2) email = free-tier-first, per-product provider registry
+  (Brevo/Resend free defaults, Postmark/SES paid upgrade per-product
+  when revenue justifies) — added `product_email_config` table +
+  quota guard, T2A rewritten;
+  (3) solo founder — single attention budget, B6 escalation =
+  founder + counsel, no assignee/per-member machinery;
+  (4) N isolated products sharing KutAI infra layer — added Resource
+  model section, every Z7 table now `product_id`-scoped (16 tables),
+  B6 freeze scoped per-product, D14 cross-product CRM stays deferred.
 - 2026-05-15 (v3) — Second-pass audit. v2 had real reframe but missed
   9 humanish areas + 13 sub-patterns + 3 wiring corrections + 15
   explicitly-deferrable patterns. v3 ships 21 active (A0–A12 +
   B1–B9), 15 deferred (D1–D15), 6 tiers (~12 weeks). Net new infra:
-  15 tables, 11 posthooks (25→36), ~32 mr_roboto actions, 11 jobs,
+  16 tables, 11 posthooks (25→36), ~32 mr_roboto actions, 11 jobs,
   3 mission templates, 1 shared email-base service, 1 langdetect
   base, 1 oncall_agent handler-registry refactor.
 - 2026-05-15 (v2 retained for delta context) — first reframe of

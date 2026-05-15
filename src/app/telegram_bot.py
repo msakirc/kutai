@@ -1955,6 +1955,10 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("action_done", self.cmd_action_done))
         # Z8 T4D: ops log — show recent on-call agent actions per mission.
         self.app.add_handler(CommandHandler("ops_log", self.cmd_ops_log))
+        # Z7 A0: founder hours saved ROI summary
+        self.app.add_handler(
+            CommandHandler("founder_hours_saved", self.cmd_founder_hours_saved)
+        )
         # --- Z9 growth (T1D stubs) — reserve the founder-track command surface ---
         self.app.add_handler(CommandHandler("northstar", self.cmd_northstar))
         self.app.add_handler(CommandHandler("hypothesis", self.cmd_hypothesis))
@@ -1971,6 +1975,10 @@ class TelegramInterface:
         self.app.add_handler(
             CommandHandler("experiment_disable", self.cmd_experiment_disable)
         )
+        # Z7 T1D (B5) — founder attention budget queue
+        self.app.add_handler(CommandHandler("attention", self.cmd_attention))
+        # Z7 T1D (B9) — external comms audit log search
+        self.app.add_handler(CommandHandler("audit_comms", self.cmd_audit_comms))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -4628,6 +4636,189 @@ class TelegramInterface:
                 f"  remaining: {res.get('remaining')} min"
             ),
         )
+
+    async def cmd_attention(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T1D (B5) — Founder attention budget queue.
+
+        Subcommands:
+          /attention status [product_id]        — show queue (today/this_week/deferred/idle)
+          /attention defer <card_id> to <when>  — defer a card to next morning
+          /attention budget <product_id> <min>  — set daily cap (minutes)
+        """
+        from src.app.attention_budget import (
+            check_budget, get_queue, record_deferred, set_daily_budget,
+            next_review_window,
+        )
+        args = context.args or []
+        sub = args[0].lower() if args else "status"
+
+        if sub == "status":
+            try:
+                product_id = int(args[1]) if len(args) > 1 else None
+            except (ValueError, TypeError):
+                product_id = None
+            try:
+                queue = await get_queue(product_id)
+            except Exception as e:
+                await self._reply(update, f"Attention queue error: {e}")
+                return
+            cap = queue["cap"]
+            spent = queue["spent"]
+            remaining = queue["remaining"]
+            over = " OVER BUDGET" if queue["over_budget"] else ""
+            lines = [
+                f"*Attention Queue* — {spent}/{cap} min spent today{over}",
+                "",
+            ]
+            for section, label in [
+                ("today", "Today (p0+p1)"),
+                ("this_week", "This Week (p2)"),
+                ("deferred", "Deferred"),
+                ("when_idle", "When Idle (p3)"),
+            ]:
+                cards = queue.get(section) or []
+                if not cards:
+                    continue
+                lines.append(f"*{label}:*")
+                for c in cards[:5]:
+                    fold = " _(below fold)_" if c.get("below_fold") else ""
+                    urgent = " ⚡" if c.get("urgent") else ""
+                    lines.append(
+                        f"  [{c['id']}] {c['title'][:50]}{urgent}{fold}"
+                    )
+                lines.append("")
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+            return
+
+        if sub == "defer":
+            # /attention defer <card_id> to <when>
+            # <when>: tomorrow | morning | YYYY-MM-DD
+            if len(args) < 4 or args[2].lower() != "to":
+                await self._reply(
+                    update,
+                    "Usage: `/attention defer <card_id> to <tomorrow|morning|YYYY-MM-DD>`",
+                    parse_mode="Markdown",
+                )
+                return
+            try:
+                card_id = int(args[1])
+            except (ValueError, TypeError):
+                await self._reply(update, "card_id must be an integer.")
+                return
+            when_str = args[3].lower()
+            import datetime as _dt
+            nrw = next_review_window({})
+            if when_str in ("tomorrow", "morning"):
+                deferred_to = nrw.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                try:
+                    _dt.datetime.strptime(when_str, "%Y-%m-%d")
+                    deferred_to = when_str + " 09:00:00"
+                except ValueError:
+                    await self._reply(update, "when must be: tomorrow, morning, or YYYY-MM-DD")
+                    return
+            try:
+                await record_deferred(card_id=card_id, product_id=0, deferred_to=deferred_to)
+                await self._reply(
+                    update,
+                    f"Card #{card_id} deferred to {deferred_to}.",
+                )
+            except Exception as e:
+                await self._reply(update, f"Defer failed: {e}")
+            return
+
+        if sub == "budget":
+            # /attention budget <product_id> <minutes>
+            if len(args) < 3:
+                await self._reply(
+                    update,
+                    "Usage: `/attention budget <product_id> <minutes>`",
+                    parse_mode="Markdown",
+                )
+                return
+            try:
+                product_id = int(args[1])
+                minutes = int(args[2])
+            except (ValueError, TypeError):
+                await self._reply(update, "product_id and minutes must be integers.")
+                return
+            try:
+                await set_daily_budget(product_id=product_id, minutes=minutes)
+                await self._reply(
+                    update,
+                    f"Daily attention cap for product #{product_id} set to {minutes} min.",
+                )
+            except Exception as e:
+                await self._reply(update, f"Budget set failed: {e}")
+            return
+
+        await self._reply(
+            update,
+            "Usage: `/attention <status|defer|budget> [args...]`",
+            parse_mode="Markdown",
+        )
+
+    async def cmd_audit_comms(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T1D (B9) — External comms audit log search.
+
+        Usage:
+          /audit_comms search recipient:<x>        — filter by recipient
+          /audit_comms search channel:<x>          — filter by channel
+          /audit_comms search since:<YYYY-MM-DD>   — filter by date
+          /audit_comms search mission:<id>         — filter by mission
+          /audit_comms gaps                        — show pending audit gaps
+        """
+        from mr_roboto.audit_log import search_sends, pending_audit_gaps
+        args = context.args or []
+        sub = args[0].lower() if args else "search"
+
+        if sub == "gaps":
+            try:
+                gaps = await pending_audit_gaps(window_minutes=5)
+                if not gaps:
+                    await self._reply(update, "No audit gaps found.")
+                    return
+                lines = [f"*Audit gaps ({len(gaps)} found):*"]
+                for g in gaps[:10]:
+                    lines.append(
+                        f"  vc_id={g.get('vendor_call_id')} verb={g.get('verb')!r}"
+                        f" mission={g.get('mission_id')} at {g.get('created_at')}"
+                    )
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+            except Exception as e:
+                await self._reply(update, f"Gap check failed: {e}")
+            return
+
+        # Parse search filters from args like "recipient:@foo channel:telegram"
+        filters: dict = {}
+        for arg in args[1:]:
+            if ":" in arg:
+                k, v = arg.split(":", 1)
+                filters[k.lower()] = v
+        try:
+            results = await search_sends(
+                recipient=filters.get("recipient"),
+                channel=filters.get("channel"),
+                since=filters.get("since"),
+                mission_id=int(filters["mission"]) if "mission" in filters else None,
+                limit=15,
+            )
+        except Exception as e:
+            await self._reply(update, f"Audit search failed: {e}")
+            return
+        if not results:
+            await self._reply(update, "No external comms log entries found.")
+            return
+        lines = [f"*External comms log ({len(results)} rows):*"]
+        for r in results:
+            revoked = " ~~REVOKED~~" if r.get("revoked_at") else ""
+            lines.append(
+                f"  [{r['log_id']}] {r['sent_at']} {r['channel']}"
+                f" → {r.get('recipient') or '(broadcast)'}{revoked}\n"
+                f"    hash={r['content_hash'][:12]}... rev={r['reversibility']}"
+                f" m={r.get('source_mission_id')}"
+            )
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Z1 audit-log inspector — view recent rows of write-only Z1 logs.
@@ -9346,6 +9537,52 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             parts.append(str(ts))
             lines.append("  " + " · ".join(parts))
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    # --- Z7 A0 briefing commands ---
+
+    async def cmd_founder_hours_saved(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ):
+        """Z7 A0 — /founder_hours_saved [period_days].
+
+        Sums mission_events.founder_minutes_saved over the last N days
+        (default 7) and replies with the total in hours + minutes.
+
+        Usage: /founder_hours_saved [period_days]
+        """
+        period_days = 7
+        if context.args:
+            try:
+                period_days = max(1, int(context.args[0]))
+            except (TypeError, ValueError):
+                await self._reply(
+                    update,
+                    "Usage: /founder_hours_saved [period_days] — period_days must be an integer.",
+                )
+                return
+
+        try:
+            from src.app.jobs.daily_briefing import sum_founder_minutes_saved
+            total_minutes = await sum_founder_minutes_saved(period_days=period_days)
+        except Exception as exc:
+            await self._reply(
+                update, f"Failed to compute founder hours saved: {exc}"
+            )
+            return
+
+        hours = total_minutes // 60
+        mins = total_minutes % 60
+        if total_minutes == 0:
+            msg = (
+                f"No founder time saved recorded in the last {period_days} day(s).\n"
+                "_(briefing_compose posthook must have run at least once)_"
+            )
+        else:
+            msg = (
+                f"*Founder time saved (last {period_days} day(s)):* "
+                f"{total_minutes} min = {hours}h {mins}m"
+            )
+        await self._reply(update, msg, parse_mode="Markdown")
 
     # --- Z9 growth (stubs) ---
     # Reserve the founder-track command surface so Z9 T2-T5 can fill the

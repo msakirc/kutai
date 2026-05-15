@@ -94,6 +94,8 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "vector_maint_snapshot": "full",
     "attention_check": "full",  # read-only budget query
     "attention_debit": "full",  # append-only debit row
+    "audit_completeness_check": "full",  # read-only gap scan + alert escalation
+    "daily_briefing": "full",  # idempotent mission_briefings row write
     "z0_preflight_write": "full",  # idempotent JSON write + missions upsert
     "request_interview_data": "full",  # surfaces a Telegram prompt; cancellable
     "workflow_advance": "full",  # mission-state transition; backward by retry

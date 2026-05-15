@@ -2832,7 +2832,7 @@ async def init_db():
             " recipient_count INTEGER DEFAULT 1,"
             " content_hash TEXT,"
             " content_md TEXT,"           # gzip+base64 of body
-            " source_mission_id TEXT,"
+            " source_mission_id INTEGER,"  # FK missions.id (app-level)
             " source_action_id INTEGER,"
             " vendor_call_id INTEGER,"    # FK action_confirmations.id (app-level)
             " reversibility TEXT,"        # full|partial|irreversible

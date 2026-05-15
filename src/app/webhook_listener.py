@@ -72,6 +72,41 @@ async def status_page_rss():
     return Response(content=content, media_type="application/rss+xml", status_code=200)
 
 
+# ── Z7 T5 B2 — Public changelog routes ────────────────────────────────────
+# Self-hosted changelog page (no external SaaS dependency).
+# /changelog              — HTML version history, anchor links per release.
+# /changelog.rss          — RSS 2.0 feed of published changelog entries.
+# /changelog/latest.json  — In-app banner data (most-recent published entry).
+
+@app.get("/changelog")
+async def changelog_html():
+    """Render and return the public changelog HTML page."""
+    from fastapi.responses import HTMLResponse
+    from src.app.changelog_page import changelog_html_handler
+    content = await changelog_html_handler()
+    return HTMLResponse(content=content, status_code=200)
+
+
+@app.get("/changelog.rss")
+async def changelog_rss():
+    """Render and return the changelog RSS 2.0 feed."""
+    from fastapi.responses import Response
+    from src.app.changelog_page import changelog_rss_handler
+    content = await changelog_rss_handler()
+    return Response(content=content, media_type="application/rss+xml", status_code=200)
+
+
+@app.get("/changelog/latest.json")
+async def changelog_latest_json():
+    """Return in-app banner data: most-recent published changelog entry."""
+    from fastapi.responses import JSONResponse
+    from src.app.changelog_page import changelog_latest_json_handler
+    data = await changelog_latest_json_handler()
+    if data is None:
+        return JSONResponse(content={}, status_code=200)
+    return JSONResponse(content=data, status_code=200)
+
+
 # ── Z7 T2A — Email provider webhook routes ─────────────────────────────────
 # Routes: POST /webhook/email/{provider}/{product_id}
 # Covers: open, click, bounce, unsub, complaint, delivery for

@@ -751,6 +751,23 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Handler: posthook_handlers/documentation_gap_detect.py."
         ),
     ),
+    # ── Z7 T5 B2: changelog_freshness ────────────────────────────────────────
+    # Fires monthly (or on-demand). Checks whether each completed
+    # goal:public_release mission has a corresponding changelog_entries row.
+    # If missing, surfaces a founder_action to publish one.
+    "changelog_freshness": PostHookSpec(
+        kind="changelog_freshness",
+        verb="changelog_freshness",
+        default_severity="warning",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T5 B2: monthly changelog freshness check. "
+            "If any goal:public_release mission has no changelog_entries row, "
+            "surfaces a founder_action 'publish changelog entry?'. "
+            "Handler: posthook_handlers/changelog_freshness.py."
+        ),
+    ),
     # Z4 T3A — visual_review via vision-model diff against tunneled preview URL.
     # STATIC trigger list (not dial-gated): founder decision — always auto-wire
     # on frontend produces; the verb soft-skips when no preview URL is available.

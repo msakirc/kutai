@@ -236,6 +236,10 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z7 T5 B1 lifecycle email engine ------------------------------------
     "email/send_via_provider": "irreversible",  # real email sent; recipient sees it
     "lifecycle_email_send": "full",             # cron tick: idempotent pick + send + mark
+    # ---- Z7 T5 B2 changelog as public artifact ------------------------------
+    "changelog/draft": "full",         # writes draft DB row; git-reversible
+    "changelog/publish": "irreversible",  # marks published; subscribers see it
+    "changelog_freshness": "full",     # read-only scan + advisory founder_action
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

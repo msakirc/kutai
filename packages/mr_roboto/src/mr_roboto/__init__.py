@@ -4105,6 +4105,72 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T5 B2 — changelog verbs ───────────────────────────────────────────
+
+    if action == "changelog/draft":
+        # Draft a changelog entry from recent git commits (KAC format).
+        # Runs A5 brand_voice_lint + A6 copy_compliance (degrade gracefully).
+        # Writes a draft row (published=0) and surfaces a founder_action.
+        try:
+            from mr_roboto.changelog_draft import run as _changelog_draft
+            res = await _changelog_draft(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "changelog/draft failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "changelog/publish":
+        # Mark the entry published; invalidate cache; queue B1 announcement email.
+        # Degrades gracefully when no announcement email sequence exists.
+        try:
+            from mr_roboto.changelog_publish import run as _changelog_publish
+            res = await _changelog_publish(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "changelog/publish failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "changelog_freshness":
+        # Monthly check: goal:public_release missions without changelog entries.
+        # Routes to general_beckman.posthook_handlers.changelog_freshness.
+        try:
+            import importlib
+            _mod = importlib.import_module(
+                "general_beckman.posthook_handlers.changelog_freshness"
+            )
+            source_task_id = payload.get("source_task_id")
+            source_task: dict = {}
+            if source_task_id:
+                try:
+                    from src.infra.db import get_task as _get_task
+                    _src = await _get_task(int(source_task_id))
+                    if _src:
+                        source_task = dict(_src)
+                except Exception:
+                    pass
+            import json as _json
+            src_ctx: dict = {}
+            raw_ctx = source_task.get("context") or {}
+            if isinstance(raw_ctx, str):
+                try:
+                    src_ctx = _json.loads(raw_ctx)
+                except Exception:
+                    src_ctx = {}
+            elif isinstance(raw_ctx, dict):
+                src_ctx = dict(raw_ctx)
+            for _k in ("product_id",):
+                if payload.get(_k):
+                    src_ctx.setdefault(_k, payload[_k])
+            source_task["context"] = src_ctx
+            res = await _mod.handle(source_task, {})
+            if res.get("status") == "failed":
+                return Action(status="failed", error=str(res.get("error") or res), result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "capture_screenshots":
         # Z4 T1A — capture preview screenshots across breakpoints + color modes.
         from mr_roboto.capture_screenshots import (

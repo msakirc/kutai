@@ -3622,6 +3622,47 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T5 B2: changelog_entries — public changelog artifact ──────────────
+    # One row per changelog entry. published=0 means draft; published=1 means
+    # public (rendered on /changelog, /changelog.rss, in-app banner, email blast).
+    # kind_breakdown_json: {"added": [...], "changed": [...], "fixed": [...],
+    #                       "deprecated": [...], "removed": [...]}.
+    # related_mission_ids_json: list of mission IDs whose commits are in this entry.
+    # product_id NOT NULL (per-product scoping, founder decision 2026-05-15).
+    await apply_migration(
+        version="2026-05-16-z7-b2-changelog-entries",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS changelog_entries ("
+            " entry_id               INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id             TEXT    NOT NULL,"
+            " version                TEXT    NOT NULL DEFAULT '',"
+            " released_at            TEXT,"
+            " title                  TEXT    NOT NULL DEFAULT '',"
+            " body_md                TEXT    NOT NULL DEFAULT '',"
+            " kind_breakdown_json    TEXT    NOT NULL DEFAULT '{}',"
+            " shipped_features_json  TEXT    NOT NULL DEFAULT '[]',"
+            " related_mission_ids_json TEXT  NOT NULL DEFAULT '[]',"
+            " external_url           TEXT,"
+            " published              INTEGER NOT NULL DEFAULT 0,"
+            " created_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_changelog_entries_product_published "
+            "ON changelog_entries(product_id, published, released_at DESC);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_changelog_entries_product_published;\n"
+            "DROP TABLE IF EXISTS changelog_entries;\n"
+        ),
+        description=(
+            "Z7 T5 B2: changelog_entries — public changelog artifact table. "
+            "published=0=draft, published=1=public. kind_breakdown_json holds "
+            "Keep-A-Changelog buckets (added/changed/fixed/deprecated/removed). "
+            "related_mission_ids_json links to source missions. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

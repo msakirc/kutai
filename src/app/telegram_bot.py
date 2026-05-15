@@ -1981,6 +1981,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("audit_comms", self.cmd_audit_comms))
         # Z7 T2A — email-send shared service (config/upgrade/test)
         self.app.add_handler(CommandHandler("email", self.cmd_email))
+        # Z7 T3E (B6) — crisis comms tiered playbook
+        self.app.add_handler(CommandHandler("crisis", self.cmd_crisis))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -4956,6 +4958,160 @@ class TelegramInterface:
             await self._reply(
                 update,
                 "Unknown subcommand. Use: `config`, `upgrade`, or `test`.",
+                parse_mode="Markdown",
+            )
+
+    async def cmd_crisis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T3E (B6) — Crisis comms tiered playbook.
+
+        Subcommands:
+          /crisis open [tier] [summary]    — open a crisis event (tier 1-4; default 1)
+          /crisis resume <product_id>      — resume marketing (clear freeze) for product
+          /crisis status                   — list active crisis events
+        """
+        args = context.args or []
+        full_text = "/crisis " + " ".join(args) if args else "/crisis status"
+
+        try:
+            from mr_roboto.crisis_open import parse_crisis_cmd
+        except Exception as exc:
+            await self._reply(update, f"Crisis module unavailable: {exc}")
+            return
+
+        cmd = parse_crisis_cmd(full_text)
+        sub = cmd.get("subcommand", "status")
+
+        if sub == "status":
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+                async with db.execute(
+                    "SELECT event_id, product_id, tier, source, summary, opened_at "
+                    "FROM crisis_events WHERE status='active' "
+                    "ORDER BY opened_at DESC LIMIT 10"
+                ) as cur:
+                    rows = await cur.fetchall()
+                if not rows:
+                    await self._reply(update, "No active crisis events.")
+                    return
+                tier_labels = {1: "Brand misstep", 2: "Outage", 3: "Security breach", 4: "Existential/Legal"}
+                lines = ["*Active crisis events:*"]
+                for row in rows:
+                    eid, pid, tier, src, summ, opened = row
+                    label = tier_labels.get(tier, f"Tier {tier}")
+                    lines.append(
+                        f"• Event #{eid} | {pid} | T{tier} {label} | "
+                        f"src={src} | {(summ or '')[:60]} | opened={opened}"
+                    )
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+            except Exception as exc:
+                await self._reply(update, f"Error fetching crisis status: {exc}")
+
+        elif sub == "open":
+            tier = int(cmd.get("tier") or 1)
+            summary = cmd.get("summary") or ""
+            if not summary and len(args) > 1:
+                # Try to infer product from args
+                summary = " ".join(args[2:]) if len(args) > 2 else ""
+
+            # Use product_id from summary context or prompt
+            product_id = "default"
+            if args and len(args) > 1:
+                # First non-tier arg might be a product_id
+                candidate = args[1] if not args[1].isdigit() else (args[2] if len(args) > 2 else "")
+                if candidate and not candidate.isdigit():
+                    product_id = candidate
+
+            try:
+                from mr_roboto.crisis_open import open_crisis_event
+                from mr_roboto.crisis_freeze_marketing import run as freeze_run
+
+                event = await open_crisis_event(
+                    product_id=product_id,
+                    tier=tier,
+                    source="manual",
+                    summary=summary or f"Manual crisis open (Tier {tier})",
+                )
+                event_id = event["event_id"]
+
+                # Auto-freeze for Tier 2+
+                if tier >= 2:
+                    await freeze_run({"product_id": product_id, "event_id": event_id})
+                    freeze_msg = f"\nMarketing freeze activated for `{product_id}`."
+                else:
+                    freeze_msg = ""
+
+                tier_labels = {1: "Brand misstep / pile-on", 2: "Outage / data issue",
+                               3: "Security incident / breach", 4: "Existential / legal"}
+                label = tier_labels.get(tier, f"Tier {tier}")
+                await self._reply(
+                    update,
+                    f"*Crisis event opened* (#{event_id})\n"
+                    f"Product: `{product_id}`\n"
+                    f"Tier: {tier} — {label}\n"
+                    f"Summary: {summary or '(none)'}"
+                    f"{freeze_msg}\n\n"
+                    f"See `playbooks/crisis_comms_tier{tier}.md` for next steps.\n"
+                    f"Use `/crisis status` to monitor.",
+                    parse_mode="Markdown",
+                )
+            except Exception as exc:
+                await self._reply(update, f"Error opening crisis event: {exc}")
+
+        elif sub == "resume":
+            product_id = cmd.get("product_id") or ""
+            if not product_id:
+                await self._reply(update, "Usage: `/crisis resume <product_id>`", parse_mode="Markdown")
+                return
+            try:
+                from mr_roboto.crisis_freeze_marketing import resume_marketing_freeze
+                from src.infra.db import get_db
+
+                result = await resume_marketing_freeze(product_id)
+                cleared = result.get("cleared", 0)
+
+                # Mark active events resolved if product matches
+                db = await get_db()
+                await db.execute(
+                    "UPDATE crisis_events SET status='resolved', "
+                    "resolved_at=strftime('%Y-%m-%d %H:%M:%S','now') "
+                    "WHERE product_id=? AND status='active'",
+                    (product_id,),
+                )
+                await db.commit()
+
+                if cleared > 0:
+                    await self._reply(
+                        update,
+                        f"Marketing freeze lifted for `{product_id}` ({cleared} freeze row(s) cleared).\n"
+                        "Active crisis events for this product marked resolved.\n"
+                        "Remember to publish a postmortem if Tier 2+.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await self._reply(
+                        update,
+                        f"No active freeze found for `{product_id}`. "
+                        "Active crisis events (if any) marked resolved.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as exc:
+                await self._reply(update, f"Error resuming crisis: {exc}")
+
+        elif "error" in cmd or sub == "unknown":
+            await self._reply(
+                update,
+                "Usage:\n"
+                "`/crisis status` — list active crises\n"
+                "`/crisis open [tier] [summary]` — open crisis (tier 1-4)\n"
+                "`/crisis resume <product_id>` — resume marketing / resolve crisis",
+                parse_mode="Markdown",
+            )
+
+        else:
+            await self._reply(
+                update,
+                "Unknown /crisis subcommand. Try `/crisis status`.",
                 parse_mode="Markdown",
             )
 

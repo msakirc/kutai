@@ -200,6 +200,10 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "incident/publish_status": "irreversible",  # inserts status_updates row; customers see it on /status
     "incident/draft_postmortem": "full",  # writes local .md artifact; git-reversible
     "incident_update_review": "irreversible",  # surfaces founder_action to Telegram; user sees it
+    # ---- Z7 T3E crisis comms verbs (B6) -------------------------------------
+    "crisis/freeze_marketing": "full",    # DB write; reversible via crisis/resume
+    "crisis/draft_holding": "full",       # draft variants only; no publish; git-reversible
+    "crisis/disclosure_timer": "irreversible",  # surfaces founder_action visible to user
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

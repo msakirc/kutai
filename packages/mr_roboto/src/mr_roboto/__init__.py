@@ -3661,4 +3661,44 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T3E — B6: crisis comms verbs ─────────────────────────────────────
+
+    if action == "crisis/freeze_marketing":
+        # Pause in-flight A2/B1/A7 for the affected product.
+        # Writes a per-product freeze flag into marketing_freeze table.
+        # A2/B1/A7 check is_marketing_frozen(product_id) before proceeding.
+        # Reversible via /crisis resume (sets resumed_at).
+        try:
+            from mr_roboto.crisis_freeze_marketing import run as _freeze
+            res = await _freeze(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "freeze_marketing failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "crisis/draft_holding":
+        # LLM-bound: reads tier playbook + event context, outputs holding-statement variants.
+        # Returns variants for founder selection — never publishes automatically.
+        try:
+            from mr_roboto.crisis_draft_holding import run as _draft_holding
+            res = await _draft_holding(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "draft_holding failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "crisis/disclosure_timer":
+        # Tier 3 only: jurisdiction-aware 72h disclosure timer.
+        # Runs every 6h; emits escalating founder_action reminder.
+        try:
+            from mr_roboto.crisis_disclosure_timer import run as _disclosure_timer
+            res = await _disclosure_timer(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "disclosure_timer failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

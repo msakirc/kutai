@@ -3160,6 +3160,68 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T3E (B6): crisis_events ────────────────────────────────────────────
+    await apply_migration(
+        version="2026-05-15-z7-crisis-events",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS crisis_events ("
+            " event_id      INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id    TEXT NOT NULL,"
+            " opened_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " tier          INTEGER NOT NULL CHECK(tier IN (1,2,3,4)),"
+            " source        TEXT NOT NULL DEFAULT 'manual',"
+            " summary       TEXT NOT NULL DEFAULT '',"
+            " status        TEXT NOT NULL DEFAULT 'active',"
+            " resolved_at   TEXT,"
+            " postmortem_url TEXT"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_crisis_events_product "
+            "ON crisis_events(product_id, status);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_crisis_events_product;\n"
+            "DROP TABLE IF EXISTS crisis_events;\n"
+        ),
+        description=(
+            "Z7 T3E (B6): crisis_events — per-product crisis lifecycle table. "
+            "tier in 1-4 (brand misstep / outage / security breach / existential). "
+            "source in mention_monitor|incident|manual. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15). "
+            "Freeze scoped per-product; other products keep running."
+        ),
+    )
+
+    # ── Z7 T3E (B6): marketing_freeze ────────────────────────────────────────
+    await apply_migration(
+        version="2026-05-15-z7-marketing-freeze",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS marketing_freeze ("
+            " freeze_id   INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id  TEXT NOT NULL,"
+            " event_id    INTEGER NOT NULL,"
+            " frozen_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " resumed_at  TEXT"
+            ");\n"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketing_freeze_product_event "
+            "ON marketing_freeze(product_id, event_id) WHERE resumed_at IS NULL;\n"
+            "CREATE INDEX IF NOT EXISTS idx_marketing_freeze_product "
+            "ON marketing_freeze(product_id, resumed_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_marketing_freeze_product_event;\n"
+            "DROP INDEX IF EXISTS idx_marketing_freeze_product;\n"
+            "DROP TABLE IF EXISTS marketing_freeze;\n"
+        ),
+        description=(
+            "Z7 T3E (B6): marketing_freeze — per-product freeze flag for A2/B1/A7. "
+            "Downstream subsystems check is_marketing_frozen(product_id) before "
+            "proceeding with launches, announcement sends, or outreach. "
+            "resumed_at=NULL means currently frozen. Set by crisis/freeze_marketing, "
+            "cleared by crisis/resume (sets resumed_at=now). "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

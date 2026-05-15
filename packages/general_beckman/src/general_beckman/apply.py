@@ -3406,6 +3406,30 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                     "adr_drift_judge spawn skipped",
                     source_id=source.get("id"), error=str(_exc),
                 )
+        # Z4 T4A — fire founder-loop visual-review notification (best-effort).
+        if a.kind == "visual_review":
+            try:
+                from mr_roboto._visual_review_notify import enqueue_visual_review_notice
+                _vr_result = getattr(a, "result", None) or {}
+                if isinstance(_vr_result, dict):
+                    await enqueue_visual_review_notice(
+                        mission_id=int(source.get("mission_id") or 0),
+                        step_id=str(
+                            ctx.get("workflow_step_id")
+                            or ctx.get("step_id")
+                            or source.get("id")
+                            or ""
+                        ),
+                        verdict=_vr_result.get("verdict", "pass"),
+                        findings=list(_vr_result.get("findings") or []),
+                        captured_paths=list(_vr_result.get("captured_paths") or []),
+                        workspace_path=ctx.get("workspace_path") or None,
+                    )
+            except Exception as _exc:
+                logger.debug(
+                    "visual_review_notify skipped",
+                    source_id=source.get("id"), error=str(_exc),
+                )
         return
 
     if a.kind == "grounding":

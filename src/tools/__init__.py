@@ -992,6 +992,9 @@ except Exception as e:
 # Z3 T4C — layer-aware tooling
 from .inspect_layer import inspect_layer  # noqa: E402
 
+# Z9 T2D — growth anti-pattern detectors
+from .growth_anti_patterns import growth_anti_patterns  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -1005,6 +1008,18 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Args: path (str), workspace_path (str, optional)."
         ),
         "example": '{"action": "tool_call", "tool": "inspect_layer", "args": {"path": "src/domain/user.py"}}',
+    },
+    "growth_anti_patterns": {
+        "function": growth_anti_patterns,
+        "description": (
+            "Run the three growth anti-pattern detectors over a digest_input "
+            "bundle: vanity metric (absolute-count north-star), engagement "
+            "vampire (high events + flat/declining retention), insufficient-N "
+            "(experiment < 100 daily-active samples). "
+            "Args: digest_input (str — the digest_input dict as a JSON object "
+            "string)."
+        ),
+        "example": '{"action": "tool_call", "tool": "growth_anti_patterns", "args": {"digest_input": "{...}"}}',
     },
     # ── Shell ──────────────────────────────────────────────────────────────
     "shell": {

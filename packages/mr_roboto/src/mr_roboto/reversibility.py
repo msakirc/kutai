@@ -171,6 +171,16 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z8 T5D cost monitor cron ---------------------------------------
     "cost_pull": "full",  # vendor read-only cost API
     "cron_cost_pull": "full",
+    # ---- Z9 growth verbs (registered T1C; implemented T2-T5) ------------
+    "inject_north_star": "full",  # writes north-star row; deletable
+    "emit_metric": "full",  # append-only metric row
+    "record_hypothesis": "full",  # writes hypothesis row; deletable
+    "record_verdict": "full",  # writes verdict row; re-runnable
+    "suppress_hypothesis": "full",  # suppressed_until expires naturally
+    "assign_variant": "partial",  # DB row reversible, but exposed users already saw the variant
+    "retire_variant": "partial",  # stops the variant, but prior exposure cannot be unwound
+    "score_backlog": "full",  # writes backlog scores; re-runnable
+    "score_sunset": "full",  # writes sunset scores; re-runnable
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

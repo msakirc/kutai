@@ -32,6 +32,31 @@ def test_override_wins_over_registry() -> None:
     assert get_reversibility("notify_user", override="full") == "full"
 
 
+@pytest.mark.parametrize(
+    "verb,expected",
+    [
+        ("inject_north_star", "full"),
+        ("emit_metric", "full"),
+        ("record_hypothesis", "full"),
+        ("record_verdict", "full"),
+        ("suppress_hypothesis", "full"),
+        ("assign_variant", "partial"),
+        ("retire_variant", "partial"),
+        ("score_backlog", "full"),
+        ("score_sunset", "full"),
+    ],
+)
+def test_z9_growth_verbs_registered(verb: str, expected: str) -> None:
+    """Z9 T1C — the 9 growth verbs have explicit reversibility tags.
+
+    assign_variant / retire_variant are ``partial`` because once a
+    variant is shown to real users that exposure can't be unwound even
+    though the DB row is deletable.
+    """
+    assert verb in VERB_REVERSIBILITY, f"{verb!r} missing from registry"
+    assert get_reversibility(verb) == expected
+
+
 def test_all_tags_are_valid() -> None:
     valid = {"full", "partial", "irreversible"}
     for verb, tag in VERB_REVERSIBILITY.items():
@@ -79,6 +104,18 @@ def test_every_registry_verb_is_a_real_dispatcher_action() -> None:
         "rotate_failed_key",
         "archive_flake_test",
         "escalate_to_founder",
+        # Z9 growth verbs — reversibility registered in T1C; the verb
+        # implementations land in later tiers (T2-T5). Until then they
+        # have no dispatcher block, so they live in the registry alone.
+        "inject_north_star",
+        "emit_metric",
+        "record_hypothesis",
+        "record_verdict",
+        "suppress_hypothesis",
+        "assign_variant",
+        "retire_variant",
+        "score_backlog",
+        "score_sunset",
     }
     for verb in VERB_REVERSIBILITY:
         if verb in EXEMPT:

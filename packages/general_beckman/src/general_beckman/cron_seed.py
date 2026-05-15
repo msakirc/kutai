@@ -313,6 +313,16 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 300,
         "payload": {"_executor": "lifecycle_email_send"},
     },
+    # Z7 T5 B8 — daily reviews harvest. Polls all configured platforms,
+    # ingests new reviews (dedup via unique constraint), classifies unclassified
+    # reviews (sentiment + theme). Surfaces 1-2-star founder_actions + queues
+    # bug-tagged reviews for investigation.
+    {
+        "title": "reviews_poll_daily",
+        "description": "Daily reviews harvest: poll configured platforms, ingest new reviews, classify sentiment + theme",
+        "interval_seconds": 86400,  # 24h
+        "payload": {"_executor": "reviews_poll_daily"},
+    },
     # Z7 T5 A9 — monthly investor bullets (A9 + A9.r1 segmented).
     # At month-end: collects metrics from Z6/Z8/Z3/A8 (degrades when absent),
     # runs anomaly detection (±2σ vs trailing-3-month median), calls LLM for

@@ -240,6 +240,22 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "changelog/draft": "full",         # writes draft DB row; git-reversible
     "changelog/publish": "irreversible",  # marks published; subscribers see it
     "changelog_freshness": "full",     # read-only scan + advisory founder_action
+    # ---- Z7 T5 B8 reviews harvest -------------------------------------------
+    # Poll verbs: append-only DB inserts (dedup via UNIQUE); fully reversible.
+    "reviews/poll/g2": "full",
+    "reviews/poll/appstore": "full",
+    "reviews/poll/playstore": "full",
+    "reviews/poll/producthunt": "full",
+    "reviews/poll/trustpilot": "full",
+    "reviews/poll/capterra": "full",
+    "reviews/poll/shopify": "full",
+    "reviews/poll/chrome_store": "full",
+    # Classify: DB UPDATE only; no external side-effect; fully reversible.
+    "reviews/classify": "full",
+    # Draft reply: local draft only; NEVER auto-posts; fully reversible.
+    "reviews/draft_reply": "full",
+    # Daily cron: polls + classifies; idempotent; fully reversible.
+    "reviews_poll_daily": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

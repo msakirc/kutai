@@ -3663,6 +3663,55 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T5 B8: external_reviews — reviews harvest table ───────────────────
+    # One row per review per platform. UNIQUE(platform, external_id) for dedup.
+    # sentiment: 'positive' | 'negative' | 'neutral' | NULL (pre-classify).
+    # theme_tag: 'UX' | 'pricing' | 'bug' | 'feature-request' | 'support' |
+    #            'generic-positive' | 'generic-negative' | NULL (pre-classify).
+    # replied_at / reply_body_md: NULL until founder approves + posts reply
+    # (NEVER auto-replied — draft_reply produces drafts only).
+    # product_id NOT NULL (per-product scoping, founder decision 2026-05-15).
+    await apply_migration(
+        version="2026-05-16-z7-b8-external-reviews",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS external_reviews ("
+            " review_id    INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id   TEXT    NOT NULL,"
+            " platform     TEXT    NOT NULL,"
+            " external_id  TEXT    NOT NULL,"
+            " posted_at    TEXT,"
+            " author       TEXT,"
+            " rating       INTEGER,"
+            " body_md      TEXT    NOT NULL DEFAULT '',"
+            " sentiment    TEXT,"
+            " theme_tag    TEXT,"
+            " replied_at   TEXT,"
+            " reply_body_md TEXT,"
+            " created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_external_reviews_platform_id "
+            "ON external_reviews(platform, external_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_external_reviews_product_platform "
+            "ON external_reviews(product_id, platform, posted_at DESC);\n"
+            "CREATE INDEX IF NOT EXISTS idx_external_reviews_rating "
+            "ON external_reviews(product_id, rating);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_external_reviews_rating;\n"
+            "DROP INDEX IF EXISTS idx_external_reviews_product_platform;\n"
+            "DROP UNIQUE INDEX IF EXISTS uq_external_reviews_platform_id;\n"
+            "DROP TABLE IF EXISTS external_reviews;\n"
+        ),
+        description=(
+            "Z7 T5 B8: external_reviews — reviews harvest table. "
+            "Polls G2/AppStore/PlayStore/ProductHunt/etc. daily; "
+            "UNIQUE(platform, external_id) for dedup. sentiment + theme_tag "
+            "set by reviews/classify. replied_at/reply_body_md NULL until "
+            "founder manually approves reply — never auto-replied. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

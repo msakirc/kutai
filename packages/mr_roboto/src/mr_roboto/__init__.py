@@ -4190,6 +4190,62 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T5 B8 — reviews harvest verbs ────────────────────────────────────
+
+    if action and action.startswith("reviews/poll/"):
+        # Per-platform poll: reviews/poll/<platform>
+        # Ingests new reviews from the platform; dedup via UNIQUE constraint.
+        platform = action.split("/", 2)[2] if action.count("/") >= 2 else ""
+        try:
+            from mr_roboto.reviews_poll import run as _reviews_poll_run
+            poll_payload = dict(payload)
+            poll_payload["platform"] = platform
+            res = await _reviews_poll_run(poll_payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or f"reviews/poll/{platform} failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "reviews/classify":
+        # LLM-bound: classify sentiment + theme_tag; side-effects for 1-2-star + bug.
+        try:
+            from mr_roboto.reviews_classify import run as _reviews_classify_run
+            res = await _reviews_classify_run(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "reviews/classify failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "reviews/draft_reply":
+        # LLM-bound: draft a reply per brand voice + platform conventions.
+        # NEVER auto-posts — founder approves before any reply is sent.
+        try:
+            from mr_roboto.reviews_draft_reply import run as _reviews_draft_reply_run
+            res = await _reviews_draft_reply_run(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "reviews/draft_reply failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "reviews_poll_daily":
+        # Daily cron: poll all configured platforms + classify unclassified reviews.
+        try:
+            from src.app.jobs.reviews_poll_daily import run_reviews_poll_daily
+            config = payload.get("config") or None
+            res = await run_reviews_poll_daily(config=config)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error="reviews_poll_daily failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "capture_screenshots":
         # Z4 T1A — capture preview screenshots across breakpoints + color modes.
         from mr_roboto.capture_screenshots import (

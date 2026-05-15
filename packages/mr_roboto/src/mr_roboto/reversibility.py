@@ -233,6 +233,9 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "meeting/brief": "full",             # writes brief_md to DB; fully reversible
     "meeting/outcome_prompt": "irreversible",  # surfaces founder_action to Telegram; user sees it
     "meeting_brief_dispatch": "full",    # cron tick: enqueues tasks + emits prompts; idempotent
+    # ---- Z7 T5 B1 lifecycle email engine ------------------------------------
+    "email/send_via_provider": "irreversible",  # real email sent; recipient sees it
+    "lifecycle_email_send": "full",             # cron tick: idempotent pick + send + mark
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

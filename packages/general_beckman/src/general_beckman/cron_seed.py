@@ -303,6 +303,16 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 2592000,  # 30 days
         "payload": {"_executor": "quote_harvest"},
     },
+    # Z7 T5 B1 — lifecycle email send (every 5 minutes).
+    # Picks email_sends rows where scheduled_for <= now AND sent_at IS NULL;
+    # calls send_email per product config; marks sent_at on success.
+    # Falls back to manual /lifecycle trigger when Z6 event stream is absent.
+    {
+        "title": "lifecycle_email_send",
+        "description": "Every-5min: pick due email_sends + send via product ESP + mark sent_at",
+        "interval_seconds": 300,
+        "payload": {"_executor": "lifecycle_email_send"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

@@ -121,6 +121,54 @@ async def email_webhook_inbound(
     return {"status": "accepted", "provider": provider, "product_id": product_id}
 
 
+# ── Z7 T5 B1 — Email preference center ────────────────────────────────────────
+# Routes: GET /email/preferences/{user_token}?product_id=...
+#         POST /email/preferences/{user_token}?product_id=...
+#
+# GET  — returns {"subscriptions": {"<seq_id>": bool, ...}}
+# POST — updates subscriptions from JSON body {"subscriptions": {...}}
+#
+# Unsubscribe links in emails point to GET with a single-click toggle parameter
+# so the user can opt out without a form. A full preference center (list all
+# sequences + toggles) is served at GET. POST is the programmatic upsert.
+
+
+@app.get("/email/preferences/{user_token}")
+async def email_preferences_get(user_token: str, product_id: str = "default") -> dict:
+    """Return per-sequence subscription preferences for user_token."""
+    from src.app.lifecycle_email import get_preferences
+
+    return await get_preferences(product_id=product_id, user_token=user_token)
+
+
+@app.post("/email/preferences/{user_token}")
+async def email_preferences_post(
+    user_token: str, product_id: str = "default", request: Request = None
+) -> dict:
+    """Update per-sequence subscription preferences for user_token.
+
+    Expects JSON body: {"subscriptions": {"<sequence_id>": bool, ...}}.
+    """
+    from src.app.lifecycle_email import set_preferences
+
+    try:
+        raw = await request.body()
+        body = __import__("json").loads(raw) if raw else {}
+    except (ValueError, Exception) as exc:
+        raise HTTPException(status_code=400, detail=f"bad json: {exc}") from exc
+
+    subscriptions = body.get("subscriptions", {})
+    if not isinstance(subscriptions, dict):
+        raise HTTPException(status_code=400, detail="subscriptions must be a dict")
+
+    await set_preferences(
+        product_id=product_id,
+        user_token=user_token,
+        subscriptions=subscriptions,
+    )
+    return {"status": "updated", "product_id": product_id, "user_token": user_token}
+
+
 @app.post("/webhook/{integration_id}")
 async def webhook_inbound(integration_id: str, request: Request) -> dict:
     raw = await request.body()

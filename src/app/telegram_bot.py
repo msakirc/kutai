@@ -2005,6 +2005,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("meeting", self.cmd_meeting))
         # Z7 T4 B7 — customer interview pipeline
         self.app.add_handler(CommandHandler("interview", self.cmd_interview))
+        # Z7 T5 B1 — lifecycle email engine
+        self.app.add_handler(CommandHandler("lifecycle", self.cmd_lifecycle))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -11698,6 +11700,171 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             )
         except Exception as exc:
             await self._reply(update, f"Error: {exc}")
+
+    # ── Z7 T5 B1 — Lifecycle email engine ────────────────────────────────────
+
+    async def cmd_lifecycle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T5 B1 — Lifecycle email engine commands.
+
+        Subcommands:
+          /lifecycle trigger <product_id> <user_id> <sequence_id>
+              Manually trigger a sequence for a user (fallback until Z6
+              event stream is live).
+          /lifecycle status <product_id>
+              Show sequence counts and recent send stats for the product.
+
+        Examples:
+          /lifecycle trigger prod-1 user@example.com 3
+          /lifecycle status prod-1
+        """
+        chat_id = update.effective_chat.id
+        args = context.args or []
+
+        if not args:
+            await self._reply(
+                update,
+                (
+                    "*Lifecycle Email Engine (B1)*\n\n"
+                    "Subcommands:\n"
+                    "  `/lifecycle trigger <product> <user_id> <sequence_id>`\n"
+                    "      Manually trigger a sequence for a user.\n\n"
+                    "  `/lifecycle status <product>`\n"
+                    "      Show sequence counts + recent send stats.\n\n"
+                    "*Example:*\n"
+                    "  `/lifecycle trigger prod-1 user@example.com 3`\n"
+                    "  `/lifecycle status prod-1`"
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        sub = args[0].lower()
+
+        if sub == "trigger":
+            if len(args) < 4:
+                await self._reply(
+                    update,
+                    "Usage: `/lifecycle trigger <product_id> <user_id> <sequence_id>`",
+                    parse_mode="Markdown",
+                )
+                return
+            product_id = args[1]
+            user_id = args[2]
+            try:
+                sequence_id = int(args[3])
+            except ValueError:
+                await self._reply(update, "sequence_id must be an integer.")
+                return
+            try:
+                from src.app.lifecycle_email import trigger_sequence
+                result = await trigger_sequence(
+                    product_id=product_id,
+                    user_id=user_id,
+                    sequence_id=sequence_id,
+                )
+                if result.get("ok"):
+                    await self._reply(
+                        update,
+                        (
+                            f"Sequence triggered.\n\n"
+                            f"*Product:* {product_id}\n"
+                            f"*User:* {user_id}\n"
+                            f"*Sequence ID:* {sequence_id}\n"
+                            f"*Sends scheduled:* {result.get('sends_created', 0)}"
+                        ),
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await self._reply(
+                        update,
+                        f"Failed to trigger sequence: {result.get('reason', 'unknown error')}",
+                    )
+            except Exception as exc:
+                await self._reply(update, f"Error triggering sequence: {exc}")
+            return
+
+        if sub == "status":
+            if len(args) < 2:
+                await self._reply(
+                    update,
+                    "Usage: `/lifecycle status <product_id>`",
+                    parse_mode="Markdown",
+                )
+                return
+            product_id = args[1]
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+
+                # Count sequences
+                cur = await db.execute(
+                    "SELECT COUNT(*) FROM email_sequences WHERE product_id=?",
+                    (product_id,),
+                )
+                row = await cur.fetchone()
+                seq_total = row[0] if row else 0
+
+                cur = await db.execute(
+                    "SELECT COUNT(*) FROM email_sequences "
+                    "WHERE product_id=? AND enabled=1",
+                    (product_id,),
+                )
+                row = await cur.fetchone()
+                seq_enabled = row[0] if row else 0
+
+                # Count templates
+                cur = await db.execute(
+                    "SELECT COUNT(*) FROM email_templates WHERE product_id=?",
+                    (product_id,),
+                )
+                row = await cur.fetchone()
+                tmpl_total = row[0] if row else 0
+
+                cur = await db.execute(
+                    "SELECT COUNT(*) FROM email_templates "
+                    "WHERE product_id=? AND status='approved'",
+                    (product_id,),
+                )
+                row = await cur.fetchone()
+                tmpl_approved = row[0] if row else 0
+
+                # Recent sends
+                cur = await db.execute(
+                    "SELECT COUNT(*) FROM email_sends "
+                    "WHERE product_id=? AND sent_at IS NOT NULL "
+                    "AND scheduled_for >= strftime('%Y-%m-%d %H:%M:%S', 'now', '-7 days')",
+                    (product_id,),
+                )
+                row = await cur.fetchone()
+                sent_7d = row[0] if row else 0
+
+                cur = await db.execute(
+                    "SELECT COUNT(*) FROM email_sends "
+                    "WHERE product_id=? AND sent_at IS NULL",
+                    (product_id,),
+                )
+                row = await cur.fetchone()
+                pending = row[0] if row else 0
+
+                await self._reply(
+                    update,
+                    (
+                        f"*Lifecycle Email Status — {product_id}*\n\n"
+                        f"*Sequences:* {seq_enabled}/{seq_total} enabled\n"
+                        f"*Templates:* {tmpl_approved}/{tmpl_total} approved\n"
+                        f"*Sends (7d):* {sent_7d} sent\n"
+                        f"*Pending:* {pending} scheduled"
+                    ),
+                    parse_mode="Markdown",
+                )
+            except Exception as exc:
+                await self._reply(update, f"Error fetching lifecycle status: {exc}")
+            return
+
+        await self._reply(
+            update,
+            f"Unknown subcommand: {sub!r}\nUsage: /lifecycle trigger | /lifecycle status",
+        )
 
     # ── Z7 T4 B7 — Customer interview / call notes pipeline ──────────────────
 

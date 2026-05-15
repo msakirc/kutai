@@ -3584,6 +3584,53 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T5 B1 — lifecycle email engine verbs ─────────────────────────────
+
+    if action == "lifecycle_email_send":
+        # B1 — 5-min cron: pick due email_sends + send + mark sent_at.
+        from src.app.jobs.lifecycle_email_send import run_lifecycle_email_send
+        try:
+            res = await run_lifecycle_email_send()
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error="lifecycle_email_send: failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "email/send_via_provider":
+        # B1 — one-shot send via the product's configured ESP.
+        # payload: {product_id, to, subject, body_md, headers?, idempotency_key?}
+        from src.integrations.email.service import send_email
+        try:
+            product_id = str(payload.get("product_id") or "")
+            to = str(payload.get("to") or "")
+            subject = str(payload.get("subject") or "")
+            body_md = str(payload.get("body_md") or "")
+            headers = payload.get("headers") or None
+            idempotency_key = payload.get("idempotency_key") or None
+            res = await send_email(
+                product_id=product_id,
+                to=to,
+                subject=subject,
+                body_md=body_md,
+                headers=headers,
+                idempotency_key=idempotency_key,
+            )
+            status = res.get("status", "error")
+            if status not in ("sent", "suppressed", "quota_blocked"):
+                return Action(
+                    status="failed",
+                    error=f"email/send_via_provider: {res.get('error') or status}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     # ── Z7 T4 B7 — customer interview pipeline verbs ─────────────────────────
 
     if action == "interview/transcribe":

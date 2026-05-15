@@ -3477,6 +3477,151 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T5 B1: email_templates — lifecycle email template store ─────────────
+    # One row per email template. kind: onboarding|retention|churn_rescue|
+    # transactional|announcement. status: draft|approved|archived.
+    # brand_voice_lint_pass + copy_compliance_pass must both be 1 before founder
+    # can approve (status → 'approved'). product_id NOT NULL (per-product scoping).
+    await apply_migration(
+        version="2026-05-16-z7-email-templates",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS email_templates ("
+            " template_id  INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id   TEXT NOT NULL,"
+            " kind         TEXT NOT NULL DEFAULT 'onboarding',"
+            " subject      TEXT NOT NULL DEFAULT '',"
+            " body_md      TEXT NOT NULL DEFAULT '',"
+            " variants_json TEXT NOT NULL DEFAULT '[]',"
+            " status       TEXT NOT NULL DEFAULT 'draft',"
+            " brand_voice_lint_pass INTEGER NOT NULL DEFAULT 0,"
+            " copy_compliance_pass  INTEGER NOT NULL DEFAULT 0,"
+            " created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_templates_product_kind "
+            "ON email_templates(product_id, kind);\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_templates_status "
+            "ON email_templates(product_id, status);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_email_templates_status;\n"
+            "DROP INDEX IF EXISTS idx_email_templates_product_kind;\n"
+            "DROP TABLE IF EXISTS email_templates;\n"
+        ),
+        description=(
+            "Z7 T5 B1: email_templates — lifecycle email template store. "
+            "kind=onboarding|retention|churn_rescue|transactional|announcement. "
+            "status=draft|approved|archived. brand_voice_lint_pass + "
+            "copy_compliance_pass must both=1 before founder approval. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
+    # ── Z7 T5 B1: email_sequences — ordered drip sequence definitions ──────────
+    # steps_json: ordered list of {template_id, delay_hours}.  enabled=1 means
+    # trigger_sequence will expand it; enabled=0 silently skips.
+    # trigger_kind: signup|first_action|inactivity_7d|cancellation|payment_failed|
+    #               announcement|manual (matches Z6 product event types).
+    await apply_migration(
+        version="2026-05-16-z7-email-sequences",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS email_sequences ("
+            " sequence_id  INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id   TEXT NOT NULL,"
+            " name         TEXT NOT NULL DEFAULT '',"
+            " trigger_kind TEXT NOT NULL DEFAULT 'manual',"
+            " steps_json   TEXT NOT NULL DEFAULT '[]',"
+            " enabled      INTEGER NOT NULL DEFAULT 1,"
+            " created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_sequences_product_trigger "
+            "ON email_sequences(product_id, trigger_kind);\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_sequences_enabled "
+            "ON email_sequences(product_id, enabled);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_email_sequences_enabled;\n"
+            "DROP INDEX IF EXISTS idx_email_sequences_product_trigger;\n"
+            "DROP TABLE IF EXISTS email_sequences;\n"
+        ),
+        description=(
+            "Z7 T5 B1: email_sequences — drip sequence definitions. "
+            "steps_json = ordered list of {template_id, delay_hours}. "
+            "trigger_kind = signup|first_action|inactivity_7d|cancellation|"
+            "payment_failed|announcement|manual. product_id NOT NULL."
+        ),
+    )
+
+    # ── Z7 T5 B1: email_sends — per-user per-step send schedule ───────────────
+    # Populated by trigger_sequence from a sequence's steps_json.
+    # lifecycle_email_send cron picks rows where scheduled_for <= now AND
+    # sent_at IS NULL, calls send_email, marks sent_at on success.
+    # Bounce/unsub/open/click event timestamps recorded from email webhooks.
+    await apply_migration(
+        version="2026-05-16-z7-email-sends",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS email_sends ("
+            " send_id       INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id    TEXT NOT NULL,"
+            " user_id       TEXT NOT NULL,"
+            " sequence_id   INTEGER,"
+            " template_id   INTEGER,"
+            " scheduled_for TEXT NOT NULL,"
+            " sent_at       TEXT,"
+            " opened_at     TEXT,"
+            " clicked_at    TEXT,"
+            " bounced_at    TEXT,"
+            " unsubscribed_at TEXT,"
+            " created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_sends_due "
+            "ON email_sends(product_id, scheduled_for) WHERE sent_at IS NULL;\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_sends_sequence "
+            "ON email_sends(sequence_id, user_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_email_sends_sequence;\n"
+            "DROP INDEX IF EXISTS idx_email_sends_due;\n"
+            "DROP TABLE IF EXISTS email_sends;\n"
+        ),
+        description=(
+            "Z7 T5 B1: email_sends — per-user per-step send schedule. "
+            "Populated by trigger_sequence. Cron picks scheduled_for<=now "
+            "AND sent_at IS NULL. Timestamps for sent/opened/clicked/bounced/"
+            "unsubscribed recorded from email webhooks. product_id NOT NULL."
+        ),
+    )
+
+    # ── Z7 T5 B1: email_preferences — per-user preference center data ─────────
+    # user_token is an opaque string (URL-safe, per-product unique) embedded in
+    # unsubscribe links.  subscriptions_json: {"<sequence_id>": true|false}.
+    # UNIQUE(product_id, user_token) so set_preferences can use INSERT OR REPLACE.
+    await apply_migration(
+        version="2026-05-16-z7-email-preferences",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS email_preferences ("
+            " pref_id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id        TEXT NOT NULL,"
+            " user_token        TEXT NOT NULL,"
+            " subscriptions_json TEXT NOT NULL DEFAULT '{}',"
+            " updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " UNIQUE(product_id, user_token)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_email_preferences_product_token "
+            "ON email_preferences(product_id, user_token);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_email_preferences_product_token;\n"
+            "DROP TABLE IF EXISTS email_preferences;\n"
+        ),
+        description=(
+            "Z7 T5 B1: email_preferences — per-user preference center. "
+            "user_token = opaque URL-safe string embedded in unsubscribe links. "
+            "subscriptions_json = {sequence_id: bool}. UNIQUE(product_id,user_token) "
+            "supports upsert. product_id NOT NULL (per-product scoping)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

@@ -679,6 +679,20 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Handler: posthook_handlers/demo_accessibility_check.py."
         ),
     ),
+    # ── Z7 T3C: press kit posthook (A4 + A4.r1) ─────────────────────────────
+    "press_kit_freshness": PostHookSpec(
+        kind="press_kit_freshness",
+        verb="press_kit_freshness",
+        default_severity="warning",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T3C (A4): monthly freshness check — if any press kit for the product "
+            "is >90 days old AND the spec has changed, surfaces a founder_action "
+            "'regenerate press kit?'. "
+            "Handler: posthook_handlers/press_kit_freshness.py."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

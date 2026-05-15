@@ -192,6 +192,9 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "score_backlog": "full",  # writes backlog scores; re-runnable
     "score_sunset": "full",  # writes sunset scores; re-runnable
     "classify_signals": "full",  # Z9 T3B — query + Beckman enqueue + append-only rows
+    # ---- Z7 T3C press kit verbs (A4 + A4.r1) --------------------------------
+    "press_kit/assemble": "full",   # writes zips + manifest to workspace; git-reversible
+    "press_kit/publish": "partial", # copies zips to local store or S3; uploaded bytes persist
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

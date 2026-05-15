@@ -3028,6 +3028,72 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T3C: press_kits — versioned binary store (A4 + A4.r1) ────────────
+    # One row per assembled press kit. manifest_json carries the full manifest
+    # including 4 audience variants (investor/journalist/partner/candidate).
+    # published_url is the canonical permanent URL prefix for this version;
+    # per-audience URLs are derived as published_url + "/{audience}/".
+    # product_id is NOT NULL per-product scoping (founder decision 2026-05-15).
+    await apply_migration(
+        version="2026-05-15-z7-press-kits",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS press_kits ("
+            " kit_id      INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id  TEXT NOT NULL,"
+            " version     INTEGER NOT NULL,"
+            " mission_id  INTEGER,"
+            " manifest_json TEXT NOT NULL,"
+            " published_url TEXT,"
+            " created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_press_kits_product_version "
+            "ON press_kits(product_id, version);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_press_kits_product_version;\n"
+            "DROP TABLE IF EXISTS press_kits;\n"
+        ),
+        description=(
+            "Z7 T3C (A4): press_kits versioned binary store. One row per assembled "
+            "kit; manifest_json holds 4 audience variants (investor/journalist/"
+            "partner/candidate). published_url = permanent URL prefix; audience "
+            "URLs = published_url/{audience}/. product_id NOT NULL (per-product "
+            "scoping, founder decision 2026-05-15)."
+        ),
+    )
+
+    # ── Z7 T3C: press_kit_quotes — harvested quotes for press kits ───────────
+    # Quotes sourced from customer interviews (B7), reviews (B8), past mentions
+    # (A11), or manually entered. approved flag controls inclusion in kit zip.
+    # source_kind: 'interview' | 'review' | 'mention' | 'manual'.
+    # kit_id is nullable — quotes harvested before assembly have kit_id=NULL.
+    await apply_migration(
+        version="2026-05-15-z7-press-kit-quotes",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS press_kit_quotes ("
+            " quote_id    INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id  TEXT NOT NULL,"
+            " kit_id      INTEGER,"
+            " source_kind TEXT NOT NULL,"
+            " speaker     TEXT,"
+            " body        TEXT NOT NULL,"
+            " approved    INTEGER NOT NULL DEFAULT 0,"
+            " created_at  TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_press_kit_quotes_product "
+            "ON press_kit_quotes(product_id, approved);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_press_kit_quotes_product;\n"
+            "DROP TABLE IF EXISTS press_kit_quotes;\n"
+        ),
+        description=(
+            "Z7 T3C (A4): press_kit_quotes — harvested quotes for press kit variants. "
+            "source_kind=interview|review|mention|manual. approved=1 means included "
+            "in kit zip. kit_id nullable (NULL = not yet assigned to a version)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

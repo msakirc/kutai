@@ -1,0 +1,66 @@
+{
+  "service_name": "intercom",
+  "base_url": "https://api.intercom.io",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "access_token",
+  "webhook_secret": "${INTERCOM_WEBHOOK_SECRET}",
+  "actions": {
+    "list_conversations": {
+      "method": "GET",
+      "path": "/conversations",
+      "required_params": []
+    },
+    "get_conversation": {
+      "method": "GET",
+      "path": "/conversations/{conversation_id}",
+      "required_params": ["conversation_id"]
+    },
+    "search_conversations": {
+      "method": "POST",
+      "path": "/conversations/search",
+      "required_params": ["query"]
+    },
+    "list_contacts": {
+      "method": "GET",
+      "path": "/contacts",
+      "required_params": []
+    },
+    "get_contact": {
+      "method": "GET",
+      "path": "/contacts/{contact_id}",
+      "required_params": ["contact_id"]
+    }
+  },
+  "mock_responses": {
+    "list_conversations": {
+      "type": "conversation.list",
+      "conversations": [
+        {"id": "conv_mock_1", "state": "open", "priority": "priority", "title": "Cannot reset password"},
+        {"id": "conv_mock_2", "state": "closed", "priority": "not_priority", "title": "Feature request: dark mode"}
+      ],
+      "total_count": 2
+    },
+    "get_conversation": {
+      "id": "conv_mock_1", "state": "open", "title": "Cannot reset password",
+      "source": {"body": "I tried to reset my password but the email never arrived."}
+    },
+    "search_conversations": {
+      "type": "conversation.list",
+      "conversations": [
+        {"id": "conv_mock_1", "state": "open", "title": "Cannot reset password"}
+      ],
+      "total_count": 1
+    },
+    "list_contacts": {
+      "type": "list",
+      "data": [
+        {"id": "contact_mock_1", "role": "user", "name": "Mock User"}
+      ],
+      "total_count": 1
+    },
+    "get_contact": {
+      "id": "contact_mock_1", "role": "user", "name": "Mock User"
+    }
+  }
+}

@@ -194,6 +194,10 @@ class HttpIntegration(BaseIntegration):
         self._auth_header = config.get("auth_header", "Authorization")
         self._auth_query_param = config.get("auth_query_param", "token")
         self._actions = config.get("actions", {})
+        # Z9 T1B — deterministic offline payloads keyed by action name.
+        # The registry copies this onto itself at register() time and serves
+        # it when mock_mode is active.
+        self.mock_responses: dict = config.get("mock_responses", {}) or {}
         # Validate base_url at construction time
         _validate_url(self._base_url)
 
@@ -229,6 +233,45 @@ class HttpIntegration(BaseIntegration):
         """Return the list of configured action names."""
         return sorted(self._actions.keys())
 
+    def _maybe_mock(self, action: str) -> dict | None:
+        """Return a deterministic mock envelope when mock mode is active.
+
+        Mock mode + the per-provider payloads both live on the
+        IntegrationRegistry singleton. We only mock when (a) the registry
+        reports ``mock_mode`` and (b) a payload exists for this action —
+        otherwise the real network path runs. If the registry can't be
+        reached we fall back to the env-resolved default so a standalone
+        HttpIntegration still mocks in non-prod test runs.
+        """
+        try:
+            from .registry import get_integration_registry, _resolve_mock_default
+
+            registry = get_integration_registry()
+            mock_on = registry.mock_mode
+            payload = registry.mock_response(self.service_name, action)
+            if payload is not None:
+                # Registry knows this provider — honour its flag.
+                return payload if mock_on else None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("registry mock lookup failed: %s", exc)
+            try:
+                from .registry import _resolve_mock_default
+                mock_on = _resolve_mock_default()
+            except Exception:
+                return None
+
+        # Provider not in the registry (e.g. ad-hoc HttpIntegration). Fall
+        # back to this instance's own config-supplied mock_responses.
+        if mock_on and action in self.mock_responses:
+            import copy
+            return {
+                "status": "ok",
+                "data": copy.deepcopy(self.mock_responses[action]),
+                "status_code": 200,
+                "mocked": True,
+            }
+        return None
+
     async def execute(self, action: str, params: dict) -> dict:
         """Execute an API action."""
         if action not in self._actions:
@@ -250,6 +293,18 @@ class HttpIntegration(BaseIntegration):
                 "status": "error",
                 "error": f"Missing required params: {missing}",
             }
+
+        # Z9 T1B — mock mode short-circuit. When the registry has mock_mode
+        # active (default in any non-prod env) and a deterministic payload is
+        # registered for this action, return it without touching the network
+        # or the credential vault.
+        mocked = self._maybe_mock(action)
+        if mocked is not None:
+            logger.debug(
+                "[%s] mock_mode active — returning fake response for %s",
+                self.service_name, action,
+            )
+            return mocked
 
         # Get credentials
         try:

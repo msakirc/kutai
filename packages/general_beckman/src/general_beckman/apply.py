@@ -1577,6 +1577,28 @@ def _posthook_agent_and_payload(
                 "workspace_path": workspace_path,
             },
         })
+    if a.kind in ("copy_compliance_review", "brand_voice_lint",
+                  "briefing_compose", "audit_completeness_check"):
+        # Z7 T1.0 — humanish-layers posthook handlers.
+        # Each runs as a mechanical task whose executor calls the handler
+        # module in posthook_handlers/<kind>.py.  The handler receives the
+        # full source task and result and returns {status: ok|fail, ...}.
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "produces": produces,
+                "workspace_path": source_ctx.get("workspace_path") or "",
+                "jurisdiction": source_ctx.get("jurisdiction") or "",
+                "channel": source_ctx.get("channel") or "",
+                "artifact_metadata": source_ctx.get("artifact_metadata") or {},
+                "copy_path": source_ctx.get("copy_path") or "",
+                "privacy_policy_path": source_ctx.get("privacy_policy_path") or "",
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -3351,6 +3373,48 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         )
         return
 
+    # Z7 T1.0 — humanish-layers posthooks.
+    # copy_compliance_review is a blocker (privacy mismatch = blocker);
+    # brand_voice_lint is a blocker (per registry default_severity).
+    # briefing_compose + audit_completeness_check are warnings (advisory).
+    if a.kind == "copy_compliance_review":
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix="copy_compliance_review gate",
+        )
+        return
+
+    if a.kind == "brand_voice_lint":
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix="brand_voice_lint gate",
+        )
+        return
+
+    if a.kind in ("briefing_compose", "audit_completeness_check"):
+        # Warning severity: soft-drop pending kind and advance source.
+        import json as _json
+        from src.infra.db import update_task as _update_task
+        new_pending = [k for k in pending if k != a.kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not a.passed:
+            ctx[f"_{a.kind}_warning"] = (
+                (a.raw or {}).get("error") or (a.raw or {}).get("summary") or "needs_review"
+            )[:300]
+        if not new_pending:
+            await _update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, a.raw or {})
+            except Exception:
+                pass
+        else:
+            await _update_task(a.source_task_id, context=_json.dumps(ctx))
+        return
 
     if a.kind == "grade" and a.passed:
         # Remove "grade" from pending; spawn summary tasks for large artifacts.

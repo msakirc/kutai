@@ -3243,4 +3243,56 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action in (
+        "copy_compliance_review",
+        "brand_voice_lint",
+        "briefing_compose",
+        "audit_completeness_check",
+    ):
+        # Z7 T1.0 — humanish-layers posthook handlers.
+        # Each handler lives in general_beckman.posthook_handlers.<action>.
+        # The handler receives the full task dict and an empty result dict,
+        # and returns {status: ok|fail, ...}.
+        try:
+            import importlib
+            _mod = importlib.import_module(
+                f"general_beckman.posthook_handlers.{action}"
+            )
+            source_task_id = payload.get("source_task_id")
+            source_task: dict = {}
+            if source_task_id:
+                try:
+                    from src.infra.db import get_task as _get_task
+                    _src = await _get_task(int(source_task_id))
+                    if _src:
+                        source_task = dict(_src)
+                except Exception:
+                    pass
+            # Merge payload fields into source task context so handler can
+            # read jurisdiction/channel/workspace_path/etc.
+            import json as _json
+            src_ctx: dict = {}
+            raw_ctx = source_task.get("context") or {}
+            if isinstance(raw_ctx, str):
+                try:
+                    src_ctx = _json.loads(raw_ctx)
+                except Exception:
+                    src_ctx = {}
+            elif isinstance(raw_ctx, dict):
+                src_ctx = dict(raw_ctx)
+            for _k in (
+                "workspace_path", "jurisdiction", "channel",
+                "artifact_metadata", "copy_path", "privacy_policy_path", "produces",
+            ):
+                if payload.get(_k):
+                    src_ctx.setdefault(_k, payload[_k])
+            source_task["context"] = src_ctx
+
+            res = await _mod.handle(source_task, {})
+            if res.get("status") == "fail":
+                return Action(status="failed", error=str(res), result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

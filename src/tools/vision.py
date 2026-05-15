@@ -4,26 +4,56 @@ import base64, os, time as _time, uuid as _uuid
 from src.infra.logging_config import get_logger
 logger = get_logger("tools.vision")
 
-async def analyze_image(filepath: str, question: str = "Describe what you see in this image.") -> str:
-    """Analyze an image file using a vision-capable model."""
-    if not os.path.exists(filepath):
-        return f"Error: file not found: {filepath}"
-    try:
-        with open(filepath, "rb") as f:
-            data = base64.b64encode(f.read()).decode()
-        ext = os.path.splitext(filepath)[1].lower().lstrip(".")
-        media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                      "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/png")
 
-        logger.info("analyzing image", filepath=filepath)
+def _encode_image(filepath: str) -> tuple[str, str]:
+    """Return (media_type, base64_data) for a single image file."""
+    ext = os.path.splitext(filepath)[1].lower().lstrip(".")
+    media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                  "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/png")
+    with open(filepath, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    return media_type, data
+
+
+async def analyze_image(filepaths: "list[str] | str", question: str = "Describe what you see in this image.") -> str:
+    """Analyze one or more image files using a vision-capable model.
+
+    Parameters
+    ----------
+    filepaths:
+        A single file path string (backward-compatible) or a list of paths.
+        When given a list, all images are included in a single vision call
+        with one text block followed by one image block per image.
+    question:
+        The question / prompt to send alongside the image(s).
+    """
+    # Normalise to list
+    if isinstance(filepaths, str):
+        path_list = [filepaths]
+    else:
+        path_list = list(filepaths)
+
+    # Validate all paths exist
+    for filepath in path_list:
+        if not os.path.exists(filepath):
+            return f"Error: file not found: {filepath}"
+
+    try:
+        logger.info("analyzing image(s)", count=len(path_list), first=path_list[0])
 
         import general_beckman
         from src.core.llm_dispatcher import _task_result_to_request_response
 
-        messages = [{"role": "user", "content": [
-            {"type": "text", "text": question},
-            {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{data}"}},
-        ]}]
+        # Build content: one text block then one image block per file
+        content: list[dict] = [{"type": "text", "text": question}]
+        for filepath in path_list:
+            media_type, data = _encode_image(filepath)
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{data}"},
+            })
+
+        messages = [{"role": "user", "content": content}]
 
         # Resolve parent_id from the orchestrator's per-task ContextVar.
         # Vision tool is always invoked from within an agent's tool execution,
@@ -76,5 +106,5 @@ async def analyze_image(filepath: str, question: str = "Describe what you see in
             return f"Error: vision analysis produced degenerate output ({_vis_cq.summary})"
         return analysis
     except Exception as e:
-        logger.error("vision analysis failed", filepath=filepath, error=str(e))
+        logger.error("vision analysis failed", filepaths=path_list, error=str(e))
         return f"Error analyzing image: {e}"

@@ -313,6 +313,23 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 300,
         "payload": {"_executor": "lifecycle_email_send"},
     },
+    # Z7 T5 A9 — monthly investor bullets (A9 + A9.r1 segmented).
+    # At month-end: collects metrics from Z6/Z8/Z3/A8 (degrades when absent),
+    # runs anomaly detection (±2σ vs trailing-3-month median), calls LLM for
+    # hypotheses (OVERHEAD lane), renders structured Markdown bullets, emits
+    # 3 segmented variants (pre_investor_pitch_bullets / current_investor_update /
+    # advisor_check_in), surfaces founder_action for copy-to-clipboard review.
+    # NOT auto-sent — founder writes the prose; A9 surfaces what they haven't noticed.
+    {
+        "title": "investor_bullets",
+        "description": (
+            "Monthly investor-bullet digest: metrics, ±2σ anomaly detection, "
+            "LLM hypotheses, 3 segmented variants (investor/advisor). "
+            "Surfaces founder_action for copy-to-clipboard review — no auto-send."
+        ),
+        "interval_seconds": 2592000,  # 30 days
+        "payload": {"_executor": "investor_bullets"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

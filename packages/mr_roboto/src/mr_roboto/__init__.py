@@ -3408,6 +3408,25 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "investor_bullets":
+        # Z7 T5 A9 — monthly investor bullets (A9 + A9.r1 segmented templates).
+        # Collects metrics from Z6/Z8/Z3/A8 (degrades gracefully when absent),
+        # runs anomaly detection (±2σ vs 3-month median), generates LLM hypotheses
+        # (OVERHEAD lane), emits 3 segmented variants, surfaces founder_action.
+        from src.app.jobs.investor_bullets import run_investor_bullets
+        try:
+            product_id = payload.get("product_id", "default")
+            res = await run_investor_bullets(product_id=product_id)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"investor_bullets: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "documentation_gap_detect":
         # Z7 T4 A8 — documentation_gap_detect posthook handler.
         # Semantic-search question against per-language support_docs collection;

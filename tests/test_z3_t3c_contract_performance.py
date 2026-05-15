@@ -41,16 +41,18 @@ def test_registry_contains_performance_review():
     assert "performance_review" in POST_HOOK_REGISTRY
 
 
-@_SKIP_NON_CANONICAL
 def test_contract_review_registry_shape():
-    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    """Canonical: triggers are a callable (qa_dial-aware), not a static list."""
+    from general_beckman.posthooks import POST_HOOK_REGISTRY, MissionDialContext
     spec = POST_HOOK_REGISTRY["contract_review"]
     assert spec.kind == "contract_review"
     assert spec.verb == "run_schemathesis"
     assert spec.default_severity == "blocker"
-    assert isinstance(spec.auto_wire_triggers, list)
-    # Must have route file triggers
-    assert len(spec.auto_wire_triggers) > 0
+    assert callable(spec.auto_wire_triggers)
+    # When qa_dial != off, the resolved triggers cover route file patterns.
+    triggers = spec.resolve_triggers(MissionDialContext(qa_dial="standard"))
+    assert len(triggers) > 0
+    assert any("routes" in t for t in triggers)
 
 
 def test_performance_review_registry_shape():
@@ -73,32 +75,40 @@ def test_registry_in_post_hook_kinds():
 # Auto-wire behavior
 # ---------------------------------------------------------------------------
 
-@_SKIP_NON_CANONICAL
 def test_contract_review_autowire_on_route_files():
     """contract_review should auto-wire for route file patterns."""
-    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    from general_beckman.posthooks import POST_HOOK_REGISTRY, MissionDialContext
     import fnmatch
     spec = POST_HOOK_REGISTRY["contract_review"]
+    triggers = spec.resolve_triggers(MissionDialContext(qa_dial="standard"))
     route_produces = [
         "src/routes/users.py",
         "app/routers/items.py",
         "backend/api/orders.py",
     ]
     for p in route_produces:
-        matched = any(fnmatch.fnmatch(p, pat) for pat in spec.auto_wire_triggers)
+        matched = any(fnmatch.fnmatch(p, pat) for pat in triggers)
         assert matched, f"Expected auto-wire for {p} but no trigger matched"
 
 
-@_SKIP_NON_CANONICAL
 def test_contract_review_no_autowire_on_unrelated_files():
     """contract_review should NOT auto-wire for non-route files."""
-    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    from general_beckman.posthooks import POST_HOOK_REGISTRY, MissionDialContext
     import fnmatch
     spec = POST_HOOK_REGISTRY["contract_review"]
+    triggers = spec.resolve_triggers(MissionDialContext(qa_dial="standard"))
     unrelated = ["README.md", "tests/test_foo.py", "styles/main.css"]
     for p in unrelated:
-        matched = any(fnmatch.fnmatch(p, pat) for pat in spec.auto_wire_triggers)
+        matched = any(fnmatch.fnmatch(p, pat) for pat in triggers)
         assert not matched, f"Unexpected auto-wire for {p}"
+
+
+def test_contract_review_no_autowire_when_qa_off():
+    """qa_dial=off: empty triggers."""
+    from general_beckman.posthooks import POST_HOOK_REGISTRY, MissionDialContext
+    spec = POST_HOOK_REGISTRY["contract_review"]
+    triggers = spec.resolve_triggers(MissionDialContext(qa_dial="off"))
+    assert triggers == []
 
 
 def test_performance_review_no_autowire_ever():
@@ -666,9 +676,25 @@ def test_apply_contract_review_dispatch_reads_spec_and_base_url():
     assert payload["base_url"] == "http://localhost:8888"
 
 
-@_SKIP_NON_CANONICAL
-def test_apply_contract_review_default_spec_path():
-    """contract_review uses 'openapi.json' as default spec_path."""
+def test_apply_contract_review_workspace_default_spec_path(tmp_path):
+    """Canonical: spec_path defaults to <workspace>/openapi.json when that file exists."""
+    from general_beckman.apply import _posthook_agent_and_payload
+    import os
+
+    (tmp_path / "openapi.json").write_text('{"openapi":"3.0.0"}')
+    source_ctx = {
+        "preview_url": "http://localhost:9999",
+        "workspace_path": str(tmp_path),
+    }
+    source = {"context": json.dumps(source_ctx)}
+
+    a = _make_posthook_a("contract_review")
+    _, task = _posthook_agent_and_payload(a, source, source_ctx)
+    assert task["payload"]["spec_path"] == os.path.join(str(tmp_path), "openapi.json")
+
+
+def test_apply_contract_review_empty_spec_path_when_no_workspace():
+    """No workspace + no explicit key → spec_path stays empty (verb soft-skips)."""
     from general_beckman.apply import _posthook_agent_and_payload
 
     a = _make_posthook_a("contract_review")
@@ -676,7 +702,7 @@ def test_apply_contract_review_default_spec_path():
     source = {"context": json.dumps(source_ctx)}
 
     _, task = _posthook_agent_and_payload(a, source, source_ctx)
-    assert task["payload"]["spec_path"] == "openapi.json"
+    assert task["payload"]["spec_path"] == ""
 
 
 def test_apply_contract_review_fallback_base_url():
@@ -711,15 +737,14 @@ def test_apply_performance_review_dispatch_web():
     assert payload["preview_url"] == "http://localhost:4000"
 
 
-@_SKIP_NON_CANONICAL
 def test_apply_performance_review_dispatch_api():
-    """performance_review dispatch for api mode reads script_path."""
+    """Canonical keys: `perf_mode` and `perf_script_path`."""
     from general_beckman.apply import _posthook_agent_and_payload
 
     a = _make_posthook_a("performance_review")
     source_ctx = {
-        "performance_mode": "api",
-        "k6_script_path": "tests/load/main.js",
+        "perf_mode": "api",
+        "perf_script_path": "tests/load/main.js",
     }
     source = {"context": json.dumps(source_ctx)}
 

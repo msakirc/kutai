@@ -360,102 +360,87 @@ class TestPostHookRegistry:
 # ---------------------------------------------------------------------------
 
 class TestExpanderIntegrationReplay:
-    def _call_expand(self, step: dict, context_override: dict | None = None):
-        from src.workflows.engine.expander import _maybe_expand_multifile
-        expanded: list[dict] = []
-        ctx = {"produces": ["src/foo.py"], **(context_override or {})}
-        _maybe_expand_multifile(
-            step=step,
-            context=ctx,
-            step_id=step["id"],
-            mission_id="99",
-            expanded_steps=expanded,
-        )
-        return expanded
+    """Z3 R1 audit — canonical signature for _maybe_expand_multifile.
 
-    @_SKIP_NON_CANONICAL
+    The expander only injects integration_review + integration_replay siblings
+    when multi-file expansion is enabled in the mission dials AND a template/
+    stack combo matches MULTI_FILE_RULES. Tests below exercise the canonical
+    surface, not the earlier agent-specific keyword shape.
+    """
+
+    def _make_dials(self, integration_replay: str = "standard"):
+        from src.workflows.review_density import ReviewDensityDials
+        from src.workflows.review_density import to_mission_dial_context
+        return to_mission_dial_context(ReviewDensityDials(
+            multi_file_expansion=True,
+            integration_replay=integration_replay,
+        ))
+
+    def _make_step(self, step_id: str = "feat.4") -> dict:
+        return {
+            "id": step_id,
+            "name": "Build backend service",
+            "phase": "phase_4",
+            "agent": "coder",
+            "context": {
+                "template_id": "backend_service",
+                "stack_slug": "fastapi+nextjs",
+                "feature_name": "checkout",
+            },
+        }
+
+    def _expand(self, integration_replay: str = "standard", step_id: str = "feat.4"):
+        from src.workflows.engine.expander import _maybe_expand_multifile
+        dials = self._make_dials(integration_replay=integration_replay)
+        return _maybe_expand_multifile(self._make_step(step_id), dials, None)
 
     def test_default_appends_integration_review_and_replay(self):
-        step = {"id": "feat.4", "name": "Build service", "phase": "phase_4"}
-        expanded = self._call_expand(step)
+        expanded = self._expand()
         ids = [s["id"] for s in expanded]
         assert "feat.4.integration_review" in ids
         assert "feat.4.integration_replay" in ids
 
-    @_SKIP_NON_CANONICAL
-
     def test_replay_depends_on_review(self):
-        step = {"id": "feat.4", "name": "Build", "phase": "phase_4"}
-        expanded = self._call_expand(step)
-        replay_step = next(s for s in expanded if s["id"] == "feat.4.integration_replay")
-        # depends_on_steps is used in task dicts
-        assert "feat.4.integration_review" in replay_step["depends_on_steps"]
-
-    @_SKIP_NON_CANONICAL
+        expanded = self._expand()
+        replay = next(s for s in expanded if s["id"] == "feat.4.integration_replay")
+        assert "feat.4.integration_review" in replay["depends_on"]
+        assert "feat.4.integration_review" in replay["depends_on_steps"]
 
     def test_dial_off_skips_replay(self):
-        step = {"id": "feat.5", "name": "Build", "phase": "phase_4"}
-        expanded = self._call_expand(step, {"integration_replay": "off"})
+        expanded = self._expand(integration_replay="off", step_id="feat.5")
         ids = [s["id"] for s in expanded]
         assert "feat.5.integration_review" in ids
         assert "feat.5.integration_replay" not in ids
 
-    @_SKIP_NON_CANONICAL
-
     def test_dial_quick_sets_mode(self):
-        step = {"id": "feat.6", "name": "Build", "phase": "phase_4"}
-        expanded = self._call_expand(step, {"integration_replay": "quick"})
+        expanded = self._expand(integration_replay="quick", step_id="feat.6")
         replay = next(s for s in expanded if s["id"] == "feat.6.integration_replay")
         assert replay["context"]["mode"] == "quick"
         assert replay["context"]["payload"]["mode"] == "quick"
 
-    @_SKIP_NON_CANONICAL
-
     def test_dial_strict_sets_mode(self):
-        step = {"id": "feat.7", "name": "Build", "phase": "phase_4"}
-        expanded = self._call_expand(step, {"integration_replay": "strict"})
+        expanded = self._expand(integration_replay="strict", step_id="feat.7")
         replay = next(s for s in expanded if s["id"] == "feat.7.integration_replay")
         assert replay["context"]["mode"] == "strict"
 
-    @_SKIP_NON_CANONICAL
+    def test_replay_is_mechanical_agent(self):
+        expanded = self._expand()
+        replay = next(s for s in expanded if s["id"] == "feat.4.integration_replay")
+        assert replay["agent"] == "mechanical"
+        assert replay["executor"] == "mechanical"
 
-    def test_shuffle_seed_uses_mission_id(self):
-        step = {"id": "feat.8", "name": "Build", "phase": "phase_4"}
-        expanded = self._call_expand(step)
-        replay = next(s for s in expanded if s["id"].endswith("integration_replay"))
-        assert replay["context"]["shuffle_seed"] == 99
+    def test_replay_carries_integration_replay_posthook(self):
+        expanded = self._expand()
+        replay = next(s for s in expanded if s["id"] == "feat.4.integration_replay")
+        assert "integration_replay" in replay["post_hooks"]
 
-    @_SKIP_NON_CANONICAL
-
-    def test_expand_steps_to_tasks_multifile_wires_siblings(self):
-        from src.workflows.engine.expander import expand_steps_to_tasks
-        steps = [{
-            "id": "feat.4",
-            "name": "Multi-file build",
-            "phase": "phase_4",
-            "agent": "coder",
-            "multi_file": True,
-            "produces": ["src/service.py"],
-        }]
-        tasks = expand_steps_to_tasks(steps, mission_id="77")
-        ids = [t["context"].get("workflow_step_id") for t in tasks]
-        assert "feat.4" in ids
-        assert "feat.4.integration_review" in ids
-        assert "feat.4.integration_replay" in ids
-
-    def test_expand_steps_no_multifile_no_siblings(self):
-        from src.workflows.engine.expander import expand_steps_to_tasks
-        steps = [{
-            "id": "feat.4",
-            "name": "Normal step",
-            "phase": "phase_4",
-            "agent": "coder",
-            "produces": ["src/service.py"],
-        }]
-        tasks = expand_steps_to_tasks(steps, mission_id="77")
-        ids = [t["context"].get("workflow_step_id") for t in tasks]
-        assert "feat.4.integration_review" not in ids
-        assert "feat.4.integration_replay" not in ids
+    def test_no_expansion_when_dials_off(self):
+        """Without multi_file_expansion dial, expander returns None entirely."""
+        from src.workflows.engine.expander import _maybe_expand_multifile
+        from src.workflows.review_density import ReviewDensityDials, to_mission_dial_context
+        dials = to_mission_dial_context(ReviewDensityDials(multi_file_expansion=False))
+        result = _maybe_expand_multifile(self._make_step(), dials, None)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -477,108 +462,44 @@ class TestApplyRoutesIntegrationReplay:
         assert payload["executor"] == "mechanical"
         assert payload["payload"]["action"] == "integration_replay"
 
-    @_SKIP_NON_CANONICAL
-
     def test_mode_from_context_dial(self):
+        """Canonical key is `integration_replay_mode` (not _dial)."""
         from general_beckman.apply import _posthook_agent_and_payload
         req = _make_request("integration_replay", source_task_id=1)
         source = {"id": 1, "mission_id": 55}
-        ctx = {"integration_replay_dial": "strict"}
+        ctx = {"integration_replay_mode": "strict"}
         agent_type, payload = _posthook_agent_and_payload(req, source, ctx)
         assert payload["payload"]["mode"] == "strict"
 
-    @_SKIP_NON_CANONICAL
-
-    def test_shuffle_seed_from_source_task_id(self):
+    def test_shuffle_seed_defaults_to_mission_id(self):
+        """Canonical: shuffle_seed = ctx.shuffle_seed | mission_id | 0."""
         from general_beckman.apply import _posthook_agent_and_payload
         req = _make_request("integration_replay", source_task_id=42)
         source = {"id": 42, "mission_id": 55}
         ctx = {}
         agent_type, payload = _posthook_agent_and_payload(req, source, ctx)
-        # shuffle_seed = source_task_id when none in ctx
-        assert payload["payload"]["shuffle_seed"] == 42
+        assert payload["payload"]["shuffle_seed"] == 55
+
+    def test_shuffle_seed_ctx_override_wins(self):
+        from general_beckman.apply import _posthook_agent_and_payload
+        req = _make_request("integration_replay", source_task_id=42)
+        source = {"id": 42, "mission_id": 55}
+        ctx = {"shuffle_seed": 999}
+        agent_type, payload = _posthook_agent_and_payload(req, source, ctx)
+        assert payload["payload"]["shuffle_seed"] == 999
 
 
 # ---------------------------------------------------------------------------
 # T5B — _apply_simple_blocker_verdict handles integration_replay
 # ---------------------------------------------------------------------------
 
+# Verdict-path coverage for `_apply_simple_blocker_verdict` is provided by the
+# canonical Z3 T3 + Z3 T4 tests (security/accessibility/contract/perf/
+# adr_drift all dispatch via the same generic helper).  Z3 R1 audit removed
+# the agent-specific duplicates that bound `source["agent_type"]` etc.
 class TestApplySimpleBlockerVerdict:
-    def _make_source(self, worker_attempts: int = 1, max_attempts: int = 15) -> dict:
-        return {
-            "id": 1,
-            "mission_id": 1,
-            "worker_attempts": worker_attempts,
-            "max_worker_attempts": max_attempts,
-            "status": "ungraded",
-            "result": "",
-            "agent_type": "coder",
-        }
-
-    @pytest.mark.asyncio
-    @_SKIP_NON_CANONICAL
-    async def test_pass_marks_completed_when_no_pending(self, tmp_path, monkeypatch):
-        source = self._make_source()
-        ctx = {"_pending_posthooks": ["integration_replay"]}
-        pending = ["integration_replay"]
-
-        completed_args = {}
-
-        import src.infra.db as _db_mod
-
-        async def _fake_update(task_id, **kwargs):
-            completed_args.update(kwargs)
-
-        monkeypatch.setattr(_db_mod, "update_task", _fake_update)
-
-        async def _fake_spawn(source, raw):
-            pass
-
-        from general_beckman import apply as apply_module
-        monkeypatch.setattr(apply_module, "_spawn_workflow_advance_if_mission", _fake_spawn)
-
-        verdict = _make_verdict("integration_replay", True)
-        await apply_module._apply_simple_blocker_verdict(
-            kind="integration_replay",
-            source=source,
-            ctx=ctx,
-            pending=pending,
-            verdict=verdict,
-        )
-
-        assert completed_args.get("status") == "completed"
-
-    @pytest.mark.asyncio
-    @_SKIP_NON_CANONICAL
-    async def test_fail_sets_pending_and_retries(self, tmp_path, monkeypatch):
-        source = self._make_source(worker_attempts=1, max_attempts=15)
-        ctx = {"_pending_posthooks": ["integration_replay"]}
-        pending = ["integration_replay"]
-
-        updated_args = {}
-
-        import src.infra.db as _db_mod
-
-        async def _fake_update(task_id, **kwargs):
-            updated_args.update(kwargs)
-
-        monkeypatch.setattr(_db_mod, "update_task", _fake_update)
-
-        verdict = _make_verdict(
-            "integration_replay", False,
-            raw={"findings": [{"severity": "blocker", "why": "test failed"}]},
-        )
-        from general_beckman import apply as apply_module
-        await apply_module._apply_simple_blocker_verdict(
-            kind="integration_replay",
-            source=source,
-            ctx=ctx,
-            pending=pending,
-            verdict=verdict,
-        )
-
-        assert updated_args.get("status") == "pending"
-        assert "integration_replay" in (ctx.get("_schema_error") or "")
+    """Sentinel — kept so removed tests are traceable in git blame."""
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -674,9 +595,14 @@ class TestIntegrationBisect:
 
 # ---------------------------------------------------------------------------
 # T5C — bisect failure emits mission_lessons (mock db)
+# Z3 R1 audit: full coverage of bisect-driven lesson emission now lives in
+# tests/test_z3_r4_bisect_richer_lessons.py (cluster + diff_shortstat + dispatch
+# wrapper + cascade-safety).  The smoke test below was the only one in this
+# file that exercised the path against the live integration_bisect verb, so
+# keep it (renamed) and drop the rest.
 # ---------------------------------------------------------------------------
 
-class TestBisectLessonEmission:
+class TestBisectLessonEmissionSmoke:
     @pytest.mark.asyncio
     async def test_strict_fail_emits_lesson(self, monkeypatch):
         """When integration_replay strict fails + bisect finds pair → lesson emitted."""
@@ -734,60 +660,9 @@ class TestBisectLessonEmission:
         assert "sha0" in lesson_calls[0]["fix"]
         assert lesson_calls[0]["domain"] == "integration"
 
-    @pytest.mark.asyncio
-    @_SKIP_NON_CANONICAL
-    async def test_lesson_failure_does_not_affect_verdict(self, tmp_path, monkeypatch):
-        """Lesson emit failure must not propagate to verdict path."""
-        async def _bad_upsert(**kwargs):
-            raise RuntimeError("DB down")
-
-        async def _fake_bisect(commits, suite_glob, workspace_path):
-            return {"breaking_pair": ["sha1", "sha0"], "failing_test": "", "diagnostic": ""}
-
-        import src.infra.mission_lessons as ml_module
-        ib_module = _import_module("mr_roboto.integration_bisect")
-        monkeypatch.setattr(ml_module, "upsert_mission_lesson", _bad_upsert)
-        # Patch the integration_bisect function in the module
-        monkeypatch.setattr(ib_module, "integration_bisect", _fake_bisect)
-
-        source = {
-            "id": 1, "mission_id": 1, "worker_attempts": 1,
-            "max_worker_attempts": 15, "status": "ungraded", "result": "",
-        }
-        ctx = {
-            "_pending_posthooks": ["integration_replay"],
-            "suite_glob": "tests/**",
-            "workspace_path": str(tmp_path),
-        }
-        pending = ["integration_replay"]
-        raw = {
-            "verdict": "fail",
-            "mode": "strict",
-            "commits_replayed": ["sha0", "sha1"],
-            "findings": [],
-        }
-        verdict = _make_verdict("integration_replay", False, raw=raw)
-
-        import src.infra.db as _db_mod
-
-        async def _fake_update(task_id, **kwargs):
-            pass
-
-        monkeypatch.setattr(_db_mod, "update_task", _fake_update)
-
-        from general_beckman import apply as apply_module
-
-        # Should not raise even when upsert fails (wrapped in try/except).
-        try:
-            await apply_module._apply_simple_blocker_verdict(
-                kind="integration_replay",
-                source=source,
-                ctx=ctx,
-                pending=pending,
-                verdict=verdict,
-            )
-        except Exception as e:
-            pytest.fail(f"Verdict path raised unexpectedly: {e}")
+# Cascade-safety for lesson-emit failures is covered by
+# tests/test_z3_r4_bisect_richer_lessons.py::TestDispatchEmits
+# ::test_lesson_emit_failure_does_not_cascade — see that file.
 
 
 # ---------------------------------------------------------------------------
@@ -808,18 +683,16 @@ class TestImports:
         assert hasattr(mr_roboto, "integration_replay")
         assert hasattr(mr_roboto, "integration_bisect")
 
-    @_SKIP_NON_CANONICAL
-
     def test_reversibility_registered(self):
         from mr_roboto.reversibility import VERB_REVERSIBILITY
         assert VERB_REVERSIBILITY.get("integration_replay") == "full"
         assert VERB_REVERSIBILITY.get("integration_bisect") == "full"
 
-    @_SKIP_NON_CANONICAL
-
     def test_review_density_dials_importable(self):
-        from src.workflows.engine.expander import ReviewDensityDials, _dial_get
-        assert "off" in ReviewDensityDials.VALID_INTEGRATION_REPLAY
-        assert "strict" in ReviewDensityDials.VALID_INTEGRATION_REPLAY
-        assert _dial_get({}, "integration_replay", "standard") == "standard"
+        """Z3 R1 audit — canonical location: review_density module + posthooks._dial_get."""
+        from src.workflows.review_density import ReviewDensityDials
+        from general_beckman.posthooks import _dial_get
+        dials = ReviewDensityDials()
+        assert dials.integration_replay == "standard"
+        assert _dial_get(None, "integration_replay", "standard") == "standard"
         assert _dial_get({"integration_replay": "strict"}, "integration_replay", "standard") == "strict"

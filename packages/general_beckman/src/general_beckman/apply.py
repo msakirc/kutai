@@ -930,6 +930,30 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
         )
         return
 
+    # Z3 R1 — review-density blocker kinds. DLQ cascades source to failed.
+    if posthook_kind in (
+        "security_review", "accessibility_review", "contract_review",
+        "performance_review", "adr_drift_check", "integration_replay",
+        "integration_review",
+    ):
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != posthook_kind
+        ]
+        source_ctx[f"_{posthook_kind}_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"{posthook_kind} DLQ: {error[:400]}",
+            failed_in_phase="posthook",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning(
+            "%s DLQ cascaded source to failed",
+            posthook_kind, source_id=source_id, posthook_task_id=task["id"],
+        )
+        return
+
     if posthook_kind in _Z1_BLOCKER_KINDS:
         # Z1 blocker post-hook (compliance_template_present, etc.) DLQ'd
         # — cascade source to failed so it doesn't get stuck in 'ungraded'.

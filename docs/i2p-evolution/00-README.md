@@ -25,7 +25,7 @@ folder maps where each piece of work lives.
 | Z2 — Visual review | [04-build-visual-review.md](04-build-visual-review.md) | screenshot framing + state priming + diff (subproject) |
 | Z2 — Mobile track | [05-build-mobile-track.md](05-build-mobile-track.md) | platform-aware frontend + mobile tooling |
 | Z3 + Z7 — Real-world bridge | [06-real-world-bridge-v2.md](06-real-world-bridge-v2.md) (v1 [06-real-world-bridge.md](06-real-world-bridge.md) superseded 2026-05-11) | accounts, legal, vendor adapters, payments |
-| Z4 + Z8 — Humanish layers | [07-humanish-layers.md](07-humanish-layers.md) | marketing, story, comms helper, relationships |
+| Z4 + Z8 — Humanish layers | [07-humanish-layers-v3.md](07-humanish-layers-v3.md) (v2 [07-humanish-layers-v2.md](07-humanish-layers-v2.md) + v1 [07-humanish-layers.md](07-humanish-layers.md) superseded 2026-05-15) | marketing, story, comms helper, relationships, lifecycle |
 | Z5 — Operations | [08-operations.md](08-operations.md) | monitoring, on-call, incident, support, backups |
 | Z6 — Growth | [09-growth.md](09-growth.md) | analytics, hypotheses, A/B, prioritization |
 | Cross-cutting | [10-cross-cutting.md](10-cross-cutting.md) | trust, time, reversibility, cost, provenance, sandboxing, demo |

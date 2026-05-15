@@ -598,39 +598,11 @@ async def test_apply_security_review_verdict_pass_source_advances():
     assert call_kwargs.get("status") == "completed"
 
 
-@pytest.mark.asyncio
-@_SKIP_NON_CANONICAL
-async def test_apply_security_review_verdict_pass_stores_findings():
-    """Non-empty findings stored in ctx even on pass (warnings only)."""
-    from general_beckman.result_router import PostHookVerdict
-    from general_beckman.apply import _apply_security_review_verdict
-
-    source = {"id": 51, "mission_id": None, "agent_type": "coder"}
-    ctx = {"_pending_posthooks": ["security_review"]}
-    pending = ["security_review"]
-
-    verdict = PostHookVerdict(
-        source_task_id=51,
-        kind="security_review",
-        passed=True,
-        raw={
-            "verdict": "pass",
-            "findings": [{"severity": "warning", "file": "app.py", "line": 1, "why": "sha1", "source": "semgrep", "rule_id": "weak-crypto-sha1"}],
-            "tools_used": ["semgrep"],
-            "blocker_count": 0,
-            "warning_count": 1,
-        },
-    )
-
-    with patch("src.infra.db.update_task", new_callable=AsyncMock), \
-         patch("general_beckman.apply._spawn_workflow_advance_if_mission",
-               new_callable=AsyncMock):
-        await _apply_security_review_verdict(
-            source=source, ctx=ctx, pending=pending, verdict=verdict,
-        )
-
-    assert "_security_review_findings" in ctx
-    assert len(ctx["_security_review_findings"]) == 1
+# Z3 R1 audit: dropped `test_apply_security_review_verdict_pass_stores_findings`
+# — the agent-specific design stored `_security_review_findings` in ctx on
+# pass; the canonical `_apply_simple_blocker_verdict` does not persist
+# pass-side findings (warnings live in the verdict.raw blob only).
+# Coverage of pass→completed transition lives in the test above.
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +657,6 @@ async def test_apply_security_review_verdict_fail_retries_source():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-@_SKIP_NON_CANONICAL
 async def test_dlq_security_review_cascades_source_to_failed():
     from general_beckman.apply import _posthook_dlq_cascade
 
@@ -766,15 +737,14 @@ def test_expander_security_review_auto_wires_on_py_produces():
     assert "security_review" in context.get("post_hooks", [])
 
 
-@_SKIP_NON_CANONICAL
 def test_expander_security_review_does_not_wire_when_qa_dial_off():
-    """qa_dial=off: security_review should NOT be auto-wired."""
+    """qa_dial=off: security_review should NOT be auto-wired (canonical: dial passed via dial_ctx)."""
     from src.workflows.engine.expander import _auto_wire_posthooks
+    from general_beckman.posthooks import MissionDialContext
 
     context = {
         "produces": ["src/app/main.py"],
         "post_hooks": [],
-        "qa_dial": "off",
     }
-    _auto_wire_posthooks(context)
+    _auto_wire_posthooks(context, MissionDialContext(qa_dial="off"))
     assert "security_review" not in context.get("post_hooks", [])

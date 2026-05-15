@@ -122,6 +122,9 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "record_demo": "full",  # additive artifact (data/missions/{id}/demo.mp4)
     "verify_demo_artifact": "full",  # pure check
     "mission_deliverable_bundle": "irreversible",  # posts to Telegram thread
+    # ---- Z3 T5 integration replay + bisect ------------------------------
+    "integration_replay": "full",  # checkout + pytest only; read-only against working tree
+    "integration_bisect": "full",  # binary-search checkouts + pytest; restores HEAD
     # ---- Z2 T4C cross-mission lesson injector ---------------------------
     "inject_lessons": "full",  # read-only query + writes to mission context JSON only
     "emit_dlq_lessons": "full",  # DLQ scan + idempotent upsert into mission_lessons

@@ -575,7 +575,49 @@ def _maybe_expand_multifile(
         "_multifile_parent": parent_id,
     }
 
-    return sub_steps + [integration_review_step]
+    out_steps = sub_steps + [integration_review_step]
+
+    # Z3 T5 — integration_replay sibling. Mode driven by review-density dial.
+    # When dial == "off" the sibling is skipped entirely; otherwise the mode
+    # propagates to the mechanical verb via context.
+    replay_mode = getattr(mission_dials, "integration_replay", "standard")
+    if replay_mode and replay_mode != "off":
+        replay_step_id = (
+            f"{parent_id}.integration_replay" if parent_id else "integration_replay"
+        )
+        # shuffle_seed defaults to parent step id hash for determinism;
+        # apply.py overrides with mission_id when wiring the payload.
+        out_steps.append({
+            "id": replay_step_id,
+            "name": f"Integration replay: {step.get('name', parent_id)}",
+            "instruction": (
+                "Re-run integration suite against current commit (and prior "
+                "commits in strict mode). Bisect on fail emits a mission_lessons "
+                "row pointing at the breaking commit pair."
+            ),
+            "agent": "mechanical",
+            "executor": "mechanical",
+            "phase": parent_phase,
+            # Replay depends on review passing first.
+            "depends_on": [ir_step_id],
+            "depends_on_steps": [ir_step_id],
+            "produces": [],
+            "post_hooks": ["integration_replay"],
+            "context": {
+                "parent_step_id": parent_id,
+                "mode": replay_mode,
+                "integration_replay_mode": replay_mode,
+                "integration_suite_glob": "tests/integration/**",
+                "payload": {
+                    "action": "integration_replay",
+                    "mode": replay_mode,
+                    "suite_glob": "tests/integration/**",
+                },
+            },
+            "_multifile_parent": parent_id,
+        })
+
+    return out_steps
 
 
 def _inject_lessons_at_mission_start(

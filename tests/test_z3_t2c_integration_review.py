@@ -212,20 +212,20 @@ def test_expander_multifile_expansion_dial_true():
 
     result = _maybe_expand_multifile(step, dial, {})
     assert result is not None
-    assert len(result) > 1  # N sub-tasks + integration_review
+    assert len(result) > 1  # N sub-tasks + integration_review (+ replay)
 
-    # Last step should be the integration_review sibling
-    ir_step = result[-1]
+    # Find the integration_review sibling by id (replay may follow it).
+    ir_step = next(s for s in result if s["id"].endswith(".integration_review"))
     assert ir_step["agent"] == "integration_reviewer"
     assert "integration_review" in ir_step.get("post_hooks", [])
-    assert ir_step["id"].endswith("integration_review")
 
-    # Sub-tasks should depend on parent's depends_on
-    for sub in result[:-1]:
+    # Sub-tasks (everything except review/replay siblings) depend on parent's depends_on.
+    sub_steps = [s for s in result if not s["id"].endswith((".integration_review", ".integration_replay"))]
+    for sub in sub_steps:
         assert "3.3" in sub["depends_on"]
 
     # IR step should depend on all sub-task IDs
-    sub_ids = [s["id"] for s in result[:-1]]
+    sub_ids = [s["id"] for s in sub_steps]
     for sid in sub_ids:
         assert sid in ir_step["depends_on"]
 
@@ -247,12 +247,13 @@ def test_expander_multifile_all_produces_collected():
     result = _maybe_expand_multifile(step, dial, {})
     assert result is not None
 
-    ir_step = result[-1]
+    ir_step = next(s for s in result if s["id"].endswith(".integration_review"))
     all_produces = ir_step["context"]["all_sub_task_produces"]
     # Should have at least one produces path from each sub-task
     assert len(all_produces) > 0
-    # Each sub-step's produces should appear in all_produces
-    for sub in result[:-1]:
+    # Each sub-step's produces (excluding sibling rows) should appear in all_produces
+    sub_steps = [s for s in result if not s["id"].endswith((".integration_review", ".integration_replay"))]
+    for sub in sub_steps:
         for p in sub.get("produces", []):
             assert p in all_produces
 

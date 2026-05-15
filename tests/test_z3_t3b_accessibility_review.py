@@ -93,23 +93,20 @@ def test_auto_wire_returns_tsx_jsx_when_dial_on():
     assert "*.jsx" in result
 
 
-@_SKIP_NON_CANONICAL
-def test_auto_wire_returns_tsx_jsx_when_dial_absent():
-    from general_beckman.posthooks import POST_HOOK_REGISTRY
+def test_auto_wire_empty_when_dial_absent():
+    """Canonical: accessibility_dial defaults to 'off' → no auto-wire."""
+    from general_beckman.posthooks import POST_HOOK_REGISTRY, MissionDialContext
     spec = POST_HOOK_REGISTRY["accessibility_review"]
-    result = spec.auto_wire_triggers({})
-    assert "*.tsx" in result
-    assert "*.jsx" in result
+    # MissionDialContext() defaults accessibility_dial to "off".
+    result = spec.resolve_triggers(MissionDialContext())
+    assert result == []
 
 
-@_SKIP_NON_CANONICAL
-def test_auto_wire_returns_tsx_jsx_with_no_ctx():
-    from general_beckman.posthooks import POST_HOOK_REGISTRY
+def test_auto_wire_empty_when_dial_off_explicit():
+    from general_beckman.posthooks import POST_HOOK_REGISTRY, MissionDialContext
     spec = POST_HOOK_REGISTRY["accessibility_review"]
-    # callable with no arguments (default ctx=None path)
-    result = spec.auto_wire_triggers()
-    assert "*.tsx" in result
-    assert "*.jsx" in result
+    result = spec.resolve_triggers(MissionDialContext(accessibility_dial="off"))
+    assert result == []
 
 
 def test_auto_wire_matches_tsx_files_via_expander_logic():

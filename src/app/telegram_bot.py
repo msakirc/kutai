@@ -1960,7 +1960,22 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("backlog", self.cmd_backlog))
         self.app.add_handler(CommandHandler("sunset", self.cmd_sunset))
         self.app.add_handler(CommandHandler("experiment", self.cmd_experiment))
+        # Z9 T5D — A/B experiment founder-track commands.
+        self.app.add_handler(
+            CommandHandler("experiment_ship", self.cmd_experiment_ship)
+        )
+        self.app.add_handler(
+            CommandHandler("experiment_rollback", self.cmd_experiment_rollback)
+        )
+        self.app.add_handler(
+            CommandHandler("experiment_disable", self.cmd_experiment_disable)
+        )
+        # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
+        self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
+        self.app.add_handler(
+            CommandHandler("approve_sunset", self.cmd_approve_sunset)
+        )
         self.app.add_handler(CommandHandler("ask", self.cmd_ask))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_founder_action_callback,
@@ -9565,19 +9580,529 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
 
     async def cmd_sunset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Z9 T1D stub — feature sunset candidates (wired in Z9 T5)."""
-        logger.info("/sunset invoked (Z9 T1D stub)")
+        """Z9 T5C — list current feature sunset candidates.
+
+        Each candidate carries the inspectable usage/cost breakdown produced
+        by the weekly ``sunset_score_recompute`` cron. Founder approves a
+        deprecation mission with ``/approve_sunset <id>``.
+        """
+        logger.info("/sunset invoked")
+        try:
+            from src.infra.db import get_growth_events
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
+
+        rows = await get_growth_events(kind="sunset_candidate", limit=100)
+        live = [
+            r for r in rows
+            if not (r.get("properties") or {}).get("consumed")
+            and not (r.get("properties") or {}).get("superseded")
+        ]
+        if not live:
+            await self._reply(
+                update,
+                "🌅 *Feature sunset*\n\nNo sunset candidates. The weekly "
+                "scorer flags features with usage below the threshold that "
+                "still cost money to maintain — check back after the next "
+                "cycle.",
+                parse_mode="Markdown",
+            )
+            return
+
+        live.sort(
+            key=lambda r: (r.get("properties") or {}).get("sunset_score", 0.0),
+            reverse=True,
+        )
+        lines = ["🌅 *Feature sunset candidates*\n"]
+        for r in live[:15]:
+            p = r.get("properties") or {}
+            usage = p.get("usage_rate", 0.0)
+            lines.append(
+                f"*#{r['id']}* `{p.get('feature','?')}` "
+                f"— sunset score *{p.get('sunset_score', 0.0):.2f}*"
+            )
+            lines.append(
+                f"  usage *{usage * 100:.2f}%* "
+                f"({p.get('distinct_users', 0)}/{p.get('active_users', 0)} users)"
+                f" · cost `{p.get('cost_band','?')}`"
+            )
+            why = (p.get("why") or "").strip()
+            if why:
+                lines.append(f"  _{why[:160]}_")
+            lines.append(f"  → `/approve_sunset {r['id']}`")
+        await self._reply(
+            update, "\n".join(lines), parse_mode="Markdown",
+        )
+
+    async def cmd_approve_sunset(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ):
+        """Z9 T5C — approve a feature sunset candidate, spawning ONE
+        deprecation mission.
+
+        Mirrors ``/approve``: the founder gate is the ONLY path from a
+        sunset candidate to a deprecation mission — sunsets are NEVER
+        auto-executed. Marks the candidate consumed so it can't be approved
+        twice.
+        """
+        if not context.args or not context.args[0].lstrip("#").isdigit():
+            await self._reply(
+                update,
+                "Usage: `/approve_sunset <candidate_id>` — see `/sunset` "
+                "for ids.",
+                parse_mode="Markdown",
+            )
+            return
+
+        cand_id = int(context.args[0].lstrip("#"))
+        try:
+            import json as _json
+            from src.infra.db import (
+                get_growth_events, insert_growth_event, get_db, add_mission,
+            )
+            import general_beckman
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
+
+        rows = await get_growth_events(kind="sunset_candidate", limit=200)
+        match = next(
+            (r for r in rows if int(r.get("id") or 0) == cand_id), None
+        )
+        if match is None:
+            await self._reply(
+                update, f"❌ No sunset candidate #{cand_id}.",
+            )
+            return
+        props = match.get("properties") or {}
+        if props.get("consumed"):
+            await self._reply(
+                update,
+                f"⚠️ Sunset candidate #{cand_id} was already approved — no "
+                f"new mission spawned.",
+            )
+            return
+
+        feature = props.get("feature", "feature")
+        domain = props.get("domain", "general")
+        usage = props.get("usage_rate", 0.0)
+        cost_band = props.get("cost_band", "?")
+        title = f"Deprecate feature: {feature}"[:80]
+        description = (
+            f"Approved feature sunset candidate #{cand_id}.\n"
+            f"Feature: {feature} | Domain: {domain}\n"
+            f"Usage: {usage * 100:.2f}% of active users "
+            f"({props.get('distinct_users', 0)}/{props.get('active_users', 0)})"
+            f" | Maintenance cost: {cost_band}\n"
+            f"Why flagged: {props.get('why') or 'n/a'}\n\n"
+            f"Plan and execute the safe removal of this feature's code and "
+            f"infrastructure: feature flags, routes/endpoints, UI surfaces, "
+            f"database columns/tables, scheduled jobs, docs. Verify nothing "
+            f"else depends on it before deleting; ship behind a staged "
+            f"rollout where reversible.\n"
+        )
+
+        # Spawn exactly ONE deprecation mission via Beckman — mirror /approve.
+        mission_id = await add_mission(
+            title=title,
+            description=description,
+            priority=5,
+            context={
+                "source": "growth_sunset",
+                "sunset_candidate_id": cand_id,
+                "sunset_feature": feature,
+                "sunset_domain": domain,
+            },
+        )
+        task_id = await general_beckman.enqueue({
+            "title": f"[plan] {title}",
+            "description": description,
+            "agent_type": "planner",
+            "kind": "main_work",
+            "priority": 5,
+            "mission_id": mission_id,
+            "context": {
+                "source": "growth_sunset",
+                "sunset_candidate_id": cand_id,
+            },
+        })
+
+        # Mark the candidate consumed (append-only flag flip).
+        props["consumed"] = True
+        props["approved_mission_id"] = mission_id
+        try:
+            db = await get_db()
+            await db.execute(
+                "UPDATE growth_events SET properties_json = ? WHERE id = ?",
+                (_json.dumps(props), cand_id),
+            )
+            await db.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cmd_approve_sunset: consume flag failed", error=str(e))
+        # Audit row — sunset_approved keeps the lifecycle loop inspectable.
+        try:
+            await insert_growth_event(
+                mission_id,
+                "sunset_approved",
+                {
+                    "sunset_candidate_id": cand_id,
+                    "mission_id": mission_id,
+                    "planner_task_id": task_id,
+                    "feature": feature,
+                    "domain": domain,
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("cmd_approve_sunset: audit row failed: %s", e)
+
         await self._reply(
             update,
-            "Feature sunset candidates — arrives with Z9 T5.",
+            f"✅ Sunset candidate #{cand_id} approved.\n"
+            f"🗑️ Deprecation mission #{mission_id} created — _{title}_\n"
+            f"Planning task #{task_id} queued.",
+            parse_mode="Markdown",
         )
 
     async def cmd_experiment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Z9 T1D stub — A/B experiment status (wired in Z9 T5)."""
-        logger.info("/experiment invoked (Z9 T1D stub)")
+        """Z9 T5D — list A/B experiments + per-variant status + posterior.
+
+        Shows every mission with ``experiment_variants`` rows: the control
+        / treatment arms, their lifecycle status, and the most recent
+        ``ab_result`` Bayesian posterior. Confident winners surface the
+        founder gate (``/experiment_ship`` / ``/experiment_rollback``) —
+        nothing auto-ships.
+        """
+        logger.info("/experiment invoked (Z9 T5D)")
+        try:
+            from src.infra.db import get_variants, get_growth_events
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
+
+        variants = await get_variants() or []
+        if not variants:
+            await self._reply(
+                update,
+                "🧪 *A/B experiments*\n\nNo experiments yet. Phase 8+ "
+                "feature missions assign variants automatically — check "
+                "back after the next build.",
+                parse_mode="Markdown",
+            )
+            return
+
+        results = await get_growth_events(kind="ab_result", limit=100) or []
+        result_by_mission: dict = {}
+        for r in results:
+            mid = r.get("mission_id")
+            if mid is not None and mid not in result_by_mission:
+                result_by_mission[mid] = r.get("properties") or {}
+
+        # Group variants by mission.
+        by_mission: dict = {}
+        for v in variants:
+            by_mission.setdefault(v.get("mission_id"), []).append(v)
+
+        icon = {"active": "🟢", "winner": "🏆", "loser": "🔻",
+                "stopped": "⏹️"}
+        lines = ["🧪 *A/B experiments*\n"]
+        for mid, vs in list(by_mission.items())[:15]:
+            lines.append(f"*Mission #{mid}*")
+            for v in vs:
+                st = v.get("status", "?")
+                lines.append(
+                    f"  {icon.get(st, '•')} `{v.get('variant_name','?')}` "
+                    f"— {st} (variant #{v.get('id')})"
+                )
+            res = result_by_mission.get(mid)
+            if res:
+                w = res.get("winner", "?")
+                pt = res.get("p_treatment_better", 0.0)
+                conf = res.get("confident")
+                lines.append(
+                    f"  → posterior: treatment better *{pt:.2f}* — "
+                    f"winner *{w}* "
+                    f"({'confident' if conf else 'inconclusive'})"
+                )
+                if conf:
+                    lines.append(
+                        f"  ⚖️ founder gate: `/experiment_ship {mid}` or "
+                        f"`/experiment_rollback {mid}`"
+                    )
+            else:
+                lines.append("  → no verdict yet")
+            lines.append("")
+        lines.append(
+            "_A/B is default-on for Phase 8+ features. "
+            "`/experiment_disable <mission_id>` opts a mission out._"
+        )
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_experiment_ship(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T5D — founder promotes the A/B winner to 100% rollout.
+
+        Usage: ``/experiment_ship <mission_id> [winner]`` (winner defaults
+        to ``treatment``). Runs the ``retire_variant`` mechanical: marks
+        winner / loser and flips the PostHog flag. Founder-gated — there is
+        no auto-ship even for a statistically confident winner.
+        """
+        if not context.args or not context.args[0].lstrip("#").isdigit():
+            await self._reply(
+                update,
+                "Usage: `/experiment_ship <mission_id> [winner]`",
+                parse_mode="Markdown",
+            )
+            return
+        mid = int(context.args[0].lstrip("#"))
+        winner = (context.args[1] if len(context.args) > 1
+                  else "treatment").lower()
+        try:
+            import mr_roboto
+            task = {
+                "id": 0,
+                "mission_id": mid,
+                "title": f"experiment_ship {mid}",
+                "payload": {
+                    "action": "retire_variant",
+                    "mission_id": mid,
+                    "winner": winner,
+                    "decision": "ship",
+                },
+            }
+            action = await mr_roboto.run(task)
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ experiment_ship failed: {e}")
+            return
+        if action.status != "completed":
+            await self._reply(
+                update,
+                f"⚠️ experiment_ship {action.status}: {action.error or ''}",
+            )
+            return
+        res = action.result or {}
         await self._reply(
             update,
-            "A/B experiment status — arrives with Z9 T5.",
+            f"🏆 Mission #{mid} — `{winner}` shipped to 100%.\n"
+            f"Retired {res.get('retired', 0)} variant(s); loser arm → 0%.",
+            parse_mode="Markdown",
+        )
+
+    async def cmd_experiment_rollback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T5D — founder force-rolls-back an A/B experiment.
+
+        Usage: ``/experiment_rollback <mission_id>``. Crowns *control* the
+        winner regardless of stats — the treatment arm goes to 0% rollout.
+        Founder-gated; auto-rollback of a confident loser is never silent.
+        """
+        if not context.args or not context.args[0].lstrip("#").isdigit():
+            await self._reply(
+                update,
+                "Usage: `/experiment_rollback <mission_id>`",
+                parse_mode="Markdown",
+            )
+            return
+        mid = int(context.args[0].lstrip("#"))
+        try:
+            import mr_roboto
+            task = {
+                "id": 0,
+                "mission_id": mid,
+                "title": f"experiment_rollback {mid}",
+                "payload": {
+                    "action": "retire_variant",
+                    "mission_id": mid,
+                    "winner": "control",
+                    "decision": "rollback",
+                },
+            }
+            action = await mr_roboto.run(task)
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ experiment_rollback failed: {e}")
+            return
+        if action.status != "completed":
+            await self._reply(
+                update,
+                f"⚠️ experiment_rollback {action.status}: "
+                f"{action.error or ''}",
+            )
+            return
+        res = action.result or {}
+        await self._reply(
+            update,
+            f"🔻 Mission #{mid} rolled back — `control` → 100%, "
+            f"treatment → 0%.\nRetired {res.get('retired', 0)} variant(s).",
+            parse_mode="Markdown",
+        )
+
+    async def cmd_experiment_disable(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T5D — opt a mission out of the default-on A/B harness.
+
+        Usage: ``/experiment_disable <mission_id>``. Flips
+        ``mission.context['use_ab']`` false so the Phase-8 ``assign_variant``
+        step ships the feature at 100% rather than splitting traffic.
+        """
+        if not context.args or not context.args[0].lstrip("#").isdigit():
+            await self._reply(
+                update,
+                "Usage: `/experiment_disable <mission_id>`",
+                parse_mode="Markdown",
+            )
+            return
+        mid = int(context.args[0].lstrip("#"))
+        try:
+            import json as _json
+            from src.infra.db import get_mission, update_mission
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
+        row = await get_mission(mid)
+        if not row:
+            await self._reply(update, f"❌ No mission #{mid}.")
+            return
+        ctx = row.get("context")
+        if isinstance(ctx, str) and ctx.strip():
+            try:
+                ctx = _json.loads(ctx)
+            except Exception:  # noqa: BLE001
+                ctx = {}
+        if not isinstance(ctx, dict):
+            ctx = {}
+        ctx["use_ab"] = False
+        await update_mission(mid, context=_json.dumps(ctx))
+        await self._reply(
+            update,
+            f"🚫 Mission #{mid} opted out of A/B. The Phase-8 "
+            f"`assign_variant` step will ship the feature at 100% rollout; "
+            f"the hypothesis is still recorded.",
+            parse_mode="Markdown",
+        )
+
+    async def cmd_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z9 T5E — full-params typed confirmation for irreversible actions.
+
+        Pricing changes move real revenue, so a bare ``/confirm`` is NOT
+        accepted. The founder must re-type the full parameter set:
+
+            ``/confirm pricing <amount> <interval> <window>``
+
+        e.g. ``/confirm pricing 19.99 month 14d``. Only when every param
+        echoes a pending pricing experiment does the Stripe pricing variant
+        get created. This mirrors the irreversible-money rule from
+        [[project_z10_complete]] — the typed echo is the gate.
+        """
+        args = context.args or []
+        if not args or args[0].lower() != "pricing":
+            await self._reply(
+                update,
+                "⚠️ *Typed confirmation required.*\n\n"
+                "A bare `/confirm` is not enough for an irreversible "
+                "pricing change. Re-type the full parameter set:\n"
+                "`/confirm pricing <amount> <interval> <window>`\n"
+                "e.g. `/confirm pricing 19.99 month 14d`",
+                parse_mode="Markdown",
+            )
+            return
+        if len(args) < 4:
+            await self._reply(
+                update,
+                "❌ Incomplete. Pricing confirmation needs ALL params:\n"
+                "`/confirm pricing <amount> <interval> <window>`\n"
+                "e.g. `/confirm pricing 19.99 month 14d`",
+                parse_mode="Markdown",
+            )
+            return
+        amount_s, interval, window = args[1], args[2].lower(), args[3]
+        try:
+            amount = float(amount_s)
+            if amount <= 0:
+                raise ValueError("amount must be positive")
+        except (TypeError, ValueError):
+            await self._reply(
+                update, "❌ `<amount>` must be a positive number "
+                "(e.g. 19.99).", parse_mode="Markdown",
+            )
+            return
+        if interval not in ("month", "year", "week", "day"):
+            await self._reply(
+                update,
+                "❌ `<interval>` must be one of: month, year, week, day.",
+                parse_mode="Markdown",
+            )
+            return
+
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        pending = self._pending_action.get(chat_id) or {}
+        if pending.get("command") != "_pricing_confirm":
+            await self._reply(
+                update,
+                "⚠️ No pending pricing experiment to confirm. Start one "
+                "via the pricing-A/B flow first, then re-type "
+                "`/confirm pricing <amount> <interval> <window>`.",
+                parse_mode="Markdown",
+            )
+            return
+        # Full-params echo MUST match the pending experiment exactly.
+        exp = pending.get("params") or {}
+        mismatches = []
+        if abs(float(exp.get("amount", -1)) - amount) > 1e-6:
+            mismatches.append(
+                f"amount (expected {exp.get('amount')}, got {amount})"
+            )
+        if str(exp.get("interval", "")).lower() != interval:
+            mismatches.append(
+                f"interval (expected {exp.get('interval')}, got {interval})"
+            )
+        if str(exp.get("window", "")).lower() != str(window).lower():
+            mismatches.append(
+                f"window (expected {exp.get('window')}, got {window})"
+            )
+        if mismatches:
+            await self._reply(
+                update,
+                "❌ Typed params do not match the pending pricing "
+                "experiment:\n• " + "\n• ".join(mismatches) + "\n\n"
+                "Re-type the EXACT params to confirm.",
+                parse_mode="Markdown",
+            )
+            return
+
+        # Confirmed — consume the pending action and create the pricing
+        # variant (T5E). assign_variant with variant_kind='pricing'.
+        self._pending_action.pop(chat_id, None)
+        mid = exp.get("mission_id")
+        try:
+            import mr_roboto
+            task = {
+                "id": 0,
+                "mission_id": mid,
+                "title": f"pricing_ab confirm m{mid}",
+                "payload": {
+                    "action": "assign_variant",
+                    "mission_id": mid,
+                    "variant_kind": "pricing",
+                    "feature": "pricing",
+                    "control_price_id": exp.get("control_price_id"),
+                    "treatment_price_id": exp.get("treatment_price_id"),
+                },
+            }
+            action = await mr_roboto.run(task)
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ pricing confirm failed: {e}")
+            return
+        if action.status != "completed":
+            await self._reply(
+                update,
+                f"⚠️ pricing confirm {action.status}: {action.error or ''}",
+            )
+            return
+        await self._reply(
+            update,
+            f"💳 Pricing A/B confirmed for mission #{mid} — "
+            f"${amount:.2f}/{interval}, {window} window.\n"
+            f"Control + treatment pricing variants created. The "
+            f"statistical-significance gate still applies before a winner "
+            f"ships.",
+            parse_mode="Markdown",
         )
 
     async def cmd_approve(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -262,6 +262,16 @@ INTERNAL_CADENCES: list[dict] = [
         "cron_expression": "0 9 * * *",
         "payload": {"_executor": "daily_briefing"},
     },
+    # Z7 T4 A10 — daily follow-up reminder at 09:00. Scans interactions WHERE
+    # follow_up_at <= today+7 AND done=0; builds digest; notifies founder.
+    # Shares the 09:00 anchor with daily_briefing so the founder sees both
+    # together in the morning. Idempotent — digest is always rebuilt fresh.
+    {
+        "title": "follow_up_reminder",
+        "description": "Daily 09:00 CRM follow-up reminder: pending follow-ups within 7 days",
+        "cron_expression": "0 9 * * *",
+        "payload": {"_executor": "follow_up_reminder"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

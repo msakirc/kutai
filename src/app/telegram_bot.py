@@ -1995,6 +1995,12 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("crisis", self.cmd_crisis))
         # Z7 T3A (A2) — launch playbook
         self.app.add_handler(CommandHandler("launch", self.cmd_launch))
+        # Z7 T4 A10 — CRM-as-interaction-log + A10.r1 consent ledger
+        self.app.add_handler(CommandHandler("contact", self.cmd_contact))
+        self.app.add_handler(CommandHandler("log", self.cmd_crm_log))
+        self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
+        self.app.add_handler(CommandHandler("follow_ups", self.cmd_follow_ups))
+        self.app.add_handler(CommandHandler("consent", self.cmd_consent))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -11087,3 +11093,376 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             )
         except Exception as e:  # noqa: BLE001
             logger.debug(f"founder_action thread post failed: {e}")
+
+    # ── Z7 T4 A10 — CRM-as-interaction-log + A10.r1 consent ledger ──────────
+
+    async def cmd_contact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T4 A10 — Add or update a CRM contact.
+
+        Usage:
+          /contact add @handle [category]   — add/update a contact
+          /contact @handle                  — show contact details
+
+        Categories: customer, prospect, investor, journalist, partner,
+                    advisor, candidate, vendor, other
+
+        Examples:
+          /contact add @alice_smith customer
+          /contact add @bob_investor investor
+          /contact @alice_smith
+        """
+        args = context.args or []
+
+        if not args:
+            await self._reply(
+                update,
+                (
+                    "*CRM — Add contact*\n\n"
+                    "Usage: `/contact add @handle [category]`\n"
+                    "Categories: customer, prospect, investor, journalist, "
+                    "partner, advisor, candidate, vendor, other\n\n"
+                    "To view: `/contact @handle`"
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        if args[0] == "add":
+            if len(args) < 2:
+                await self._reply(
+                    update,
+                    "Usage: `/contact add @handle [category]`",
+                    parse_mode="Markdown",
+                )
+                return
+            handle = args[1] if args[1].startswith("@") else f"@{args[1]}"
+            category = args[2] if len(args) >= 3 else "other"
+            product_id = "default"
+            try:
+                from src.app.crm import add_contact
+                contact_id = await add_contact(
+                    product_id=product_id,
+                    handle=handle,
+                    display_name=handle.lstrip("@"),
+                    category=category,
+                )
+                await self._reply(
+                    update,
+                    f"Contact added: {handle} (category: {category}, id: {contact_id})\n"
+                    f"Use `/log {handle} <summary>` to log interactions.",
+                )
+            except Exception as exc:
+                await self._reply(update, f"Error adding contact: {exc}")
+            return
+
+        # View contact by handle
+        handle = args[0] if args[0].startswith("@") else f"@{args[0]}"
+        product_id = "default"
+        try:
+            from src.app.crm import get_contact_by_handle, list_interactions
+            contact = await get_contact_by_handle(product_id=product_id, handle=handle)
+            if contact is None:
+                await self._reply(update, f"Contact {handle} not found. Use `/contact add {handle}` to create.")
+                return
+            interactions = await list_interactions(product_id=product_id, contact_id=contact["contact_id"], limit=5)
+            lines = [
+                f"*Contact: {handle}*",
+                f"Name: {contact['display_name']}",
+                f"Category: {contact['category']}",
+            ]
+            if contact.get("email"):
+                lines.append(f"Email: {contact['email']}")
+            if interactions:
+                lines.append(f"\nLast {len(interactions)} interactions:")
+                for i in interactions:
+                    lines.append(f"  [{i['kind']}] {i['summary'][:60]} ({i['logged_at'][:10]})")
+            else:
+                lines.append("\nNo interactions logged yet.")
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+        except Exception as exc:
+            await self._reply(update, f"Error: {exc}")
+
+    async def cmd_crm_log(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T4 A10 — Log an interaction with a contact.
+
+        Usage:
+          /log @handle <summary> [follow-up: Nd|Nw|Nm]
+
+        The optional follow-up window sets a reminder:
+          2d = 2 days, 1w = 1 week, 3m = 3 months
+
+        Examples:
+          /log @alice Discussed pricing. follow-up: 2w
+          /log @bob Demo call — interested in enterprise plan
+          /log @carol Signed NDA. follow-up: 1m
+        """
+        args = context.args or []
+
+        if not args:
+            await self._reply(
+                update,
+                (
+                    "*CRM — Log interaction*\n\n"
+                    "Usage: `/log @handle <summary> [follow-up: Nd|Nw|Nm]`\n\n"
+                    "Examples:\n"
+                    "  `/log @alice Discussed pricing. follow-up: 2w`\n"
+                    "  `/log @bob Demo call — interested`"
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        if len(args) < 2:
+            await self._reply(update, "Usage: `/log @handle <summary>`", parse_mode="Markdown")
+            return
+
+        handle = args[0] if args[0].startswith("@") else f"@{args[0]}"
+        rest = " ".join(args[1:])
+
+        # Parse optional follow-up: "follow-up: 2w" or "follow-up:2w"
+        import re as _re
+        follow_up: str | None = None
+        fu_match = _re.search(r"follow-?up:\s*(\S+)", rest, _re.IGNORECASE)
+        if fu_match:
+            follow_up = fu_match.group(1)
+            rest = rest[:fu_match.start()].strip()
+
+        summary = rest.strip()
+        if not summary:
+            await self._reply(update, "Please provide a summary after the handle.")
+            return
+
+        product_id = "default"
+        try:
+            from src.app.crm import get_contact_by_handle, log_interaction
+            contact = await get_contact_by_handle(product_id=product_id, handle=handle)
+            if contact is None:
+                await self._reply(
+                    update,
+                    f"Contact {handle} not found. Create with `/contact add {handle}` first.",
+                )
+                return
+            iid = await log_interaction(
+                product_id=product_id,
+                contact_id=contact["contact_id"],
+                kind="other",
+                summary=summary,
+                follow_up=follow_up,
+            )
+            fu_text = f" Follow-up set: {follow_up}." if follow_up else ""
+            await self._reply(
+                update,
+                f"Logged interaction #{iid} with {handle}.{fu_text}",
+            )
+        except Exception as exc:
+            await self._reply(update, f"Error logging interaction: {exc}")
+
+    async def cmd_contacts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T4 A10 — List CRM contacts with last interaction.
+
+        Usage:
+          /contacts              — list all contacts
+          /contacts [category]   — filter by category
+
+        Categories: customer, prospect, investor, journalist, partner,
+                    advisor, candidate, vendor, other
+
+        Examples:
+          /contacts
+          /contacts investor
+          /contacts customer
+        """
+        args = context.args or []
+        category = args[0] if args else None
+        product_id = "default"
+
+        try:
+            from src.app.crm import list_contacts
+            contacts = await list_contacts(product_id=product_id, category=category)
+            if not contacts:
+                label = f"category '{category}'" if category else "any category"
+                await self._reply(
+                    update,
+                    f"No contacts found for {label}. Use `/contact add @handle` to add one.",
+                )
+                return
+            header = f"*Contacts ({category or 'all'})*" if category else "*All Contacts*"
+            lines = [header]
+            for c in contacts:
+                last = c.get("last_interaction")
+                last_str = f" — last: {last[:10]}" if last else ""
+                lines.append(
+                    f"• {c['handle']} ({c['display_name']}) [{c['category']}]{last_str}"
+                )
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+        except Exception as exc:
+            await self._reply(update, f"Error listing contacts: {exc}")
+
+    async def cmd_follow_ups(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T4 A10 — Show pending follow-ups due within 7 days.
+
+        Usage:
+          /follow_ups          — pending within 7 days
+          /follow_ups [days]   — pending within N days (e.g. /follow_ups 14)
+
+        Examples:
+          /follow_ups
+          /follow_ups 14
+        """
+        args = context.args or []
+        within_days = 7
+        if args:
+            try:
+                within_days = int(args[0])
+            except ValueError:
+                pass
+
+        product_id = "default"
+        try:
+            from src.app.crm import get_pending_follow_ups
+            items = await get_pending_follow_ups(product_id=product_id, within_days=within_days)
+            if not items:
+                await self._reply(
+                    update,
+                    f"No pending follow-ups in the next {within_days} days.",
+                )
+                return
+            lines = [f"*Follow-ups due within {within_days} days* ({len(items)} pending):"]
+            for item in items:
+                handle = item.get("handle") or f"contact#{item['contact_id']}"
+                display = item.get("display_name") or handle
+                fu_date = item.get("follow_up_at", "?")[:10]
+                kind = item.get("kind") or "other"
+                summary = (item.get("summary") or "")[:60]
+                lines.append(
+                    f"• {display} ({handle}) [{kind}] — due {fu_date}\n"
+                    f"  {summary}"
+                )
+            lines.append(
+                f"\nUse `/log @handle <summary>` to log outcome, or mark done via crm."
+            )
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+        except Exception as exc:
+            await self._reply(update, f"Error fetching follow-ups: {exc}")
+
+    async def cmd_consent(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T4 A10.r1 — Manage contact consent records.
+
+        Usage:
+          /consent grant @handle <purpose>    — grant consent
+          /consent revoke @handle <purpose>   — revoke consent
+          /consent check @handle <purpose>    — check consent status
+
+        Purposes: quote_use, data_processing, marketing_email,
+                  interview_recording, case_study
+
+        Examples:
+          /consent grant @alice quote_use
+          /consent revoke @bob marketing_email
+          /consent check @carol data_processing
+        """
+        args = context.args or []
+
+        if len(args) < 3:
+            await self._reply(
+                update,
+                (
+                    "*CRM — Consent ledger*\n\n"
+                    "Usage:\n"
+                    "  `/consent grant @handle <purpose>`\n"
+                    "  `/consent revoke @handle <purpose>`\n"
+                    "  `/consent check @handle <purpose>`\n\n"
+                    "Purposes: `quote_use`, `data_processing`, `marketing_email`, "
+                    "`interview_recording`, `case_study`"
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        action_word = args[0].lower()
+        handle = args[1] if args[1].startswith("@") else f"@{args[1]}"
+        purpose = args[2].lower()
+        product_id = "default"
+
+        VALID_ACTIONS = {"grant", "revoke", "check"}
+        if action_word not in VALID_ACTIONS:
+            await self._reply(
+                update,
+                f"Unknown action '{action_word}'. Use: grant, revoke, or check.",
+            )
+            return
+
+        try:
+            from src.app.crm import (
+                get_contact_by_handle,
+                grant_consent,
+                revoke_consent,
+                check_consent,
+                has_consent,
+            )
+            contact = await get_contact_by_handle(product_id=product_id, handle=handle)
+            if contact is None:
+                await self._reply(
+                    update,
+                    f"Contact {handle} not found. Create with `/contact add {handle}` first.",
+                )
+                return
+
+            cid = contact["contact_id"]
+
+            if action_word == "grant":
+                await grant_consent(
+                    product_id=product_id,
+                    contact_id=cid,
+                    purpose=purpose,
+                    source_evidence_url="telegram:manual",
+                )
+                await self._reply(
+                    update,
+                    f"Consent granted: {handle} → {purpose}\n"
+                    f"Source: manual (Telegram). `/consent check {handle} {purpose}` to verify.",
+                )
+
+            elif action_word == "revoke":
+                await revoke_consent(
+                    product_id=product_id,
+                    contact_id=cid,
+                    purpose=purpose,
+                )
+                await self._reply(
+                    update,
+                    f"Consent revoked: {handle} → {purpose}",
+                )
+
+            elif action_word == "check":
+                valid = await has_consent(
+                    product_id=product_id,
+                    contact_id=cid,
+                    purpose=purpose,
+                )
+                record = await check_consent(
+                    product_id=product_id,
+                    contact_id=cid,
+                    purpose=purpose,
+                )
+                if record is None:
+                    await self._reply(update, f"No consent record for {handle} / {purpose}.")
+                    return
+                status = "VALID" if valid else "INVALID (revoked or expired)"
+                lines = [
+                    f"*Consent check: {handle} / {purpose}*",
+                    f"Status: {status}",
+                    f"Granted: {record.get('granted_at', '?')}",
+                ]
+                if record.get("expires_at"):
+                    lines.append(f"Expires: {record['expires_at']}")
+                if record.get("revoked_at"):
+                    lines.append(f"Revoked: {record['revoked_at']}")
+                if record.get("source_evidence_url"):
+                    lines.append(f"Source: {record['source_evidence_url']}")
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+        except ValueError as ve:
+            await self._reply(update, f"Validation error: {ve}")
+        except Exception as exc:
+            await self._reply(update, f"Error: {exc}")

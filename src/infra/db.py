@@ -3251,6 +3251,120 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T4 A10: relationships — CRM contact directory ─────────────────────
+    # Telegram-native interaction log. NOT a relationship graph; no email
+    # integration. category valid values enforced at app level (see crm.py).
+    # product_id NOT NULL per-product scoping (founder decision 2026-05-15).
+    await apply_migration(
+        version="2026-05-16-z7-relationships",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS relationships ("
+            " contact_id   INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id   TEXT NOT NULL,"
+            " handle       TEXT NOT NULL,"             # @telegram_handle or name-slug
+            " display_name TEXT NOT NULL,"
+            " category     TEXT NOT NULL DEFAULT 'other',"
+            # customer|prospect|investor|journalist|partner|advisor|candidate|vendor|other
+            " email        TEXT,"
+            " links_json   TEXT,"                      # JSON array of URLs
+            " notes_md     TEXT,"
+            " created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_product_handle "
+            "ON relationships(product_id, handle);\n"
+            "CREATE INDEX IF NOT EXISTS idx_relationships_product_category "
+            "ON relationships(product_id, category);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_relationships_product_handle;\n"
+            "DROP INDEX IF EXISTS idx_relationships_product_category;\n"
+            "DROP TABLE IF EXISTS relationships;\n"
+        ),
+        description=(
+            "Z7 T4 A10: relationships — Telegram-native contact directory. "
+            "contact_id PK, product_id NOT NULL, handle UNIQUE per product, "
+            "category: customer|prospect|investor|journalist|partner|advisor|"
+            "candidate|vendor|other. B4 (meeting brief) and B7 (interviews) "
+            "write interactions rows; this table is the contact registry."
+        ),
+    )
+
+    # ── Z7 T4 A10: interactions — structured interaction log ─────────────────
+    # kind valid values: call|email|meeting|message|event|interview|other.
+    # follow_up_at nullable; done=0 means pending, done=1 means completed.
+    # B4 writes rows at meeting end; B7 writes rows with kind='interview'.
+    await apply_migration(
+        version="2026-05-16-z7-interactions",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS interactions ("
+            " interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id     TEXT NOT NULL,"
+            " contact_id     INTEGER NOT NULL,"
+            " kind           TEXT NOT NULL DEFAULT 'other',"
+            " summary        TEXT NOT NULL DEFAULT '',"
+            " next_action    TEXT,"
+            " follow_up_at   TEXT,"                    # nullable; "%Y-%m-%d %H:%M:%S"
+            " logged_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " mission_id     INTEGER,"                 # nullable FK to missions.id
+            " done           INTEGER NOT NULL DEFAULT 0"  # 0=pending, 1=done
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_interactions_product_contact "
+            "ON interactions(product_id, contact_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_interactions_follow_up "
+            "ON interactions(product_id, follow_up_at, done) "
+            "WHERE follow_up_at IS NOT NULL;\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_interactions_product_contact;\n"
+            "DROP INDEX IF EXISTS idx_interactions_follow_up;\n"
+            "DROP TABLE IF EXISTS interactions;\n"
+        ),
+        description=(
+            "Z7 T4 A10: interactions — structured interaction log. "
+            "kind: call|email|meeting|message|event|interview|other. "
+            "follow_up_at nullable parsed from relative windows (2w/3d/1m). "
+            "done flag for follow-up reminder sweep. "
+            "B4 meeting-brief creates rows at outcome-log time; "
+            "B7 interview pipeline creates rows with kind='interview'."
+        ),
+    )
+
+    # ── Z7 T4 A10.r1: consent_records — per-purpose consent ledger ───────────
+    # purpose valid values: quote_use|data_processing|marketing_email|
+    #   interview_recording|case_study.
+    # revoked_at NULL = consent active (if not expired).
+    # expires_at NULL = no expiry (permanent unless revoked).
+    await apply_migration(
+        version="2026-05-16-z7-consent-records",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS consent_records ("
+            " consent_id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id          TEXT NOT NULL,"
+            " contact_id          INTEGER NOT NULL,"
+            " purpose             TEXT NOT NULL,"
+            # quote_use|data_processing|marketing_email|interview_recording|case_study
+            " granted_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " expires_at          TEXT,"                # nullable; "%Y-%m-%d %H:%M:%S"
+            " source_evidence_url TEXT,"               # URL proving consent was collected
+            " revoked_at          TEXT"                # nullable; set on revoke
+            ");\n"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_consent_records_unique "
+            "ON consent_records(product_id, contact_id, purpose);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_consent_records_unique;\n"
+            "DROP TABLE IF EXISTS consent_records;\n"
+        ),
+        description=(
+            "Z7 T4 A10.r1: consent_records — per-purpose consent ledger. "
+            "purpose: quote_use|data_processing|marketing_email|"
+            "interview_recording|case_study. "
+            "revoked_at NULL + not expired = valid consent (has_consent()). "
+            "Every Z7 surface checks has_consent() before touching contact data. "
+            "B7 interview pipeline checks interview_recording consent before transcribing."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

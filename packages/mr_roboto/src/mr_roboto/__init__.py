@@ -87,6 +87,7 @@ from mr_roboto.extract_signatures import extract_signatures
 from mr_roboto.check_adr_drift import check_adr_drift  # Z3 T4B
 from mr_roboto.integration_replay import integration_replay  # Z3 T5
 from mr_roboto.integration_bisect import integration_bisect  # Z3 T5
+from mr_roboto.visual_review import visual_review  # Z4 T2B
 
 __all__ = [
     "Action",
@@ -140,6 +141,7 @@ __all__ = [
     "pick_recipe",
     "instantiate_recipe_verb",
     "extract_signatures",
+    "visual_review",
 ]
 
 
@@ -3353,6 +3355,85 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "follow_up_reminder":
+        # Z7 T4 A10 — daily CRM follow-up reminder: scans interactions where
+        # follow_up_at <= today+7 AND done=0; builds digest; notifies founder.
+        from src.app.jobs.follow_up_reminder import run_follow_up_reminder
+        try:
+            res = await run_follow_up_reminder()
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"follow_up_reminder: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    # ── Z7 T4 A10: CRM data-layer mechanical verbs ───────────────────────────
+
+    if action == "crm/add_contact":
+        # Add or update a CRM contact. Upserts by (product_id, handle).
+        from src.app.crm import add_contact
+        try:
+            contact_id = await add_contact(
+                product_id=payload.get("product_id", "default"),
+                handle=payload["handle"],
+                display_name=payload.get("display_name", payload["handle"]),
+                category=payload.get("category", "other"),
+                email=payload.get("email"),
+                notes_md=payload.get("notes_md"),
+            )
+            return Action(status="completed", result={"contact_id": contact_id}, reversibility="full")
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "crm/log_interaction":
+        # Log a CRM interaction with optional relative follow-up window.
+        from src.app.crm import log_interaction
+        try:
+            iid = await log_interaction(
+                product_id=payload.get("product_id", "default"),
+                contact_id=int(payload["contact_id"]),
+                kind=payload.get("kind", "other"),
+                summary=payload.get("summary", ""),
+                follow_up=payload.get("follow_up"),
+                next_action=payload.get("next_action"),
+                mission_id=payload.get("mission_id"),
+            )
+            return Action(status="completed", result={"interaction_id": iid}, reversibility="full")
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "crm/grant_consent":
+        # Grant consent for a purpose.
+        from src.app.crm import grant_consent
+        try:
+            cid = await grant_consent(
+                product_id=payload.get("product_id", "default"),
+                contact_id=int(payload["contact_id"]),
+                purpose=payload["purpose"],
+                source_evidence_url=payload.get("source_evidence_url", ""),
+                expires_at=payload.get("expires_at"),
+            )
+            return Action(status="completed", result={"consent_id": cid}, reversibility="full")
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "crm/revoke_consent":
+        # Revoke a previously granted consent.
+        from src.app.crm import revoke_consent
+        try:
+            await revoke_consent(
+                product_id=payload.get("product_id", "default"),
+                contact_id=int(payload["contact_id"]),
+                purpose=payload["purpose"],
+            )
+            return Action(status="completed", result={}, reversibility="full")
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     # ── Z7 T3B — demo pipeline verbs (A3 + A3.r1) ────────────────────────────
 
     if action == "demo/storyboard":
@@ -3761,6 +3842,22 @@ async def _run_dispatch(task: dict) -> Action:
             res = await _disclosure_timer(payload)
             if res.get("status") == "error":
                 return Action(status="failed", error=res.get("error") or "disclosure_timer failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "visual_review":
+        # Z4 T2B — diff captured screenshots against baselines or audit against
+        # design tokens using a vision-capable model.
+        from mr_roboto.visual_review import visual_review as _visual_review
+        try:
+            res = await _visual_review(
+                mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
+                step_id=str(step_id if (step_id := payload.get("step_id")) else task.get("id") or ""),
+                captured_paths=list(payload.get("captured_paths") or []),
+                baseline_dir=payload.get("baseline_dir") or None,
+                workspace_path=payload.get("workspace_path") or None,
+            )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

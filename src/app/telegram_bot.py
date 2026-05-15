@@ -9337,12 +9337,103 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     # just replies via _reply() naming the tier that delivers it.
 
     async def cmd_northstar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Z9 T1D stub — north-star metric tracking (wired in Z9 T4)."""
-        logger.info("/northstar invoked (Z9 T1D stub)")
-        await self._reply(
-            update,
-            "North-star metric tracking — arrives with Z9 T4.",
-        )
+        """Z9 T4B — show the mission's north-star metric + recent trend.
+
+        Usage: ``/northstar [mission_id]`` — defaults to the most recently
+        created active mission. Reads ``mission.context['north_star']``
+        (injected by the inject_north_star verb at Phase 8) and the latest
+        ``metric_emit`` / ``hypothesis_recorded`` growth_events for trend.
+        """
+        logger.info("/northstar invoked")
+        import json
+        try:
+            from src.infra.db import (
+                get_active_missions,
+                get_growth_events,
+                get_mission,
+            )
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
+
+        # Resolve target mission — explicit arg, else newest active.
+        mission = None
+        args = context.args or []
+        if args and args[0].isdigit():
+            mission = await get_mission(int(args[0]))
+            if mission is None:
+                await self._reply(
+                    update, f"❌ Mission {args[0]} not found.",
+                )
+                return
+        else:
+            actives = await get_active_missions()
+            if actives:
+                mission = max(actives, key=lambda m: m.get("id") or 0)
+
+        if mission is None:
+            await self._reply(
+                update,
+                "🧭 *North-star metric*\n\nNo active mission. Run "
+                "`/northstar <mission_id>` to inspect a specific mission.",
+                parse_mode="Markdown",
+            )
+            return
+
+        mission_id = mission.get("id")
+        ctx_raw = mission.get("context") or "{}"
+        try:
+            ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else dict(ctx_raw)
+        except (json.JSONDecodeError, TypeError):
+            ctx = {}
+        ns = ctx.get("north_star") or {}
+        nsm = ns.get("north_star_metric") or {}
+        aarrr = ns.get("aarrr_metrics") or []
+
+        lines = [f"🧭 *North-star metric — mission #{mission_id}*\n"]
+        if not nsm.get("name"):
+            lines.append(
+                "_Not configured yet._ The success_metrics artifact is "
+                "created at step 2.9 and injected into mission context at "
+                "Phase 8 (`inject_north_star`). Check back once the mission "
+                "reaches Phase 8."
+            )
+        else:
+            lines.append(f"*{nsm.get('name')}*")
+            just = (nsm.get("justification") or "").strip()
+            if just:
+                lines.append(f"_{just[:300]}_")
+            if aarrr:
+                lines.append(f"\n*AARRR metrics* ({len(aarrr)}):")
+                for m in aarrr[:8]:
+                    tgt = m.get("target_value")
+                    tgt_s = f" → target `{tgt}`" if tgt is not None else ""
+                    lines.append(
+                        f"  • `{m.get('name','?')}`{tgt_s} "
+                        f"({m.get('measurement_frequency','?')})"
+                    )
+
+        # Latest measured value + trend from growth_events.
+        try:
+            emits = await get_growth_events(
+                mission_id=mission_id, kind="metric_emit", limit=5,
+            )
+        except Exception:  # noqa: BLE001
+            emits = []
+        if emits:
+            lines.append("\n*Recent values:*")
+            for ev in emits:
+                p = ev.get("properties") or {}
+                val = p.get("value", p.get("metric_value", "?"))
+                when = (ev.get("occurred_at") or "")[:16]
+                lines.append(f"  • `{val}` — {when}")
+        else:
+            lines.append(
+                "\n_No measured values yet — metric_emit fires once the "
+                "feature is live._"
+            )
+
+        await self._reply(update, "\n".join(lines), parse_mode="Markdown")
 
     async def cmd_hypothesis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Z9 T1D stub — hypothesis registry (wired in Z9 T4)."""

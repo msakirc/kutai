@@ -219,6 +219,10 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "crisis/freeze_marketing": "full",    # DB write; reversible via crisis/resume
     "crisis/draft_holding": "full",       # draft variants only; no publish; git-reversible
     "crisis/disclosure_timer": "irreversible",  # surfaces founder_action visible to user
+    # ---- Z7 T4 B7 customer interview pipeline ----------------------------
+    "interview/transcribe": "full",   # local DB write (transcript_md); re-runnable
+    "interview/summarize": "full",    # LLM → DB write; re-runnable (idempotent overwrite)
+    "interview/cross_link": "full",   # DB writes (interactions + press_kit_quotes); no ext publish
     # ---- Z7 T4 A10 CRM-as-log + A10.r1 consent ledger ----------------------
     "follow_up_reminder": "full",         # idempotent digest + best-effort Telegram notify
     "crm/add_contact": "full",            # DB upsert; reversible by removing the row

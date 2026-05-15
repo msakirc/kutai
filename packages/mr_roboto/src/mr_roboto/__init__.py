@@ -3525,6 +3525,68 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T4 B7 — customer interview pipeline verbs ─────────────────────────
+
+    if action == "interview/transcribe":
+        # B7 step 1: Whisper-CPU transcription (pluggable).
+        # Reads audio_path from interview_notes, writes transcript_md back.
+        from src.app.interview import transcribe_interview
+        try:
+            note_id = int(payload.get("note_id") or 0)
+            product_id = str(payload.get("product_id") or "default")
+            model_size = payload.get("model_size") or None
+            res = await transcribe_interview(
+                note_id=note_id,
+                product_id=product_id,
+                model_size=model_size,
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error", "transcribe failed"), result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "interview/summarize":
+        # B7 step 2: LLM-bound summarization (OVERHEAD lane via beckman.enqueue).
+        # Reads transcript_md, writes summary_md / quotes_json / insights_md /
+        # action_items_json to interview_notes.
+        from src.app.interview import summarize_interview
+        try:
+            note_id = int(payload.get("note_id") or 0)
+            product_id = str(payload.get("product_id") or "default")
+            res = await summarize_interview(note_id=note_id, product_id=product_id)
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error", "summarize failed"), result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "interview/cross_link":
+        # B7 step 3: non-LLM cross-linker.
+        # a. Writes interactions row (kind='interview') via crm.log_interaction.
+        # b. Enqueues action items as candidate backlog tasks.
+        # c. Pushes quotes to press_kit_quotes gated on quote_use consent;
+        #    emits founder_action requesting consent when absent.
+        from src.app.interview import cross_link_interview
+        try:
+            note_id = int(payload.get("note_id") or 0)
+            product_id = str(payload.get("product_id") or "default")
+            contact_id = int(payload.get("contact_id") or 0)
+            mission_id = payload.get("mission_id")
+            if mission_id is not None:
+                mission_id = int(mission_id)
+            res = await cross_link_interview(
+                note_id=note_id,
+                product_id=product_id,
+                contact_id=contact_id,
+                mission_id=mission_id,
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error", "cross_link failed"), result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     # ── Z7 T3B — demo pipeline verbs (A3 + A3.r1) ────────────────────────────
 
     if action == "demo/storyboard":

@@ -2003,6 +2003,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("consent", self.cmd_consent))
         # Z7 T4 B4 — meeting brief auto-generation
         self.app.add_handler(CommandHandler("meeting", self.cmd_meeting))
+        # Z7 T4 B7 — customer interview pipeline
+        self.app.add_handler(CommandHandler("interview", self.cmd_interview))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -8078,6 +8080,105 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             await query.message.reply_text("❌ Unknown similar-review action.")
             return
 
+        # ── Z4 T4B/T4C: visual-review founder-loop inline buttons ───
+        # Format:
+        #   visrev:approve:<mid>:<step_id>:<frame_filename>
+        #       → copy captured frame to baseline (per-breakpoint approval)
+        #   visrev:cal:<verdict>:<mid>:<lesson_pattern>
+        #       → upsert a mission lesson to mute this finding pattern
+        if data.startswith("visrev:"):
+            try:
+                parts = data.split(":", 4)
+                visrev_kind = parts[1]
+            except (ValueError, IndexError):
+                await query.message.reply_text("❌ Bozuk visrev butonu.")
+                return
+
+            if visrev_kind == "approve":
+                # visrev:approve:<mid>:<step_id>:<frame_filename>
+                try:
+                    mid = int(parts[2])
+                    step_id_v = parts[3]
+                    frame_filename = parts[4]
+                except (ValueError, IndexError):
+                    await query.message.reply_text("❌ Bozuk visrev:approve butonu.")
+                    return
+                try:
+                    import shutil as _shutil
+                    from src.tools.workspace import WORKSPACE_DIR as _WS
+                    captured_path = os.path.join(
+                        _WS,
+                        f"mission_{mid}",
+                        ".visual",
+                        "captured",
+                        step_id_v,
+                        frame_filename,
+                    )
+                    baseline_dir = os.path.join(
+                        _WS,
+                        f"mission_{mid}",
+                        ".visual",
+                        "baseline",
+                    )
+                    os.makedirs(baseline_dir, exist_ok=True)
+                    dst = os.path.join(baseline_dir, frame_filename)
+                    _shutil.copy2(captured_path, dst)
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Baseline approval failed: {e}"
+                    )
+                    return
+                await self._reply(
+                    update,
+                    f"✅ Approved `{frame_filename}` as new baseline "
+                    f"(mission #{mid}).",
+                    parse_mode="Markdown",
+                )
+                return
+
+            if visrev_kind == "cal":
+                # visrev:cal:<verdict>:<mid>:<lesson_pattern>
+                try:
+                    cal_verdict = parts[2]
+                    mid = int(parts[3])
+                    lesson_pattern = parts[4]
+                except (ValueError, IndexError):
+                    await query.message.reply_text("❌ Bozuk visrev:cal butonu.")
+                    return
+                try:
+                    from src.infra.mission_lessons import upsert_mission_lesson
+                    fix_msg = (
+                        "Founder marked this visual pattern as acceptable — suppress future alerts."
+                        if cal_verdict == "fine"
+                        else "Founder confirmed this visual pattern is genuinely broken."
+                    )
+                    severity = "info" if cal_verdict == "fine" else "blocker"
+                    await upsert_mission_lesson(
+                        stack="frontend",
+                        domain="visual",
+                        pattern=lesson_pattern,
+                        fix=fix_msg,
+                        severity=severity,
+                        source_kind="visrev_calibration",
+                        source_ref={"mission_id": mid, "verdict": cal_verdict},
+                    )
+                except Exception as e:
+                    await query.message.reply_text(
+                        f"❌ Calibration failed: {e}"
+                    )
+                    return
+                label = "🟢 Fine" if cal_verdict == "fine" else "🔴 Broken"
+                await self._reply(
+                    update,
+                    f"{label} — `{lesson_pattern}` recorded as *{cal_verdict}* "
+                    f"for mission #{mid}.",
+                    parse_mode="Markdown",
+                )
+                return
+
+            await query.message.reply_text("❌ Unknown visrev action.")
+            return
+
         # ── Z1 Tier 4B: propagate inline button ─────────────────────
         # Format: `propagate:<mission_id>:<artifact_path>`
         # On tap, stash a `_pending_action` so the next message becomes
@@ -11597,3 +11698,129 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             )
         except Exception as exc:
             await self._reply(update, f"Error: {exc}")
+
+    # ── Z7 T4 B7 — Customer interview / call notes pipeline ──────────────────
+
+    async def cmd_interview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /interview command.
+
+        Subcommands:
+          /interview start @handle [audio_path]  — begin a new interview session
+          /interview stop [note_id] [audio=path] — mark interview stopped; set audio_path
+          /interview list [@handle]              — list recent interview notes
+
+        Examples:
+          /interview start @alice
+          /interview stop 42 audio=/tmp/call.mp3
+          /interview list
+          /interview list @alice
+        """
+        chat_id = update.effective_chat.id
+        product_id = str(chat_id)
+
+        args = (context.args or [])
+        if not args:
+            await self._reply(
+                update,
+                "Usage:\n"
+                "  `/interview start @handle [audio_path]`\n"
+                "  `/interview stop [note_id] [audio=/path/to/file.mp3]`\n"
+                "  `/interview list [@handle]`",
+                parse_mode="Markdown",
+            )
+            return
+
+        sub = args[0].lower()
+
+        # /interview list [@handle]
+        if sub == "list":
+            handle = args[1].lstrip("@") if len(args) > 1 else None
+            try:
+                from src.app.interview import list_interviews
+                notes = await list_interviews(product_id, handle=handle, limit=10)
+                if not notes:
+                    target = f"@{handle}" if handle else "any contact"
+                    await self._reply(update, f"No interview notes found for {target}.")
+                    return
+                lines = []
+                for n in notes:
+                    display = n.get("display_name") or n.get("handle") or f"contact#{n['contact_id']}"
+                    dur = f" ({n['duration_minutes']:.0f}min)" if n.get("duration_minutes") else ""
+                    lines.append(
+                        f"• #{n['note_id']} — {display}{dur} — {n['started_at'] or 'no date'}"
+                    )
+                await self._reply(update, "Interview notes:\n" + "\n".join(lines))
+            except Exception as exc:
+                await self._reply(update, f"Error listing interviews: {exc}")
+            return
+
+        # /interview start @handle [audio_path]
+        if sub == "start":
+            if len(args) < 2:
+                await self._reply(update, "Usage: `/interview start @handle [audio_path]`", parse_mode="Markdown")
+                return
+            handle = args[1].lstrip("@")
+            audio_path = args[2] if len(args) > 2 else None
+            try:
+                from src.app.interview import start_interview
+                result = await start_interview(product_id, handle, audio_path=audio_path)
+                note_id = result["note_id"]
+                consent_hint = ""
+                try:
+                    from src.app import crm
+                    if not await crm.has_consent(product_id, result["contact_id"], "interview_recording"):
+                        consent_hint = (
+                            "\n\nReminder: recording consent is not on file for this contact. "
+                            "Use `/consent grant @handle interview_recording <evidence_url>` "
+                            "to record consent before uploading audio."
+                        )
+                except Exception:
+                    pass
+                await self._reply(
+                    update,
+                    f"Interview started — note #{note_id} for @{handle}.{consent_hint}\n\n"
+                    f"When done, use `/interview stop {note_id} audio=/path/to/file.mp3` "
+                    "to mark the interview complete and upload the audio.",
+                )
+            except Exception as exc:
+                await self._reply(update, f"Error starting interview: {exc}")
+            return
+
+        # /interview stop [note_id] [audio=/path]
+        if sub == "stop":
+            note_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+            audio_path = None
+            for arg in args[2:]:
+                if arg.startswith("audio="):
+                    audio_path = arg[len("audio="):]
+            if note_id is None:
+                await self._reply(
+                    update,
+                    "Usage: `/interview stop <note_id> [audio=/path/to/file.mp3]`",
+                    parse_mode="Markdown",
+                )
+                return
+            try:
+                from src.app.interview import stop_interview
+                await stop_interview(note_id, product_id, audio_path=audio_path)
+                next_steps = f"Interview #{note_id} stopped."
+                if audio_path:
+                    next_steps += f"\nAudio path set: `{audio_path}`"
+                next_steps += (
+                    "\n\nRun the pipeline:\n"
+                    f"  1. `interview/transcribe` note_id={note_id}\n"
+                    f"  2. `interview/summarize` note_id={note_id}\n"
+                    f"  3. `interview/cross_link` note_id={note_id}\n\n"
+                    "(These steps run automatically when dispatched via mr_roboto.)"
+                )
+                await self._reply(update, next_steps, parse_mode="Markdown")
+            except Exception as exc:
+                await self._reply(update, f"Error stopping interview: {exc}")
+            return
+
+        await self._reply(
+            update,
+            f"Unknown /interview subcommand: {sub!r}\n\n"
+            "Available: `start`, `stop`, `list`",
+            parse_mode="Markdown",
+        )

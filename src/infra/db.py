@@ -3409,6 +3409,44 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T4 B7: interview_notes — customer interview / call notes pipeline ─────
+    # Transcript stored as plain text (Markdown). Quotes / action items as JSON.
+    # product_id NOT NULL per-product scoping (founder decision 2026-05-15).
+    await apply_migration(
+        version="2026-05-16-z7-interview-notes",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS interview_notes ("
+            " note_id            INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id         TEXT NOT NULL,"
+            " contact_id         INTEGER,"
+            " started_at         TEXT,"
+            " duration_minutes   REAL,"
+            " transcript_md      TEXT,"
+            " summary_md         TEXT,"
+            " quotes_json        TEXT,"
+            " insights_md        TEXT,"
+            " action_items_json  TEXT,"
+            " audio_path         TEXT"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_interview_notes_product "
+            "ON interview_notes(product_id, started_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_interview_notes_contact "
+            "ON interview_notes(contact_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_interview_notes_contact;\n"
+            "DROP INDEX IF EXISTS idx_interview_notes_product;\n"
+            "DROP TABLE IF EXISTS interview_notes;\n"
+        ),
+        description=(
+            "Z7 T4 B7: interview_notes — per-product customer interview pipeline. "
+            "Transcript (Markdown), structured summary (bullets/quotes/insights/"
+            "action_items as JSON), audio_path for source recording. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15). "
+            "contact_id FK to relationships at app level."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

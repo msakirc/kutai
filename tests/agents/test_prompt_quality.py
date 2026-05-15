@@ -12,9 +12,10 @@ LOW_TRAFFIC_AGENTS = [
     "shopping_advisor", "shopping_clarifier", "deal_analyst",
     "product_researcher", "artifact_summarizer", "integration_reviewer",
     "growth_digest_synthesizer",  # Z9 T2C — weekly growth digest synthesis
+    "signal_classifier",  # Z9 T3B — growth signal classifier
 ]
 
-ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 22 total
+ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 23 total
 
 @pytest.mark.parametrize("name", ALL_AGENTS)
 def test_prompt_has_role_primer(name):

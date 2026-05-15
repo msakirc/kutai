@@ -183,6 +183,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "retire_variant": "partial",  # stops the variant, but prior exposure cannot be unwound
     "score_backlog": "full",  # writes backlog scores; re-runnable
     "score_sunset": "full",  # writes sunset scores; re-runnable
+    "classify_signals": "full",  # Z9 T3B — query + Beckman enqueue + append-only rows
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

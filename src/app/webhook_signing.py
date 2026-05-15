@@ -49,6 +49,10 @@ async def verify_signature(
         "github": _verify_github,
         "betterstack": _verify_betterstack,
         "twilio": _verify_twilio,
+        # Z9 T3A — growth signal intake.
+        "intercom": _verify_intercom,
+        "zendesk": _verify_zendesk,
+        "posthog": _verify_posthog,
     }
     fn = verifiers.get(integration_id)
     if fn is None:
@@ -138,6 +142,60 @@ def _verify_twilio(raw: bytes, headers: dict, secret: str) -> bool:
     ).digest()
     expected_b64 = base64.b64encode(expected).decode()
     return hmac.compare_digest(sig, expected_b64)
+
+
+# ---------------------------------------------------------------------------
+# Z9 T3A — growth signal intake verifiers
+# ---------------------------------------------------------------------------
+
+
+def _verify_intercom(raw: bytes, headers: dict, secret: str) -> bool:
+    """Intercom signs the raw body with HMAC-SHA1, header ``x-hub-signature``.
+
+    The header value is ``sha1=<hex>`` (mirrors GitHub's older scheme).
+    """
+    sig = headers.get("x-hub-signature", "")
+    if not sig.startswith("sha1="):
+        return False
+    expected = "sha1=" + hmac.new(
+        secret.encode(), raw, hashlib.sha1
+    ).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+
+def _verify_zendesk(raw: bytes, headers: dict, secret: str) -> bool:
+    """Zendesk signs ``timestamp + raw_body`` with HMAC-SHA256, base64.
+
+    Headers: ``x-zendesk-webhook-signature`` (base64 digest) and
+    ``x-zendesk-webhook-signature-timestamp``.
+    """
+    sig = headers.get("x-zendesk-webhook-signature", "")
+    ts = headers.get("x-zendesk-webhook-signature-timestamp", "")
+    if not sig or not ts:
+        return False
+    signed_payload = ts.encode() + raw
+    expected = base64.b64encode(
+        hmac.new(secret.encode(), signed_payload, hashlib.sha256).digest()
+    ).decode()
+    return hmac.compare_digest(sig, expected)
+
+
+def _verify_posthog(raw: bytes, headers: dict, secret: str) -> bool:
+    """PostHog webhook delivery — HMAC-SHA256 of the raw body.
+
+    PostHog's hook system does not ship a first-party signing header, so the
+    intake convention is a configured shared secret echoed in
+    ``x-posthog-signature`` as ``sha256=<hex>`` (set when registering the
+    webhook). This keeps verification mandatory and uniform with the other
+    providers rather than accepting unsigned posts.
+    """
+    sig = headers.get("x-posthog-signature", "")
+    if not sig.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(
+        secret.encode(), raw, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(sig, expected)
 
 
 # ---------------------------------------------------------------------------

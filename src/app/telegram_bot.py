@@ -9353,11 +9353,55 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
 
     async def cmd_backlog(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Z9 T1D stub — signal-driven backlog (wired in Z9 T3)."""
-        logger.info("/backlog invoked (Z9 T1D stub)")
+        """Z9 T3C — list top-N scored backlog candidates.
+
+        Each candidate carries the inspectable score formula breakdown.
+        Founder promotes one to a mission with ``/approve <id>``.
+        """
+        try:
+            from src.infra.db import get_growth_events
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
+
+        rows = await get_growth_events(kind="backlog_candidate", limit=50)
+        # Hide consumed / superseded candidates — only the live ranking.
+        live = [
+            r for r in rows
+            if not (r.get("properties") or {}).get("consumed")
+            and not (r.get("properties") or {}).get("superseded")
+        ]
+        if not live:
+            await self._reply(
+                update,
+                "📋 *Growth backlog*\n\nNo scored candidates yet. The "
+                "weekly digest classifies and scores signals — check back "
+                "after the next cycle.",
+                parse_mode="Markdown",
+            )
+            return
+
+        live.sort(
+            key=lambda r: (r.get("properties") or {}).get("score", 0.0),
+            reverse=True,
+        )
+        lines = ["📋 *Growth backlog — top candidates*\n"]
+        for r in live[:10]:
+            p = r.get("properties") or {}
+            f = p.get("formula") or {}
+            lines.append(
+                f"*#{r['id']}* `{p.get('label','?')}` / `{p.get('domain','?')}` "
+                f"— score *{p.get('score', 0.0):.3f}*"
+            )
+            expr = f.get("expression")
+            if expr:
+                lines.append(f"  freq×rev×ns×age/cost: `{expr}`")
+            excerpt = (p.get("sample_excerpt") or "").strip()
+            if excerpt:
+                lines.append(f"  _{excerpt[:120]}_")
+            lines.append(f"  → `/approve {r['id']}`")
         await self._reply(
-            update,
-            "Signal-driven backlog — arrives with Z9 T3.",
+            update, "\n".join(lines), parse_mode="Markdown",
         )
 
     async def cmd_sunset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -9377,11 +9421,127 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
 
     async def cmd_approve(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Z9 T1D stub — backlog candidate approval (wired in Z9 T3)."""
-        logger.info("/approve invoked (Z9 T1D stub)")
+        """Z9 T3C — approve a backlog candidate, spawning exactly one mission.
+
+        This is the ONLY path from a backlog candidate to a mission — there
+        is no auto-spawn. Marks the candidate consumed so it can't be
+        approved twice.
+        """
+        if not context.args or not context.args[0].lstrip("#").isdigit():
+            await self._reply(
+                update,
+                "Usage: `/approve <candidate_id>` — see `/backlog` for ids.",
+                parse_mode="Markdown",
+            )
+            return
+
+        cand_id = int(context.args[0].lstrip("#"))
+        try:
+            import json as _json
+            from src.infra.db import get_growth_events, insert_growth_event, get_db
+            import general_beckman
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"❌ {_friendly_error(str(e))}")
+            return
+
+        rows = await get_growth_events(kind="backlog_candidate", limit=200)
+        match = next((r for r in rows if int(r.get("id") or 0) == cand_id), None)
+        if match is None:
+            await self._reply(
+                update, f"❌ No backlog candidate #{cand_id}.",
+            )
+            return
+        props = match.get("properties") or {}
+        if props.get("consumed"):
+            await self._reply(
+                update,
+                f"⚠️ Candidate #{cand_id} was already approved — no new "
+                f"mission spawned.",
+            )
+            return
+
+        label = props.get("label", "feature_request")
+        domain = props.get("domain", "general")
+        excerpt = (props.get("sample_excerpt") or "").strip()
+        freq = props.get("frequency", 0)
+        verb = {
+            "bug": "Fix",
+            "churn_signal": "Address churn driver in",
+            "pricing_feedback": "Revisit pricing for",
+        }.get(label, "Build")
+        title = f"{verb} {domain} ({label})"[:80]
+        description = (
+            f"Approved growth backlog candidate #{cand_id}.\n"
+            f"Label: {label} | Domain: {domain} | Signal frequency: {freq}\n"
+            f"Score formula: {((props.get('formula') or {}).get('expression')) or 'n/a'}\n"
+        )
+        if excerpt:
+            description += f"Representative signal: {excerpt}\n"
+
+        # Spawn exactly one mission via Beckman. mr_roboto routes a
+        # mechanical workflow_advance after planning; here we enqueue a
+        # planner task scoped to the new mission so the founder gate stays
+        # the single entry point.
+        from src.infra.db import add_mission
+
+        mission_id = await add_mission(
+            title=title,
+            description=description,
+            priority=6,
+            context={
+                "source": "growth_backlog",
+                "backlog_candidate_id": cand_id,
+                "growth_label": label,
+                "growth_domain": domain,
+            },
+        )
+        task_id = await general_beckman.enqueue({
+            "title": f"[plan] {title}",
+            "description": description,
+            "agent_type": "planner",
+            "kind": "main_work",
+            "priority": 6,
+            "mission_id": mission_id,
+            "context": {
+                "source": "growth_backlog",
+                "backlog_candidate_id": cand_id,
+            },
+        })
+
+        # Mark the candidate consumed (append-only: flip the flag in place).
+        props["consumed"] = True
+        props["approved_mission_id"] = mission_id
+        try:
+            db = await get_db()
+            await db.execute(
+                "UPDATE growth_events SET properties_json = ? WHERE id = ?",
+                (_json.dumps(props), cand_id),
+            )
+            await db.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cmd_approve: consume flag failed", error=str(e))
+        # Audit row — backlog_approved keeps the loop inspectable.
+        try:
+            await insert_growth_event(
+                mission_id,
+                "backlog_approved",
+                {
+                    "backlog_candidate_id": cand_id,
+                    "mission_id": mission_id,
+                    "planner_task_id": task_id,
+                    "label": label,
+                    "domain": domain,
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("cmd_approve: audit row failed: %s", e)
+
         await self._reply(
             update,
-            "Backlog candidate approval — arrives with Z9 T3.",
+            f"✅ Candidate #{cand_id} approved.\n"
+            f"🎯 Mission #{mission_id} created — _{title}_\n"
+            f"Planning task #{task_id} queued.",
+            parse_mode="Markdown",
         )
     # --- end Z9 growth (stubs) ---
 

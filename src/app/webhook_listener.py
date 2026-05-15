@@ -34,6 +34,13 @@ from src.infra.db import get_db
 logger = logging.getLogger("kutai.webhook")
 app = FastAPI()
 
+# Z9 T3A — providers whose webhooks carry *growth signals* (support tickets,
+# error reports, analytics events) rather than ops alerts. These are
+# normalized, PII-redacted, and stored to ``growth_events`` as ``raw_signal``
+# instead of enqueuing an ``alert_triage`` task. sentry stays on the Z8
+# ops/alert path — it is intentionally NOT in this set.
+_SIGNAL_PROVIDERS = frozenset({"intercom", "zendesk", "posthog"})
+
 
 @app.get("/webhook/__health")
 async def webhook_health() -> dict:
@@ -64,6 +71,13 @@ async def webhook_inbound(integration_id: str, request: Request) -> dict:
     payload_hash = hashlib.sha256(raw).hexdigest()
     mission_id = await _route_to_mission(integration_id, payload)
     await mark_seen(integration_id, event_id, payload_hash, mission_id)
+
+    # Z9 T3A — growth signal intake. intercom / zendesk / posthog deliveries
+    # are normalized + PII-redacted + stored as a ``raw_signal`` growth_event.
+    # No LLM, no triage task — later tiers (T3B classifier) read the sink.
+    if integration_id in _SIGNAL_PROVIDERS:
+        await _store_raw_signal(integration_id, event_id, payload, mission_id)
+        return {"status": "accepted", "event_id": event_id, "kind": "raw_signal"}
 
     # Enqueue the alert_triage task on the ongoing lane.
     #
@@ -118,6 +132,19 @@ def _extract_event_id(integration_id: str, payload: dict) -> str | None:
         "github": lambda p: p.get("delivery") or p.get("id"),
         "betterstack": lambda p: p.get("id") or p.get("uuid"),
         "twilio": lambda p: p.get("MessageSid") or p.get("CallSid") or p.get("id"),
+        # Z9 T3A — growth signal providers.
+        "intercom": lambda p: (
+            p.get("id")
+            or (p.get("data", {}).get("item", {}) or {}).get("id")
+        ),
+        "zendesk": lambda p: (
+            p.get("id")
+            or p.get("ticket_id")
+            or (p.get("ticket", {}) or {}).get("id")
+        ),
+        "posthog": lambda p: (
+            p.get("uuid") or p.get("event_id") or p.get("id")
+        ),
     }
     fn = extractors.get(integration_id, lambda p: p.get("event_id") or p.get("id"))
     val = fn(payload)
@@ -153,3 +180,125 @@ async def _route_to_mission(integration_id: str, payload: dict) -> int | None:
     if not row:
         return None
     return int(row[0])
+
+
+# ---------------------------------------------------------------------------
+# Z9 T3A — growth signal normalization + sink
+# ---------------------------------------------------------------------------
+
+
+def _normalize_signal(
+    provider: str, event_id: str, payload: dict
+) -> dict:
+    """Parse a provider webhook payload into a normalized signal dict.
+
+    Shape (stable contract — T3B classifier consumes this):
+        {provider, signal_type, content, external_id, occurred_at, raw_meta}
+
+    ``content`` is the human-readable free text (ticket body, error message,
+    event name). ``raw_meta`` carries provider-specific structured fields the
+    classifier may use. PII redaction is applied by the caller, not here.
+    """
+    signal_type = "unknown"
+    content = ""
+    occurred_at = None
+    raw_meta: dict = {}
+
+    if provider == "intercom":
+        # Conversation / ticket events: payload.data.item holds the resource.
+        topic = payload.get("topic") or payload.get("type") or ""
+        item = (payload.get("data", {}) or {}).get("item", {}) or {}
+        signal_type = "support_ticket"
+        source = item.get("source", {}) or {}
+        content = (
+            source.get("body")
+            or item.get("body")
+            or (item.get("conversation_message", {}) or {}).get("body")
+            or ""
+        )
+        occurred_at = item.get("created_at") or payload.get("created_at")
+        raw_meta = {
+            "topic": topic,
+            "conversation_id": item.get("id"),
+            "state": item.get("state"),
+            "priority": item.get("priority"),
+        }
+    elif provider == "zendesk":
+        ticket = payload.get("ticket", {}) or payload
+        signal_type = "support_ticket"
+        content = (
+            ticket.get("description")
+            or ticket.get("latest_comment", "")
+            or payload.get("description")
+            or payload.get("comment")
+            or ""
+        )
+        occurred_at = ticket.get("created_at") or payload.get("created_at")
+        raw_meta = {
+            "ticket_id": ticket.get("id") or payload.get("ticket_id"),
+            "subject": ticket.get("subject") or payload.get("subject"),
+            "status": ticket.get("status"),
+            "priority": ticket.get("priority"),
+            "tags": ticket.get("tags"),
+        }
+    elif provider == "posthog":
+        signal_type = "analytics_event"
+        event_name = (
+            payload.get("event")
+            or payload.get("name")
+            or (payload.get("data", {}) or {}).get("event")
+            or ""
+        )
+        content = event_name
+        properties = payload.get("properties", {}) or {}
+        occurred_at = payload.get("timestamp") or payload.get("sent_at")
+        raw_meta = {
+            "event": event_name,
+            "distinct_id": payload.get("distinct_id"),
+            "properties": properties,
+        }
+
+    return {
+        "provider": provider,
+        "signal_type": signal_type,
+        "content": content,
+        "external_id": event_id,
+        "occurred_at": occurred_at,
+        "raw_meta": raw_meta,
+    }
+
+
+async def _store_raw_signal(
+    provider: str,
+    event_id: str,
+    payload: dict,
+    mission_id: int | None,
+) -> None:
+    """Normalize, PII-redact, and persist a growth signal as ``raw_signal``.
+
+    Runs ``redact_user_pii`` over ``content`` and ``raw_meta`` (free-text and
+    structured) before the row hits ``growth_events``. T3A does NOT classify
+    or score — that is T3B/T3C.
+    """
+    from src.infra.db import insert_growth_event
+    from src.security.sensitivity import redact_user_pii
+
+    signal = _normalize_signal(provider, event_id, payload)
+    # Redact user PII from every free-text / structured field before storage.
+    signal["content"] = redact_user_pii(signal.get("content") or "")
+    signal["raw_meta"] = redact_user_pii(signal.get("raw_meta") or {})
+
+    try:
+        await insert_growth_event(
+            mission_id=mission_id,
+            kind="raw_signal",
+            properties=signal,
+            segment=None,
+        )
+    except Exception as exc:
+        # Don't fail the webhook response on a sink hiccup — the delivery is
+        # already deduped (mark_seen ran); log and move on.
+        logger.warning(
+            "growth_events insert failed for %s/%s: %s",
+            provider, event_id, exc,
+        )

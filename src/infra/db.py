@@ -6160,12 +6160,14 @@ async def get_growth_events(
     mission_id: int | None = None,
     kind: str | None = None,
     since: str | None = None,
+    limit: int | None = None,
 ) -> list[dict]:
     """Return growth_events rows filtered by mission / kind / time.
 
     ``since`` is an inclusive SQLite datetime string ('YYYY-MM-DD HH:MM:SS').
-    Any combination of filters may be omitted. ``properties_json`` is decoded
-    back to a dict. Most recent first.
+    Any combination of filters may be omitted. ``limit`` caps the row count
+    (most recent first). Each row exposes the decoded payload under BOTH
+    ``properties`` and ``properties_json`` keys. Most recent first.
     """
     db = await get_db()
     clauses = []
@@ -6180,24 +6182,30 @@ async def get_growth_events(
         clauses.append("occurred_at >= ?")
         params.append(since)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    cur = await db.execute(
+    sql = (
         "SELECT * FROM growth_events" + where
-        + " ORDER BY occurred_at DESC, id DESC",
-        tuple(params),
+        + " ORDER BY occurred_at DESC, id DESC"
     )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    cur = await db.execute(sql, tuple(params))
     rows = await cur.fetchall()
     cols = [d[0] for d in cur.description]
     result = []
     for row in rows:
         d = dict(zip(cols, row))
+        decoded = None
         try:
-            d["properties_json"] = (
+            decoded = (
                 json.loads(d["properties_json"])
                 if d.get("properties_json")
                 else None
             )
         except Exception:
-            pass
+            decoded = d.get("properties_json")
+        d["properties_json"] = decoded
+        d["properties"] = decoded
         result.append(d)
     return result
 

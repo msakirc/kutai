@@ -1900,6 +1900,39 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "classify_signals":
+        # Z9 T3B — fetch unclassified raw_signal growth_events + enqueue the
+        # signal_classifier agent via Beckman. Mechanical orchestration only;
+        # NO direct LLM call.
+        from mr_roboto.executors.classify_signals import run as _classify_run
+        try:
+            res = await _classify_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"classify_signals: {res.get('error') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "score_backlog":
+        # Z9 T3C — deterministic scorer over classified_signal rows; writes
+        # top-N backlog_candidate rows. Pure math, no LLM.
+        from mr_roboto.executors.score_backlog import run as _score_run
+        try:
+            res = await _score_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"score_backlog: {res.get('error') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "monitoring_check":
         from mr_roboto.executors.monitoring_check import run as monitoring_check_run
         try:

@@ -26,6 +26,7 @@ from .adr_drift_judge import AdrDriftJudgeAgent
 from .oncall_agent import OncallAgent
 from .support_tier1 import SupportTier1Agent
 from .growth_digest_synthesizer import GrowthDigestSynthesizerAgent
+from .signal_classifier import SignalClassifierAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -54,6 +55,7 @@ AGENT_REGISTRY = {
     "oncall_agent": OncallAgent(),
     "support_tier1": SupportTier1Agent(),
     "growth_digest_synthesizer": GrowthDigestSynthesizerAgent(),
+    "signal_classifier": SignalClassifierAgent(),
 }
 
 

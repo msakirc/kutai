@@ -192,7 +192,7 @@ async def emit_lessons_from_dlq_patterns() -> int:
         """
         SELECT d.id, d.mission_id, d.error, d.error_category,
                d.task_id,
-               COALESCE(t.feedback, '') AS feedback
+               COALESCE(t.retry_reason, '') AS feedback
         FROM dead_letter_tasks d
         LEFT JOIN tasks t ON t.id = d.task_id
         WHERE d.resolved_at IS NULL

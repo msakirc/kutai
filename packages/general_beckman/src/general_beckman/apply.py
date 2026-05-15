@@ -1617,6 +1617,21 @@ def _posthook_agent_and_payload(
                 ),
             },
         })
+    if a.kind == "incident_update_review":
+        # Z7 T3D — B3: founder-review gate for incident status update drafts.
+        # Fires after incident/draft_update; emits a founder_action with the draft.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "incident_id": source_ctx.get("incident_id"),
+                "product_id": source_ctx.get("product_id") or "",
+                "draft": source_ctx.get("draft") or "",
+                "status_kind": source_ctx.get("status_kind") or "investigating",
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
 
 
@@ -3440,6 +3455,17 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
             feedback_prefix=f"{a.kind} gate",
+        )
+        return
+
+    # Z7 T3D — B3: incident_update_review posthook verdict.
+    # Blocker: founder must review the draft before publish_status is called.
+    # Pass: drop kind from pending, advance source task.
+    # Fail: keep pending, re-surface to founder.
+    if a.kind == "incident_update_review":
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix="incident_update_review gate",
         )
         return
 

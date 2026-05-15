@@ -693,6 +693,25 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Handler: posthook_handlers/press_kit_freshness.py."
         ),
     ),
+    # ── Z7 T3D: incident comms founder-review gate (B3) ──────────────────────
+    # Fires after incident/draft_update to gate publication on founder approval.
+    # Severity: blocker — status update must not be published without review.
+    # TODO: Add max 4hr SLA timer (B3 spec): if founder unavailable >4h,
+    #   B6 crisis playbook takes over. Implement SLA timer when B6 lands in T3E.
+    "incident_update_review": PostHookSpec(
+        kind="incident_update_review",
+        verb="incident_update_review",
+        default_severity="blocker",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T3D (B3): founder-review gate before publishing a customer-facing "
+            "status update. Emits a founder_action with the draft text; blocks "
+            "incident/publish_status until approved. "
+            "TODO: 4hr SLA timer → B6 crisis playbook escalation (T3E). "
+            "Handler: posthook_handlers/incident_update_review.py."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

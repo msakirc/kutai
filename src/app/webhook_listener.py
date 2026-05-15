@@ -48,6 +48,30 @@ async def webhook_health() -> dict:
     return {"status": "ok"}
 
 
+# ── Z7 T3D — B3: Public status page + RSS ─────────────────────────────────
+# Self-hosted status page (no statuspage.io / Cachet dependency).
+# /status    — HTML with active incidents, component health, 90-day uptime.
+# /status.rss — RSS 2.0 feed of recent status_updates.
+
+
+@app.get("/status")
+async def status_page_html():
+    """Render and return the public status HTML page."""
+    from fastapi.responses import HTMLResponse
+    from src.app.status_page import status_html_handler
+    content = await status_html_handler()
+    return HTMLResponse(content=content, status_code=200)
+
+
+@app.get("/status.rss")
+async def status_page_rss():
+    """Render and return the status RSS 2.0 feed."""
+    from fastapi.responses import Response
+    from src.app.status_page import status_rss_handler
+    content = await status_rss_handler()
+    return Response(content=content, media_type="application/rss+xml", status_code=200)
+
+
 # ── Z7 T2A — Email provider webhook routes ─────────────────────────────────
 # Routes: POST /webhook/email/{provider}/{product_id}
 # Covers: open, click, bounce, unsub, complaint, delivery for

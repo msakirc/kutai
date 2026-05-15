@@ -195,6 +195,11 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z7 T3C press kit verbs (A4 + A4.r1) --------------------------------
     "press_kit/assemble": "full",   # writes zips + manifest to workspace; git-reversible
     "press_kit/publish": "partial", # copies zips to local store or S3; uploaded bytes persist
+    # ---- Z7 T3D incident comms verbs (B3) -----------------------------------
+    "incident/draft_update": "full",      # drafts text only; DB not yet written; git-reversible
+    "incident/publish_status": "irreversible",  # inserts status_updates row; customers see it on /status
+    "incident/draft_postmortem": "full",  # writes local .md artifact; git-reversible
+    "incident_update_review": "irreversible",  # surfaces founder_action to Telegram; user sees it
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

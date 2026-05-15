@@ -3573,4 +3573,92 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T3D — B3: incident comms verbs + posthook handler ─────────────────
+
+    if action == "incident_update_review":
+        # Z7 T3D B3 posthook handler — founder-review gate for draft status updates.
+        # Route to general_beckman.posthook_handlers.incident_update_review.
+        try:
+            import importlib
+            _mod = importlib.import_module(
+                "general_beckman.posthook_handlers.incident_update_review"
+            )
+            source_task_id = payload.get("source_task_id")
+            source_task: dict = {}
+            if source_task_id:
+                try:
+                    from src.infra.db import get_task as _get_task
+                    _src = await _get_task(int(source_task_id))
+                    if _src:
+                        source_task = dict(_src)
+                except Exception:
+                    pass
+            import json as _json
+            src_ctx: dict = {}
+            raw_ctx = source_task.get("context") or {}
+            if isinstance(raw_ctx, str):
+                try:
+                    src_ctx = _json.loads(raw_ctx)
+                except Exception:
+                    src_ctx = {}
+            elif isinstance(raw_ctx, dict):
+                src_ctx = dict(raw_ctx)
+            # Merge payload fields so handler can read draft/incident_id/product_id.
+            for _k in ("incident_id", "product_id", "draft", "status_kind"):
+                if payload.get(_k):
+                    src_ctx.setdefault(_k, payload[_k])
+            source_task["context"] = src_ctx
+            res = await _mod.handle(source_task, src_ctx)
+            if res.get("status") == "failed":
+                return Action(
+                    status="failed",
+                    error=str(res.get("error") or res),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "incident/draft_update":
+        # Draft a customer-friendly status update (LLM-bound via beckman.enqueue).
+        # CRITICAL: redacts internal hostnames / stack traces / customer PII.
+        try:
+            from mr_roboto.incident_draft_update import run as _draft_update
+            res = await _draft_update(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "draft_update failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "incident/publish_status":
+        # Publish a founder-reviewed status update to the status_updates table.
+        # Invalidates the /status page cache so the next request re-renders.
+        try:
+            from mr_roboto.incident_publish_status import run as _publish_status
+            res = await _publish_status(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "publish_status failed", result=res)
+            # Bust cache so /status page shows the new update immediately.
+            try:
+                from src.app.status_page import invalidate_cache as _bust_cache
+                _bust_cache()
+            except Exception:
+                pass
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "incident/draft_postmortem":
+        # Auto-draft postmortem template at incident resolve.
+        # Emits a founder_action (7-day review SLA).
+        try:
+            from mr_roboto.incident_draft_postmortem import run as _draft_postmortem
+            res = await _draft_postmortem(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "draft_postmortem failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

@@ -3094,6 +3094,72 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T3D: incidents — customer-facing incident tracking (B3) ───────────
+    # product_id NOT NULL per-product scoping (founder decision 2026-05-15).
+    # severity: 'critical' | 'major' | 'minor'
+    # resolved_at NULL means incident is still open.
+    # postmortem_url filled in by founder after publishing the postmortem (7d SLA).
+    await apply_migration(
+        version="2026-05-15-z7-incidents",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS incidents ("
+            " incident_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id  TEXT NOT NULL,"
+            " opened_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " resolved_at TEXT,"
+            " severity    TEXT NOT NULL DEFAULT 'minor',"
+            " affected_components_json TEXT NOT NULL DEFAULT '[]',"
+            " customer_impact_summary TEXT,"
+            " current_status_md TEXT,"
+            " postmortem_url TEXT"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_incidents_product_open "
+            "ON incidents(product_id, resolved_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_incidents_product_open;\n"
+            "DROP TABLE IF EXISTS incidents;\n"
+        ),
+        description=(
+            "Z7 T3D (B3): incidents — per-product customer-facing incident log. "
+            "resolved_at NULL = open. severity in critical|major|minor. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
+    # ── Z7 T3D: status_updates — per-incident public status update feed (B3) ─
+    # status_kind: 'investigating' | 'identified' | 'monitoring' | 'resolved'
+    # Each row is one customer-facing status update, reviewed by founder
+    # before publish via incident/publish_status verb.
+    await apply_migration(
+        version="2026-05-15-z7-status-updates",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS status_updates ("
+            " update_id   INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id  TEXT NOT NULL,"
+            " incident_id INTEGER NOT NULL,"
+            " posted_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " body_md     TEXT NOT NULL,"
+            " status_kind TEXT NOT NULL DEFAULT 'investigating'"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_status_updates_incident "
+            "ON status_updates(incident_id, posted_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_status_updates_product "
+            "ON status_updates(product_id, posted_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_status_updates_incident;\n"
+            "DROP INDEX IF EXISTS idx_status_updates_product;\n"
+            "DROP TABLE IF EXISTS status_updates;\n"
+        ),
+        description=(
+            "Z7 T3D (B3): status_updates — per-incident customer-facing status "
+            "update log. status_kind in investigating|identified|monitoring|resolved. "
+            "Each row published after founder review via incident/publish_status. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

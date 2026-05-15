@@ -693,6 +693,27 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "Handler: posthook_handlers/press_kit_freshness.py."
         ),
     ),
+    # ── Z7 T3A: launch readiness gate (A2 + A2.r1) ───────────────────────────
+    # Pre-T-0 blocker: 7 checks must pass before publish_synchronized fires.
+    # Severity: blocker — T-0 must not fire without all hard checks green.
+    # Absent subsystems degrade to non-blocking warnings (not crash).
+    # Handler: posthook_handlers/launch_readiness_gate.py
+    "launch_readiness_gate": PostHookSpec(
+        kind="launch_readiness_gate",
+        verb="launch_readiness_gate",
+        default_severity="blocker",
+        cost_band="moderate",
+        auto_wire_triggers=[],
+        description=(
+            "Z7 T3A (A2.r1): pre-T-0 readiness gate — 7 checks: "
+            "(a) site load, (b) payment E2E, (c) support FAQ indexed, "
+            "(d) A6 copy compliance, (e) A4 press kit published, "
+            "(f) B3 status page, (g) B6 crisis playbook tier1+tier2. "
+            "Absent subsystem → warning (not crash). "
+            "Any blocker → freeze T-0, surface founder_action 'override or fix?'. "
+            "Handler: posthook_handlers/launch_readiness_gate.py."
+        ),
+    ),
     # ── Z7 T3D: incident comms founder-review gate (B3) ──────────────────────
     # Fires after incident/draft_update to gate publication on founder approval.
     # Severity: blocker — status update must not be published without review.

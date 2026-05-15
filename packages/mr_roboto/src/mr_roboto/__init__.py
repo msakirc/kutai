@@ -3661,6 +3661,70 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 T3A — A2: Launch playbook verbs ─────────────────────────────────
+
+    if action in (
+        "launch_drafts/hn", "launch_drafts/ph", "launch_drafts/twitter",
+        "launch_drafts/linkedin", "launch_drafts/reddit",
+    ):
+        # LLM-bound per-channel draft verb.
+        # Enqueues a Beckman task (OVERHEAD lane) that generates the channel draft.
+        channel = action.split("/", 1)[1]
+        try:
+            from mr_roboto.launch_drafts import run as _launch_drafts_run
+            res = await _launch_drafts_run(channel, payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or f"launch_drafts/{channel} failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "publish_synchronized":
+        # Publish all approved channel drafts at T-0.
+        # Checks is_marketing_frozen(product_id) first.
+        try:
+            from mr_roboto.launch_publish_synchronized import run as _pub_sync
+            res = await _pub_sync(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "publish_synchronized failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "launch_response_monitor":
+        # Enqueue a sub-mission that polls channels for engagement + sentiment.
+        try:
+            from mr_roboto.launch_response_monitor import run as _launch_monitor
+            res = await _launch_monitor(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "launch_response_monitor failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "launch_lessons_writeback":
+        # T+7d: emit 3-5 mission_lessons rows from engagement data.
+        try:
+            from mr_roboto.launch_lessons_writeback import run as _launch_lessons
+            res = await _launch_lessons(payload)
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "launch_lessons_writeback failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "launch_readiness_gate":
+        # Pre-T-0 readiness gate: 7 hard checks.
+        # Routes to posthook handler via the run() function.
+        try:
+            from mr_roboto.launch_readiness_gate import run as _launch_gate
+            res = await _launch_gate(payload)
+            if res.get("status") == "blocked":
+                return Action(status="failed", error="launch_readiness_gate: blocked", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     # ── Z7 T3E — B6: crisis comms verbs ─────────────────────────────────────
 
     if action == "crisis/freeze_marketing":

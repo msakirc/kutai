@@ -363,6 +363,16 @@ def set_telegram(instance: "TelegramInterface") -> None:
     _TG_INSTANCE = instance
 
 
+async def enqueue_launch_mission(spec: dict, **kwargs) -> int:
+    """Z7 T3A (A2) — Thin wrapper to enqueue a launch mission via Beckman.
+
+    Separated from cmd_launch so tests can monkeypatch this function
+    without importing the full TelegramInterface.
+    """
+    from general_beckman import enqueue as beckman_enqueue
+    return await beckman_enqueue(spec, **kwargs)
+
+
 class TelegramInterface:
     def __init__(self, orchestrator=None):
         self.orchestrator = orchestrator
@@ -1983,6 +1993,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("email", self.cmd_email))
         # Z7 T3E (B6) — crisis comms tiered playbook
         self.app.add_handler(CommandHandler("crisis", self.cmd_crisis))
+        # Z7 T3A (A2) — launch playbook
+        self.app.add_handler(CommandHandler("launch", self.cmd_launch))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -5114,6 +5126,148 @@ class TelegramInterface:
                 "Unknown /crisis subcommand. Try `/crisis status`.",
                 parse_mode="Markdown",
             )
+
+    async def cmd_launch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T3A (A2) — Launch playbook.
+
+        Usage:
+          /launch <YYYY-MM-DD> <channels>   — create a launch mission
+          /launch status                    — list active launches
+          /launch help                      — show usage
+
+        Examples:
+          /launch 2026-06-15 hn,twitter,linkedin
+          /launch 2026-06-15 all
+          /launch status
+        """
+        args = context.args or []
+
+        if not args or args[0] in ("help", "--help"):
+            await self._reply(
+                update,
+                (
+                    "*Launch playbook (A2)*\n\n"
+                    "Usage: `/launch <YYYY-MM-DD> <channels>`\n"
+                    "Channels: `hn`, `ph`, `twitter`, `linkedin`, `reddit` (comma-separated) or `all`\n\n"
+                    "Examples:\n"
+                    "  `/launch 2026-06-15 hn,twitter,linkedin`\n"
+                    "  `/launch 2026-06-15 all`\n\n"
+                    "Use `/launch status` to list active launches."
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        if args[0] == "status":
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+                async with db.execute(
+                    "SELECT launch_id, product_id, scheduled_publish_at, status, channels_json "
+                    "FROM launches ORDER BY created_at DESC LIMIT 10"
+                ) as cur:
+                    rows = await cur.fetchall()
+                if not rows:
+                    await self._reply(update, "No launches found.")
+                    return
+                lines = ["*Active launches:*"]
+                for row in rows:
+                    lid, pid, pub_at, status, ch_json = row
+                    lines.append(
+                        f"• Launch #{lid} | {pid} | T-0: {pub_at} | "
+                        f"status={status} | {ch_json}"
+                    )
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+            except Exception as exc:
+                await self._reply(update, f"Error fetching launches: {exc}")
+            return
+
+        # Parse date + channels
+        if len(args) < 2:
+            await self._reply(
+                update,
+                "Usage: `/launch <YYYY-MM-DD> <channels>`\n"
+                "Example: `/launch 2026-06-15 hn,twitter`",
+                parse_mode="Markdown",
+            )
+            return
+
+        date_str = args[0]
+        channels_raw = args[1]
+
+        VALID_CHANNELS = {"hn", "ph", "twitter", "linkedin", "reddit"}
+        if channels_raw.strip().lower() == "all":
+            channels = sorted(VALID_CHANNELS)
+        else:
+            channels = [c.strip().lower() for c in channels_raw.split(",") if c.strip()]
+            unknown = [c for c in channels if c not in VALID_CHANNELS]
+            if unknown:
+                await self._reply(
+                    update,
+                    f"Unknown channels: {', '.join(unknown)}. "
+                    f"Supported: {', '.join(sorted(VALID_CHANNELS))}",
+                )
+                return
+
+        try:
+            from datetime import datetime
+            pub_dt = datetime.strptime(date_str, "%Y-%m-%d")
+            # Default to 09:00 UTC on the specified date
+            scheduled_publish_at = pub_dt.strftime("%Y-%m-%d 09:00:00")
+        except ValueError:
+            await self._reply(
+                update,
+                f"Invalid date format: `{date_str}`. Use `YYYY-MM-DD`.",
+                parse_mode="Markdown",
+            )
+            return
+
+        # Determine product_id (default to "default")
+        product_id = "default"
+        if len(args) >= 3:
+            product_id = args[2]
+
+        try:
+            import json
+            task_id = await enqueue_launch_mission(
+                spec={
+                    "title": f"Launch playbook for '{product_id}' on {date_str}",
+                    "description": (
+                        f"A2 launch playbook: schedule={scheduled_publish_at}, "
+                        f"channels={channels}, product={product_id}"
+                    ),
+                    "agent_type": "assistant",
+                    "kind": "main_work",
+                    "context": {
+                        "product_id": product_id,
+                        "scheduled_publish_at": scheduled_publish_at,
+                        "channels": channels,
+                        "workflow": "launch_playbook",
+                    },
+                },
+            )
+        except Exception as exc:
+            await self._reply(update, f"Failed to create launch mission: {exc}")
+            return
+
+        import json
+        ch_str = ", ".join(channels)
+        await self._reply(
+            update,
+            (
+                f"*Launch playbook created!*\n\n"
+                f"Product: `{product_id}`\n"
+                f"T-0: `{scheduled_publish_at}` UTC\n"
+                f"Channels: `{ch_str}`\n"
+                f"Task ID: `{task_id}`\n\n"
+                f"Phase clock:\n"
+                f"  T-72h — Asset prep (drafts)\n"
+                f"  T-24h — Founder approval\n"
+                f"  T-0   — Synchronized publish\n"
+                f"  T+7d  — Lessons writeback"
+            ),
+            parse_mode="Markdown",
+        )
 
     async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Z1 audit-log inspector — view recent rows of write-only Z1 logs.

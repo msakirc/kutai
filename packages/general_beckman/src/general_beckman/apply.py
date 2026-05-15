@@ -1617,6 +1617,20 @@ def _posthook_agent_and_payload(
                 ),
             },
         })
+    if a.kind == "launch_readiness_gate":
+        # Z7 T3A — A2.r1: pre-T-0 readiness gate for launch playbook.
+        # Fires before publish_synchronized; runs 7 hard checks.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "product_id": source_ctx.get("product_id") or "",
+                "launch_id": source_ctx.get("launch_id") or 0,
+                "channels": source_ctx.get("channels") or [],
+            },
+        })
     if a.kind == "incident_update_review":
         # Z7 T3D — B3: founder-review gate for incident status update drafts.
         # Fires after incident/draft_update; emits a founder_action with the draft.
@@ -3455,6 +3469,17 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
             feedback_prefix=f"{a.kind} gate",
+        )
+        return
+
+    # Z7 T3A — A2.r1: launch_readiness_gate posthook verdict.
+    # Blocker: all 7 checks must pass before T-0 publish fires.
+    # ready / ready_with_warnings → passes gate (warnings surfaced but not blocking).
+    # blocked → keeps pending, T-0 frozen until founder acts.
+    if a.kind == "launch_readiness_gate":
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix="launch_readiness_gate",
         )
         return
 

@@ -1,0 +1,290 @@
+{
+  "plan_id": "launch_playbook",
+  "version": "1.0",
+  "metadata": {
+    "description": "A2 — Long-running launch mission with a phase clock anchored to scheduled_publish_at. Phases: T-72h asset prep, T-24h founder approval, T-0 synchronized publish, T+0..72h response monitor, T+7d lessons writeback.",
+    "relative_to": "scheduled_publish_at",
+    "agents_required": ["assistant", "mechanical", "researcher"],
+    "trigger": "/launch <date> <channels> Telegram command",
+    "product_scoping": "product_id required; all rows scoped per-product"
+  },
+  "phases": [
+    {
+      "phase_id": "asset_prep",
+      "description": "T-72h: Draft all channel content using LLM-bound verbs, inject prior launch lessons.",
+      "offset_hours": -72,
+      "steps": [
+        {
+          "step_id": "1.inject_lessons",
+          "agent": "mechanical",
+          "title": "Inject prior launch lessons into mission context",
+          "description": "Pull mission_lessons with domain=launch_* for this product. Inject into mission context so T-72h drafts benefit from prior launch data.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "inject_lessons",
+            "domain_filter": "launch_"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "1.draft_hn",
+          "agent": "mechanical",
+          "title": "Draft Hacker News launch post",
+          "description": "Enqueue LLM draft for HN Show HN post. Consumes spec + brand voice + prior launch lessons.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "launch_drafts/hn"
+          },
+          "tools_hint": "mr_roboto verb: launch_drafts/hn. Enqueues Beckman OVERHEAD task.",
+          "produces": []
+        },
+        {
+          "step_id": "1.draft_ph",
+          "agent": "mechanical",
+          "title": "Draft Product Hunt launch post",
+          "description": "Enqueue LLM draft for Product Hunt launch page (tagline + features + maker comment).",
+          "executor": "mechanical",
+          "payload": {
+            "action": "launch_drafts/ph"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "1.draft_twitter",
+          "agent": "mechanical",
+          "title": "Draft Twitter/X launch thread",
+          "description": "Enqueue LLM draft for Twitter launch thread (founder-voice, 3-5 tweets).",
+          "executor": "mechanical",
+          "payload": {
+            "action": "launch_drafts/twitter"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "1.draft_linkedin",
+          "agent": "mechanical",
+          "title": "Draft LinkedIn launch post",
+          "description": "Enqueue LLM draft for LinkedIn professional launch post.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "launch_drafts/linkedin"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "1.draft_reddit",
+          "agent": "mechanical",
+          "title": "Draft Reddit launch post",
+          "description": "Enqueue LLM draft for Reddit subreddit post (community-native, no hard sell).",
+          "executor": "mechanical",
+          "payload": {
+            "action": "launch_drafts/reddit"
+          },
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "founder_approval",
+      "description": "T-24h: Founder reviews and approves all channel drafts. One founder_action card per channel.",
+      "offset_hours": -24,
+      "steps": [
+        {
+          "step_id": "2.founder_review_hn",
+          "agent": "mechanical",
+          "title": "Founder review — HN draft",
+          "description": "Surface HN draft as a founder_action card with inline edit-and-approve. Blocker: do NOT include in publish_synchronized without approval.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "notify_user",
+            "channel_draft_kind": "hn"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "2.founder_review_ph",
+          "agent": "mechanical",
+          "title": "Founder review — Product Hunt draft",
+          "description": "Surface PH draft as a founder_action card. Blocker: approval required before T-0.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "notify_user",
+            "channel_draft_kind": "ph"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "2.founder_review_twitter",
+          "agent": "mechanical",
+          "title": "Founder review — Twitter draft",
+          "description": "Surface Twitter thread as a founder_action card. Blocker: approval required before T-0.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "notify_user",
+            "channel_draft_kind": "twitter"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "2.founder_review_linkedin",
+          "agent": "mechanical",
+          "title": "Founder review — LinkedIn draft",
+          "description": "Surface LinkedIn post as a founder_action card. Blocker: approval required before T-0.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "notify_user",
+            "channel_draft_kind": "linkedin"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "2.founder_review_reddit",
+          "agent": "mechanical",
+          "title": "Founder review — Reddit draft",
+          "description": "Surface Reddit post as a founder_action card. Blocker: approval required before T-0.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "notify_user",
+            "channel_draft_kind": "reddit"
+          },
+          "produces": []
+        },
+        {
+          "step_id": "2.readiness_gate",
+          "agent": "mechanical",
+          "title": "Launch readiness gate (A2.r1)",
+          "description": "Run all 7 pre-T-0 readiness checks before authorizing publish_synchronized. Blocker on any failure. Absent subsystems degrade to non-blocking warning.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "launch_readiness_gate"
+          },
+          "post_hooks": ["launch_readiness_gate"],
+          "tools_hint": "mr_roboto verb: launch_readiness_gate. 7 checks: site_load, payment_e2e, support_faq, copy_compliance, press_kit, status_page, crisis_playbook.",
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "synchronized_publish",
+      "description": "T-0: Publish all approved channel drafts simultaneously. Checks B6 marketing freeze first.",
+      "offset_hours": 0,
+      "steps": [
+        {
+          "step_id": "3.publish",
+          "agent": "mechanical",
+          "title": "Synchronized publish — all channels",
+          "description": "Publish all founder-approved channel drafts simultaneously. BEFORE publishing, check is_marketing_frozen(product_id) — abort if frozen. Updates launches.status to 'live'.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "publish_synchronized"
+          },
+          "tools_hint": "mr_roboto verb: publish_synchronized. Checks B6 freeze, then publishes in parallel. Returns {status: published|aborted|partial}.",
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "early_monitor",
+      "description": "T+1h: Start response monitoring sub-mission.",
+      "offset_hours": 1,
+      "steps": [
+        {
+          "step_id": "4.start_monitor",
+          "agent": "mechanical",
+          "title": "Start launch response monitor",
+          "description": "Enqueue sub-mission that polls each channel for replies, comments, upvotes. Surfaces top engagement + negative-sentiment threads + velocity anomalies as founder_actions.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "launch_response_monitor"
+          },
+          "tools_hint": "mr_roboto verb: launch_response_monitor. Enqueues a Beckman sub-mission (researcher agent). Poll intervals: T+1h, T+4h, T+24h, T+72h.",
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "mid_check",
+      "description": "T+4h: Mid-day engagement check.",
+      "offset_hours": 4,
+      "steps": [
+        {
+          "step_id": "5.mid_check",
+          "agent": "mechanical",
+          "title": "T+4h engagement snapshot",
+          "description": "Trigger a mid-day engagement snapshot from the response monitor. Surface velocity anomalies immediately via founder_action.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "notify_user",
+            "monitor_checkpoint": "t_plus_4h"
+          },
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "day1_digest",
+      "description": "T+24h: Day-1 engagement digest.",
+      "offset_hours": 24,
+      "steps": [
+        {
+          "step_id": "6.day1_digest",
+          "agent": "mechanical",
+          "title": "Day-1 engagement digest",
+          "description": "Surface day-1 engagement summary via founder_action: top threads, total reach, conversion indicators, negative-sentiment flagged threads.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "notify_user",
+            "monitor_checkpoint": "t_plus_24h"
+          },
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "day3_digest",
+      "description": "T+72h: Day-3 engagement digest.",
+      "offset_hours": 72,
+      "steps": [
+        {
+          "step_id": "7.day3_digest",
+          "agent": "mechanical",
+          "title": "Day-3 engagement digest",
+          "description": "Surface day-3 engagement summary. Flag decelerating engagement. Update launches.status to 'monitoring'.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "notify_user",
+            "monitor_checkpoint": "t_plus_72h"
+          },
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "lessons_writeback",
+      "description": "T+7d: Write 3-5 mission_lessons rows from launch engagement data.",
+      "offset_hours": 168,
+      "steps": [
+        {
+          "step_id": "8.lessons_writeback",
+          "agent": "mechanical",
+          "title": "Launch lessons writeback (T+7d)",
+          "description": "Emit 3-5 mission_lessons rows (e.g. dedup_key launch.hn.timing.9am-est). Feeds cross-mission learning loop: next launch's T-72h drafts consume these via inject_lessons. Updates launches.status to 'concluded'.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "launch_lessons_writeback"
+          },
+          "tools_hint": "mr_roboto verb: launch_lessons_writeback. Writes mission_lessons rows for top-channel, timing, readiness patterns.",
+          "produces": []
+        }
+      ]
+    }
+  ],
+  "trigger_mapping": {
+    "telegram": {
+      "command": "/launch",
+      "args_format": "<YYYY-MM-DD> <channels_csv>",
+      "description": "Create a launch mission for the product. Date is scheduled_publish_at (T-0). Channels: hn,ph,twitter,linkedin,reddit.",
+      "prompts_for": ["product_id"]
+    }
+  }
+}

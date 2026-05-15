@@ -175,6 +175,21 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z8 T5D cost monitor cron ---------------------------------------
     "cost_pull": "full",  # vendor read-only cost API
     "cron_cost_pull": "full",
+    # ---- Z7 T3A launch playbook verbs (A2 + A2.r1) -------------------------
+    # Draft verbs: fully reversible — produce local draft text only, no publish.
+    "launch_drafts/hn": "full",
+    "launch_drafts/ph": "full",
+    "launch_drafts/twitter": "full",
+    "launch_drafts/linkedin": "full",
+    "launch_drafts/reddit": "full",
+    # publish_synchronized: irreversible — channels see the post immediately.
+    "publish_synchronized": "irreversible",
+    # launch_response_monitor: full — enqueues a monitoring sub-mission; reversible.
+    "launch_response_monitor": "full",
+    # launch_lessons_writeback: full — append-only mission_lessons rows; idempotent.
+    "launch_lessons_writeback": "full",
+    # launch_readiness_gate: full — read-only checks + founder_action (advisory).
+    "launch_readiness_gate": "full",
     # ---- Z7 T3B demo pipeline verbs (A3 + A3.r1) --------------------------
     "demo/storyboard": "full",        # writes storyboard.json to workspace; git-reversible
     "demo/record": "full",            # writes raw .webm per scene; git-reversible

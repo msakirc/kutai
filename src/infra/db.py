@@ -3222,6 +3222,35 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T3A (A2): launches — per-product launch mission state ─────────────
+    await apply_migration(
+        version="2026-05-16-z7-launches",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS launches ("
+            " launch_id            INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id           TEXT NOT NULL,"
+            " scheduled_publish_at TEXT NOT NULL,"
+            " status               TEXT NOT NULL DEFAULT 'planned',"
+            " channels_json        TEXT NOT NULL DEFAULT '[]',"
+            " mission_id           INTEGER,"
+            " created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_launches_product "
+            "ON launches(product_id, status);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_launches_product;\n"
+            "DROP TABLE IF EXISTS launches;\n"
+        ),
+        description=(
+            "Z7 T3A (A2): launches — per-product launch mission state. "
+            "Tracks scheduled_publish_at (phase clock anchor), status "
+            "(planned|live|concluded), channels as JSON list, and the "
+            "mission_id of the spawned launch_playbook mission. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

@@ -645,17 +645,19 @@ async def on_task_finished(task_id: int, result: dict) -> None:
             await post_execute_workflow_step(task, result)
     except Exception as e:
         log.warning("post_execute_workflow_step raised", task_id=task_id, error=str(e))
-    actions = route_result(task, result)
-    if actions is None:
-        return
-    if not isinstance(actions, (list, tuple)):
-        actions = [actions]
-    actions = rewrite_actions(task, task_ctx, actions)
-    await apply_actions(task, actions)
-
     # ── Continuation hooks ────────────────────────────────────────────────
     # Dispatch on_complete handler, chain next_task_spec, and resolve any
     # await_inline waiter — all three are independent (do all that apply).
+    #
+    # MUST run BEFORE the `route_result is None` early-return below.
+    # raw_dispatch child tasks (LLM calls spawned via beckman.enqueue,
+    # e.g. grade_task's reviewer child) have route_result return None —
+    # they carry no workflow routing. With the hook block placed after the
+    # early-return, the parent's inline-waiter future was never resolved,
+    # the child completed silently, and the parent blocked the full
+    # INLINE_TIMEOUT (600s) then DLQ'd. Production 2026-05-15 mission 69:
+    # grader tasks #31203/#31204/#35460 timed out while 10 reviewer
+    # children all completed cleanly.
     try:
         import json as _json
         _beckman_sub = (task_ctx or {}).get("beckman") or {}
@@ -680,6 +682,14 @@ async def on_task_finished(task_id: int, result: dict) -> None:
             resolve_inline(task_id, _tr)
     except Exception as _ce:
         log.debug("continuation hook failed", task_id=task_id, error=str(_ce))
+
+    actions = route_result(task, result)
+    if actions is None:
+        return
+    if not isinstance(actions, (list, tuple)):
+        actions = [actions]
+    actions = rewrite_actions(task, task_ctx, actions)
+    await apply_actions(task, actions)
 
     # Progress ping: terse per-step notification for workflow-step tasks so
     # the user sees a mission moving forward rather than 2+ minutes of

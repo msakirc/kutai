@@ -171,6 +171,8 @@ async def capture_screenshots(
     routes: list[str] | None = None,
     produces: list[str] | None = None,
     workspace_path: str | None = None,
+    components: list[dict] | None = None,
+    capture_mode: str = "viewport",
 ) -> dict[str, Any]:
     """Capture screenshots of a running web preview for visual diffing.
 
@@ -187,12 +189,38 @@ async def capture_screenshots(
         the expander's generic context pass-through.
     workspace_path:
         Optional override — resolved from ``get_mission_workspace`` when absent.
+    components:
+        **T5B** — Optional list of component descriptors.  Each entry is a
+        dict with ``{"name": str, "selector": str}``.  When provided, after
+        each full-page screenshot the verb also crops the matching DOM element
+        via ``page.locator(selector).screenshot()`` and saves it as
+        ``{route_slug}_{component_name}_{mode}_{breakpoint}.png`` alongside
+        the full-page frame.  When absent, behaviour is unchanged.
+    capture_mode:
+        **T5C extension hook** — Controls the screenshot backend.
+
+        - ``"viewport"`` *(default, only implemented mode)*: Playwright
+          headless Chromium, current behaviour.
+        - ``"device"`` *(Z5 placeholder)*: Z5 (mobile-native track) will add
+          ``xcrun simctl io`` (iOS Simulator) and ``adb exec-out screencap``
+          (Android) here.  Passing ``"device"`` today returns a soft-skip so
+          callers can opt-in to the hook before Z5 ships without hard-failing.
 
     Returns
     -------
     dict with keys: ``ok``, ``skipped``, ``reason`` (if skipped),
     ``captured_paths``, ``route_count``, ``frame_count``.
     """
+    # T5C — soft-skip for unimplemented capture modes.
+    if capture_mode != "viewport":
+        reason = f"device capture mode not yet implemented (Z5)"
+        logger.info("capture_screenshots soft-skip: capture_mode=%r — %s", capture_mode, reason)
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": reason,
+            "captured_paths": [],
+        }
     # --- 1. Resolve workspace -----------------------------------------------
     if workspace_path is None:
         from src.tools.workspace import get_mission_workspace  # lazy import
@@ -281,6 +309,28 @@ async def capture_screenshots(
                                         logger.debug(
                                             f"capture_screenshots: wrote {out_path}"
                                         )
+
+                                        # T5B — optional per-component crops
+                                        if components:
+                                            for comp in components:
+                                                comp_name = str(comp.get("name") or "")
+                                                selector = str(comp.get("selector") or "")
+                                                if not comp_name or not selector:
+                                                    continue
+                                                comp_frame = f"{slug}_{comp_name}_{mode}_{bp}.png"
+                                                comp_path = os.path.join(out_dir, comp_frame)
+                                                try:
+                                                    locator = page.locator(selector)
+                                                    await locator.screenshot(path=comp_path)
+                                                    captured_paths.append(comp_path)
+                                                    logger.debug(
+                                                        f"capture_screenshots: component crop {comp_path}"
+                                                    )
+                                                except Exception as comp_err:
+                                                    logger.warning(
+                                                        f"capture_screenshots: component crop error "
+                                                        f"{comp_name}/{slug}/{mode}/{bp}: {comp_err}"
+                                                    )
                                     finally:
                                         await page.close()
                                 finally:

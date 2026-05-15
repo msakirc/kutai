@@ -1393,6 +1393,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     if output_value and _is_disguised_failure(output_value):
         result["status"] = "failed"
         result["error"] = "Agent reported completion but output indicates failure"
+        result["error_category"] = "quality"  # deterministic — retry immediately
         logger.warning(
             f"[Workflow Hook] Step '{step_id}' detected as disguised failure — "
             f"overriding to failed for retry"
@@ -1408,6 +1409,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
         if cq.is_degenerate:
             result["status"] = "failed"
             result["error"] = f"Degenerate content rejected: {cq.summary}"
+            result["error_category"] = "quality"  # deterministic — retry immediately
             logger.warning(
                 f"[Workflow Hook] Step '{step_id}' output rejected: "
                 f"{cq.summary} ({len(output_value)} chars)"
@@ -1600,8 +1602,18 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 logger.debug(f"[Workflow Hook] Could not update task context: {e}")
             # Signal failure — the unified retry/DLQ path in the orchestrator
             # decides whether to retry, delay, or give up.
+            # error_category="quality": schema validation is deterministic —
+            # same input + same model reproduces the failure. beckman's
+            # decide_retry fires quality retries IMMEDIATELY (no backoff
+            # ladder) because wall-clock waiting changes nothing; only the
+            # retry-hint checklist / model swap / agent refresh help.
+            # Without the explicit tag the failure defaulted to a non-quality
+            # category and hit the availability backoff ladder (production
+            # 2026-05-15 mission 70 #44529: schema-fail retry showed
+            # eta=34s instead of firing immediately).
             result["status"] = "failed"
             result["error"] = f"Schema validation: {error_msg}"
+            result["error_category"] = "quality"
 
     # ── Force needs_clarification for human-gate steps ──
     # Steps with triggers_clarification=true bypass LLM's clarify action.
@@ -1631,6 +1643,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 f"Clarification question was degenerate ({_clar_cq.summary}), "
                 f"retrying instead of sending garbled text to human"
             )
+            result["error_category"] = "quality"  # deterministic — retry immediately
             logger.warning(
                 f"[Workflow Hook] Step '{step_id}' clarification rejected: "
                 f"{_clar_cq.summary}"

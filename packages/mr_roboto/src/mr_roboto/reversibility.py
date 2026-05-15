@@ -225,6 +225,10 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "crm/log_interaction": "full",        # append-only interaction row; deletable
     "crm/grant_consent": "full",          # DB upsert; reversible via crm/revoke_consent
     "crm/revoke_consent": "full",         # sets revoked_at; re-grantable via crm/grant_consent
+    # ---- Z7 T4 B4 meeting brief auto-generation --------------------------------
+    "meeting/brief": "full",             # writes brief_md to DB; fully reversible
+    "meeting/outcome_prompt": "irreversible",  # surfaces founder_action to Telegram; user sees it
+    "meeting_brief_dispatch": "full",    # cron tick: enqueues tasks + emits prompts; idempotent
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

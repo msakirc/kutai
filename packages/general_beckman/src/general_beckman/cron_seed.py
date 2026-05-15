@@ -272,6 +272,17 @@ INTERNAL_CADENCES: list[dict] = [
         "cron_expression": "0 9 * * *",
         "payload": {"_executor": "follow_up_reminder"},
     },
+    # Z7 T4 B4 — meeting brief dispatch (every 5 minutes).
+    # Phase 1: picks meetings in [25, 35]min window with no brief yet;
+    # enqueues MAIN_WORK beckman task for LLM brief generation.
+    # Phase 2: picks meetings 20-60min past scheduled_for with no outcome logged;
+    # fires outcome_prompt founder_action card (non-LLM).
+    {
+        "title": "meeting_brief_dispatch",
+        "description": "Every-5min: generate meeting briefs 30min pre-meeting + prompt outcome 30min post",
+        "interval_seconds": 300,
+        "payload": {"_executor": "meeting_brief_dispatch"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

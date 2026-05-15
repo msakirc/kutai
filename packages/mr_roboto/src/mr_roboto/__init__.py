@@ -3957,16 +3957,20 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "visual_review":
-        # Z4 T2B — diff captured screenshots against baselines or audit against
-        # design tokens using a vision-capable model.
+        # Z4 T2B / T3D — diff captured screenshots against baselines or audit
+        # against design tokens using a vision-capable model.
+        # T3C: when captured_paths is empty/absent, the verb self-captures via
+        # capture_screenshots (routes + produces forwarded for route inference).
         from mr_roboto.visual_review import visual_review as _visual_review
         try:
             res = await _visual_review(
                 mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
                 step_id=str(step_id if (step_id := payload.get("step_id")) else task.get("id") or ""),
-                captured_paths=list(payload.get("captured_paths") or []),
+                captured_paths=list(payload.get("captured_paths") or []) or None,
                 baseline_dir=payload.get("baseline_dir") or None,
                 workspace_path=payload.get("workspace_path") or None,
+                routes=list(payload.get("routes")) if payload.get("routes") else None,
+                produces=list(payload.get("produces")) if payload.get("produces") else None,
             )
             return Action(status="completed", result=res)
         except Exception as e:

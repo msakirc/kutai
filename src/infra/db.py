@@ -3365,6 +3365,50 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T4 B4: meetings — meeting brief auto-generation ───────────────────
+    # meeting_id PK, product_id NOT NULL per-product scoping.
+    # contact_id references relationships(contact_id) at app level (no FK constraint
+    # — consistent with repo style).
+    # brief_generated_at: set when the brief job fires; NULL means not yet generated.
+    # brief_md: the structured Markdown brief surfaced to founder.
+    # outcome_logged_interaction_id: FK to interactions; NULL until founder logs outcome.
+    await apply_migration(
+        version="2026-05-16-z7-meetings",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS meetings ("
+            " meeting_id                     INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id                     TEXT NOT NULL,"
+            " contact_id                     INTEGER,"
+            " scheduled_for                  TEXT NOT NULL,"
+            " purpose                        TEXT NOT NULL DEFAULT '',"
+            " brief_generated_at             TEXT,"   # NULL = not yet generated
+            " brief_md                       TEXT,"   # populated after brief/brief verb
+            " outcome_logged_interaction_id  INTEGER"  # FK interactions; NULL = not logged
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_meetings_product_scheduled "
+            "ON meetings(product_id, scheduled_for);\n"
+            "CREATE INDEX IF NOT EXISTS idx_meetings_brief_pending "
+            "ON meetings(scheduled_for, brief_generated_at) "
+            "WHERE brief_generated_at IS NULL;\n"
+            "CREATE INDEX IF NOT EXISTS idx_meetings_outcome_pending "
+            "ON meetings(scheduled_for, outcome_logged_interaction_id) "
+            "WHERE outcome_logged_interaction_id IS NULL;\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_meetings_product_scheduled;\n"
+            "DROP INDEX IF EXISTS idx_meetings_brief_pending;\n"
+            "DROP INDEX IF EXISTS idx_meetings_outcome_pending;\n"
+            "DROP TABLE IF EXISTS meetings;\n"
+        ),
+        description=(
+            "Z7 T4 B4: meetings — per-product meeting schedule + brief state. "
+            "brief_generated_at NULL = brief not yet dispatched. "
+            "outcome_logged_interaction_id NULL = outcome not yet logged. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15). "
+            "contact_id references relationships at app level."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

@@ -2001,6 +2001,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
         self.app.add_handler(CommandHandler("follow_ups", self.cmd_follow_ups))
         self.app.add_handler(CommandHandler("consent", self.cmd_consent))
+        # Z7 T4 B4 — meeting brief auto-generation
+        self.app.add_handler(CommandHandler("meeting", self.cmd_meeting))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -11464,5 +11466,134 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         except ValueError as ve:
             await self._reply(update, f"Validation error: {ve}")
+        except Exception as exc:
+            await self._reply(update, f"Error: {exc}")
+
+    async def cmd_meeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Z7 T4 B4 — Schedule a meeting and manage meeting briefs.
+
+        Usage:
+          /meeting @handle YYYY-MM-DD HH:MM [purpose...]
+                             — schedule a meeting with a contact
+          /meeting list      — list upcoming meetings
+          /meeting list @handle — list meetings for a specific contact
+
+        Examples:
+          /meeting @alice 2026-05-17 14:00 Product demo
+          /meeting @investor 2026-06-01 10:30 Q2 investor update
+          /meeting list
+          /meeting list @alice
+
+        A meeting brief is automatically generated 30 minutes before the
+        scheduled time and delivered here. You'll also receive a prompt to
+        log the meeting outcome 30 minutes after.
+        """
+        args = context.args or []
+        product_id = "default"
+
+        # /meeting list [@handle]
+        if args and args[0].lower() == "list":
+            try:
+                from src.app.meetings import list_meetings
+                from src.app.crm import get_contact_by_handle
+
+                contact_filter = None
+                if len(args) >= 2:
+                    handle = args[1] if args[1].startswith("@") else f"@{args[1]}"
+                    contact = await get_contact_by_handle(product_id=product_id, handle=handle)
+                    if contact is None:
+                        await self._reply(update, f"Contact {handle} not found.")
+                        return
+                    contact_filter = contact["contact_id"]
+
+                meetings = await list_meetings(product_id, contact_id=contact_filter)
+                if not meetings:
+                    await self._reply(update, "No meetings scheduled.")
+                    return
+
+                lines = ["*Scheduled Meetings*\n"]
+                for m in meetings[:20]:
+                    cid = m.get("contact_id")
+                    purpose = m.get("purpose") or "(no purpose)"
+                    scheduled = m.get("scheduled_for") or "?"
+                    brief_icon = "📋" if m.get("brief_md") else "⏳"
+                    outcome_icon = "✅" if m.get("outcome_logged_interaction_id") else "🔲"
+                    lines.append(
+                        f"{brief_icon}{outcome_icon} `{scheduled}` — {purpose} "
+                        f"(contact#{cid})"
+                    )
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+            except Exception as exc:
+                await self._reply(update, f"Error listing meetings: {exc}")
+            return
+
+        # /meeting @handle YYYY-MM-DD HH:MM [purpose...]
+        if len(args) < 3:
+            await self._reply(
+                update,
+                (
+                    "*Meeting Brief — Auto-generation*\n\n"
+                    "Schedule a meeting:\n"
+                    "  `/meeting @handle YYYY-MM-DD HH:MM [purpose]`\n\n"
+                    "List meetings:\n"
+                    "  `/meeting list`\n"
+                    "  `/meeting list @handle`\n\n"
+                    "*Example:*\n"
+                    "  `/meeting @alice 2026-05-17 14:00 Product demo`\n\n"
+                    "A brief is auto-generated 30min before; an outcome prompt "
+                    "is sent 30min after."
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        handle = args[0] if args[0].startswith("@") else f"@{args[0]}"
+        date_str = args[1]
+        time_str = args[2]
+        purpose = " ".join(args[3:]) if len(args) > 3 else ""
+        scheduled_for = f"{date_str} {time_str}"
+
+        try:
+            from src.app.crm import get_contact_by_handle
+            from src.app.meetings import create_meeting
+
+            contact = await get_contact_by_handle(product_id=product_id, handle=handle)
+            if contact is None:
+                await self._reply(
+                    update,
+                    f"Contact {handle} not found. Add them first with:\n"
+                    f"`/contact add {handle}`",
+                    parse_mode="Markdown",
+                )
+                return
+
+            contact_id = contact["contact_id"]
+            meeting_id = await create_meeting(
+                product_id=product_id,
+                contact_id=contact_id,
+                scheduled_for=scheduled_for,
+                purpose=purpose or "(no purpose stated)",
+            )
+
+            display = contact.get("display_name") or handle
+            await self._reply(
+                update,
+                (
+                    f"Meeting scheduled\n\n"
+                    f"*Contact:* {display} ({handle})\n"
+                    f"*Time:* {scheduled_for}\n"
+                    f"*Purpose:* {purpose or '(none)'}\n"
+                    f"*ID:* #{meeting_id}\n\n"
+                    f"A brief will be generated 30min before. "
+                    f"You'll be prompted to log the outcome 30min after."
+                ),
+                parse_mode="Markdown",
+            )
+        except ValueError as ve:
+            await self._reply(
+                update,
+                f"Invalid date/time: {ve}\n\nExpected format: `YYYY-MM-DD HH:MM`",
+                parse_mode="Markdown",
+            )
         except Exception as exc:
             await self._reply(update, f"Error: {exc}")

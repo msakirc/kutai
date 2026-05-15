@@ -2989,4 +2989,39 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "analytics_digest":
+        # Z9 T2B — weekly analytics data-pull. Mechanical (no LLM): pulls
+        # PostHog analytics + DB aggregates, then enqueues the
+        # growth_digest_synthesizer agent via Beckman for LLM synthesis.
+        from mr_roboto.executors.analytics_digest import run as _analytics_run
+        try:
+            res = await _analytics_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"analytics_digest: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "arm_analytics_digest":
+        # Z9 T2B — Phase 14 launch step: arm the weekly analytics_digest
+        # cron for the mission (idempotent — durable cursor entry + live arm).
+        from mr_roboto.executors.arm_analytics_digest import (
+            run as _arm_digest_run,
+        )
+        try:
+            res = await _arm_digest_run(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"arm_analytics_digest: {res.get('reason') or 'failed'}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

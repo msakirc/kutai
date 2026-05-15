@@ -78,6 +78,8 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "http_check": "full",  # GET/HEAD/etc., we treat as side-effect-free
     "parse_og_tags": "full",  # one HTTP fetch, no write
     "monitoring_check": "full",
+    "analytics_digest": "full",  # Z9 T2B — read-only pull + append-only growth_events row
+    "arm_analytics_digest": "full",  # Z9 T2B — cron arm; disarm is a single cursor edit
     "social_preview_check": "full",
     "staging_smoke_check": "full",
     # ---- Datastore append/refresh (reversible by re-run) -----------

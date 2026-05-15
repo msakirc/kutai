@@ -278,7 +278,7 @@ async def _load_success_metrics(mission_id: int | None) -> dict[str, Any]:
     try:
         import json
 
-        from src.workflows.engine.artifacts import get_artifact_store
+        from src.workflows.engine.hooks import get_artifact_store
 
         store = get_artifact_store()
         raw = await store.retrieve(int(mission_id), "success_metrics")

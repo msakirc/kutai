@@ -934,7 +934,7 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
     if posthook_kind in (
         "security_review", "accessibility_review", "contract_review",
         "performance_review", "adr_drift_check", "integration_replay",
-        "integration_review", "adr_drift_judge",
+        "integration_review", "adr_drift_judge", "visual_review",
     ):
         source_ctx["_pending_posthooks"] = [
             k for k in (source_ctx.get("_pending_posthooks") or [])
@@ -1532,6 +1532,42 @@ def _posthook_agent_and_payload(
                 "preview_url": preview_url,
                 "script_path": source_ctx.get("perf_script_path") or "",
                 "thresholds": source_ctx.get("perf_thresholds") or {},
+            },
+        })
+    if a.kind == "visual_review":
+        # Z4 T3B — vision-model diff against tunneled preview URL.
+        # URL resolved from .preview/last_preview_url.txt (same pattern as
+        # accessibility_review) with source_ctx fallback.
+        # "pending:" marker (hosting deferred) suppresses URL — verb soft-skips.
+        import os as _os
+        workspace_path = source_ctx.get("workspace_path") or ""
+        preview_url = source_ctx.get("preview_url") or ""
+        if workspace_path and not preview_url:
+            _last_url_path = _os.path.join(workspace_path, ".preview", "last_preview_url.txt")
+            try:
+                with open(_last_url_path, "r", encoding="utf-8") as _f:
+                    _read = _f.read().strip()
+                # Filter pending markers — only real URLs propagate downstream.
+                if _read.startswith("http://") or _read.startswith("https://"):
+                    preview_url = _read
+            except (OSError, FileNotFoundError):
+                pass
+        produces = list(source_ctx.get("produces") or [])
+        step_id = str(source.get("step_id") or source.get("id") or "")
+        mission_id = source.get("mission_id") or 0
+        routes = list(source_ctx.get("routes") or []) or None
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "visual_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "visual_review",
+                "workspace_path": workspace_path,
+                "step_id": step_id,
+                "mission_id": mission_id,
+                "produces": produces,
+                "routes": routes,
+                "baseline_dir": None,
             },
         })
     if a.kind == "integration_replay":
@@ -3347,13 +3383,13 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         )
         return
 
-    # Z3 T3 + T4B + T5 — security/accessibility/contract/performance/adr_drift_check/
-    # integration_replay share the simple blocker-or-pass pattern (mechanical
-    # verb produces {findings, verdict}).
+    # Z3 T3 + T4B + T5 + Z4 T3B — security/accessibility/contract/performance/
+    # adr_drift_check/integration_replay/visual_review share the simple
+    # blocker-or-pass pattern (mechanical verb produces {findings, verdict}).
     if a.kind in (
         "security_review", "accessibility_review", "contract_review",
         "performance_review", "adr_drift_check", "integration_replay",
-        "adr_drift_judge",
+        "adr_drift_judge", "visual_review",
     ):
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,

@@ -1140,42 +1140,34 @@ async def build_user_context(
             except Exception as exc:
                 logger.debug("Workflow exemplar injection failed: %s", exc)
 
-        # Free-text path: vector skill match for non-workflow tasks. Seeds
-        # and any future capability primitives live here. Workflow tasks skip
+        # Free-text path: yalayut Phase 2 — render the task["skills"]
+        # envelope intersect attached. The old src.memory.skills
+        # free-text vector match is retired here; intersect now owns
+        # matching, coulson owns rendering. Workflow tasks still skip
         # this path — exemplar lookup above is authoritative for them.
         if not _step_id:
             try:
-                from src.memory.skills import (
-                    find_relevant_skills, format_skills_for_prompt,
-                    get_tools_to_inject, record_injection,
+                from coulson.skill_render import (
+                    render_skill_envelope, tool_names_from_envelope,
                 )
-                task_text = f"{task.get('title', '')} {task.get('description', '')}"
-                budget = budgets.get("skills", 800)
-                relevant_skills = await find_relevant_skills(task_text, limit=3)
-                if relevant_skills:
-                    skills_block = format_skills_for_prompt(relevant_skills, budget)
+                envelope = task.get("skills") or []
+                if envelope:
+                    skills_block = render_skill_envelope(envelope)
                     if skills_block:
                         parts.append(skills_block)
-
-                    extra_tools = get_tools_to_inject(relevant_skills)
-                    if extra_tools:
-                        for tool in extra_tools:
-                            if tool not in _injected_skills_tools:
-                                _injected_skills_tools.append(tool)
-                                logger.info("Skill-injected tool (deferred to caller): %s", tool)
-
-                    skill_names = [s["name"] for s in relevant_skills]
-                    await record_injection(skill_names)
-                    try:
-                        _ctx = json.loads(task.get("context", "{}"))
-                        _ctx["injected_skills"] = skill_names
-                        task["context"] = json.dumps(_ctx)
-                    except Exception:
-                        pass
-
-                    logger.info("Skills injected: %s", skill_names)
+                    for tool in tool_names_from_envelope(envelope):
+                        if tool not in _injected_skills_tools:
+                            _injected_skills_tools.append(tool)
+                            logger.info(
+                                "Skill-injected tool from envelope "
+                                "(deferred to caller): %s", tool,
+                            )
+                    logger.info(
+                        "Skills rendered from envelope: %s",
+                        [a.get("name") for a in envelope],
+                    )
             except Exception as exc:
-                logger.debug("Skill injection failed: %s", exc)
+                logger.debug("Envelope skill render failed: %s", exc)
 
     if "api" in policy:
         try:

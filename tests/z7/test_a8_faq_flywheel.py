@@ -159,7 +159,9 @@ async def test_faq_regen_clusters_within_language_only(init_db):
 
 @pytest.mark.asyncio
 async def test_faq_regen_cluster_gt3_drafts_entry():
-    """A cluster with > 3 tickets should produce a draft FAQ entry."""
+    """A cluster with > 3 tickets should produce a draft FAQ entry via beckman enqueue."""
+    import general_beckman
+    from general_beckman import TaskResult
     from src.app.jobs.faq_regen import _draft_faq_entry
 
     cluster = [
@@ -169,14 +171,21 @@ async def test_faq_regen_cluster_gt3_drafts_entry():
         {"question": "Can I change my password?", "answer": "Yes, in settings."},
     ]
 
-    # Mock the LLM clustering call
-    mock_result = {
-        "question": "How do I reset or change my password?",
-        "answer": "Go to Settings > Security > Reset Password. An email link will be sent.",
-    }
-    with patch("src.app.jobs.faq_regen._llm_cluster_draft", new_callable=AsyncMock) as m:
+    # Mock beckman.enqueue at the LLM boundary — the real API is called,
+    # only the actual LLM execution is faked.
+    mock_result = TaskResult(
+        status="done",
+        result={"content": '{"question": "How do I reset or change my password?", "answer": "Go to Settings > Security > Reset Password."}'},
+        error=None,
+    )
+    with patch.object(general_beckman, "enqueue", new_callable=AsyncMock) as m:
         m.return_value = mock_result
         result = await _draft_faq_entry(cluster, lang="en")
+
+    # enqueue must have been called with await_inline=True
+    m.assert_called_once()
+    call_kwargs = m.call_args[1]
+    assert call_kwargs.get("await_inline") is True, "enqueue must be called with await_inline=True"
 
     assert result is not None
     assert "question" in result
@@ -185,7 +194,8 @@ async def test_faq_regen_cluster_gt3_drafts_entry():
 
 @pytest.mark.asyncio
 async def test_faq_regen_small_cluster_skipped():
-    """A cluster with <= 3 tickets should NOT draft an FAQ entry."""
+    """A cluster with <= 3 tickets should NOT call beckman enqueue."""
+    import general_beckman
     from src.app.jobs.faq_regen import _draft_faq_entry
 
     cluster = [
@@ -193,7 +203,7 @@ async def test_faq_regen_small_cluster_skipped():
         {"question": "I forgot my password, help!", "answer": "Go to settings."},
     ]
 
-    with patch("src.app.jobs.faq_regen._llm_cluster_draft", new_callable=AsyncMock) as m:
+    with patch.object(general_beckman, "enqueue", new_callable=AsyncMock) as m:
         result = await _draft_faq_entry(cluster, lang="en")
 
     m.assert_not_called()
@@ -252,19 +262,25 @@ async def test_faq_regen_approve_appends_turkish_faq(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_faq_regen_approve_reindexes_chroma_collection(tmp_path, monkeypatch):
-    """On approve, re-index the per-language Chroma collection via lang_collection_name."""
+    """On approve, re-index the per-language Chroma collection via the real embed_and_store path.
+
+    _reindex_collection is NOT mocked — the real function is exercised.
+    Only embed_and_store (the ChromaDB/GPU boundary) is faked.
+    """
     from src.util.lang import lang_collection_name
+    import src.memory.vector_store as vs_mod
 
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     monkeypatch.setattr("src.app.jobs.faq_regen.FAQ_ARTIFACTS_DIR", str(artifacts_dir))
 
-    reindexed_collections: list[str] = []
+    stored_calls: list[dict] = []
 
-    async def mock_reindex(collection_name: str, text: str) -> None:
-        reindexed_collections.append(collection_name)
+    async def mock_embed_and_store(text, metadata, collection="semantic", doc_id=None):
+        stored_calls.append({"text": text, "metadata": metadata, "collection": collection})
+        return "fake-doc-id"
 
-    monkeypatch.setattr("src.app.jobs.faq_regen._reindex_collection", mock_reindex)
+    monkeypatch.setattr(vs_mod, "embed_and_store", mock_embed_and_store)
 
     from src.app.jobs.faq_regen import _apply_faq_approval
     entry = {
@@ -274,8 +290,44 @@ async def test_faq_regen_approve_reindexes_chroma_collection(tmp_path, monkeypat
     }
     await _apply_faq_approval(entry)
 
+    # embed_and_store must have been called with the per-language collection
     expected_collection = lang_collection_name("support_docs", "en")
-    assert expected_collection in reindexed_collections
+    assert len(stored_calls) == 1, "embed_and_store must be called exactly once"
+    assert stored_calls[0]["collection"] == expected_collection, (
+        f"embed_and_store called with collection {stored_calls[0]['collection']!r}, "
+        f"expected {expected_collection!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_faq_emit_founder_action_uses_real_create(init_db):
+    """_emit_faq_founder_action must call founder_actions.create with valid params (no context_json).
+
+    Previously this call passed context_json= which raises TypeError at runtime.
+    This test exercises the REAL create() path against SQLite to catch any re-regression.
+    """
+    import src.founder_actions as fa_mod
+    from src.app.jobs.faq_regen import _emit_faq_founder_action
+
+    entry = {
+        "question": "How do I reset my password?",
+        "answer": "Go to Settings > Reset.",
+        "lang": "en",
+    }
+
+    # Suppress telegram notification only
+    with patch.object(fa_mod, "_notify_telegram", new_callable=AsyncMock):
+        result = await _emit_faq_founder_action(
+            mission_id=0,
+            entry=entry,
+            cluster_size=5,
+        )
+
+    assert result is not None, "_emit_faq_founder_action must return a FounderAction"
+    assert hasattr(result, "id"), "result must be a persisted FounderAction with id"
+    # Payload must be accessible from expected_output_schema
+    assert result.expected_output_schema is not None
+    assert "_faq_approval_pending" in result.expected_output_schema
 
 
 # ── quote_harvest tests ───────────────────────────────────────────────────────
@@ -309,17 +361,18 @@ async def test_quote_harvest_scans_positive_tickets(init_db):
 
 
 @pytest.mark.asyncio
-async def test_quote_harvest_emits_founder_action_for_consent():
-    """quote_harvest emits a founder_action(kind='generic') for each quote candidate."""
+async def test_quote_harvest_emits_founder_action_for_consent(init_db):
+    """quote_harvest emits a founder_action(kind='generic') via the REAL founder_actions.create.
+
+    _create_founder_action is NOT mocked — the real create() is called against real SQLite,
+    exercising the actual parameter contract. Only the Telegram notifier (network boundary)
+    is suppressed.
+    """
+    import src.founder_actions as fa_mod
     from src.app.jobs.quote_harvest import _emit_consent_request
 
-    created_actions: list[dict] = []
-
-    async def mock_create(**kwargs):
-        created_actions.append(kwargs)
-        return MagicMock(id=42)
-
-    with patch("src.app.jobs.quote_harvest._create_founder_action", mock_create):
+    # Suppress telegram notification (network boundary only)
+    with patch.object(fa_mod, "_notify_telegram", new_callable=AsyncMock):
         result = await _emit_consent_request(
             ticket={
                 "id": 1,
@@ -328,12 +381,18 @@ async def test_quote_harvest_emits_founder_action_for_consent():
                 "answer": "Thank you!",
             },
             product_id="prod-1",
-            mission_id=10,
+            mission_id=0,
         )
 
-    assert len(created_actions) == 1
-    action = created_actions[0]
-    assert action.get("kind") in ("generic", "consent_request", "quote_consent")
+    # The call must succeed and return a persisted FounderAction
+    assert result is not None, "founder_actions.create must return a FounderAction"
+    assert hasattr(result, "id"), "result must have an id (persisted row)"
+    assert result.kind in ("generic", "consent_request", "quote_consent")
+    # Payload must be recoverable from expected_output_schema (not lost via context_json)
+    assert result.expected_output_schema is not None, (
+        "payload must be stored in expected_output_schema"
+    )
+    assert "_quote_consent_pending" in result.expected_output_schema
 
 
 @pytest.mark.asyncio
@@ -427,6 +486,34 @@ async def test_gap_detect_no_row_when_match_found(init_db):
         cur = await db.execute("SELECT * FROM docs_gap_log WHERE product_id='prod-2'")
         rows = await cur.fetchall()
     assert len(rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_gap_detect_retrieve_docs_passes_collection_to_vector_store():
+    """retrieve_docs must pass collection_name to vector_store.query, not support_rag.
+
+    Previously, retrieve_docs delegated to support_rag.retrieve_docs which has NO
+    collection_name parameter — the multilingual collection was silently ignored.
+    This test verifies the fix: vector_store.query is called with the correct collection.
+    """
+    import src.memory.vector_store as vs_mod
+    from packages.general_beckman.src.general_beckman.posthook_handlers.documentation_gap_detect import (
+        retrieve_docs,
+    )
+
+    queried_collections: list[str] = []
+
+    async def mock_vs_query(text, collection="semantic", top_k=5, where=None):
+        queried_collections.append(collection)
+        return []
+
+    with patch.object(vs_mod, "query", mock_vs_query):
+        await retrieve_docs("Şifre nasıl sıfırlanır?", collection_name="support_docs_tr", top_k=1)
+
+    assert queried_collections == ["support_docs_tr"], (
+        f"Expected vector_store.query to be called with 'support_docs_tr', "
+        f"got {queried_collections}"
+    )
 
 
 # ── Registry + cron tests ─────────────────────────────────────────────────────

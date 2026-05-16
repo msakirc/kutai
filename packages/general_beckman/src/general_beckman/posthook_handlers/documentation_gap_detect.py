@@ -40,15 +40,32 @@ async def retrieve_docs(
     collection_name: str = "support_docs",
     top_k: int = 1,
 ) -> list[dict]:
-    """Semantic search against the support_docs Chroma collection.
+    """Semantic search against a per-language support_docs Chroma collection.
 
-    Delegates to ``src.ops.support_rag.retrieve_docs`` — returns list of
-    ``{"id": str, "score": float, "document": str}`` dicts.
+    Uses ``src.memory.vector_store.query`` directly so that the
+    ``collection_name`` parameter (e.g. ``support_docs_tr``) is honoured —
+    ``src.ops.support_rag.retrieve_docs`` always searches ``support_docs``
+    and has no collection parameter.
+
+    Returns list of ``{"id": str, "score": float, "document": str}`` dicts.
     Falls back to empty list on import / runtime failure.
     """
     try:
-        from src.ops.support_rag import retrieve_docs as _retrieve
-        return await _retrieve(question, top_k=top_k)
+        from src.memory.vector_store import query as vs_query
+        hits = await vs_query(question, collection=collection_name, top_k=top_k)
+        # vs_query returns {id, text, metadata, distance}; normalise to
+        # the {id, score, document} shape expected by callers.
+        results = []
+        for h in hits:
+            distance = h.get("distance", 1.0)
+            # Convert L2 distance to a 0–1 similarity score (clamped).
+            score = max(0.0, 1.0 - float(distance))
+            results.append({
+                "id": h.get("id", ""),
+                "score": score,
+                "document": h.get("text", ""),
+            })
+        return results
     except Exception as exc:
         logger.debug(
             "documentation_gap_detect: retrieve_docs failed (treating as no-match)",

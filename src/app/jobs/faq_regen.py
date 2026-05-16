@@ -124,19 +124,52 @@ async def _llm_cluster_draft(cluster: list[dict], lang: str) -> dict | None:
         f"The FAQ should be in the same language as the interactions."
     )
     try:
-        from packages.general_beckman.src.general_beckman.beckman import get_beckman
-        beckman = get_beckman()
-        result = await beckman.enqueue(
-            goal=prompt,
-            agent_type="responder",
-            lane="OVERHEAD",
-            context={"source": "faq_regen", "lang": lang},
-        )
-        if isinstance(result, dict) and "question" in result:
-            return result
-        # Try to extract JSON from text response
+        import time
+        import uuid
         import json
-        text = str(result) if result else ""
+        import general_beckman
+        from general_beckman.lanes import LANE_ONESHOT
+
+        messages = [{"role": "user", "content": prompt}]
+        _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
+        task_result = await general_beckman.enqueue(
+            {
+                "title": f"faq_regen:cluster:{lang}:{_suffix}",
+                "description": "Draft synthetic FAQ entry from clustered support tickets.",
+                "agent_type": "responder",
+                "kind": "overhead",
+                "priority": 2,
+                "context": {
+                    "source": "faq_regen",
+                    "lang": lang,
+                    "llm_call": {
+                        "raw_dispatch": True,
+                        "call_category": "overhead",
+                        "task": "responder",
+                        "agent_type": "responder",
+                        "difficulty": 3,
+                        "messages": messages,
+                        "failures": [],
+                        "estimated_input_tokens": 500,
+                        "estimated_output_tokens": 150,
+                    },
+                },
+            },
+            lane=LANE_ONESHOT,
+            await_inline=True,
+        )
+        # Extract text from TaskResult
+        raw = None
+        if task_result is not None:
+            result_dict = task_result.result if hasattr(task_result, "result") else None
+            if isinstance(result_dict, dict):
+                raw = result_dict.get("content") or result_dict.get("text") or result_dict.get("response")
+            if raw is None:
+                raw = str(task_result)
+        if raw and isinstance(raw, dict) and "question" in raw:
+            return raw
+        # Try to extract JSON from text response
+        text = str(raw) if raw else ""
         start = text.find("{")
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
@@ -175,9 +208,9 @@ async def _reindex_collection(collection_name: str, text: str) -> None:
     try:
         from src.memory.vector_store import embed_and_store
         await embed_and_store(
-            collection_name=collection_name,
-            documents=[text],
-            metadatas=[{"source": "faq_regen"}],
+            text,
+            {"source": "faq_regen"},
+            collection=collection_name,
         )
         logger.info("faq_regen: re-indexed collection", collection=collection_name)
     except Exception as exc:
@@ -249,12 +282,11 @@ async def _emit_faq_founder_action(
             "Approve to append to faq.md (or faq_{lang}.md) and re-index support_docs_{lang}.",
             "Reject to discard the draft.",
         ]
-        payload_json = {
+        payload = {
             "faq_entry": entry,
             "cluster_size": cluster_size,
             "_faq_approval_pending": True,
         }
-        import json
         return await create_founder_action(
             mission_id=mission_id,
             kind="generic",
@@ -262,8 +294,8 @@ async def _emit_faq_founder_action(
             why=why,
             instructions=instructions,
             expected_output_kind="ack_only",
+            expected_output_schema=payload,
             notify_telegram=True,
-            context_json=json.dumps(payload_json),
         )
     except Exception as exc:
         logger.warning("faq_regen: _emit_faq_founder_action failed", error=str(exc))

@@ -79,8 +79,6 @@ async def _emit_consent_request(
     The action payload includes the ticket id so the on-approve handler can
     insert the quote into ``press_kit_quotes``.
     """
-    import json
-
     ticket_id = ticket.get("id")
     user_id = ticket.get("user_id", "unknown")
     question = ticket.get("question", "")
@@ -112,8 +110,8 @@ async def _emit_consent_request(
         why=why,
         instructions=instructions,
         expected_output_kind="ack_only",
+        expected_output_schema=payload,
         notify_telegram=True,
-        context_json=json.dumps(payload),
     )
 
 

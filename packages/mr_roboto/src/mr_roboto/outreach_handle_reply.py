@@ -8,7 +8,8 @@ this verb:
      out_of_office | bounce | question.
   3. If unsubscribe_request → INSERT OR IGNORE into email_suppression.
   4. Logs the interaction to the CRM via crm.log_interaction (interactions table).
-  5. If positive_interest → surface a beckman enqueue for a follow-up draft.
+  5. If positive_interest → enqueue a follow-up draft via outreach/draft
+     (run_outreach_draft) with template_id='follow_up'.
   6. Updates outreach_sends.replied_at.
   7. Returns a classification dict.
 
@@ -197,9 +198,55 @@ async def run_outreach_handle_reply(
         "suppressed": suppressed,
     }
 
-    # For positive_interest: note that a follow-up draft should be queued
-    # (actual LLM enqueue deferred to caller / workflow step)
+    # For positive_interest: enqueue a follow-up draft via the existing
+    # outreach/draft verb so a personalized reply is actually produced —
+    # previously this only set follow_up_needed=True and dropped the task.
     if classification == "positive_interest":
         result["follow_up_needed"] = True
+
+        # Recover the list_id for this send so the follow-up draft is
+        # scoped to the same campaign list.
+        list_id = ""
+        try:
+            lc = await db.execute(
+                "SELECT list_id FROM outreach_sends WHERE send_id=?",
+                (send_id,),
+            )
+            lc_row = await lc.fetchone()
+            list_id = (lc_row[0] if lc_row and lc_row[0] else "") or ""
+        except Exception:
+            list_id = ""
+
+        try:
+            from mr_roboto.outreach_draft import run_outreach_draft
+
+            draft_res = await run_outreach_draft(
+                product_id=product_id,
+                mission_id=mission_id or 0,
+                prospect_data={
+                    "name": reply_from,
+                    "email": reply_from,
+                    "reply_body": reply_body[:1000],
+                    "is_follow_up": True,
+                    "original_send_id": send_id,
+                },
+                template_id="follow_up",
+                list_id=list_id,
+            )
+            result["follow_up_task"] = draft_res
+            logger.info(
+                "outreach_handle_reply: follow-up draft enqueued",
+                product_id=product_id,
+                send_id=send_id,
+                follow_up_status=draft_res.get("status"),
+            )
+        except Exception as exc:
+            logger.error(
+                "outreach_handle_reply: follow-up draft enqueue failed",
+                product_id=product_id,
+                send_id=send_id,
+                error=str(exc),
+            )
+            result["follow_up_task"] = {"status": "error", "error": str(exc)}
 
     return result

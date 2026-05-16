@@ -205,6 +205,24 @@ async def _ingest_mention(
             score=score,
             url=url,
         )
+        # Mark the mention as acted-on now that a founder_action has been
+        # surfaced for it — this is the one place a mention is acted upon,
+        # so it owns the acted_on write.
+        try:
+            await db.execute(
+                "UPDATE mentions SET acted_on = 1 "
+                "WHERE product_id = ? AND source = ? AND source_id = ?",
+                (product_id, source, source_id),
+            )
+            await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "mention_polls: failed to set acted_on",
+                product_id=product_id,
+                source=source,
+                source_id=source_id,
+                error=str(exc),
+            )
 
     return {"ingested": True, "score": score, "tier": tier}
 

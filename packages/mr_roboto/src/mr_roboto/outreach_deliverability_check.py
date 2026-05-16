@@ -142,6 +142,26 @@ async def run_deliverability_check(
             complaint_rate=complaint_rate,
             issue=issue,
         )
+        # Set the REAL pause flag so outreach/send actually stops — the
+        # founder_action alone is cosmetic.
+        try:
+            await db.execute(
+                "INSERT INTO outreach_pauses (product_id, list_id, reason) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(product_id, list_id) DO UPDATE SET "
+                "  reason=excluded.reason, "
+                "  paused_at=strftime('%Y-%m-%d %H:%M:%S','now'), "
+                "  cleared_at=NULL",
+                (product_id, list_id, issue),
+            )
+            await db.commit()
+        except Exception as exc:
+            logger.error(
+                "outreach_deliverability_check: failed to write pause flag",
+                product_id=product_id,
+                list_id=list_id,
+                error=str(exc),
+            )
         await _emit_founder_action(
             product_id=product_id,
             mission_id=mission_id,

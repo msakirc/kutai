@@ -5,6 +5,7 @@ calling T2A send_email:
 
   1. Feature flag (OUTREACH_ENABLED env) — disabled → return status='disabled'.
   2. Global suppression (email_suppression table) — known-bad email → suppressed.
+  2b. Campaign pause (outreach_pauses table) — un-cleared row → campaign_paused.
   3. Warmup quota (outreach_warmup table) — sent_count >= target_count → quota exceeded.
   4. Jurisdiction check — GDPR target without explicit opt-in → gdpr_blocked.
 
@@ -35,6 +36,10 @@ from typing import Any
 from src.infra.logging_config import get_logger
 
 logger = get_logger("mr_roboto.outreach_send")
+
+# Day-1 warmup quota (50/day) — the most restrictive ramp bucket. A domain
+# with no warmup row is treated as day-1 to prevent zero-throttle sends.
+_DAY1_QUOTA = 50
 
 # GDPR-jurisdiction TLDs and country codes (non-exhaustive; expand as needed)
 _GDPR_TLDS = frozenset({
@@ -100,7 +105,8 @@ async def run_outreach_send(
     """Cold outreach send with full gate chain.
 
     Returns a dict with at minimum {"status": <str>}.
-    status values: disabled | suppressed | warmup_quota_exceeded | gdpr_blocked | sent | error
+    status values: disabled | suppressed | campaign_paused |
+                   warmup_quota_exceeded | gdpr_blocked | sent | error
     """
     # ── Gate 1: Feature flag ────────────────────────────────────────────────
     if not _outreach_enabled():
@@ -132,13 +138,31 @@ async def run_outreach_send(
             "email": target_email,
         }
 
+    # ── Gate 2b: Campaign pause flag ────────────────────────────────────────
+    # outreach_deliverability_check sets an outreach_pauses row when bounce /
+    # complaint thresholds are exceeded. Refuse to send while it is un-cleared.
+    cur = await db.execute(
+        "SELECT reason, paused_at FROM outreach_pauses "
+        "WHERE product_id=? AND list_id=? AND cleared_at IS NULL",
+        (product_id, list_id),
+    )
+    pause_row = await cur.fetchone()
+    if pause_row is not None:
+        logger.warning(
+            "outreach_send: campaign paused",
+            product_id=product_id,
+            list_id=list_id,
+            reason=pause_row[0],
+        )
+        return {
+            "status": "campaign_paused",
+            "reason": pause_row[0] or "campaign paused by deliverability check",
+            "paused_at": pause_row[1],
+        }
+
     # ── Gate 3: Warmup quota ────────────────────────────────────────────────
     # Determine the sending domain from the email
     send_domain = target_email.rsplit("@", 1)[-1] if "@" in target_email else ""
-    # Day-1 quota (50/day) is the most restrictive ramp bucket.
-    # A domain with NO warmup row is treated as day-1 to prevent zero-throttle
-    # sends on fresh domains.
-    _DAY1_QUOTA = 50
     if send_domain:
         # Find the highest-day warmup row for this product+domain
         cur = await db.execute(

@@ -11,6 +11,21 @@ that ingests:
 
 and produces a channel-appropriate draft for founder review.
 
+Cross-mission lessons loop (Z7 T6E)
+-------------------------------------
+When ``mission_lessons`` is not provided in the payload, the verb
+auto-fetches prior launch lessons from ``mission_lessons`` table via
+``fetch_launch_lessons(product_id)``. This closes the loop:
+
+  launch_lessons_writeback (T+7d, launch N)
+    → mission_lessons rows (stack=``launch/<product_id>``, domain=``launch_*``)
+    → launch_drafts/<channel> (T-72h, launch N+1)
+    → LLM prompt includes "Prior launch lessons" block
+
+The fetch uses the same Z2-T4 ``top_mission_lessons`` helper (filtered
+to the product's launch stack) so lessons are ranked by recency ×
+occurrences — the same ranking used by ``inject_lessons``.
+
 Supported channels
 ------------------
 - ``hn``       — Hacker News (Show HN: … style, technical, community first)
@@ -23,7 +38,8 @@ Usage (mr_roboto dispatch)
 --------------------------
 ``payload["action"] = "launch_drafts/hn"``
 ``payload = {"product_id": "prod-abc", "launch_id": 1, "spec": "...",
-             "brand_voice": "...", "mission_lessons": [...]}``
+             "brand_voice": "..."}``
+             # mission_lessons is optional; auto-fetched if absent
 
 Returns ``{"status": "enqueued", "task_id": int}`` on success.
 """
@@ -69,6 +85,39 @@ async def _enqueue(spec: dict, **kwargs):
     return await beckman_enqueue(spec, **kwargs)
 
 
+async def fetch_launch_lessons(product_id: str, *, limit: int = 5) -> list[dict]:
+    """Fetch prior launch lessons for ``product_id`` from the mission_lessons store.
+
+    Uses the Z2-T4 ``top_mission_lessons`` helper (recency × occurrences ranking)
+    filtered to the product's launch stack (``launch/<product_id>``).
+
+    Returns an empty list when no rows exist or if the helper is unavailable —
+    callers must degrade gracefully.
+
+    Parameters
+    ----------
+    product_id:
+        Product identifier — forms the stack ``launch/<product_id>``.
+    limit:
+        Maximum lessons to return (default 5).
+    """
+    if not product_id:
+        return []
+
+    stack = f"launch/{product_id}"
+    try:
+        from src.infra.mission_lessons import top_mission_lessons
+        lessons = await top_mission_lessons(stack=stack, domain=None, limit=limit)
+        return lessons or []
+    except Exception as exc:
+        logger.debug(
+            "fetch_launch_lessons: could not fetch lessons for product %r: %s",
+            product_id,
+            exc,
+        )
+        return []
+
+
 async def run(channel: str, payload: dict) -> dict:
     """Enqueue an LLM draft task for the given channel.
 
@@ -97,7 +146,21 @@ async def run(channel: str, payload: dict) -> dict:
     launch_id = payload.get("launch_id")
     spec_text = payload.get("spec") or ""
     brand_voice = payload.get("brand_voice") or ""
-    mission_lessons = payload.get("mission_lessons") or []
+
+    # Z7 T6E — cross-mission lessons loop.
+    # If caller provided explicit lessons, use them.
+    # Otherwise auto-fetch from mission_lessons store (Z2-T4 pattern) so that
+    # launch N+1's T-72h drafts always see launch N's T+7d writeback lessons.
+    if "mission_lessons" in payload:
+        mission_lessons = list(payload["mission_lessons"] or [])
+    else:
+        mission_lessons = await fetch_launch_lessons(product_id, limit=5)
+        if mission_lessons:
+            logger.info(
+                "launch_drafts: auto-fetched %d prior launch lessons for %r",
+                len(mission_lessons),
+                product_id,
+            )
 
     channel_ctx = CHANNEL_CONTEXTS[channel]
 

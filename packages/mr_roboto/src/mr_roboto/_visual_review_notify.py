@@ -7,17 +7,17 @@ After ``visual_review`` runs, the founder must be able to:
 
 Callback-data scheme
 --------------------
-``visrev:approve:{mission_id}:{step_id}:{frame_filename}``
-    Per-breakpoint baseline approval.
-
-``visrev:cal:{verdict}:{mission_id}:{lesson_pattern}``
-    Calibration ("this colour is fine" / "broken") — recorded as a
-    mission lesson so it mutes the same pattern across future missions.
+``visrev:{mission_id}:{token}``
+    Compact (~23 bytes) — the token resolves against the per-mission
+    cbmap sidecar (``mission_{id}/.visual/.cbmap.json``) to an entry:
+      - ``{kind: "approve", step_id, frame}`` — per-breakpoint baseline approval
+      - ``{kind: "cal", verdict, lesson_pattern}`` — severity calibration
 
 Notes
 -----
-- Telegram caps ``callback_data`` at 64 bytes; entries exceeding that are
-  dropped so a bad button never blocks the notification.
+- The token scheme keeps ``callback_data`` well under Telegram's 64-byte
+  cap regardless of step_id / filename length, so no button is ever
+  silently dropped.
 - Thumbnails are WebP ≤80KB, max dimension 600px, written to
   ``mission_{id}/.visual/thumbs/{step_id}/``.
 - Media-groups (albums) can't carry inline buttons — buttons go on a
@@ -107,20 +107,46 @@ def _make_thumbnails(
 # Callback-data helpers
 # ---------------------------------------------------------------------------
 
-def _approve_cb(mission_id: int, step_id: str, frame_filename: str) -> str | None:
-    """Build approve callback data; returns None when >64 bytes."""
-    cb = f"visrev:approve:{mission_id}:{step_id}:{frame_filename}"
-    if len(cb.encode()) > 64:
-        return None
-    return cb
+def _cbmap_path(workspace_path: str, mission_id: int) -> str:
+    """Path to the per-mission callback-token map.
+
+    Telegram caps ``callback_data`` at 64 bytes — packing step_id + a
+    frame filename (or a ``route:component:kind`` lesson pattern) blows
+    that budget for late-phase steps with long IDs.  Instead each button
+    gets a short token; the real fields live in this JSON sidecar.
+    """
+    return os.path.join(
+        workspace_path, f"mission_{mission_id}", ".visual", ".cbmap.json"
+    )
 
 
-def _cal_cb(verdict: str, mission_id: int, lesson_pattern: str) -> str | None:
-    """Build calibration callback data; returns None when >64 bytes."""
-    cb = f"visrev:cal:{verdict}:{mission_id}:{lesson_pattern}"
-    if len(cb.encode()) > 64:
-        return None
-    return cb
+def _register_cb(workspace_path: str, mission_id: int, entry: dict) -> str:
+    """Persist *entry* under a fresh token; return the compact callback_data.
+
+    Returned form ``visrev:{mission_id}:{token}`` is ~23 bytes — always
+    well under Telegram's 64-byte ceiling regardless of step_id length.
+    """
+    import json
+    import secrets
+
+    path = _cbmap_path(workspace_path, mission_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cbmap: dict = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                cbmap = loaded
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("visual_review_notify: cbmap read failed: %s", exc)
+    token = secrets.token_hex(4)  # 8 hex chars
+    cbmap[token] = entry
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(cbmap, fh)
+    os.replace(tmp, path)
+    return f"visrev:{mission_id}:{token}"
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +158,7 @@ def _build_inline_keyboard(
     findings: list[dict[str, Any]],
     mission_id: int,
     step_id: str,
+    workspace_path: str,
 ) -> list[list[dict[str, str]]]:
     """Build a list-of-rows for inline buttons.
 
@@ -140,15 +167,20 @@ def _build_inline_keyboard(
     Layout:
     - One approve button per frame (≤8 frames → ≤8 buttons, 2 per row).
     - Two calibration buttons at the end.
+
+    Every button's ``callback_data`` is a compact ``visrev:{mid}:{token}``
+    string; the step_id / frame / lesson-pattern payload is persisted in
+    the per-mission cbmap sidecar (see :func:`_register_cb`).
     """
     rows: list[list[dict[str, str]]] = []
 
     # Approve buttons (2 per row).
     approve_buttons: list[dict[str, str]] = []
     for _thumb_path, original_basename in thumbs:
-        cb = _approve_cb(mission_id, step_id, original_basename)
-        if cb is None:
-            continue  # too long — skip silently
+        cb = _register_cb(
+            workspace_path, mission_id,
+            {"kind": "approve", "step_id": step_id, "frame": original_basename},
+        )
         label = f"✅ {original_basename[:20]}"
         approve_buttons.append({"label": label, "callback_data": cb})
 
@@ -162,15 +194,18 @@ def _build_inline_keyboard(
     kind = top_finding.get("kind") or "other"
     lesson_pattern = f"{route}:{component}:{kind}"
 
-    cb_fine = _cal_cb("fine", mission_id, lesson_pattern)
-    cb_broken = _cal_cb("broken", mission_id, lesson_pattern)
-    cal_row: list[dict[str, str]] = []
-    if cb_fine:
-        cal_row.append({"label": "🟢 This is fine", "callback_data": cb_fine})
-    if cb_broken:
-        cal_row.append({"label": "🔴 Genuinely broken", "callback_data": cb_broken})
-    if cal_row:
-        rows.append(cal_row)
+    cb_fine = _register_cb(
+        workspace_path, mission_id,
+        {"kind": "cal", "verdict": "fine", "lesson_pattern": lesson_pattern},
+    )
+    cb_broken = _register_cb(
+        workspace_path, mission_id,
+        {"kind": "cal", "verdict": "broken", "lesson_pattern": lesson_pattern},
+    )
+    rows.append([
+        {"label": "🟢 This is fine", "callback_data": cb_fine},
+        {"label": "🔴 Genuinely broken", "callback_data": cb_broken},
+    ])
 
     return rows
 
@@ -357,7 +392,9 @@ async def enqueue_visual_review_notice(
 
     # 5. Build and send follow-up text + inline buttons.
     text = _build_summary_text(mission_id, step_id, verdict, findings)
-    rows = _build_inline_keyboard(thumbs, findings, mission_id, step_id)
+    rows = _build_inline_keyboard(
+        thumbs, findings, mission_id, step_id, workspace_path
+    )
     await _send_text_with_buttons(bot, chat_id, text, rows)
 
     logger.info(

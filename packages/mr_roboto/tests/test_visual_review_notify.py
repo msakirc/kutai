@@ -37,58 +37,59 @@ def _fake_png(path: str) -> None:
 # T4A — _visual_review_notify module
 # ---------------------------------------------------------------------------
 
-class TestApproveCallback:
-    def test_approve_cb_normal(self):
-        from mr_roboto._visual_review_notify import _approve_cb
-        cb = _approve_cb(42, "3.2", "home_light_375.png")
-        assert cb is not None
-        assert cb == "visrev:approve:42:3.2:home_light_375.png"
+class TestRegisterCb:
+    """Token-based callback scheme: compact callback_data + cbmap sidecar."""
+
+    def test_register_approve_entry(self, tmp_path):
+        import json
+        from mr_roboto._visual_review_notify import _register_cb, _cbmap_path
+        cb = _register_cb(
+            str(tmp_path), 42,
+            {"kind": "approve", "step_id": "3.2", "frame": "home_light_375.png"},
+        )
+        # Compact form, well under Telegram's 64-byte cap.
+        assert cb.startswith("visrev:42:")
+        assert len(cb.encode()) <= 64
+        token = cb.split(":")[2]
+        with open(_cbmap_path(str(tmp_path), 42), encoding="utf-8") as f:
+            entry = json.load(f)[token]
+        assert entry == {
+            "kind": "approve", "step_id": "3.2", "frame": "home_light_375.png",
+        }
+
+    def test_register_cal_entry(self, tmp_path):
+        import json
+        from mr_roboto._visual_review_notify import _register_cb, _cbmap_path
+        cb = _register_cb(
+            str(tmp_path), 7,
+            {"kind": "cal", "verdict": "fine", "lesson_pattern": "home:Button:color"},
+        )
+        token = cb.split(":")[2]
+        with open(_cbmap_path(str(tmp_path), 7), encoding="utf-8") as f:
+            entry = json.load(f)[token]
+        assert entry["kind"] == "cal"
+        assert entry["lesson_pattern"] == "home:Button:color"
+
+    def test_callback_data_compact_even_with_long_step_id(self, tmp_path):
+        """The whole point of the token scheme — long IDs never overflow."""
+        from mr_roboto._visual_review_notify import _register_cb
+        cb = _register_cb(
+            str(tmp_path), 999999,
+            {"kind": "approve",
+             "step_id": "15.14b_deliverable_bundle_verify_consistency",
+             "frame": "product_listing_detail_dark_1920.png"},
+        )
         assert len(cb.encode()) <= 64
 
-    def test_approve_cb_too_long_returns_none(self):
-        from mr_roboto._visual_review_notify import _approve_cb
-        long_filename = "x" * 60 + ".png"
-        result = _approve_cb(42, "3.2", long_filename)
-        assert result is None
-
-    def test_cal_cb_normal(self):
-        from mr_roboto._visual_review_notify import _cal_cb
-        cb = _cal_cb("fine", 7, "home:Button:color")
-        assert cb is not None
-        assert cb == "visrev:cal:fine:7:home:Button:color"
-        assert len(cb.encode()) <= 64
-
-    def test_cal_cb_too_long_returns_none(self):
-        from mr_roboto._visual_review_notify import _cal_cb
-        long_pattern = "r:" + "c" * 60 + ":k"
-        result = _cal_cb("fine", 7, long_pattern)
-        assert result is None
-
-
-class TestCallbackRoundTrip:
-    """Encode → parse round-trip for both callback schemes."""
-
-    def test_approve_roundtrip(self):
-        from mr_roboto._visual_review_notify import _approve_cb
-        cb = _approve_cb(99, "step_x", "checkout_dark_768.png")
-        assert cb is not None
-        parts = cb.split(":", 4)
-        assert parts[0] == "visrev"
-        assert parts[1] == "approve"
-        assert int(parts[2]) == 99
-        assert parts[3] == "step_x"
-        assert parts[4] == "checkout_dark_768.png"
-
-    def test_cal_roundtrip(self):
-        from mr_roboto._visual_review_notify import _cal_cb
-        cb = _cal_cb("broken", 5, "shop:NavBar:layout")
-        assert cb is not None
-        parts = cb.split(":", 4)
-        assert parts[0] == "visrev"
-        assert parts[1] == "cal"
-        assert parts[2] == "broken"
-        assert int(parts[3]) == 5
-        assert parts[4] == "shop:NavBar:layout"
+    def test_multiple_registrations_accumulate(self, tmp_path):
+        import json
+        from mr_roboto._visual_review_notify import _register_cb, _cbmap_path
+        cb1 = _register_cb(str(tmp_path), 1, {"kind": "approve", "frame": "a.png"})
+        cb2 = _register_cb(str(tmp_path), 1, {"kind": "approve", "frame": "b.png"})
+        assert cb1 != cb2
+        with open(_cbmap_path(str(tmp_path), 1), encoding="utf-8") as f:
+            cbmap = json.load(f)
+        assert len(cbmap) == 2
 
 
 class TestSummaryText:
@@ -215,26 +216,42 @@ class TestMakeThumbnails:
 
 
 class TestBuildInlineKeyboard:
-    def test_approve_buttons_present(self):
-        from mr_roboto._visual_review_notify import _build_inline_keyboard
+    def test_approve_buttons_present(self, tmp_path):
+        import json
+        from mr_roboto._visual_review_notify import (
+            _build_inline_keyboard, _cbmap_path,
+        )
 
         thumbs = [
             ("/t/home_light_375.webp", "home_light_375.png"),
             ("/t/home_dark_375.webp", "home_dark_375.png"),
         ]
-        rows = _build_inline_keyboard(thumbs, [], mission_id=5, step_id="1.1")
-        # Flatten buttons
+        rows = _build_inline_keyboard(
+            thumbs, [], mission_id=5, step_id="1.1",
+            workspace_path=str(tmp_path),
+        )
         buttons = [btn for row in rows for btn in row]
         cb_data = [b["callback_data"] for b in buttons]
-        assert any("visrev:approve:5:1.1:home_light_375.png" in cb for cb in cb_data)
-        assert any("visrev:approve:5:1.1:home_dark_375.png" in cb for cb in cb_data)
+        # Every callback is the compact token form, under the 64-byte cap.
+        assert all(cb.startswith("visrev:5:") for cb in cb_data)
+        assert all(len(cb.encode()) <= 64 for cb in cb_data)
+        # The cbmap holds an approve entry per captured frame.
+        with open(_cbmap_path(str(tmp_path), 5), encoding="utf-8") as f:
+            cbmap = json.load(f)
+        approve_frames = {
+            e["frame"] for e in cbmap.values() if e.get("kind") == "approve"
+        }
+        assert approve_frames == {"home_light_375.png", "home_dark_375.png"}
 
-    def test_calibration_buttons_present(self):
+    def test_calibration_buttons_present(self, tmp_path):
         from mr_roboto._visual_review_notify import _build_inline_keyboard
 
         thumbs = [("/t/home_light_375.webp", "home_light_375.png")]
         findings = [{"route": "home", "component": "Btn", "kind": "color"}]
-        rows = _build_inline_keyboard(thumbs, findings, mission_id=3, step_id="2.0")
+        rows = _build_inline_keyboard(
+            thumbs, findings, mission_id=3, step_id="2.0",
+            workspace_path=str(tmp_path),
+        )
         buttons = [btn for row in rows for btn in row]
         labels = [b["label"] for b in buttons]
         assert any("fine" in l.lower() for l in labels)

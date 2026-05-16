@@ -8085,44 +8085,50 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
 
         # ── Z4 T4B/T4C: visual-review founder-loop inline buttons ───
-        # Format:
-        #   visrev:approve:<mid>:<step_id>:<frame_filename>
-        #       → copy captured frame to baseline (per-breakpoint approval)
-        #   visrev:cal:<verdict>:<mid>:<lesson_pattern>
-        #       → upsert a mission lesson to mute this finding pattern
+        # Format: visrev:<mid>:<token> — token resolves against the
+        # per-mission cbmap sidecar (mission_<mid>/.visual/.cbmap.json):
+        #   {kind: "approve", step_id, frame} → copy captured frame to the
+        #       per-mission baseline AND promote it to the cross-mission
+        #       baseline store keyed by the mission's design-token hash.
+        #   {kind: "cal", verdict, lesson_pattern} → upsert a mission lesson.
         if data.startswith("visrev:"):
+            import json as _json
             try:
-                parts = data.split(":", 4)
-                visrev_kind = parts[1]
+                _, _mid_s, _token = data.split(":", 2)
+                mid = int(_mid_s)
             except (ValueError, IndexError):
                 await query.message.reply_text("❌ Bozuk visrev butonu.")
                 return
 
+            from src.tools.workspace import WORKSPACE_DIR as _WS
+            _cbmap_path = os.path.join(
+                _WS, f"mission_{mid}", ".visual", ".cbmap.json"
+            )
+            entry = None
+            try:
+                with open(_cbmap_path, "r", encoding="utf-8") as _f:
+                    entry = _json.load(_f).get(_token)
+            except (OSError, ValueError):
+                entry = None
+            if not isinstance(entry, dict):
+                await query.message.reply_text(
+                    "❌ visrev butonu süresi doldu (cbmap entry missing)."
+                )
+                return
+
+            visrev_kind = entry.get("kind")
+
             if visrev_kind == "approve":
-                # visrev:approve:<mid>:<step_id>:<frame_filename>
-                try:
-                    mid = int(parts[2])
-                    step_id_v = parts[3]
-                    frame_filename = parts[4]
-                except (ValueError, IndexError):
-                    await query.message.reply_text("❌ Bozuk visrev:approve butonu.")
-                    return
+                step_id_v = str(entry.get("step_id") or "")
+                frame_filename = str(entry.get("frame") or "")
                 try:
                     import shutil as _shutil
-                    from src.tools.workspace import WORKSPACE_DIR as _WS
                     captured_path = os.path.join(
-                        _WS,
-                        f"mission_{mid}",
-                        ".visual",
-                        "captured",
-                        step_id_v,
-                        frame_filename,
+                        _WS, f"mission_{mid}", ".visual", "captured",
+                        step_id_v, frame_filename,
                     )
                     baseline_dir = os.path.join(
-                        _WS,
-                        f"mission_{mid}",
-                        ".visual",
-                        "baseline",
+                        _WS, f"mission_{mid}", ".visual", "baseline",
                     )
                     os.makedirs(baseline_dir, exist_ok=True)
                     dst = os.path.join(baseline_dir, frame_filename)
@@ -8132,23 +8138,40 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         f"❌ Baseline approval failed: {e}"
                     )
                     return
+                # Promote to the cross-mission baseline store so a stable
+                # design system reuses this baseline in future missions.
+                cross_msg = ""
+                try:
+                    _th_path = os.path.join(
+                        _WS, f"mission_{mid}", ".visual", ".token_hash"
+                    )
+                    with open(_th_path, "r", encoding="utf-8") as _f:
+                        _thash = _f.read().strip()
+                    if _thash:
+                        from mr_roboto.visual_baseline import (
+                            cross_mission_baseline_dir,
+                            promote_to_cross_mission,
+                        )
+                        # repo root = src/app/telegram_bot.py → climb 3
+                        _repo_root = os.path.dirname(os.path.dirname(
+                            os.path.dirname(os.path.abspath(__file__))
+                        ))
+                        _cross = cross_mission_baseline_dir(_repo_root, _thash)
+                        promote_to_cross_mission(dst, _cross)
+                        cross_msg = " + cross-mission store"
+                except Exception as e:
+                    logger.debug("visrev cross-mission promote skipped: %s", e)
                 await self._reply(
                     update,
                     f"✅ Approved `{frame_filename}` as new baseline "
-                    f"(mission #{mid}).",
+                    f"(mission #{mid}){cross_msg}.",
                     parse_mode="Markdown",
                 )
                 return
 
             if visrev_kind == "cal":
-                # visrev:cal:<verdict>:<mid>:<lesson_pattern>
-                try:
-                    cal_verdict = parts[2]
-                    mid = int(parts[3])
-                    lesson_pattern = parts[4]
-                except (ValueError, IndexError):
-                    await query.message.reply_text("❌ Bozuk visrev:cal butonu.")
-                    return
+                cal_verdict = str(entry.get("verdict") or "")
+                lesson_pattern = str(entry.get("lesson_pattern") or "")
                 try:
                     from src.infra.mission_lessons import upsert_mission_lesson
                     fix_msg = (

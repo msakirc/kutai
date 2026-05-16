@@ -411,10 +411,11 @@ async def visual_review(
         _repo_root = os.path.dirname(_repo_root)
     _cross_dir: str | None = _cross_mission_baseline_dir(_repo_root, thash)
 
-    # Persist token hash + warn when it changed.
+    # Persist token hash. tokens_changed logs a warning as a side-effect
+    # when the design system drifted (cross-mission baselines for the old
+    # hash are now stale) — call it for that signal, then record the hash.
     _ws_for_hash = os.path.join(workspace_path, f"mission_{mission_id}")
-    if _tokens_changed(_ws_for_hash, thash):
-        pass  # warning already logged by tokens_changed
+    _tokens_changed(_ws_for_hash, thash)
     _write_token_hash(_ws_for_hash, thash)
 
     # Build enriched AUDIT prompt with spec context if available

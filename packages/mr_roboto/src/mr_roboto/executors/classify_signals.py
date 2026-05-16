@@ -247,3 +247,29 @@ async def _on_classifier_complete(task_id: int, result: dict) -> None:
         task_id=task_id,
         written=written,
     )
+
+    # Chain into scoring: classified_signal rows are now in place, so enqueue
+    # the mechanical score_backlog pass to turn them into backlog_candidate
+    # rows. Without this hop the signal→backlog loop dead-ends at classification.
+    if written:
+        try:
+            await general_beckman.enqueue(
+                {
+                    "title": "score growth backlog",
+                    "description": (
+                        f"Score {written} newly-classified signal(s) into "
+                        f"backlog candidates."
+                    ),
+                    "agent_type": "mechanical",
+                    "kind": "overhead",
+                    "priority": 4,
+                    "mission_id": mission_id,
+                    "context": {"payload": {"action": "score_backlog"}},
+                },
+                parent_id=task_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "classify_signals_complete: score_backlog enqueue failed",
+                error=str(exc),
+            )

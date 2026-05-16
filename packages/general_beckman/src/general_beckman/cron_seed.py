@@ -215,6 +215,18 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 604800,  # 7d
         "payload": {"_executor": "mine_dlq_patterns"},
     },
+    # Z9 Growth T3 — weekly signal→backlog refresh. Runs classify_signals,
+    # which enqueues the signal_classifier agent; its completion continuation
+    # persists classified_signal rows and chains into score_backlog, writing
+    # backlog_candidate rows the founder reviews via /backlog. Without this
+    # cron the whole T3 signal→backlog loop never runs — classify_signals and
+    # score_backlog are otherwise orphaned executors. Weekly, digest-aligned.
+    {
+        "title": "signal_classify_sweep",
+        "description": "Weekly signal→backlog refresh — classify raw_signal growth_events, then score into backlog_candidate rows",
+        "interval_seconds": 604800,  # 7d
+        "payload": {"_executor": "classify_signals"},
+    },
     # Z9 Growth T4C — daily verdict window sweeper. Scans every pending
     # hypothesis and enqueues a record_verdict mechanical task for each one
     # whose measurement window has closed (created_at + window_seconds <=

@@ -196,6 +196,10 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "demo/edit": "full",              # writes cuts/*.mp4; git-reversible
     "demo/caption": "full",           # writes demo.vtt; git-reversible
     "demo/accessibility_pass": "full", # writes accessibility_manifest.json; git-reversible
+    # demo/distribute: uploads unlisted YT video; can be deleted/edited → partial.
+    "demo/distribute": "partial",
+    # demo/distribute/flip_to_public: makes YT video public; visible to world → irreversible.
+    "demo/distribute/flip_to_public": "irreversible",
     # ---- Z9 growth verbs (registered T1C; implemented T2-T5) ------------
     "inject_north_star": "full",  # writes north-star row; deletable
     "emit_metric": "full",  # append-only metric row

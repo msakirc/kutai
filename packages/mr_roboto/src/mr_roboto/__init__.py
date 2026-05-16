@@ -97,6 +97,8 @@ import mr_roboto.outreach_deliverability_check as outreach_deliverability_check_
 import mr_roboto.outreach_domain_verify as outreach_domain_verify_module  # noqa: F401
 # Z7 T6 A12 — marketing copy generator (A12 / A1)
 import mr_roboto.marketing_copy as marketing_copy_module  # noqa: F401
+# Z7 T6D — demo distribution stage (A3 distribute)
+import mr_roboto.demo_distribute as demo_distribute_module  # noqa: F401
 
 __all__ = [
     "Action",
@@ -4407,6 +4409,35 @@ async def _run_dispatch(task: dict) -> Action:
             )
             if res.get("status") == "error":
                 return Action(status="failed", error=res.get("error") or "marketing_copy failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    # ── Z7 T6D — demo/distribute (A3 distribution stage) ─────────────────────
+    if action == "demo/distribute":
+        # Upload demo cuts to YouTube (unlisted), extract thumbnails, og:video snippet.
+        from mr_roboto.demo_distribute import run as _demo_distribute
+        try:
+            cuts = payload.get("cuts") or {}
+            if isinstance(cuts, str):
+                import json as _json
+                try:
+                    cuts = _json.loads(cuts)
+                except Exception:
+                    cuts = {}
+            res = await _demo_distribute(
+                mission_id=int(payload.get("mission_id") or task.get("mission_id") or 0),
+                workspace_path=payload.get("workspace_path") or "",
+                cuts=cuts,
+                product_name=payload.get("product_name") or "",
+                description=payload.get("description") or "",
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("error") or "demo/distribute failed",
+                    result=res,
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

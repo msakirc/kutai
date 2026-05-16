@@ -183,13 +183,78 @@
    },
    {
     "group_id": "mobile_app_submission",
-    "description": "Skip app store submission if no native mobile apps.",
+    "description": "Skip app store submission if no native mobile apps. if_true is intentionally empty until Z5 T5 distribution adds the real submit step and repoints this (the old 14.10 wiring went dead when Z9 reused that id for arm_analytics_digest_cron).",
     "condition_artifact": "platform_requirements",
     "condition_check": "platforms_include('ios') OR platforms_include('android')",
-    "if_true": [
-     "14.10"
-    ],
+    "if_true": [],
     "if_false": []
+   },
+   {
+    "group_id": "frontend_platform",
+    "description": "Route the frontend scaffold by target_platform. Web missions run the web scaffold 7.5; mobile/both missions run the Expo Router scaffold 7.5m. Both 7.5 and 7.5m are inserted as tasks at mission start; this group skips whichever branch does not apply once platform_requirements is produced. The full 7.5m definition is mirrored in fallback_steps for branching-primitive consistency.",
+    "condition_artifact": "platform_requirements",
+    "condition_check": "target_platform in ('mobile','both')",
+    "if_true": [
+     "7.5m"
+    ],
+    "if_false": [
+     "7.5"
+    ],
+    "fallback_steps": [
+     {
+      "id": "7.5m",
+      "phase": "phase_7",
+      "name": "mobile_frontend_scaffold",
+      "agent": "coder",
+      "difficulty": "medium",
+      "tools_hint": [
+       "shell",
+       "write_file",
+       "read_file",
+       "scaffold",
+       "verify_deps",
+       "git_commit"
+      ],
+      "depends_on": [
+       "7.1"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+       "tech_stack_decision",
+       "frontend_architecture"
+      ],
+      "output_artifacts": [
+       "mobile_frontend_scaffold"
+      ],
+      "produces": [
+       "app/package.json",
+       "app/app.json"
+      ],
+      "post_hooks": [
+       "verify_artifacts"
+      ],
+      "context": {
+       "estimated_output_tokens": 6000
+      },
+      "instruction": "Use the scaffold tool to initialize an Expo (React Native) cross-platform mobile project with the selected stack. Set up: an Expo project (create-expo-app or `npx expo`), TypeScript configuration (strict mode), Expo Router file-based routing (the `app/` directory — routes are files, layout via `app/_layout.tsx`) per information_architecture, state management per frontend_architecture, API client with auth token handling and error handling per observability_strategy, and styling via NativeWind (Tailwind for RN) or React Native StyleSheet. Write `app.json` with the Expo config (name, slug, scheme, iOS bundleIdentifier + Android package placeholders). Install and verify all dependencies.\n\nAFTER the scaffold work is done, RETURN a JSON object directly in `result` (no envelope, no markdown, no \"Wrote ...\" summary):\n\n{\n  \"project_path\": \"<absolute or workspace-relative path of scaffolded Expo project>\",\n  \"dependencies_installed\": true,\n  \"dev_server_verified\": true,\n  \"framework\": \"Expo SDK <version> + expo-router\",\n  \"notes\": \"<one paragraph: what was set up, anything skipped or deferred>\"\n}\n\nSet boolean fields to true ONLY when actually verified (npm/pnpm install exited 0; `expo start` / metro bundler started and responded). If verification couldn't run (e.g. tool unavailable), still emit the field as false with notes explaining.",
+      "done_when": "mobile_frontend_scaffold exists with an Expo project (app/ Expo Router dir, app.json) and a running metro/expo dev server.",
+      "artifact_schema": {
+       "mobile_frontend_scaffold": {
+        "type": "object",
+        "required_fields": [
+         "project_path",
+         "dependencies_installed",
+         "dev_server_verified"
+        ],
+        "must_be_true": [
+         "dependencies_installed",
+         "dev_server_verified"
+        ]
+       }
+      },
+      "reversibility": "full"
+     }
+    ]
    },
    {
     "group_id": "file_upload_security",
@@ -6714,6 +6779,59 @@
    "reversibility": "full"
   },
   {
+   "id": "7.5m",
+   "phase": "phase_7",
+   "name": "mobile_frontend_scaffold",
+   "agent": "coder",
+   "difficulty": "medium",
+   "tools_hint": [
+    "shell",
+    "write_file",
+    "read_file",
+    "scaffold",
+    "verify_deps",
+    "git_commit"
+   ],
+   "depends_on": [
+    "7.1"
+   ],
+   "may_need_clarification": false,
+   "input_artifacts": [
+    "tech_stack_decision",
+    "frontend_architecture"
+   ],
+   "output_artifacts": [
+    "mobile_frontend_scaffold"
+   ],
+   "produces": [
+    "app/package.json",
+    "app/app.json"
+   ],
+   "post_hooks": [
+    "verify_artifacts"
+   ],
+   "context": {
+    "estimated_output_tokens": 6000
+   },
+   "instruction": "Use the scaffold tool to initialize an Expo (React Native) cross-platform mobile project with the selected stack. Set up: an Expo project (create-expo-app or `npx expo`), TypeScript configuration (strict mode), Expo Router file-based routing (the `app/` directory — routes are files, layout via `app/_layout.tsx`) per information_architecture, state management per frontend_architecture, API client with auth token handling and error handling per observability_strategy, and styling via NativeWind (Tailwind for RN) or React Native StyleSheet. Write `app.json` with the Expo config (name, slug, scheme, iOS bundleIdentifier + Android package placeholders). Install and verify all dependencies.\n\nAFTER the scaffold work is done, RETURN a JSON object directly in `result` (no envelope, no markdown, no \"Wrote ...\" summary):\n\n{\n  \"project_path\": \"<absolute or workspace-relative path of scaffolded Expo project>\",\n  \"dependencies_installed\": true,\n  \"dev_server_verified\": true,\n  \"framework\": \"Expo SDK <version> + expo-router\",\n  \"notes\": \"<one paragraph: what was set up, anything skipped or deferred>\"\n}\n\nSet boolean fields to true ONLY when actually verified (npm/pnpm install exited 0; `expo start` / metro bundler started and responded). If verification couldn't run (e.g. tool unavailable), still emit the field as false with notes explaining.",
+   "done_when": "mobile_frontend_scaffold exists with an Expo project (app/ Expo Router dir, app.json) and a running metro/expo dev server.",
+   "artifact_schema": {
+    "mobile_frontend_scaffold": {
+     "type": "object",
+     "required_fields": [
+      "project_path",
+      "dependencies_installed",
+      "dev_server_verified"
+     ],
+     "must_be_true": [
+      "dependencies_installed",
+      "dev_server_verified"
+     ]
+    }
+   },
+   "reversibility": "full"
+  },
+  {
    "id": "7.5.git_commit",
    "phase": "phase_7",
    "name": "frontend_scaffold_git_commit",
@@ -6722,14 +6840,15 @@
    "difficulty": "easy",
    "tools_hint": [],
    "depends_on": [
-    "7.5"
+    "7.5",
+    "7.5m"
    ],
    "payload": {
     "action": "git_commit",
     "push": true,
     "mark_green": true
    },
-   "instruction": "Mechanical auto-commit after 7.5. Z10 T1A push=true => atomic commit↔push. Z10 T3C mark_green=true => snapshot mission DB + Chroma + git tag for /rollback_mission.",
+   "instruction": "Mechanical auto-commit after the frontend scaffold (web 7.5 or Expo 7.5m — whichever ran; the other branch is skipped by the frontend_platform conditional group). Z10 T1A push=true => atomic commit↔push. Z10 T3C mark_green=true => snapshot mission DB + Chroma + git tag for /rollback_mission.",
    "done_when": "Workspace committed if there are changes.",
    "context": {},
    "reversibility": "full"
@@ -6748,7 +6867,8 @@
    ],
    "depends_on": [
     "7.3",
-    "7.5"
+    "7.5",
+    "7.5m"
    ],
    "may_need_clarification": false,
    "input_artifacts": [
@@ -6820,6 +6940,7 @@
    "depends_on": [
     "7.3",
     "7.5",
+    "7.5m",
     "7.4"
    ],
    "may_need_clarification": false,
@@ -6931,7 +7052,8 @@
     "git_commit"
    ],
    "depends_on": [
-    "7.5"
+    "7.5",
+    "7.5m"
    ],
    "may_need_clarification": false,
    "input_artifacts": [

@@ -1,0 +1,30 @@
+/**
+ * drizzle-kit configuration — drives `npx drizzle-kit generate`.
+ *
+ * RECIPE_PARAM markers:
+ *   // RECIPE_PARAM:DB_FILE_NAME=app.db
+ *
+ * `dialect: "sqlite"` + `driver: "expo"` is the combination drizzle-kit needs
+ * to emit migrations consumable by `drizzle-orm/expo-sqlite/migrator`. The
+ * `expo` driver also makes drizzle-kit write a `migrations/migrations.js`
+ * bundle (the JS module imported by client.ts) alongside the raw `.sql`.
+ *
+ * Workflow:
+ *   1. Edit `db/schema.ts`.
+ *   2. Run `npx drizzle-kit generate` — produces a new `migrations/NNNN_*.sql`
+ *      and refreshes `migrations/migrations.js`.
+ *   3. Commit both. Migrations apply on app start via `runMigrations()`.
+ *
+ * Never run `drizzle-kit push` for an Expo app — there is no dev DB server to
+ * push to; the SQLite file lives on each device. Always go through `generate`
+ * + the on-device migrator.
+ */
+import type { Config } from "drizzle-kit";
+
+// RECIPE_PARAM:DB_FILE_NAME=app.db
+export default {
+  schema: "./db/schema.ts",
+  out: "./migrations",
+  dialect: "sqlite",
+  driver: "expo",
+} satisfies Config;

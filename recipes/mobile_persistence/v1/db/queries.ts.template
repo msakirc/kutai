@@ -1,0 +1,112 @@
+/**
+ * Query / mutation layer — typed CRUD helpers over the Drizzle instance.
+ *
+ * RECIPE_PARAM markers:
+ *   // RECIPE_PARAM:ENTITY=note
+ *   // RECIPE_PARAM:ENTITY_PLURAL=notes
+ *   // RECIPE_PARAM:CACHE_STALE_MS=30000
+ *
+ * This module is the ONLY place that touches Drizzle directly. The hook layer
+ * (`hooks.ts`) and components consume these functions — never `db` itself.
+ * That keeps SQL concerns in one file and makes the data layer unit-testable
+ * without React.
+ *
+ * Read-through cache pattern
+ * --------------------------
+ * `listNotesCached()` implements a simple in-memory read-through cache: the
+ * first call hits SQLite, subsequent calls within CACHE_STALE_MS return the
+ * cached snapshot. Any mutation calls `invalidateCache()` so the next read
+ * goes back to disk. This is deliberately tiny — for richer caching wire the
+ * react-query layer in `hooks.ts`, which supersedes this for UI code. The
+ * cache here is the fallback for non-React call sites (background jobs, etc).
+ */
+import { eq, desc } from "drizzle-orm";
+
+import { db } from "./client";
+import { noteTable, type Note, type NewNote } from "./schema";
+
+// RECIPE_PARAM:CACHE_STALE_MS=30000
+const CACHE_STALE_MS = 30000;
+
+// ---------------------------------------------------------------------------
+// Read-through cache state
+// ---------------------------------------------------------------------------
+
+let _cache: { rows: Note[]; at: number } | null = null;
+
+/** Drop the cached snapshot — called by every mutation below. */
+export function invalidateCache(): void {
+  _cache = null;
+}
+
+// ---------------------------------------------------------------------------
+// Reads
+// ---------------------------------------------------------------------------
+
+/** Fetch every row, newest first. Always hits SQLite. */
+export async function listNotes(): Promise<Note[]> {
+  return db.select().from(noteTable).orderBy(desc(noteTable.createdAt));
+}
+
+/**
+ * Read-through cached variant of `listNotes`.
+ * Returns the cached snapshot when fresh (< CACHE_STALE_MS old), else reloads.
+ */
+export async function listNotesCached(): Promise<Note[]> {
+  const now = Date.now();
+  if (_cache && now - _cache.at < CACHE_STALE_MS) {
+    return _cache.rows;
+  }
+  const rows = await listNotes();
+  _cache = { rows, at: now };
+  return rows;
+}
+
+/** Fetch a single row by primary key, or null if absent. */
+export async function getNote(id: number): Promise<Note | null> {
+  const rows = await db
+    .select()
+    .from(noteTable)
+    .where(eq(noteTable.id, id))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Mutations — each invalidates the read-through cache
+// ---------------------------------------------------------------------------
+
+/** Insert a new row. Returns the inserted row (with generated id). */
+export async function createNote(input: NewNote): Promise<Note> {
+  const now = Date.now();
+  const rows = await db
+    .insert(noteTable)
+    .values({ ...input, createdAt: now, updatedAt: now })
+    .returning();
+  invalidateCache();
+  return rows[0];
+}
+
+/** Partial update by id. Returns the updated row, or null if id not found. */
+export async function updateNote(
+  id: number,
+  patch: Partial<NewNote>,
+): Promise<Note | null> {
+  const rows = await db
+    .update(noteTable)
+    .set({ ...patch, updatedAt: Date.now() })
+    .where(eq(noteTable.id, id))
+    .returning();
+  invalidateCache();
+  return rows[0] ?? null;
+}
+
+/** Delete by id. Returns true when a row was removed. */
+export async function deleteNote(id: number): Promise<boolean> {
+  const rows = await db
+    .delete(noteTable)
+    .where(eq(noteTable.id, id))
+    .returning();
+  invalidateCache();
+  return rows.length > 0;
+}

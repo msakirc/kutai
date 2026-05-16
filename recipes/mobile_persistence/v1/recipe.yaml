@@ -1,0 +1,40 @@
+name: mobile_persistence
+version: v1
+description: "On-device persistence for Expo apps — expo-sqlite + Drizzle ORM + react-query data hooks"
+requires:
+  tech_stack:
+    - "fastapi+sqlite+expo"
+    - "fastapi+postgres+expo"
+    - "expo"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - test_run
+  - pattern_lint
+templates:
+  frontend: frontend.template.tsx
+  db: db/
+  migrations: migrations/
+  tests: tests/
+prompts:
+  expo: prompts/expo.md
+lessons_domain: mobile_persistence
+dependencies:
+  backend: []
+  frontend:
+    - expo-sqlite
+    - drizzle-orm
+    - drizzle-kit
+    - "@tanstack/react-query"
+param_defaults:
+  ENTITY: "note"
+  ENTITY_PLURAL: "notes"
+  TABLE_NAME: "notes"
+  DB_FILE_NAME: "app.db"
+  CACHE_STALE_MS: "30000"
+entry_points:
+  data_layer: frontend.template.tsx
+  db_modules: db/
+  migration: migrations/
+  smoke_tests: tests/

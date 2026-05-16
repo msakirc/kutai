@@ -1,0 +1,119 @@
+/**
+ * React data hooks — react-query-friendly layer over the query module.
+ *
+ * RECIPE_PARAM markers:
+ *   // RECIPE_PARAM:ENTITY=note
+ *   // RECIPE_PARAM:ENTITY_PLURAL=notes
+ *   // RECIPE_PARAM:CACHE_STALE_MS=30000
+ *
+ * Two flavours are exported, pick per screen:
+ *
+ *   1. react-query hooks (`useNotesQuery`, `useCreateNote`, ...) — pull-based,
+ *      good when you want loading/error states, optimistic updates, and a
+ *      shared cache across screens. Requires a `QueryClientProvider` at the
+ *      app root.
+ *
+ *   2. `useLiveNotes()` — Drizzle's `useLiveQuery` (Expo driver). Push-based:
+ *      the component re-renders automatically whenever the underlying SQLite
+ *      rows change, no manual invalidation. Requires `enableChangeListener`
+ *      on the DB handle (set in client.ts).
+ *
+ * Prefer (2) for always-on list screens; prefer (1) when you need explicit
+ * mutation feedback or server sync later.
+ */
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useLiveQuery } from "drizzle-orm/expo-sqlite";
+import { desc } from "drizzle-orm";
+
+import { db } from "./client";
+import { noteTable, type Note, type NewNote } from "./schema";
+import {
+  listNotes,
+  getNote,
+  createNote,
+  updateNote,
+  deleteNote,
+} from "./queries";
+
+// RECIPE_PARAM:CACHE_STALE_MS=30000
+const CACHE_STALE_MS = 30000;
+
+// Stable query keys — keep them centralised so invalidation is consistent.
+export const noteKeys = {
+  all: ["notes"] as const,
+  detail: (id: number) => ["notes", id] as const,
+};
+
+// ---------------------------------------------------------------------------
+// react-query hooks
+// ---------------------------------------------------------------------------
+
+/** List all rows. `staleTime` mirrors the read-through cache window. */
+export function useNotesQuery() {
+  return useQuery({
+    queryKey: noteKeys.all,
+    queryFn: listNotes,
+    staleTime: CACHE_STALE_MS,
+  });
+}
+
+/** Single-row query by id. */
+export function useNoteQuery(id: number) {
+  return useQuery({
+    queryKey: noteKeys.detail(id),
+    queryFn: () => getNote(id),
+    staleTime: CACHE_STALE_MS,
+  });
+}
+
+/** Insert mutation — invalidates the list query on success. */
+export function useCreateNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: NewNote) => createNote(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: noteKeys.all }),
+  });
+}
+
+/** Update mutation — invalidates both list and detail queries. */
+export function useUpdateNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: Partial<NewNote> }) =>
+      updateNote(id, patch),
+    onSuccess: (_row, vars) => {
+      qc.invalidateQueries({ queryKey: noteKeys.all });
+      qc.invalidateQueries({ queryKey: noteKeys.detail(vars.id) });
+    },
+  });
+}
+
+/** Delete mutation — invalidates the list query. */
+export function useDeleteNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => deleteNote(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: noteKeys.all }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Live-query hook (Drizzle Expo driver)
+// ---------------------------------------------------------------------------
+
+/**
+ * Push-based list — auto-re-renders on any change to the `notes` table.
+ *
+ * `useLiveQuery` returns `{ data, error, updatedAt }`. It depends on
+ * `enableChangeListener: true` being set on the expo-sqlite handle (it is, in
+ * client.ts). Use this instead of `useNotesQuery` for a live list screen.
+ */
+export function useLiveNotes(): { data: Note[] } {
+  return useLiveQuery(
+    db.select().from(noteTable).orderBy(desc(noteTable.createdAt)),
+  );
+}

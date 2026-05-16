@@ -427,6 +427,22 @@ class Orchestrator:
                     break
                 task = await general_beckman.next_task()
                 if task is not None:
+                    # Yalayut Phase 2 — match catalog skills for this task
+                    # once, before dispatch. intersect.flash() attaches a
+                    # task["skills"] envelope (coulson reads it) or, for a
+                    # preempt recipe, sets runner=mechanical + payload so
+                    # the task routes to mr_roboto. Imported lazily so the
+                    # orchestrator module load doesn't pull yalayut. flash
+                    # graceful-degrades internally — no try/except needed,
+                    # but guard the import itself in case the package is
+                    # absent in a stripped deploy.
+                    try:
+                        import intersect
+                        task = await intersect.flash(task)
+                    except Exception as _e:
+                        logger.debug("intersect.flash skipped #%s: %s",
+                                     task.get("id"), _e)
+                        task.setdefault("skills", [])
                     t = asyncio.create_task(self._dispatch(task))
                     self._running_futures.append(t)
                     t.add_done_callback(self._drop_running_future)

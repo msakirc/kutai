@@ -3,7 +3,7 @@ import pytest
 
 from yalayut.contracts import Manifest, TaskContext, Artifact
 from yalayut.index import store
-from yalayut.query import query_db
+from yalayut._query_engine import query_db
 
 pytestmark = pytest.mark.asyncio
 

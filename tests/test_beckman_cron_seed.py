@@ -25,14 +25,21 @@ async def test_seed_internal_cadences_inserts_expected_rows(tmp_path, monkeypatc
 
     conn = await get_db()
     cursor = await conn.execute(
-        "SELECT title, interval_seconds, kind FROM scheduled_tasks WHERE kind='internal'"
+        "SELECT title, interval_seconds, cron_expression, kind "
+        "FROM scheduled_tasks WHERE kind='internal'"
     )
     rows = [dict(r) for r in await cursor.fetchall()]
     titles = {r["title"] for r in rows}
     expected_titles = {c["title"] for c in INTERNAL_CADENCES}
     assert titles == expected_titles
+    # Each cadence is scheduled either by a fixed interval OR by a cron
+    # expression — bash_audit / daily_briefing / follow_up_reminder use
+    # cron_expression with interval_seconds=None, which is legitimate.
     for r in rows:
-        assert r["interval_seconds"] is not None
+        assert (
+            r["interval_seconds"] is not None
+            or r["cron_expression"] is not None
+        ), f"cadence '{r['title']}' has neither interval_seconds nor cron_expression"
 
     # Teardown: close connection so monkeypatch's DB_PATH restore takes effect.
     if _db_mod._db_connection is not None:

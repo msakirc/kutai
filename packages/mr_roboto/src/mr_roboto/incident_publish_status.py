@@ -95,8 +95,13 @@ async def run(payload: dict) -> dict:
     try:
         from src.app.status_page import invalidate_cache
         invalidate_cache()
-    except Exception:
-        pass  # best-effort; cache TTL will expire naturally
+    except Exception as exc:
+        # Best-effort — cache TTL will expire naturally — but log so a real
+        # import/call regression is visible instead of silently swallowed.
+        logger.debug(
+            "incident_publish_status: status-page cache invalidation skipped",
+            error=str(exc),
+        )
 
     logger.info(
         "incident_publish_status: published",

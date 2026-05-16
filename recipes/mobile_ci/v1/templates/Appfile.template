@@ -1,0 +1,25 @@
+# Appfile — Fastlane app identity for the mobile_ci recipe (Z5 T3b).
+#
+# Defines the iOS bundle id, Apple team, and Android package name once so
+# every lane in the Fastfile inherits them. The Apple Connect API key and
+# Play service-account JSON are NOT set here — they come from GitHub
+# Secrets (APP_STORE_CONNECT_KEY / PLAY_SERVICE_ACCOUNT_JSON) at CI time.
+#
+# RECIPE_PARAM markers (each value is substituted into the matching token below):
+# RECIPE_PARAM:BUNDLE_ID=com.example.app
+# RECIPE_PARAM:APPLE_TEAM_ID=ABCDE12345
+
+app_identifier("<<BUNDLE_ID>>")
+team_id("<<APPLE_TEAM_ID>>")
+
+# Android — `supply` reads the package name from here.
+package_name("<<BUNDLE_ID>>")
+
+for_platform :ios do
+  app_identifier("<<BUNDLE_ID>>")
+  team_id("<<APPLE_TEAM_ID>>")
+end
+
+for_platform :android do
+  package_name("<<BUNDLE_ID>>")
+end

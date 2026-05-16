@@ -1,0 +1,65 @@
+# Fastfile — Fastlane lanes for the free-first mobile CI recipe (Z5 T3b).
+#
+# Lanes map onto the `fastlane` mr_roboto verb:
+#   build  -> compile (gym / gradle); local, re-runnable.
+#   match  -> sync code-signing certs/profiles from the encrypted repo.
+#   pilot  -> upload the iOS build to TestFlight.
+#   supply -> upload the Android build to the Play internal track.
+#
+# RECIPE_PARAM markers (each value is substituted into the matching token below):
+# RECIPE_PARAM:BUNDLE_ID=com.example.app
+# RECIPE_PARAM:APPLE_TEAM_ID=ABCDE12345
+# RECIPE_PARAM:XCODE_SCHEME=App
+
+default_platform(:ios)
+
+platform :ios do
+  desc "Sync code-signing material from the encrypted match repo"
+  lane :match do
+    # `match` reads MATCH_PASSWORD from a GH Secret on CI — never committed.
+    # readonly on CI so the runner never regenerates certificates.
+    sync_code_signing(
+      type: "appstore",
+      app_identifier: "<<BUNDLE_ID>>",
+      team_id: "<<APPLE_TEAM_ID>>",
+      readonly: true
+    )
+  end
+
+  desc "Build a signed Release IPA"
+  lane :build do
+    match
+    build_app(
+      scheme: "<<XCODE_SCHEME>>",
+      workspace: "<<XCODE_SCHEME>>.xcworkspace",
+      configuration: "Release",
+      export_method: "app-store"
+    )
+  end
+
+  desc "Upload the build to TestFlight"
+  lane :pilot do
+    upload_to_testflight(
+      app_identifier: "<<BUNDLE_ID>>",
+      skip_waiting_for_build_processing: true
+    )
+  end
+end
+
+platform :android do
+  desc "Assemble a signed Release APK/AAB"
+  lane :build do
+    gradle(task: "clean assembleRelease")
+  end
+
+  desc "Upload the build to the Play internal track"
+  lane :supply do
+    upload_to_play_store(
+      package_name: "<<BUNDLE_ID>>",
+      track: "internal",
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+end

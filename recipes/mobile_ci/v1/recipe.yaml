@@ -1,0 +1,32 @@
+name: mobile_ci
+version: v1
+description: "Free-first mobile CI: GitHub Actions macOS/Linux build + Fastlane release"
+requires:
+  tech_stack:
+    - "expo"
+    - "fastapi+sqlite+expo"
+    - "fastapi+postgres+expo"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+templates:
+  workflow: templates/mobile.yml.template
+  fastfile: templates/Fastfile.template
+  appfile: templates/Appfile.template
+prompts:
+  expo: prompts/expo.md
+lessons_domain: mobile_ci
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  BUNDLE_ID: "com.example.app"
+  APPLE_TEAM_ID: "ABCDE12345"
+  XCODE_SCHEME: "App"
+  APP_NAME: "MyApp"
+  NODE_VERSION: "20"
+  JAVA_VERSION: "17"
+entry_points:
+  ci_workflow: templates/mobile.yml.template
+  fastlane_config: templates/Fastfile.template

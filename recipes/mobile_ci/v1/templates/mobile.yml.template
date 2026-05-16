@@ -1,0 +1,92 @@
+# Mobile CI — free-first GitHub Actions workflow (Z5 T3b mobile_ci recipe).
+#
+# RECIPE_PARAM markers (each value is substituted into the matching token below):
+# RECIPE_PARAM:BUNDLE_ID=com.example.app
+# RECIPE_PARAM:XCODE_SCHEME=App
+# RECIPE_PARAM:NODE_VERSION=20
+# RECIPE_PARAM:JAVA_VERSION=17
+#
+# iOS builds on a macos-latest runner (billed 10x on the free tier — keep
+# the job lean). Android builds on a free ubuntu-latest runner.
+name: Mobile CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ios:
+    name: iOS build (macOS runner)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "<<NODE_VERSION>>"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      # Cache the prebuilt ios/ Pods so the 10x-billed macOS minutes stay low.
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+      # expo prebuild materialises the native ios/ dir xcodebuild needs.
+      - name: Expo prebuild (iOS)
+        run: npx expo prebuild --platform ios --non-interactive
+      - name: Build with Fastlane
+        env:
+          # Code-signing material comes from GH Secrets, never committed.
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+          BUNDLE_ID: "<<BUNDLE_ID>>"
+        run: |
+          if [ -f ios/fastlane/Fastfile ]; then
+            cd ios && bundle exec fastlane build
+          else
+            xcodebuild -workspace ios/<<XCODE_SCHEME>>.xcworkspace \
+              -scheme <<XCODE_SCHEME>> \
+              -configuration Release \
+              -sdk iphoneos \
+              -derivedDataPath ios/build \
+              CODE_SIGNING_ALLOWED=NO
+          fi
+
+  android:
+    name: Android build (Linux runner)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "<<NODE_VERSION>>"
+          cache: npm
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "<<JAVA_VERSION>>"
+      - name: Install dependencies
+        run: npm ci
+      - name: Expo prebuild (Android)
+        run: npx expo prebuild --platform android --non-interactive
+      # Keystore is stored base64 in a GH Secret — decoded at build time.
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+          fi
+      - name: Gradle assembleRelease
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          APP_ID: "<<BUNDLE_ID>>"
+        run: cd android && ./gradlew assembleRelease --no-daemon

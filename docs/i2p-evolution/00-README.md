@@ -23,7 +23,7 @@ folder maps where each piece of work lives.
 | Z2 — Build foundation | [02-build-foundation.md](02-build-foundation.md) | mechanical guardrails + specs-as-SoT + memory + recipes + tooling discipline |
 | Z2 — Build review density | [03-build-review-density.md](03-build-review-density.md) | multi-pass review + multi-file expansion + QA modalities |
 | Z2 — Visual review | [04-build-visual-review.md](04-build-visual-review.md) | screenshot framing + state priming + diff (subproject) |
-| Z2 — Mobile track | [05-build-mobile-track.md](05-build-mobile-track.md) | platform-aware frontend + mobile tooling |
+| Z2 — Mobile track | [05-build-mobile-track-v2.md](05-build-mobile-track-v2.md) (v1 [05-build-mobile-track.md](05-build-mobile-track.md) superseded 2026-05-16) | platform-aware frontend + mobile tooling |
 | Z3 + Z7 — Real-world bridge | [06-real-world-bridge-v2.md](06-real-world-bridge-v2.md) (v1 [06-real-world-bridge.md](06-real-world-bridge.md) superseded 2026-05-11) | accounts, legal, vendor adapters, payments |
 | Z4 + Z8 — Humanish layers | [07-humanish-layers-v3.md](07-humanish-layers-v3.md) (v2 [07-humanish-layers-v2.md](07-humanish-layers-v2.md) + v1 [07-humanish-layers.md](07-humanish-layers.md) superseded 2026-05-15) | marketing, story, comms helper, relationships, lifecycle |
 | Z5 — Operations | [08-operations.md](08-operations.md) | monitoring, on-call, incident, support, backups |

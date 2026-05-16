@@ -104,6 +104,9 @@ from mr_roboto.expo_cli import expo_cli  # Z5 T3
 from mr_roboto.android_build import android_build  # Z5 T3
 from mr_roboto.eas_build import eas_build  # Z5 T3
 from mr_roboto.eas_submit import eas_submit  # Z5 T3
+# Z5 T3b — free-first GitHub Actions CI + Fastlane mobile build path
+from mr_roboto.gen_mobile_ci import gen_mobile_ci  # Z5 T3b
+from mr_roboto.fastlane_run import fastlane  # Z5 T3b
 
 __all__ = [
     "Action",
@@ -163,6 +166,8 @@ __all__ = [
     "android_build",
     "eas_build",
     "eas_submit",
+    "gen_mobile_ci",
+    "fastlane",
 ]
 
 
@@ -305,6 +310,16 @@ async def run(task: dict) -> Action:
     payload = task.get("payload") or {}
     verb = payload.get("action") or ""
     override = payload.get("reversibility_override")
+    # Z5 T3b — `fastlane` reversibility depends on the lane: build/match are
+    # reversible, pilot/supply push a binary to a store track. The verb body
+    # cannot influence the tag (it is resolved before dispatch), so derive
+    # the override from the lane here and feed it through the standard
+    # `reversibility_override` mechanism. An explicit caller override still
+    # wins (it is read first, above).
+    if verb == "fastlane" and override is None:
+        from mr_roboto.fastlane_run import lane_reversibility
+
+        override = lane_reversibility(payload.get("lane"))
     if override not in ("full", "partial", "irreversible", None):
         override = None
     resolved_reversibility = get_reversibility(str(verb), override=override)
@@ -4556,6 +4571,57 @@ async def _run_dispatch(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=res.get("error") or "eas_submit failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "gen_mobile_ci":
+        # Z5 T3b — generate .github/workflows/mobile.yml (free-first GH
+        # Actions mobile CI: macOS-runner iOS job + Linux Android job).
+        # Reversibility `full` — writes one local file.
+        from mr_roboto.gen_mobile_ci import gen_mobile_ci as _gen_mobile_ci
+        try:
+            res = await _gen_mobile_ci(
+                mission_id=task.get("mission_id"),
+                workspace_path=payload.get("workspace_path") or None,
+                platforms=list(payload.get("platforms"))
+                if payload.get("platforms") is not None
+                else None,
+                bundle_id=str(payload.get("bundle_id") or "com.example.app"),
+                scheme=payload.get("scheme") or None,
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("error") or "gen_mobile_ci failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "fastlane":
+        # Z5 T3b — run a Fastlane lane (build / match / pilot / supply).
+        # Per-lane reversibility: build/match → full, pilot/supply →
+        # irreversible (resolved in run() via reversibility_override).
+        # Soft-skips when the fastlane CLI is not installed.
+        from mr_roboto.fastlane_run import fastlane as _fastlane
+        try:
+            res = await _fastlane(
+                mission_id=task.get("mission_id"),
+                lane=str(payload.get("lane") or ""),
+                workspace_path=payload.get("workspace_path") or None,
+                extra_args=list(payload.get("extra_args") or []) or None,
+                timeout_s=float(payload.get("timeout_s", 1200.0)),
+            )
+            if res.get("skipped"):
+                return Action(status="completed", result=res)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("error") or "fastlane failed",
                     result=res,
                 )
             return Action(status="completed", result=res)

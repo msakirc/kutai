@@ -299,6 +299,15 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # eas_submit: uploads a binary to TestFlight / Play internal — a real store
     # track. Testers receive it; cannot be cleanly un-done.
     "eas_submit": "irreversible",
+    # ---- Z5 T3b — free-first GitHub Actions CI + Fastlane -------------------
+    # gen_mobile_ci: writes .github/workflows/mobile.yml into the workspace —
+    # a single local file, git-reversible.
+    "gen_mobile_ci": "full",
+    # fastlane: reversibility is per-lane. build/match are local + re-runnable
+    # (full); pilot/supply push a binary to a store track (irreversible). The
+    # base entry is the conservative default — used only when the lane cannot
+    # be resolved; the dispatcher injects the lane-derived override otherwise.
+    "fastlane": "irreversible",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

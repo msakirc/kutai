@@ -161,6 +161,13 @@ async def _llm_cluster_draft(cluster: list[dict], lang: str) -> dict | None:
         # Extract text from TaskResult
         raw = None
         if task_result is not None:
+            if task_result.status != "completed":
+                logger.warning(
+                    "faq_regen: LLM task did not complete",
+                    status=task_result.status,
+                    error=getattr(task_result, "error", ""),
+                )
+                return None
             result_dict = task_result.result if hasattr(task_result, "result") else None
             if isinstance(result_dict, dict):
                 raw = result_dict.get("content") or result_dict.get("text") or result_dict.get("response")
@@ -204,9 +211,18 @@ async def _reindex_collection(collection_name: str, text: str) -> None:
 
     Delegates to ``src.memory.vector_store`` if available; degrades gracefully
     on import failure (Chroma not initialised yet in test environments).
+    If the per-language collection is not registered, falls back to the base
+    ``support_docs`` collection rather than silently no-oping.
     """
     try:
-        from src.memory.vector_store import embed_and_store
+        from src.memory.vector_store import embed_and_store, COLLECTIONS
+        # Fall back to the base collection if the per-language one is not registered.
+        if collection_name not in COLLECTIONS:
+            logger.info(
+                "faq_regen: collection not registered, falling back to support_docs",
+                requested=collection_name,
+            )
+            collection_name = "support_docs"
         await embed_and_store(
             text,
             {"source": "faq_regen"},

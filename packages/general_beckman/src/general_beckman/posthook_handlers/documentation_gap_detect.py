@@ -51,14 +51,24 @@ async def retrieve_docs(
     Falls back to empty list on import / runtime failure.
     """
     try:
-        from src.memory.vector_store import query as vs_query
+        from src.memory.vector_store import query as vs_query, COLLECTIONS
+        # If the per-language collection is not registered, fall back to the
+        # base "support_docs" collection rather than silently no-oping.
+        if collection_name not in COLLECTIONS:
+            logger.info(
+                "documentation_gap_detect: collection not registered, falling back to support_docs",
+                requested=collection_name,
+            )
+            collection_name = "support_docs"
         hits = await vs_query(question, collection=collection_name, top_k=top_k)
         # vs_query returns {id, text, metadata, distance}; normalise to
         # the {id, score, document} shape expected by callers.
         results = []
         for h in hits:
             distance = h.get("distance", 1.0)
-            # Convert L2 distance to a 0–1 similarity score (clamped).
+            # Convert cosine distance to a 0–1 similarity score (clamped).
+            # The collection uses hnsw:space=cosine, so distance ∈ [0, 2]
+            # and 1.0 - distance maps to a similarity score in [-1, 1], clamped to [0, 1].
             score = max(0.0, 1.0 - float(distance))
             results.append({
                 "id": h.get("id", ""),

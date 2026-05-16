@@ -174,7 +174,7 @@ async def test_faq_regen_cluster_gt3_drafts_entry():
     # Mock beckman.enqueue at the LLM boundary — the real API is called,
     # only the actual LLM execution is faked.
     mock_result = TaskResult(
-        status="done",
+        status="completed",
         result={"content": '{"question": "How do I reset or change my password?", "answer": "Go to Settings > Security > Reset Password."}'},
         error=None,
     )
@@ -458,9 +458,6 @@ async def test_gap_detect_writes_row_when_no_match(init_db):
 async def test_gap_detect_no_row_when_match_found(init_db):
     """documentation_gap_detect does NOT write a gap row when semantic search returns a hit."""
     import aiosqlite
-
-    mock_hit = MagicMock()
-    mock_hit.id = "doc-123"
 
     with patch(
         "packages.general_beckman.src.general_beckman.posthook_handlers.documentation_gap_detect.retrieve_docs",

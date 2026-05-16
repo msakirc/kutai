@@ -13,6 +13,16 @@ Public API
   → first matching path or None
 - ``promote_to_cross_mission(frame_path, cross_dir)`` → destination path
 - ``tokens_changed(workspace_path, current_hash)`` → bool
+
+Z5 T4a — device-mode frames
+---------------------------
+Resolution is purely by *basename*, so Z5 device-mode frames
+(``{route}_{device}_{mode}.png``, ``device_{serial}_android.png``,
+``device_ios_simulator.png``) route correctly with no change here: a
+device-mode captured frame resolves against a device-mode baseline of the
+same basename, and falls through to AUDIT mode when no baseline exists.
+Device and viewport frames never collide because the device slug is part of
+the filename.
 """
 from __future__ import annotations
 

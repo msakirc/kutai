@@ -17,7 +17,9 @@ Return shape
   When skipped, verdict is ``"pass"`` (skip = no gate).
 - ``findings``: list of dicts with keys
   ``{severity, file, url, kind, component, description, expected, observed,
-    breakpoint, route, mode, source}``.
+    breakpoint, route, mode, device, source}``.  ``device`` is non-empty for
+  Z5 device-mode frames (``capture_mode="device"``) and empty for viewport
+  frames; ``breakpoint`` is correspondingly empty for device frames.
 - ``skipped``: bool
 - ``reason``: str explaining skip (present when skipped, absent otherwise).
 
@@ -238,19 +240,71 @@ _FILENAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Z5 T4a — Playwright device-descriptor frames: ``{route}_{device}_{mode}.png``
+# where {breakpoint} is replaced by a device slug. Device slugs are known
+# (one per entry in capture_screenshots._DEVICE_DESCRIPTORS); matching them
+# explicitly avoids mis-parsing a multi-segment route slug as a device.
+_KNOWN_DEVICE_SLUGS = ("iphone_14", "pixel_7")
+
+# Z5 T4a — real-device frames from the adb / simctl arms have no route or
+# breakpoint, only a device identity: ``device_{serial}_android.png`` or
+# ``device_ios_simulator.png``.
+_REAL_DEVICE_RE = re.compile(r"^device_(?P<device>.+)\.png$", re.IGNORECASE)
+
 
 def _parse_filename(path: str) -> dict[str, str]:
-    """Extract breakpoint/route/mode from a filename like ``{route}_{mode}_{bp}.png``."""
+    """Extract route / mode / breakpoint / device from a captured frame name.
+
+    Recognised shapes (in priority order):
+
+    - ``device_{serial}_android.png`` / ``device_ios_simulator.png``
+      (Z5 adb / simctl arms) → ``device`` set, route/mode/breakpoint empty.
+    - ``{route}_{device}_{mode}.png`` (Z5 Playwright device-descriptor arm)
+      where the middle segment is a known device slug → ``device`` + route
+      + mode set, breakpoint empty.
+    - ``{route}_{mode}_{breakpoint}.png`` (Z4 viewport arm) → route + mode +
+      breakpoint set, device empty.
+
+    Always returns all four keys; unparsable fields are empty strings.
+    """
     basename = os.path.basename(path)
+
+    # 1. Real-device frame (adb / simctl) — no route, no breakpoint.
+    rd = _REAL_DEVICE_RE.match(basename)
+    if rd:
+        return {"route": "", "mode": "", "breakpoint": "", "device": rd.group("device")}
+
+    # 2. Playwright device-descriptor frame — middle segment is a device slug.
+    if basename.lower().endswith(".png"):
+        stem = basename[: -len(".png")]
+        for dslug in _KNOWN_DEVICE_SLUGS:
+            token = f"_{dslug}_"
+            idx = stem.lower().find(token)
+            if idx > 0:
+                route = stem[:idx]
+                mode = stem[idx + len(token):]
+                # Only treat as a device frame when the mode tail has no
+                # further underscore (a real device frame is exactly
+                # route + device + mode).
+                if mode and "_" not in mode:
+                    return {
+                        "route": route,
+                        "mode": mode,
+                        "breakpoint": "",
+                        "device": dslug,
+                    }
+
+    # 3. Viewport frame ``{route}_{mode}_{breakpoint}.png``.
     m = _FILENAME_RE.match(basename)
     if m:
         return {
             "route": m.group("route"),
             "mode": m.group("mode"),
             "breakpoint": m.group("breakpoint"),
+            "device": "",
         }
-    # Could not parse — return empty strings
-    return {"route": "", "mode": "", "breakpoint": ""}
+    # Could not parse — return empty strings.
+    return {"route": "", "mode": "", "breakpoint": "", "device": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +529,7 @@ async def visual_review(
                 "breakpoint": file_meta["breakpoint"],
                 "route": file_meta["route"],
                 "mode": file_meta["mode"],
+                "device": file_meta.get("device", ""),
                 "source": "visual_review",
             }
             all_findings.append(finding)

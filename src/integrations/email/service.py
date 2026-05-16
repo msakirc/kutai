@@ -152,11 +152,20 @@ async def send_email(
     provider_cls = get_provider_class(provider_name)
     provider = provider_cls(api_key=api_key or "", from_domain=from_domain or "")
 
+    # CRLF sanitization — strip \r and \n from subject + header names/values
+    # so a caller-supplied value can't inject extra SMTP headers.
+    safe_subject = _strip_crlf(subject)
+    safe_headers: dict[str, str] | None = None
+    if headers:
+        safe_headers = {
+            _strip_crlf(str(k)): _strip_crlf(str(v)) for k, v in headers.items()
+        }
+
     result = await provider.send(
         to=actual_to,
-        subject=subject,
+        subject=safe_subject,
         body_md=body_md,
-        headers=headers,
+        headers=safe_headers,
         idempotency_key=idempotency_key,
     )
 
@@ -264,6 +273,11 @@ async def handle_webhook_event(
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _strip_crlf(value: str) -> str:
+    """Remove CR/LF characters to prevent email header injection."""
+    return value.replace("\r", "").replace("\n", "")
 
 
 async def _resolve_api_key(api_key_ref: str | None) -> str | None:

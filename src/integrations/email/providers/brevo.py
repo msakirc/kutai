@@ -10,6 +10,7 @@ Brevo webhook event types (v3 API):
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 from typing import Any
@@ -54,7 +55,7 @@ class BrevoProvider(EmailProvider):
             "to": [{"email": to}],
             "subject": subject,
             "textContent": body_md,
-            "htmlContent": f"<pre>{body_md}</pre>",
+            "htmlContent": f"<pre>{html.escape(body_md)}</pre>",
         }
         if headers:
             payload["headers"] = headers

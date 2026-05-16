@@ -498,6 +498,21 @@ class TelegramInterface:
                 "Failed to restore clarification state: %s", e,
             )
 
+    def _is_admin_chat(self, chat_id) -> bool:
+        """Return True if ``chat_id`` is the configured admin/owner chat.
+
+        When ``TELEGRAM_ADMIN_CHAT_ID`` is unset the bot is single-tenant
+        and every chat is treated as the owner (gate is a no-op). When it
+        is set, only that chat passes — used to gate privileged commands
+        (e.g. /lifecycle, which triggers real email sends).
+        """
+        if not TELEGRAM_ADMIN_CHAT_ID:
+            return True
+        try:
+            return int(chat_id) == int(TELEGRAM_ADMIN_CHAT_ID)
+        except (TypeError, ValueError):
+            return False
+
     async def _reply(self, update_or_msg, text: str, **kwargs):
         """Send a reply with the current keyboard state.
 
@@ -11744,6 +11759,16 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         """
         chat_id = update.effective_chat.id
         args = context.args or []
+
+        # Owner-only — /lifecycle triggers real email sends. Reject any chat
+        # that is not the configured admin chat. When no admin chat is
+        # configured the bot is single-tenant and the gate is a no-op.
+        if not self._is_admin_chat(chat_id):
+            await self._reply(
+                update,
+                "Not authorized — /lifecycle is restricted to the bot owner.",
+            )
+            return
 
         if not args:
             await self._reply(

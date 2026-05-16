@@ -630,3 +630,118 @@ async def test_send_email_no_config_returns_error(tmp_path, monkeypatch):
 
     assert result["status"] == "error"
     assert "config" in result.get("reason", "").lower() or "not found" in result.get("reason", "").lower()
+
+
+# ── Z7 fix-pass: CRLF header-injection sanitization ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_email_strips_crlf_from_subject_and_headers(tmp_path, monkeypatch):
+    """send_email must strip \\r and \\n from subject + header names/values
+    so a caller-supplied value cannot inject extra SMTP headers."""
+    db_mod = await _setup_db(tmp_path, monkeypatch)
+    await _seed_product_config(db_mod, provider="brevo", monthly_quota=300)
+
+    monkeypatch.setenv("KUTAY_DEV_ALLOW_INSECURE_VAULT", "1")
+    from src.security import credential_store as cs
+
+    async def _fake_get_cred(name):
+        return {"api_key": "brevo-test-key"}
+
+    monkeypatch.setattr(cs, "get_credential", _fake_get_cred)
+
+    captured = {}
+
+    from src.integrations.email.providers import brevo as brevo_mod
+
+    async def _fake_send(self, to, subject, body_md, headers=None, idempotency_key=None):
+        captured["subject"] = subject
+        captured["headers"] = headers
+        return {"status": "sent", "provider": "brevo", "message_id": "msg-crlf"}
+
+    monkeypatch.setattr(brevo_mod.BrevoProvider, "send", _fake_send)
+
+    from src.integrations.email.service import send_email
+
+    result = await send_email(
+        product_id="prod-123",
+        to="user@test.com",
+        subject="Hello\r\nBcc: attacker@evil.com",
+        body_md="body",
+        headers={
+            "X-Custom\r\nInjected": "value\nX-Evil: yes",
+        },
+    )
+
+    assert result["status"] == "sent"
+    # Subject must have no CR/LF left.
+    assert "\r" not in captured["subject"]
+    assert "\n" not in captured["subject"]
+    assert captured["subject"] == "HelloBcc: attacker@evil.com"
+    # Header name + value must both be sanitized.
+    assert captured["headers"] is not None
+    for name, value in captured["headers"].items():
+        assert "\r" not in name and "\n" not in name
+        assert "\r" not in value and "\n" not in value
+
+
+def test_strip_crlf_helper():
+    """The _strip_crlf helper removes both CR and LF."""
+    from src.integrations.email.service import _strip_crlf
+
+    assert _strip_crlf("a\r\nb") == "ab"
+    assert _strip_crlf("plain") == "plain"
+    assert _strip_crlf("\n\r\n") == ""
+
+
+# ── Z7 fix-pass: Brevo htmlContent HTML escaping ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_brevo_escapes_html_in_body(monkeypatch):
+    """BrevoProvider.send must HTML-escape body_md before interpolating it
+    into the <pre>...</pre> htmlContent so markup cannot be injected."""
+    from src.integrations.email.providers import brevo as brevo_mod
+
+    captured = {}
+
+    class _FakeResp:
+        status = 201
+
+        async def json(self, content_type=None):
+            return {"messageId": "msg-html"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, headers=None, data=None, timeout=None):
+            captured["data"] = data
+            return _FakeResp()
+
+    monkeypatch.setattr(brevo_mod.aiohttp, "ClientSession", _FakeSession)
+
+    provider = brevo_mod.BrevoProvider(api_key="k", from_domain="example.com")
+    result = await provider.send(
+        to="user@test.com",
+        subject="Subj",
+        body_md="<script>alert(1)</script> & friends",
+    )
+
+    assert result["status"] == "sent"
+    payload = json.loads(captured["data"])
+    # The raw markup must not survive into htmlContent.
+    assert "<script>" not in payload["htmlContent"]
+    assert "&lt;script&gt;" in payload["htmlContent"]
+    assert "&amp;" in payload["htmlContent"]
+    # textContent stays raw (not HTML).
+    assert payload["textContent"] == "<script>alert(1)</script> & friends"

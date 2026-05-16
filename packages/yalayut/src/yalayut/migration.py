@@ -16,7 +16,7 @@ from pathlib import Path
 import aiosqlite
 
 from yalayut.index import embedding_to_blob, store
-from yalayut.manifest import parse_manifest_yaml
+from yalayut.manifest import canonical_name, parse_manifest_yaml
 from yalayut.schema import ensure_yalayut_schema
 from yalayut.seed.seed_data import (
     seed_disabled_imports, seed_owners, seed_sources, load_seed_manifests,
@@ -100,6 +100,17 @@ async def install_seed_manifests(db: aiosqlite.Connection) -> int:
     inserted = 0
     for manifest_path, yaml_text in seed_pairs:
         manifest = parse_manifest_yaml(yaml_text)
+        # M1 fix: recompute the canonical name using the same logic synthesize()
+        # uses (canonical_name(owner_slug, name_original)) so that a seed row
+        # and a cron-discovered row for the same upstream artifact share the same
+        # name and collide on UNIQUE(source,name,version) instead of creating a
+        # duplicate.  The seed YAMLs used slug "superpowers" but the GitHub repo
+        # owner is "obra" — synthesize() correctly derives "obra-brainstorming".
+        computed_name = canonical_name(
+            manifest.owner or "", manifest.name_original
+        )
+        if computed_name:
+            manifest.name = computed_name
         # Curated seeds are T0 by definition (hand-authored + vetted offline).
         tier = 0
         audit: dict = {"source_max": 0, "check_maxes": {}}

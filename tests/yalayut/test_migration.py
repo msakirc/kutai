@@ -1,7 +1,9 @@
 """Migration: existing skills rows -> yalayut_index."""
 import pytest
 
-from yalayut.migration import migrate_skills_to_yalayut, run_full_migration
+from yalayut.migration import (
+    migrate_skills_to_yalayut, run_full_migration, install_seed_manifests,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -137,3 +139,50 @@ async def test_run_full_migration_seed_index_is_idempotent(
     )
     count = (await cur.fetchone())["c"]
     assert count == 20, f"double-run must not duplicate seeds; got {count} rows"
+
+
+# ── M1 regression ──────────────────────────────────────────────────────────────
+
+async def test_seed_and_cron_agree_on_canonical_name(yalayut_db, monkeypatch):
+    """M1: seed-installed name must match the name synthesize() produces for
+    the same upstream artifact (e.g. brainstorming from obra/superpowers).
+    Before the fix seeds store 'superpowers-brainstorming' while cron stores
+    'obra-brainstorming' -> two rows per skill under UNIQUE(source,name,version).
+    """
+    from yalayut.contracts import ArtifactRef
+    from yalayut.discovery.synthesize import synthesize
+
+    async def fake_embed(text, is_query=True):
+        return [1.0] + [0.0] * 767
+    monkeypatch.setattr("yalayut.migration._embed", fake_embed)
+
+    # Install seeds (fixes H1).
+    await install_seed_manifests(yalayut_db)
+
+    # Simulate what synthesize() produces for brainstorming from obra/superpowers
+    ref = ArtifactRef(
+        source_id="github:obra/superpowers@/skills",
+        name="brainstorming",
+        fetch_url="https://raw/x",
+        owner="obra",
+    )
+    raw_body = (
+        b"---\nname: brainstorming\ndescription: Brainstorm before creative work."
+        b"\nlicense: MIT\n---\n\nBody."
+    )
+    manifest_from_cron, _ = synthesize(ref, raw_body)
+
+    # The seed-installed name must equal the cron-synthesized name.
+    cur = await yalayut_db.execute(
+        "SELECT name FROM yalayut_index "
+        "WHERE source='github:obra/superpowers@/skills' "
+        "AND name_original='brainstorming'"
+    )
+    row = await cur.fetchone()
+    assert row is not None, "seed brainstorming must be in the index"
+    seed_name = row["name"]
+    cron_name = manifest_from_cron.name
+    assert seed_name == cron_name, (
+        f"seed name {seed_name!r} != cron name {cron_name!r}; "
+        "a cron run would insert a duplicate row"
+    )

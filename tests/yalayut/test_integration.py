@@ -58,9 +58,14 @@ async def test_full_pipeline(yalayut_db, monkeypatch, tmp_path):
     result = await run_cron_discovery(yalayut_db)
     assert result["artifacts_indexed"] == 2
 
-    # both artifacts indexed at T0 (trusted source + trusted owner)
+    # both cron-discovered artifacts are indexed at T0 (trusted source + owner).
+    # Note: run_full_migration() now also installs the 20 seed manifests, so the
+    # full index has more rows — filter to just the two fetched by fake_discover
+    # by checking their name_original values (pdf/brainstorming from cron path;
+    # the seeds for these names were already updated by cron via upsert).
     cur = await yalayut_db.execute(
-        "SELECT name, vet_tier FROM yalayut_index WHERE source != 'internal'"
+        "SELECT name, vet_tier FROM yalayut_index "
+        "WHERE name IN ('anthropics-pdf', 'obra-brainstorming')"
     )
     rows = await cur.fetchall()
     assert {r["name"] for r in rows} == {"anthropics-pdf",

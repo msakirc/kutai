@@ -208,6 +208,58 @@ def _apply_hint_from_targets(
         context["tools_hint"] = [t for t in tools_hint if t != "write_file"]
 
 
+# Phases whose steps default to recipe_lookup=True (well-known recipes
+# fast-forward these): scaffold, auth, api, deploy, test-setup, migration.
+# Everything else (design, architecture, debugging, synthesis) defaults
+# to False — bespoke reasoning work, no external recipe applies.
+_RECIPE_LOOKUP_PHASES = frozenset({
+    "scaffold", "auth", "api", "deploy", "test-setup", "test_setup",
+    "migration",
+})
+_NO_RECIPE_PHASES = frozenset({
+    "design", "architecture", "debugging", "debug", "synthesis",
+})
+
+
+def _default_recipe_lookup(step: dict) -> bool:
+    """Decide the default recipe_lookup when a step omits the flag.
+
+    Resolution order: explicit step flag → phase-based default → False.
+    The phase is read from the step's ``phase`` key, else inferred from
+    a leading title keyword.
+    """
+    phase = (step.get("phase") or "").strip().lower()
+    if phase in _RECIPE_LOOKUP_PHASES:
+        return True
+    if phase in _NO_RECIPE_PHASES:
+        return False
+    title = (step.get("title") or step.get("name") or "").lower()
+    if any(k in title for k in
+           ("scaffold", "auth", "deploy", "migration", "test setup")):
+        return True
+    return False
+
+
+def build_step_context(step: dict, *, mission_id: int) -> dict:
+    """Assemble the per-step task context dict, including recipe fields.
+
+    recipe_lookup: explicit step value if present, else phase default.
+    recipe_hint:   passed through verbatim when the step declares it.
+    """
+    ctx: dict = {
+        "is_workflow_step": True,
+        "workflow_step_id": step.get("id"),
+        "mission_id": mission_id,
+    }
+    if "recipe_lookup" in step:
+        ctx["recipe_lookup"] = bool(step["recipe_lookup"])
+    else:
+        ctx["recipe_lookup"] = _default_recipe_lookup(step)
+    if step.get("recipe_hint"):
+        ctx["recipe_hint"] = step["recipe_hint"]
+    return ctx
+
+
 def expand_steps_to_tasks(
     steps: list[dict],
     mission_id: str,
@@ -379,6 +431,23 @@ def expand_steps_to_tasks(
         if isinstance(step_ctx, dict):
             for k, v in step_ctx.items():
                 context[k] = v
+
+        # Yalayut Phase 2 — per-step recipe fields.
+        # recipe_lookup gates intersect.flash (False = skip the catalog query
+        # entirely for design/architecture steps where external recipes add
+        # noise rather than signal). recipe_hint is the query hint bonus.
+        # Use build_step_context() logic: explicit step value wins over the
+        # phase-based default. Only inject these AFTER step_ctx merge so a
+        # step-level context dict can override if needed.
+        _recipe_lookup_val = step.get("recipe_lookup")
+        if _recipe_lookup_val is not None:
+            context["recipe_lookup"] = bool(_recipe_lookup_val)
+        else:
+            # Compute default only if not already set by step_ctx
+            if "recipe_lookup" not in context:
+                context["recipe_lookup"] = _default_recipe_lookup(step)
+        if step.get("recipe_hint") and "recipe_hint" not in context:
+            context["recipe_hint"] = step["recipe_hint"]
 
         # Mechanical-executor steps (mr_roboto): propagate executor tag + payload
         # into context so the orchestrator can route them without an LLM call.

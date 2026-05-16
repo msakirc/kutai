@@ -11,6 +11,7 @@ registering more entries.
 from __future__ import annotations
 
 import aiosqlite
+import yaml
 
 from yalayut.contracts import SourceConfig
 from yalayut.discovery.sources.github_path import GithubPathAdapter
@@ -85,6 +86,30 @@ async def run_cron_discovery(db: aiosqlite.Connection) -> dict:
                 body_path = await adapter.fetch(ref)
                 raw = body_path.read_bytes()
                 manifest, body = synthesize(ref, raw)
+                # H3 fix: write manifest.yaml next to SKILL.md so that
+                # _to_artifact can load intent_keywords/inputs_schema via
+                # _load_manifest_fields().  The YAML shape mirrors
+                # parse_manifest_yaml()'s expected keys (round-trip safe).
+                manifest_yaml_path = body_path.parent / "manifest.yaml"
+                manifest_dict = {
+                    "name": manifest.name,
+                    "name_original": manifest.name_original,
+                    "version": manifest.version,
+                    "artifact_type": manifest.artifact_type,
+                    "kind": manifest.kind,
+                    "source": manifest.source,
+                    "owner": manifest.owner,
+                    "license": manifest.license,
+                    "mechanizable": manifest.mechanizable,
+                    "model_hint": manifest.model_hint,
+                    "applies_to": manifest.applies_to,
+                    "intent_keywords": list(manifest.intent_keywords),
+                    "inputs_schema": dict(manifest.inputs_schema),
+                }
+                manifest_yaml_path.write_text(
+                    yaml.safe_dump(manifest_dict, allow_unicode=True),
+                    encoding="utf-8",
+                )
             except Exception as e:
                 errors.append(f"fetch {ref.name}: {type(e).__name__}: {e}")
                 continue

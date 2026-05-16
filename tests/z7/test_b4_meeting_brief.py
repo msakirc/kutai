@@ -344,6 +344,217 @@ class TestBriefGeneration:
         assert "Alice" in md
         assert "Discuss pricing" in md
 
+    def test_compose_brief_md_llm_unavailable_no_placeholder(self):
+        """When llm_unavailable=True the brief shows a clear 'unavailable' message,
+        NOT the misleading 'will appear here after brief generation' placeholder."""
+        from src.app.meetings import (
+            compose_brief_md,
+            _TALKING_POINTS_PLACEHOLDER,
+        )
+        ctx = {
+            "contact": {"display_name": "Bob"},
+            "meeting": {"purpose": "Sync", "scheduled_for": "2026-05-17 09:00:00"},
+            "interactions": [],
+            "follow_ups": [],
+            "mentions": [],
+            "changelog": [],
+        }
+        md = compose_brief_md(ctx, llm_unavailable=True)
+        assert "unavailable" in md.lower()
+        assert _TALKING_POINTS_PLACEHOLDER not in md, (
+            "Failed-LLM brief must NOT ship the misleading placeholder"
+        )
+        assert "will appear here" not in md
+
+
+# ===========================================================================
+# 5b. meeting/brief — REAL LLM-enqueue path (de-mocked: only the model boundary
+#     is faked; the real _call_llm_meeting_brief + enqueue plumbing runs).
+# ===========================================================================
+
+
+# The literal stub string that the pre-fix handler shipped on every brief.
+_DEAD_PLACEHOLDER = "(LLM-drafted talking points will appear here"
+
+
+def _make_task_result(status="completed", content="", error=None):
+    """Build a TaskResult-shaped object the way beckman returns it."""
+    import types
+    result = {"content": content} if content is not None else None
+    return types.SimpleNamespace(status=status, error=error, result=result)
+
+
+class TestMeetingBriefLLMPath:
+    """Exercise the REAL _call_llm_meeting_brief → general_beckman.enqueue path.
+
+    Only the outermost beckman.enqueue boundary is faked (it stands in for the
+    LLM-model call).  The prompt build, spec build, await_inline path, parsing
+    and extraction all run for real.  A test that passes with the stub
+    reintroduced would be tautological — so we assert the dead placeholder
+    string never appears in the output.
+    """
+
+    @pytest.mark.asyncio
+    async def test_call_llm_meeting_brief_parses_real_response(self, monkeypatch):
+        """_call_llm_meeting_brief returns parsed talking points + asks from a
+        faithful fake enqueue returning a JSON-content TaskResult."""
+        import general_beckman as _gb
+        from general_beckman.lanes import LANE_ONESHOT
+        import src.app.meetings as _m
+
+        captured = {}
+
+        async def _fake_enqueue(spec, *, lane=None, await_inline=False, **kw):
+            # Faithful: assert the verb used the documented contract.
+            captured["lane"] = lane
+            captured["await_inline"] = await_inline
+            captured["spec"] = spec
+            return _make_task_result(
+                status="completed",
+                content=json.dumps({
+                    "talking_points": ["Confirm Q3 renewal", "Walk through new dashboard"],
+                    "suggested_asks": ["Ask for a referral intro"],
+                }),
+            )
+
+        monkeypatch.setattr(_gb, "enqueue", _fake_enqueue)
+
+        ctx = {
+            "contact": {"display_name": "Carol", "category": "customer"},
+            "meeting": {"purpose": "Renewal", "scheduled_for": "2026-05-17 15:00:00"},
+            "interactions": [
+                {"kind": "email", "summary": "Sent pricing", "logged_at": "2026-05-10 10:00:00"}
+            ],
+            "follow_ups": [],
+            "mentions": [],
+            "changelog": [],
+        }
+        tps, asks = await _m._call_llm_meeting_brief(ctx)
+
+        assert tps == ["Confirm Q3 renewal", "Walk through new dashboard"]
+        assert asks == ["Ask for a referral intro"]
+        # Verify the real contract was honoured.
+        assert captured["await_inline"] is True
+        assert captured["lane"] == LANE_ONESHOT
+        assert captured["spec"]["context"]["llm_call"]["raw_dispatch"] is True
+
+    @pytest.mark.asyncio
+    async def test_call_llm_meeting_brief_non_completed_returns_empty(self, monkeypatch):
+        """Non-'completed' status → ([], []) so the caller degrades gracefully."""
+        import general_beckman as _gb
+        import src.app.meetings as _m
+
+        async def _fake_enqueue(spec, *, lane=None, await_inline=False, **kw):
+            return _make_task_result(status="exhausted", error="budget", content=None)
+
+        monkeypatch.setattr(_gb, "enqueue", _fake_enqueue)
+
+        tps, asks = await _m._call_llm_meeting_brief({"contact": {}, "meeting": {}})
+        assert tps == []
+        assert asks == []
+
+    @pytest.mark.asyncio
+    async def test_call_llm_meeting_brief_enqueue_raises_returns_empty(self, monkeypatch):
+        """enqueue raising → ([], []), no crash."""
+        import general_beckman as _gb
+        import src.app.meetings as _m
+
+        async def _fake_enqueue(spec, *, lane=None, await_inline=False, **kw):
+            raise RuntimeError("beckman down")
+
+        monkeypatch.setattr(_gb, "enqueue", _fake_enqueue)
+
+        tps, asks = await _m._call_llm_meeting_brief({"contact": {}, "meeting": {}})
+        assert tps == []
+        assert asks == []
+
+    @pytest.mark.asyncio
+    async def test_meeting_brief_verb_ships_real_llm_output(self, db, monkeypatch):
+        """End-to-end: mr_roboto.run('meeting/brief') drafts via the LLM and the
+        persisted brief_md contains the REAL LLM output — never the dead stub."""
+        import general_beckman as _gb
+        import mr_roboto
+
+        contact_id = await _add_contact(db)
+        mid = await _create_meeting(db, contact_id=contact_id, offset_minutes=30)
+
+        async def _fake_enqueue(spec, *, lane=None, await_inline=False, **kw):
+            assert await_inline is True, "verb must use await_inline=True"
+            return _make_task_result(
+                status="completed",
+                content=json.dumps({
+                    "talking_points": ["Review the onboarding blockers"],
+                    "suggested_asks": ["Request a case-study quote"],
+                }),
+            )
+
+        monkeypatch.setattr(_gb, "enqueue", _fake_enqueue)
+
+        task = {
+            "id": 1,
+            "mission_id": 1,
+            "payload": {
+                "action": "meeting/brief",
+                "meeting_id": mid,
+                "product_id": "prod1",
+            },
+        }
+        result = await mr_roboto.run(task)
+        assert result.status == "completed", getattr(result, "error", "")
+
+        async with db.execute(
+            "SELECT brief_md FROM meetings WHERE meeting_id=?", (mid,)
+        ) as cur:
+            row = await cur.fetchone()
+        brief_md = row[0] or ""
+
+        assert "Review the onboarding blockers" in brief_md, (
+            "brief must contain the real LLM talking points"
+        )
+        assert "Request a case-study quote" in brief_md
+        assert _DEAD_PLACEHOLDER not in brief_md, (
+            "brief must NEVER contain the dead stub placeholder — "
+            "a test that passes with the stub reintroduced is tautological"
+        )
+
+    @pytest.mark.asyncio
+    async def test_meeting_brief_verb_degrades_when_llm_fails(self, db, monkeypatch):
+        """When the LLM call fails the verb still completes, persists a brief
+        with a clear 'unavailable' message, and never ships the dead stub."""
+        import general_beckman as _gb
+        import mr_roboto
+
+        contact_id = await _add_contact(db)
+        mid = await _create_meeting(db, contact_id=contact_id, offset_minutes=30)
+
+        async def _fake_enqueue(spec, *, lane=None, await_inline=False, **kw):
+            raise RuntimeError("LLM unavailable")
+
+        monkeypatch.setattr(_gb, "enqueue", _fake_enqueue)
+
+        task = {
+            "id": 1,
+            "mission_id": 1,
+            "payload": {
+                "action": "meeting/brief",
+                "meeting_id": mid,
+                "product_id": "prod1",
+            },
+        }
+        result = await mr_roboto.run(task)
+        assert result.status == "completed", getattr(result, "error", "")
+
+        async with db.execute(
+            "SELECT brief_md FROM meetings WHERE meeting_id=?", (mid,)
+        ) as cur:
+            row = await cur.fetchone()
+        brief_md = row[0] or ""
+
+        assert "unavailable" in brief_md.lower()
+        assert _DEAD_PLACEHOLDER not in brief_md
+        # The data-layer sections must still be intact.
+        assert "# Meeting Brief" in brief_md
+
 
 # ===========================================================================
 # 6. meeting/outcome_prompt verb

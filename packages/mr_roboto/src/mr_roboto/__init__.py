@@ -3581,23 +3581,47 @@ async def _run_dispatch(task: dict) -> Action:
     # ── Z7 T4 B4: meeting brief auto-generation verbs ────────────────────────
 
     if action == "meeting/brief":
-        # Z7 B4 — LLM-bound brief generation (MAIN_WORK lane).
+        # Z7 B4 — LLM-bound brief generation.
         # Pulls: last 5 interactions, open follow-ups, optional A11/B2 data.
-        # Writes brief_md to meetings row; surfaces result as founder_action card.
-        # Degrades gracefully if A11 (mentions) or B2 (changelog) are absent.
-        from src.app.meetings import build_brief_context, compose_brief_md
+        # Drafts talking points + suggested asks via the LLM (beckman ONESHOT
+        # lane, await_inline).  Writes brief_md to meetings row; surfaces result
+        # as a Telegram notify.
+        # Degrades gracefully if A11 (mentions) or B2 (changelog) are absent,
+        # and if the LLM draft fails (renders an explicit "unavailable" message
+        # rather than a misleading placeholder).
+        from src.app.meetings import (
+            build_brief_context,
+            compose_brief_md,
+            _call_llm_meeting_brief,
+        )
         try:
             meeting_id = int(payload.get("meeting_id") or 0)
             product_id = str(payload.get("product_id") or "default")
 
             ctx = await build_brief_context(meeting_id=meeting_id, product_id=product_id)
 
-            # Request LLM talking points via beckman (MAIN_WORK lane).
-            # For now compose the brief with a structural stub; the beckman
-            # enqueue pattern produces talking points asynchronously.
-            # When the LLM response arrives it updates brief_md via a follow-up
-            # mechanical step.  This verb completes the data-gathering phase.
-            brief_md = compose_brief_md(ctx)
+            # Draft talking points + suggested asks via the LLM (await_inline).
+            talking_points: list[str] = []
+            suggested_asks: list[str] = []
+            llm_failed = False
+            try:
+                talking_points, suggested_asks = await _call_llm_meeting_brief(ctx)
+            except Exception as _llm_exc:
+                from src.infra.logging_config import get_logger as _gl
+                _gl("mr_roboto.meeting_brief").warning(
+                    "meeting/brief: LLM draft raised; degrading gracefully",
+                    error=str(_llm_exc),
+                )
+                llm_failed = True
+            if not talking_points and not suggested_asks:
+                llm_failed = True
+
+            brief_md = compose_brief_md(
+                ctx,
+                talking_points=talking_points,
+                suggested_asks=suggested_asks,
+                llm_unavailable=llm_failed,
+            )
 
             # Persist brief_md to meetings row
             from src.infra.db import get_db

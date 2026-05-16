@@ -20,6 +20,7 @@ B4 hooks into:
 """
 from __future__ import annotations
 
+import json as _json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,6 +29,16 @@ from src.infra.logging_config import get_logger
 logger = get_logger("app.meetings")
 
 _DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+# Placeholder that compose_brief_md emits when no talking points are supplied.
+# Used as a guard so the brief never silently ships a stub.
+_TALKING_POINTS_PLACEHOLDER = (
+    "_(LLM-drafted talking points will appear here after brief generation)_"
+)
+_TALKING_POINTS_UNAVAILABLE = (
+    "_(Talking points unavailable — LLM draft failed; "
+    "review the context sections above and prepare manually.)_"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -257,15 +268,224 @@ async def build_brief_context(meeting_id: int, product_id: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# LLM talking-points / suggested-asks helper (testable via monkeypatch)
+# ---------------------------------------------------------------------------
+
+
+def _summarise_ctx_for_llm(ctx: dict) -> str:
+    """Render the brief context dict into a compact text block for the LLM prompt."""
+    contact = ctx.get("contact") or {}
+    meeting = ctx.get("meeting") or {}
+    name = contact.get("display_name") or contact.get("handle") or "the contact"
+    category = contact.get("category") or "unknown"
+    purpose = meeting.get("purpose") or "(no purpose stated)"
+    scheduled = meeting.get("scheduled_for") or "?"
+
+    parts: list[str] = [
+        f"Contact: {name} (category: {category})",
+        f"Meeting purpose: {purpose}",
+        f"Scheduled for: {scheduled}",
+    ]
+
+    interactions = ctx.get("interactions") or []
+    if interactions:
+        lines = ["Recent interactions:"]
+        for ix in interactions[:5]:
+            when = ix.get("logged_at") or "?"
+            kind = ix.get("kind") or "other"
+            summary = ix.get("summary") or "(no summary)"
+            lines.append(f"  - {when} [{kind}] {summary}")
+        parts.append("\n".join(lines))
+    else:
+        parts.append("Recent interactions: (none on record)")
+
+    follow_ups = ctx.get("follow_ups") or []
+    if follow_ups:
+        lines = ["Open follow-ups:"]
+        for fu in follow_ups[:5]:
+            kind = fu.get("kind") or "?"
+            summary = fu.get("summary") or "(no summary)"
+            due = fu.get("follow_up_at") or "?"
+            lines.append(f"  - [{kind}] {summary} (due {due})")
+        parts.append("\n".join(lines))
+    else:
+        parts.append("Open follow-ups: (none pending)")
+
+    changelog = ctx.get("changelog") or []
+    if changelog:
+        lines = ["Recent product changes:"]
+        for entry in changelog[:3]:
+            version = entry.get("version") or "?"
+            title = entry.get("title") or "(no title)"
+            lines.append(f"  - v{version}: {title}")
+        parts.append("\n".join(lines))
+
+    mentions = ctx.get("mentions") or []
+    if mentions:
+        lines = ["Recent mentions:"]
+        for m in mentions[:5]:
+            source = m.get("source") or "?"
+            snippet = (m.get("snippet") or "")[:120]
+            lines.append(f"  - [{source}] {snippet}")
+        parts.append("\n".join(lines))
+
+    return "\n".join(parts)
+
+
+async def _call_llm_meeting_brief(ctx: dict) -> tuple[list[str], list[str]]:
+    """Draft talking points + suggested asks for a meeting via the LLM.
+
+    Uses the beckman ONESHOT lane with ``await_inline=True`` — returns a
+    ``TaskResult`` synchronously.  Returns ``(talking_points, suggested_asks)``;
+    on any failure returns ``([], [])`` so the caller can degrade gracefully.
+
+    Extracted as a module-level function so tests can monkeypatch
+    ``general_beckman.enqueue`` (the outermost model boundary) and exercise the
+    real parsing/extraction path.
+    """
+    import time
+    import uuid
+
+    from general_beckman import enqueue
+    from general_beckman.lanes import LANE_ONESHOT
+
+    ctx_summary = _summarise_ctx_for_llm(ctx)
+
+    prompt = (
+        "You are a chief-of-staff preparing a founder for an upcoming meeting.\n"
+        "Given the meeting context below, produce:\n"
+        "  - talking_points: 3-5 concise, specific points the founder should raise.\n"
+        "  - suggested_asks: 1-2 concrete asks the founder could make of the contact.\n\n"
+        "Meeting context:\n"
+        f"{ctx_summary}\n\n"
+        "Rules:\n"
+        "- Be specific and grounded in the context — reference real interactions, "
+        "follow-ups, or product changes shown above.\n"
+        "- Each talking point and ask is one short sentence.\n"
+        "- Do NOT invent facts not present in the context.\n"
+        'Return ONLY a JSON object: '
+        '{"talking_points": ["..."], "suggested_asks": ["..."]}'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+
+    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
+    spec = {
+        "title": f"meeting_brief:llm:{_suffix}",
+        "description": "Draft meeting talking points and suggested asks.",
+        "agent_type": "reviewer",
+        "kind": "overhead",
+        "priority": 2,
+        "context": {
+            "llm_call": {
+                "raw_dispatch": True,
+                "call_category": "overhead",
+                "task": "reviewer",
+                "agent_type": "reviewer",
+                "difficulty": 3,
+                "messages": messages,
+                "failures": [],
+                "estimated_input_tokens": 500,
+                "estimated_output_tokens": 300,
+            },
+        },
+    }
+
+    try:
+        task_result = await enqueue(spec, lane=LANE_ONESHOT, await_inline=True)
+    except Exception as exc:
+        logger.warning("meeting_brief: LLM enqueue failed: %r", exc)
+        return [], []
+
+    if getattr(task_result, "status", None) != "completed":
+        logger.warning(
+            "meeting_brief: LLM task did not complete (status=%s): %s",
+            getattr(task_result, "status", None),
+            getattr(task_result, "error", ""),
+        )
+        return [], []
+
+    result_data = getattr(task_result, "result", None) or {}
+    content = result_data.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    raw_str = str(content or "").strip()
+
+    parsed = _parse_brief_llm_response(raw_str)
+    if parsed is None:
+        logger.warning(
+            "meeting_brief: LLM returned unparseable response: %r", raw_str[:200]
+        )
+        return [], []
+
+    talking_points, suggested_asks = parsed
+    return talking_points, suggested_asks
+
+
+def _parse_brief_llm_response(raw: str) -> tuple[list[str], list[str]] | None:
+    """Extract (talking_points, suggested_asks) from an LLM response string.
+
+    Accepts a raw JSON object, a fenced JSON block, or a JSON object embedded
+    in surrounding prose.  Returns ``None`` when no usable structure is found.
+    """
+    if not raw:
+        return None
+
+    text = raw.strip()
+    # Strip code fences if present.
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(l for l in lines if not l.strip().startswith("```")).strip()
+
+    candidates = [text]
+    import re
+
+    m = re.search(r"\{[\s\S]*\}", text)
+    if m:
+        candidates.append(m.group())
+
+    for candidate in candidates:
+        try:
+            obj = _json.loads(candidate)
+        except (ValueError, _json.JSONDecodeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        tps = obj.get("talking_points") or []
+        asks = obj.get("suggested_asks") or []
+        if isinstance(tps, list):
+            tps = [str(t).strip() for t in tps if str(t).strip()]
+        else:
+            tps = []
+        if isinstance(asks, list):
+            asks = [str(a).strip() for a in asks if str(a).strip()]
+        else:
+            asks = []
+        if tps or asks:
+            return tps, asks
+
+    return None
+
+
 def compose_brief_md(
     ctx: dict,
     talking_points: list[str] | None = None,
     suggested_asks: list[str] | None = None,
+    *,
+    llm_unavailable: bool = False,
 ) -> str:
     """Compose a structured Markdown brief from context dict.
 
     Used both by tests (with stub ctx) and by the LLM verb (after LLM drafts
     talking_points / suggested_asks from ctx).
+
+    When *llm_unavailable* is True the Talking Points / Suggested Asks sections
+    render an explicit "unavailable" message rather than the misleading
+    "will appear here after brief generation" placeholder.
 
     Sections:
       - Last Interactions
@@ -346,11 +566,10 @@ def compose_brief_md(
         for i, tp in enumerate(tps[:5], 1):
             lines.append(f"{i}. {tp}")
         sections.append("\n".join(lines))
+    elif llm_unavailable:
+        sections.append("## Talking Points\n" + _TALKING_POINTS_UNAVAILABLE)
     else:
-        sections.append(
-            "## Talking Points\n"
-            "_(LLM-drafted talking points will appear here after brief generation)_"
-        )
+        sections.append("## Talking Points\n" + _TALKING_POINTS_PLACEHOLDER)
 
     # Suggested asks
     asks = suggested_asks or []
@@ -359,6 +578,11 @@ def compose_brief_md(
         for i, ask in enumerate(asks[:2], 1):
             lines.append(f"{i}. {ask}")
         sections.append("\n".join(lines))
+    elif llm_unavailable:
+        sections.append(
+            "## Suggested Asks\n"
+            "_(Suggested asks unavailable — LLM draft failed.)_"
+        )
 
     return "\n\n".join(sections)
 

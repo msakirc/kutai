@@ -616,3 +616,53 @@ def test_lang_collection_name_tr():
     """Turkish support_docs collection → support_docs_tr."""
     from src.util.lang import lang_collection_name
     assert lang_collection_name("support_docs", "tr") == "support_docs_tr"
+
+
+@pytest.mark.asyncio
+async def test_support_docs_en_round_trip(tmp_path, monkeypatch):
+    """support_docs_en is registered in COLLECTIONS and accepts real embed_and_store + query.
+
+    This test exercises the REAL embed_and_store and query paths (no mock at the
+    collection guard layer) so any regression in COLLECTIONS registration is caught
+    immediately.  The embedder itself runs locally on CPU (multilingual-e5-base) — no
+    network call.  ChromaDB is pointed at a tmp_path so there is no shared-state
+    pollution.
+    """
+    import src.memory.vector_store as vs_mod
+
+    # Redirect Chroma to an isolated tmp dir so the test never touches production data.
+    monkeypatch.setattr(vs_mod, "_DB_DIR", str(tmp_path / "chroma"))
+    # Reset module-level state so init_store() rebuilds with the tmp dir.
+    monkeypatch.setattr(vs_mod, "_initialized", False)
+    monkeypatch.setattr(vs_mod, "_collections", {})
+
+    from src.memory.vector_store import embed_and_store, query, init_store
+
+    # Initialise — this is what creates the Chroma collections from COLLECTIONS.
+    ok = await init_store()
+    assert ok, "init_store must succeed with tmp Chroma dir"
+
+    # Write a document to the per-language English collection.
+    doc_id = await embed_and_store(
+        "How to reset your password: visit Settings and click Reset.",
+        metadata={"lang": "en", "source": "faq_regen_test"},
+        collection="support_docs_en",
+    )
+    assert doc_id is not None, (
+        "embed_and_store returned None for 'support_docs_en' — "
+        "collection is likely not registered in COLLECTIONS"
+    )
+
+    # Read it back via query.
+    results = await query(
+        "password reset",
+        collection="support_docs_en",
+        top_k=1,
+    )
+    assert len(results) == 1, (
+        f"query on 'support_docs_en' returned {len(results)} results, expected 1 — "
+        "collection guard is rejecting the collection or embedding failed"
+    )
+    assert "password" in results[0]["text"].lower() or "reset" in results[0]["text"].lower(), (
+        f"Unexpected round-trip text: {results[0]['text']!r}"
+    )

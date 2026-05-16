@@ -770,7 +770,7 @@ async def run_investor_bullets(
             instructions=instructions,
             expected_output_kind="ack_only",
             notify_telegram=True,
-            context_json=json.dumps(context_payload),
+            expected_output_schema=context_payload,
         )
 
         return {"ok": True, "variants": len(variants), "anomalies": len(anomaly_items)}

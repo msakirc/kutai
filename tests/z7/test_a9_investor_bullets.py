@@ -311,8 +311,10 @@ async def test_founder_action_surfaced():
     call_kwargs = mock_fa.call_args[1]
     assert "investor_bullets" in call_kwargs.get("title", "").lower() or \
            "bullets" in call_kwargs.get("title", "").lower()
-    # context_json must contain the variants
-    ctx = json.loads(call_kwargs["context_json"])
+    # expected_output_schema must contain the variants (context_json was removed — it's
+    # not a param of founder_actions.create; the dict is passed directly as
+    # expected_output_schema so it survives the DB round-trip as JSON).
+    ctx = call_kwargs.get("expected_output_schema") or {}
     assert "variants" in ctx
 
 

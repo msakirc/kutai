@@ -63,6 +63,11 @@ COLLECTIONS = [
     # Z8 T5E — tier-1 support RAG: indexed FAQ / policy / how-to docs that
     # the support_tier1 agent queries before answering user tickets.
     "support_docs",
+    # A8.r1 multilingual FAQ indexing — per-language variants produced by
+    # faq_regen._reindex_collection and queried by documentation_gap_detect.
+    # Naming convention: support_docs_{iso639-1} via lang_collection_name().
+    "support_docs_en",
+    "support_docs_tr",
 ]
 
 _DB_DIR = os.path.join(

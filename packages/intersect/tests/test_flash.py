@@ -17,6 +17,47 @@ def patch_yalayut(monkeypatch, fake_artifact):
     return _install
 
 
+# ---------------------------------------------------------------------------
+# P2-1 regression: flash must pass the RAW task dict to yalayut.query(),
+# not the nested _build_task_ctx() dict.  The raw task has top-level "id"
+# and "title"; the nested dict wraps them under a "task" key — from_task()
+# would miss them and return an empty query_text() → zero results.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_flash_passes_raw_task_dict_to_yalayut_query(
+    intersect_db, sample_task, fake_artifact, monkeypatch,
+):
+    """yalayut.query must receive the RAW task dict (top-level 'id'/'title'),
+    NOT the nested binding-context dict produced by _build_task_ctx."""
+    received_arg = {}
+
+    async def _capturing_query(arg):
+        received_arg.update(arg)  # store what flash actually passed
+        return [fake_artifact(artifact_id=1, kind="prompt_skill", vet_tier=0,
+                              score=0.9, name="anthropics-pdf")]
+
+    import yalayut
+    monkeypatch.setattr(yalayut, "query", _capturing_query, raising=False)
+
+    await do_flash(sample_task)
+
+    # The raw task dict has top-level "id" and "title".
+    assert "id" in received_arg, (
+        "yalayut.query received a dict without top-level 'id' — "
+        "flash is passing the nested _build_task_ctx() dict instead of the raw task"
+    )
+    assert "title" in received_arg, (
+        "yalayut.query received a dict without top-level 'title' — "
+        "flash is passing the nested _build_task_ctx() dict instead of the raw task"
+    )
+    # The nested binding dict would have a 'task' key — that must NOT be the
+    # top-level shape passed to yalayut.query().
+    assert "task" not in received_arg, (
+        "yalayut.query received the nested _build_task_ctx() dict "
+        "(has top-level 'task' key) — it should receive the raw task dict"
+    )
+
+
 @pytest.mark.asyncio
 async def test_flash_attaches_inject_envelope(
     intersect_db, sample_task, patch_yalayut, fake_artifact, monkeypatch,

@@ -111,7 +111,7 @@ async def flash(task: dict) -> dict:
 
         import yalayut
         task_ctx = _build_task_ctx(task, ctx)
-        candidates = await yalayut.query(task_ctx)
+        candidates = await yalayut.query(task)
         if not candidates:
             return task
 

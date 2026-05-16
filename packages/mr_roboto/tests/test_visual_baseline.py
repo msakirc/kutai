@@ -17,6 +17,10 @@ import pytest
 
 # Pre-import the capture_screenshots module so we can patch its attributes
 _cs_mod = _importlib.import_module("mr_roboto.capture_screenshots")
+# run_cmd module object — patched directly because the package __init__
+# re-exports the run_cmd *function* under the same name (shadows the module
+# for dotted-string patch targets).
+_run_cmd_mod = _importlib.import_module("mr_roboto.run_cmd")
 
 
 # ---------------------------------------------------------------------------
@@ -394,34 +398,48 @@ async def test_capture_screenshots_no_components_unchanged(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# T5C — capture_mode="device" returns soft-skip
+# T5C / Z5 T4a — capture_mode="device"
+#
+# Z5 T4a turned the former device-mode soft-skip stub into a real
+# implementation (Playwright device descriptors + adb + xcrun simctl arms).
+# With no preview URL, no adb and a non-macOS host every arm soft-skips, so
+# the device run still returns a clean soft-skip envelope — but the reason is
+# now the aggregate of per-arm reasons, not the old "Z5 not implemented"
+# placeholder. Full device-mode coverage lives in
+# ``test_z5_t4a_device_capture.py``.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_capture_mode_device_soft_skip(tmp_path):
-    """capture_mode='device' must return a soft-skip without touching playwright."""
+async def test_capture_mode_device_soft_skip_when_no_backend(tmp_path):
+    """capture_mode='device' with no preview / adb / macOS → soft-skip envelope."""
     from mr_roboto.capture_screenshots import capture_screenshots
 
-    result = await capture_screenshots(
-        mission_id=1,
-        step_id="step_device",
-        routes=["/"],
-        workspace_path=str(tmp_path),
-        capture_mode="device",
-    )
+    with patch.object(_cs_mod.importlib, "import_module", return_value=MagicMock()), \
+         patch.object(_cs_mod.sys, "platform", "win32"), \
+         patch.object(_cs_mod.platform, "system", return_value="Windows"), \
+         patch.object(_run_cmd_mod, "run_cmd",
+               AsyncMock(return_value={"ok": False, "error": "executable not found: adb",
+                                       "stdout_tail": "", "stderr_tail": ""})):
+        result = await capture_screenshots(
+            mission_id=1,
+            step_id="step_device",
+            routes=["/"],
+            workspace_path=str(tmp_path),
+            capture_mode="device",
+        )
 
     assert result["ok"] is True
     assert result["skipped"] is True
-    assert "Z5" in result["reason"]
+    assert result["capture_mode"] == "device"
     assert result["captured_paths"] == []
 
 
 @pytest.mark.asyncio
 async def test_capture_mode_viewport_is_default(tmp_path):
-    """capture_mode omitted / 'viewport' does NOT trigger soft-skip."""
+    """capture_mode omitted / 'viewport' does NOT dispatch to device mode."""
     from mr_roboto.capture_screenshots import capture_screenshots
 
-    # No preview URL → soft-skip for different reason (no preview URL, not device)
+    # No preview URL → soft-skip for the viewport reason (no preview URL).
     result = await capture_screenshots(
         mission_id=1,
         step_id="step_viewport_default",
@@ -430,6 +448,7 @@ async def test_capture_mode_viewport_is_default(tmp_path):
         # capture_mode not passed → defaults to "viewport"
     )
 
-    # Should reach the URL check, not the device gate
+    # Should reach the viewport URL check, not the device dispatch.
     assert result["skipped"] is True
-    assert "Z5" not in result.get("reason", "")
+    assert result["capture_mode"] == "viewport"
+    assert "preview_url" in result.get("reason", "")

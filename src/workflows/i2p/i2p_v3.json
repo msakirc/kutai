@@ -12572,6 +12572,151 @@
      }
     },
     {
+     "template_step_id": "feat.7m",
+     "name": "mobile_frontend_state",
+     "agent": "implementer",
+     "difficulty": "medium",
+     "tools_hint": [
+      "shell",
+      "write_file",
+      "read_file",
+      "edit_file",
+      "lint",
+      "query_codebase"
+     ],
+     "condition": "Only if feature_impl_plan.needs_frontend is true AND target_platform in (mobile, both)",
+     "instruction": "Set up the Expo (React Native) frontend for this feature: TypeScript types (API response/request, form, state, component props), API client functions using the base client, and state management (query hooks, mutation hooks with optimistic updates and cache invalidation). This is a React Native / Expo app — NOT a DOM app. Follow patterns from implementation_context. REQUIRED OUTPUT PATHS (write actual files via write_file at exactly these paths): app/types/{feature_id}.ts, app/api/{feature_id}.ts, app/state/{feature_id}.ts.",
+     "output_artifacts": [
+      "frontend_state_files"
+     ],
+     "produces": [
+      "app/types/{feature_id}.ts",
+      "app/api/{feature_id}.ts",
+      "app/state/{feature_id}.ts"
+     ],
+     "post_hooks": [
+      "verify_artifacts",
+      "code_review"
+     ],
+     "artifact_schema": {
+      "frontend_state_files": {
+       "type": "object",
+       "required_fields": [
+        "type_files",
+        "api_files",
+        "state_files"
+       ]
+      }
+     }
+    },
+    {
+     "template_step_id": "feat.8m",
+     "name": "mobile_frontend_components",
+     "agent": "implementer",
+     "difficulty": "medium",
+     "tools_hint": [
+      "shell",
+      "write_file",
+      "read_file",
+      "edit_file",
+      "lint",
+      "query_codebase"
+     ],
+     "condition": "Only if feature_impl_plan.needs_frontend is true AND target_platform in (mobile, both)",
+     "instruction": "Implement feature-specific React Native UI components per screen_specifications using the design system tokens. Use React Native primitives (View, Text, Pressable, FlatList, etc.) and StyleSheet or NativeWind for styling — NOT DOM elements. Include responsive behavior for phone and tablet form factors. Implement accessibility per accessibility_spec: accessibilityRole, accessibilityLabel, focus order. Implement forms with validation, error display, submit handling if applicable. Implement loading (skeleton/ActivityIndicator), error (inline + toast), and empty states. REQUIRED OUTPUT PATH (write the components index via write_file at exactly this path): app/components/{feature_id}/index.tsx.",
+     "output_artifacts": [
+      "frontend_component_files"
+     ],
+     "produces": [
+      "app/components/{feature_id}/index.tsx"
+     ],
+     "post_hooks": [
+      "verify_artifacts",
+      "code_review"
+     ],
+     "artifact_schema": {
+      "frontend_component_files": {
+       "type": "object",
+       "required_fields": [
+        "component_files",
+        "responsive_verified",
+        "a11y_verified"
+       ]
+      }
+     }
+    },
+    {
+     "template_step_id": "feat.9m",
+     "name": "mobile_frontend_screens",
+     "agent": "implementer",
+     "difficulty": "medium",
+     "tools_hint": [
+      "shell",
+      "write_file",
+      "read_file",
+      "edit_file",
+      "lint",
+      "query_codebase"
+     ],
+     "condition": "Only if feature_impl_plan.needs_frontend is true AND target_platform in (mobile, both)",
+     "instruction": "Assemble Expo Router screens: compose components, wire data bindings, action handlers, conditional rendering, route params. Implement all screen states: loading, error, empty, success. Screens are files under the Expo Router `app/` directory (file-based routing) — wire navigation per information_architecture. REQUIRED OUTPUT PATH (write the screen via write_file at exactly this path): app/{feature_id}/index.tsx.",
+     "output_artifacts": [
+      "frontend_page_files"
+     ],
+     "produces": [
+      "app/{feature_id}/index.tsx"
+     ],
+     "post_hooks": [
+      "verify_artifacts",
+      "code_review"
+     ],
+     "artifact_schema": {
+      "frontend_page_files": {
+       "type": "object",
+       "fields": {
+        "page_files": {},
+        "states_implemented": {
+         "type": "array",
+         "optional": true
+        }
+       }
+      }
+     }
+    },
+    {
+     "template_step_id": "feat.10m",
+     "name": "mobile_frontend_tests",
+     "agent": "test_generator",
+     "difficulty": "medium",
+     "tools_hint": [
+      "shell",
+      "write_file",
+      "read_file",
+      "coverage"
+     ],
+     "condition": "Only if feature_impl_plan.needs_frontend is true AND target_platform in (mobile, both)",
+     "instruction": "Write React Native frontend tests for utilities, hooks, state management. Write component tests using @testing-library/react-native: render, interaction, conditional rendering, accessibility, screen states (loading/error/empty). Run all tests and verify they pass. REQUIRED OUTPUT PATH (write the test file via write_file at exactly this path): app/__tests__/{feature_id}.test.tsx.",
+     "output_artifacts": [
+      "frontend_test_files"
+     ],
+     "produces": [
+      "app/__tests__/{feature_id}.test.tsx"
+     ],
+     "post_hooks": [
+      "verify_artifacts"
+     ],
+     "artifact_schema": {
+      "frontend_test_files": {
+       "type": "object",
+       "required_fields": [
+        "unit_test_files",
+        "component_test_files",
+        "coverage"
+       ]
+      }
+     }
+    },
+    {
      "template_step_id": "feat.11",
      "name": "e2e_tests",
      "agent": "test_generator",

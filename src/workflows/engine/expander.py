@@ -698,6 +698,60 @@ def _substitute_payload(payload: dict, params: dict) -> dict:
     return _walk(payload)
 
 
+# Z5 T1 — feature-template frontend variant pairs. The web step on the left
+# is the Next.js / DOM shape; the ``…m`` step on the right is the Expo /
+# React-Native shape. Mobile missions run the Expo variant; web missions run
+# the DOM variant; ``both`` missions run both. Template steps gate on a free-
+# text ``condition`` string (not conditional groups), so the variant choice is
+# made here at expansion time keyed on ``params["target_platform"]``.
+_FRONTEND_VARIANT_PAIRS: dict[str, str] = {
+    "feat.7": "feat.7m",
+    "feat.8": "feat.8m",
+    "feat.9": "feat.9m",
+    "feat.10": "feat.10m",
+}
+
+
+def select_platform_variants(
+    template_steps: list[dict],
+    target_platform: str,
+) -> list[dict]:
+    """Filter feature-template steps by ``target_platform`` (Z5 T1).
+
+    The feature template carries both the web frontend steps
+    (``feat.7``–``feat.10``) and their Expo/React-Native variants
+    (``feat.7m``–``feat.10m``). Exactly which run depends on the mission's
+    target platform:
+
+    - ``web`` (or any unrecognised / empty value): keep the web steps,
+      drop every ``…m`` variant. This is the safe default — web missions
+      are unaffected by Z5.
+    - ``mobile``: drop the web frontend steps, keep the ``…m`` variants.
+    - ``both``: keep both sets (a web app *and* an Expo app are in scope).
+
+    Non-frontend steps (``feat.1``–``feat.6``, ``feat.11``+) are never
+    touched. Order is preserved.
+    """
+    platform = (target_platform or "web").strip().lower()
+    if platform not in ("web", "mobile", "both"):
+        platform = "web"
+
+    web_ids = set(_FRONTEND_VARIANT_PAIRS)
+    expo_ids = set(_FRONTEND_VARIANT_PAIRS.values())
+
+    if platform == "both":
+        drop: set[str] = set()
+    elif platform == "mobile":
+        drop = web_ids
+    else:  # web
+        drop = expo_ids
+
+    return [
+        s for s in template_steps
+        if s.get("template_step_id") not in drop
+    ]
+
+
 def expand_template(
     template: dict,
     params: dict,
@@ -712,7 +766,10 @@ def expand_template(
         and optionally ``context_strategy``.
     params:
         Parameter values to substitute into step instructions.
-        Placeholders like ``{feature_name}`` are replaced.
+        Placeholders like ``{feature_name}`` are replaced.  When
+        ``params`` carries a ``target_platform`` key (``web`` |
+        ``mobile`` | ``both``) the feature-template frontend steps are
+        filtered to the matching platform variant (Z5 T1).
     prefix:
         Prefix for generated step IDs.  If non-empty, IDs become
         ``"{prefix}.{template_step_id}"``.
@@ -727,7 +784,13 @@ def expand_template(
     context_strategy = template.get("context_strategy")
     expanded: list[dict] = []
 
-    for tpl_step in template.get("steps", []):
+    # Z5 T1 — select the frontend variant (web vs Expo) for this mission.
+    template_steps = select_platform_variants(
+        template.get("steps", []),
+        str(params.get("target_platform") or "web"),
+    )
+
+    for tpl_step in template_steps:
         tpl_step_id = tpl_step["template_step_id"]
 
         # Build the step ID. Defensive separator handling: strip a

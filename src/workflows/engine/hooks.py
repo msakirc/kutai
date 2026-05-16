@@ -2075,6 +2075,33 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
             logger.warning("[Workflow Hook] feature_implementation_template not found")
             return
 
+        # Z5 T1 — resolve the mission's target platform so the feature
+        # template expands the web (feat.7-10) or Expo (feat.7m-10m)
+        # frontend variant. Read from the platform_requirements artifact;
+        # default to 'web' when the artifact is absent or lacks the field
+        # (legacy missions / non-i2p workflows are unaffected).
+        target_platform = "web"
+        try:
+            _store = ArtifactStore(use_db=True)
+            _pr_raw = await _store.retrieve(mission_id, "platform_requirements")
+            if _pr_raw:
+                _pr = _json.loads(_pr_raw) if isinstance(_pr_raw, str) else _pr_raw
+                if isinstance(_pr, dict):
+                    _tp = _pr.get("target_platform")
+                    if isinstance(_tp, str) and _tp.strip().lower() in (
+                        "web", "mobile", "both"
+                    ):
+                        target_platform = _tp.strip().lower()
+        except Exception as _exc:
+            logger.debug(
+                f"[Workflow Hook] could not resolve target_platform for "
+                f"mission #{mission_id}: {_exc!r} — defaulting to 'web'"
+            )
+        logger.info(
+            f"[Workflow Hook] mission #{mission_id} feature-template "
+            f"target_platform={target_platform!r}"
+        )
+
         # Track feature_id → (first_task_id, last_task_id) for cross-feature deps
         feature_task_range: dict[str, tuple[int, int]] = {}
 
@@ -2129,7 +2156,11 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
 
             expanded = expand_template(
                 template,
-                params={"feature_id": fid, "feature_name": fname},
+                params={
+                    "feature_id": fid,
+                    "feature_name": fname,
+                    "target_platform": target_platform,
+                },
                 prefix=f"8.{fid}.",
             )
 

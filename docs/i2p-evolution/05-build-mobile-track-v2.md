@@ -13,6 +13,24 @@ implementation plan.
 
 ---
 
+## Founder decisions (2026-05-16)
+
+Locked at kick-off by the founder (these were v1 "open questions" — Z5 must
+not default them silently):
+
+1. **Framework: Expo / React Native.** Cross-platform only for v1. Native
+   Swift+Kotlin recipes deferred to a follow-up wave.
+2. **Build infra: GitHub Actions macOS runners**, not EAS cloud. iOS builds
+   on a free GH-hosted macOS runner via `xcodebuild` + Fastlane; Android on a
+   Linux runner via `gradlew` (or locally on the Windows box). Generated
+   GitHub Actions workflows are the primary CI surface.
+3. **Cost: free-first.** EAS Build/Submit is acceptable only as an optional
+   fallback, never the default — more setup is fine if it stays free. The
+   `eas_build`/`eas_submit` adapters shipped in T3 remain, demoted to fallback.
+
+These decisions reshape T3 (add a GH Actions / Fastlane build path) and T5
+(submit via Fastlane `pilot`/`supply`, not `eas submit`).
+
 ## Stale-claim corrections (what v1 got wrong)
 
 | # | v1 claim | Reality (2026-05-16) |
@@ -22,7 +40,7 @@ implementation plan.
 | S3 | "New conditional group `target_platform`" | The conditional-group mechanism already exists (`metadata.conditional_groups`, with `fallback_steps` for alternate definitions). A `mobile_app_submission` group already exists. **No schema work needed** — but see S4. |
 | S4 | (silent) | **`mobile_app_submission` is mis-wired.** Its `if_true: ["14.10"]` points at a step that is now `arm_analytics_digest_cron` — Z9 reused the `14.10` id. The group is dangling. Z5 must repoint it. |
 | S5 | "branch ∈ {web, mobile_native, mobile_cross_platform, both}" — 4-way | **Host OS = Windows (`win32`).** `xcrun simctl`, Xcode, iOS Simulator are macOS-only and cannot run on this box. `mobile_native` (Swift+Kotlin) is therefore doubly out of scope for v1: un-buildable locally *and* it doubles the recipe surface. v1 ships **Expo cross-platform only**. Effective values: `web` (existing) / `mobile` / `both`. |
-| S6 | "EAS for v1; pluggable so self-hosted comes later" | For **iOS specifically, EAS Build + EAS Submit is the only path** from a Windows host — not a convenience, a hard requirement. Android (`adb`, `gradle`) *does* run on Windows, so a local Android path is viable. This asymmetry drives the adapter design. |
+| S6 | "EAS for v1; pluggable so self-hosted comes later" | iOS cannot build on the Windows dev box. Two cloud paths exist: EAS Build (paid past a small free tier) or **GitHub Actions macOS runners** (free tier for the workload, more setup). Founder picked the free-first GH Actions path (see Founder decisions). Android (`adb`, `gradle`) runs locally on Windows. |
 
 ---
 
@@ -179,16 +197,29 @@ schema, `tech_stack: [fastapi+sqlite+expo, fastapi+postgres+expo]`,
 at 1.0; `instantiate_recipe` round-trips into a temp dir; lessons seed into
 `mission_lessons`.*
 
-### T3 — mr_roboto mobile adapters *(parallel-safe: 2 agents)*
+### T3 — mr_roboto mobile adapters ✅ *(shipped 2026-05-16)*
 
-Agent A: `expo_cli` + `android_build`. Agent B: `eas_build` + `eas_submit`.
-Each = new `if action ==` branch in `__init__.py`, a module under
-`mr_roboto/`, `run_cmd`-based, structured JSON result, `VERB_REVERSIBILITY`
-entries (`eas_submit` → `irreversible`, builds → `full`). Tests use a fake
-`run_cmd` fixture; assert soft-skip when CLI absent.
+`expo_cli`, `android_build`, `eas_build`, `eas_submit` — `run_cmd`-based,
+structured JSON, `VERB_REVERSIBILITY` (`eas_submit` → `irreversible`, builds
+→ `full`), 24 tests. `eas_*` are now the **fallback** path per the founder
+decision.
 
-*Effort: ~2d. Acceptance: each verb dispatches; missing-CLI → `skipped`, not
-`failed`; `eas_submit` reversibility = `irreversible`.*
+### T3b — GitHub Actions mobile CI + Fastlane *(addendum, free-first path)*
+
+Added after the founder picked GH Actions over EAS:
+1. `gen_mobile_ci` mr_roboto verb — generates `.github/workflows/mobile.yml`:
+   a macOS-runner job (`xcodebuild` + Fastlane for iOS) and a Linux/macOS job
+   (`gradlew` for Android), keyed to the Expo `prebuild` output.
+2. `fastlane` mr_roboto verb — wraps `fastlane` lanes (`build`, `match` for
+   signing, `pilot` for TestFlight, `supply` for Play internal). `run_cmd`-
+   based, soft-skip when absent. Reversibility: `match`/`build` → `full`,
+   `pilot`/`supply` → `irreversible`.
+3. `mobile_ci` recipe — ships the Fastlane `Fastfile` + `Appfile` templates,
+   the workflow YAML, and `lessons.md` (free-tier minute limits, macOS-runner
+   caching, `match` keychain on CI, code-signing secrets via GH Secrets).
+
+*Effort: ~1.5d. Acceptance: generated workflow YAML is valid; `fastlane`
+verb dispatches + soft-skips; `pilot`/`supply` reversibility = `irreversible`.*
 
 ### T4 — Mobile QA + device visual review *(parallel-safe: 2 agents)*
 
@@ -208,8 +239,10 @@ Playwright presets; `mobile_smoke` gates on Maestro exit code.*
 
 1. New step `14.x_mobile_submit` (real id assigned at impl): generates
    per-device/per-locale screenshots (reuses T4 capture), metadata +
-   privacy-nutrition-labels from spec artifacts, calls `eas_submit`, polls
-   review status via `vendor_call`.
+   privacy-nutrition-labels from spec artifacts, triggers the generated GH
+   Actions workflow which runs `fastlane pilot` (TestFlight) / `fastlane
+   supply` (Play internal); `eas_submit` is the fallback. Polls review status
+   via `vendor_call(apple_appstore|google_play)`.
 2. Repoint `mobile_app_submission.if_true` onto it (closes the T1 placeholder).
 3. `mobile_release_rejection` playbook recipe — common rejection reasons +
    fix templates, modelled on the `incident_playbook_*` recipes.
@@ -237,16 +270,15 @@ matches + instantiates.*
 
 ## Open questions — resolved
 
-- **Cross-platform pick:** Expo. (Best DX, RN-based, EAS-integrated.)
-- **Native coverage:** out of scope for v1 — un-buildable on a Windows host
-  without EAS; revisit only with a macOS runner.
-- **EAS vs self-hosted:** EAS mandatory for iOS (host-OS constraint); Android
-  may also use local `gradle` — adapter supports both.
-- **iOS device screenshots:** Playwright device descriptors against Expo Web
-  for v1; real-device iOS deferred to a macOS runner.
+Framework / build-infra / cost were founder calls — see **Founder decisions
+(2026-05-16)** above. Remaining agent-level defaults:
+
+- **iOS device screenshots:** Playwright device descriptors against the Expo
+  Web export for v1 (runs on Windows); real-device iOS screenshots run on the
+  GH Actions macOS runner as a follow-up.
 - **Push provider:** Expo hosted push for v1 (recipe `mobile_push`, stretch).
-- **Beta testing:** agent manages EAS Submit uploads + tester invites; reads
-  feedback, surfaces to founder.
+- **Beta testing:** agent manages Fastlane `pilot` uploads + tester invites;
+  reads feedback, surfaces to founder.
 
 ## Dependencies
 
@@ -263,3 +295,7 @@ matches + instantiates.*
 - 2026-05-16 — v2: full re-audit; 6 stale claims corrected (notably the
   Windows host-OS constraint and the Z6 distribution overlap); gap map
   reshaped; 5-tier batched plan added. Supersedes v1.
+- 2026-05-16 — founder decisions locked (Expo / GitHub Actions macOS runners /
+  free-first). T3 marked shipped; T3b GH-Actions+Fastlane addendum added;
+  T5 submit path switched from `eas_submit` to Fastlane `pilot`/`supply`.
+  T1+T2+T3 shipped to `main` (9 commits).

@@ -177,14 +177,22 @@ async def test_send_blocked_by_warmup_quota(tmp_path, monkeypatch):
 async def test_send_blocked_when_no_warmup_row_and_day1_quota_exhausted(tmp_path, monkeypatch):
     """A fresh domain with NO warmup row must not bypass the quota gate.
 
-    This is the real-path test for Critical 5: before the fix, outreach/send
-    only enforced the quota 'if warmup_row is not None' — a brand-new domain
-    with zero rows sent with ZERO throttle.  After the fix, the missing row is
-    treated as day-1 (target=50) and a seed row is inserted.  If we have
-    already sent 50 emails for the domain (via other send rows), the gate blocks.
+    Critical 5 fix path: before the fix, outreach/send only enforced the quota
+    'if warmup_row is not None' — a brand-new domain (zero rows) sent with ZERO
+    throttle.  After the fix, the missing row is treated as day-1 (target=50),
+    a seed row is inserted, and quota is enforced uniformly.
 
-    We simulate exhaustion by seeding the day-1 row at full capacity immediately
-    after the first call seeds it, then verifying a second call is blocked.
+    This test exercises the no-row path directly:
+      1. Start with a genuinely fresh domain (no outreach_warmup row).
+      2. First send succeeds — the fix seeds a day-1 row (sent_count=0→1).
+      3. Bump sent_count to 50 in DB (simulates exhausting the day-1 budget).
+      4. Second send must be blocked with warmup_quota_exceeded.
+
+    Failure under the reverted bug ('if warmup_row is not None'):
+      Step 1-2: warmup_row is None → quota gate is SKIPPED entirely; no seeding.
+      Step 3: nothing to bump (row was never inserted) → DB update is a no-op.
+      Step 4: warmup_row is still None → gate still skipped → send goes through.
+      Assert fails: 'sent' != 'warmup_quota_exceeded'.
     """
     db_mod = await _setup_db(tmp_path, monkeypatch)
     await _seed_product_config(db_mod)
@@ -193,8 +201,9 @@ async def test_send_blocked_when_no_warmup_row_and_day1_quota_exhausted(tmp_path
 
     from mr_roboto.outreach_send import run_outreach_send
 
-    # First: verify no warmup row exists for a fresh domain.
     db = await db_mod.get_db()
+
+    # Precondition: genuinely no warmup row for this domain.
     cur = await db.execute(
         "SELECT COUNT(*) FROM outreach_warmup WHERE product_id=? AND domain=?",
         ("prod-outreach-1", "freshco.io"),
@@ -202,30 +211,60 @@ async def test_send_blocked_when_no_warmup_row_and_day1_quota_exhausted(tmp_path
     row = await cur.fetchone()
     assert row[0] == 0, "precondition: no warmup row for freshco.io"
 
-    # Seed the day-1 row at exactly the quota limit (50/50) before the send
-    # to simulate a domain that has already exhausted its daily allowance.
+    # Step 1: First send — fix seeds the row; mock email so no real call.
+    with patch(
+        "src.integrations.email.service.send_email",
+        new=AsyncMock(return_value={"status": "sent", "message_id": "msg-seed-1"}),
+    ):
+        first_result = await run_outreach_send(
+            product_id="prod-outreach-1",
+            list_id="list-1",
+            target_email="cto@freshco.io",
+            template_id="tmpl-1",
+            subject="Hello",
+            body_md="Hi there",
+            postal_address="123 Main St",
+            unsubscribe_base_url="https://example.com/unsub",
+        )
+
+    assert first_result["status"] == "sent", (
+        "First send to a fresh domain must succeed (quota not yet exhausted)"
+    )
+
+    # Step 2: Verify the fix seeded a day-1 row.
+    cur = await db.execute(
+        "SELECT sent_count, target_count, day FROM outreach_warmup "
+        "WHERE product_id=? AND domain=?",
+        ("prod-outreach-1", "freshco.io"),
+    )
+    warmup = await cur.fetchone()
+    assert warmup is not None, "fix must seed a day-1 warmup row on first send to a fresh domain"
+    assert warmup[2] == 1, "seeded row must be day 1"
+    assert warmup[1] == 50, "day-1 target must be 50"
+
+    # Step 3: Exhaust the day-1 budget by setting sent_count to target_count.
     await db.execute(
-        "INSERT INTO outreach_warmup (product_id, domain, day, sent_count, target_count) "
-        "VALUES (?, ?, 1, 50, 50)",
+        "UPDATE outreach_warmup SET sent_count=target_count "
+        "WHERE product_id=? AND domain=? AND day=1",
         ("prod-outreach-1", "freshco.io"),
     )
     await db.commit()
 
-    # The send must now be blocked by the quota gate, NOT pass through unchecked.
-    result = await run_outreach_send(
+    # Step 4: Second send must be blocked.
+    second_result = await run_outreach_send(
         product_id="prod-outreach-1",
         list_id="list-1",
         target_email="cto@freshco.io",
         template_id="tmpl-1",
-        subject="Hello",
-        body_md="Hi there",
+        subject="Hello again",
+        body_md="Hi again",
         postal_address="123 Main St",
         unsubscribe_base_url="https://example.com/unsub",
     )
 
-    assert result["status"] == "warmup_quota_exceeded", (
-        "A domain at day-1 capacity must be blocked; "
-        "if 'ok' is returned the quota gate was bypassed (bug not fixed)"
+    assert second_result["status"] == "warmup_quota_exceeded", (
+        "After exhausting day-1 budget, send must be blocked. "
+        "If 'sent' is returned, the quota gate was bypassed (Critical 5 bug not fixed)."
     )
 
 

@@ -99,6 +99,11 @@ import mr_roboto.outreach_domain_verify as outreach_domain_verify_module  # noqa
 import mr_roboto.marketing_copy as marketing_copy_module  # noqa: F401
 # Z7 T6D — demo distribution stage (A3 distribute)
 import mr_roboto.demo_distribute as demo_distribute_module  # noqa: F401
+# Z5 T3 — mobile build/distribution adapters
+from mr_roboto.expo_cli import expo_cli  # Z5 T3
+from mr_roboto.android_build import android_build  # Z5 T3
+from mr_roboto.eas_build import eas_build  # Z5 T3
+from mr_roboto.eas_submit import eas_submit  # Z5 T3
 
 __all__ = [
     "Action",
@@ -154,6 +159,10 @@ __all__ = [
     "extract_signatures",
     "visual_review",
     "capture_screenshots",
+    "expo_cli",
+    "android_build",
+    "eas_build",
+    "eas_submit",
 ]
 
 
@@ -4373,7 +4382,7 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     # ── Z7 T6 A11: mention_polls/<source> — mention monitor poll verbs ───────
-    if action.startswith("mention_polls/"):
+    if action and action.startswith("mention_polls/"):
         source = action[len("mention_polls/"):]
         try:
             from mr_roboto.mention_polls import run as _mp_run
@@ -4436,6 +4445,117 @@ async def _run_dispatch(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=res.get("error") or "demo/distribute failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    # ── Z5 T3 — mobile build/distribution adapters ───────────────────────────
+    if action == "expo_cli":
+        # Wrap the Expo CLI (prebuild / export / doctor). Soft-skips when
+        # the Expo CLI / npx is not installed.
+        from mr_roboto.expo_cli import expo_cli as _expo_cli
+        try:
+            res = await _expo_cli(
+                mission_id=task.get("mission_id"),
+                subcommand=str(payload.get("subcommand") or ""),
+                workspace_path=payload.get("workspace_path") or None,
+                extra_args=list(payload.get("extra_args") or []) or None,
+                timeout_s=float(payload.get("timeout_s", 600.0)),
+            )
+            if res.get("skipped"):
+                return Action(status="completed", result=res)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("error") or "expo_cli failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "android_build":
+        # Wrap local gradle / adb. Runs natively on Windows. Soft-skips
+        # when the gradle wrapper or adb is absent.
+        from mr_roboto.android_build import android_build as _android_build
+        try:
+            # NOTE: payload["action"] is the verb selector ("android_build")
+            # — the gradle/adb sub-action comes from a dedicated key.
+            res = await _android_build(
+                mission_id=task.get("mission_id"),
+                action=str(
+                    payload.get("android_action")
+                    or payload.get("subcommand")
+                    or ""
+                ),
+                workspace_path=payload.get("workspace_path") or None,
+                variant=str(payload.get("variant") or "release"),
+                extra_args=list(payload.get("extra_args") or []) or None,
+                timeout_s=float(payload.get("timeout_s", 600.0)),
+            )
+            if res.get("skipped"):
+                return Action(status="completed", result=res)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("error") or "android_build failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "eas_build":
+        # Wrap `eas build` — cloud builds (iOS + Android). Soft-skips when
+        # eas-cli / npx is not installed.
+        from mr_roboto.eas_build import eas_build as _eas_build
+        try:
+            res = await _eas_build(
+                mission_id=task.get("mission_id"),
+                platform=str(payload.get("platform") or "all"),
+                profile=str(payload.get("profile") or "production"),
+                workspace_path=payload.get("workspace_path") or None,
+                non_interactive=bool(payload.get("non_interactive", True)),
+                extra_args=list(payload.get("extra_args") or []) or None,
+                timeout_s=float(payload.get("timeout_s", 1800.0)),
+            )
+            if res.get("skipped"):
+                return Action(status="completed", result=res)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("error") or "eas_build failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "eas_submit":
+        # Wrap `eas submit` — uploads a build to TestFlight / Play
+        # internal. Irreversible (a binary lands on a store track).
+        # Soft-skips when eas-cli / npx is not installed.
+        from mr_roboto.eas_submit import eas_submit as _eas_submit
+        try:
+            res = await _eas_submit(
+                mission_id=task.get("mission_id"),
+                platform=str(payload.get("platform") or ""),
+                workspace_path=payload.get("workspace_path") or None,
+                build_id=payload.get("build_id") or None,
+                latest=bool(payload.get("latest", False)),
+                profile=str(payload.get("profile") or "production"),
+                non_interactive=bool(payload.get("non_interactive", True)),
+                extra_args=list(payload.get("extra_args") or []) or None,
+                timeout_s=float(payload.get("timeout_s", 900.0)),
+            )
+            if res.get("skipped"):
+                return Action(status="completed", result=res)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("error") or "eas_submit failed",
                     result=res,
                 )
             return Action(status="completed", result=res)

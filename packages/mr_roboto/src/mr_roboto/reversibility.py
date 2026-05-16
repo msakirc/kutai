@@ -287,6 +287,18 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # marketing_copy: writes local JSON artifact + emits founder_action (advisory).
     # Artifact is git-reversible; founder_action is advisory (no external publish).
     "marketing_copy": "full",
+    # ---- Z5 T3 — mobile build/distribution adapters ------------------------
+    # expo_cli: prebuild/export/doctor — local file writes only, git-reversible.
+    "expo_cli": "full",
+    # android_build: local gradle build (build/ is disposable) + adb install on
+    # a dev device + read-only adb devices. No durable real-world side effect.
+    "android_build": "full",
+    # eas_build: cloud build — produces a disposable, reproducible artifact on
+    # Expo's servers; nothing user-visible is published.
+    "eas_build": "full",
+    # eas_submit: uploads a binary to TestFlight / Play internal — a real store
+    # track. Testers receive it; cannot be cleanly un-done.
+    "eas_submit": "irreversible",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

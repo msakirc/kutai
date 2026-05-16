@@ -82,8 +82,8 @@ async def _fetch_cards(product_id: int | None) -> list[dict]:
         params,
     )
     rows = await cur.fetchall()
+    cols = [d[0] for d in cur.description]  # read before close — aiosqlite nulls description after close
     await cur.close()
-    cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in rows]
 
 

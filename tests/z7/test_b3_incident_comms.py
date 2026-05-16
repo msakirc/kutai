@@ -661,6 +661,45 @@ class TestPublishStatus:
         assert row[0] is not None, "resolved_at should be set on resolution"
 
     @pytest.mark.asyncio
+    async def test_publish_calls_invalidate_cache(self, initialized_db, monkeypatch):
+        """incident/publish_status calls status_page.invalidate_cache() after a successful publish.
+
+        This is the real-path test for Critical 4: the verb's docstring claimed it
+        invalidated the cache but the original code never called invalidate_cache().
+        After the fix the real call must fire (not just be mocked at the seam).
+        """
+        from src.infra.db import get_db
+        from mr_roboto.incident_publish_status import run as publish_run
+        import src.app.status_page as sp
+
+        # Pre-populate the cache so we can observe it being cleared.
+        sp._cache["html"] = "<html>stale</html>"
+        sp._cache["rss"] = "<rss/>"
+        sp._cache["fetched_at"] = 999_999_999.0
+
+        db = await get_db()
+        cur = await db.execute(
+            "INSERT INTO incidents (product_id, severity, affected_components_json) "
+            "VALUES (?, ?, ?)",
+            ("prod-cache-test", "minor", '[]'),
+        )
+        await db.commit()
+        incident_id = cur.lastrowid
+
+        result = await publish_run({
+            "incident_id": incident_id,
+            "product_id": "prod-cache-test",
+            "body_md": "We have identified the issue.",
+            "status_kind": "identified",
+        })
+
+        assert result["status"] == "ok"
+        # The real invalidate_cache() must have been called — cache must be empty now.
+        assert sp._cache == {}, (
+            "publish_status must call invalidate_cache(); stale cache was still present"
+        )
+
+    @pytest.mark.asyncio
     async def test_publish_invalid_status_kind_returns_error(self, initialized_db):
         """incident/publish_status rejects unknown status_kind."""
         from mr_roboto.incident_publish_status import run as publish_run

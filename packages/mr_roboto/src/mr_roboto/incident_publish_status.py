@@ -91,6 +91,13 @@ async def run(payload: dict) -> dict:
         )
     await db.commit()
 
+    # Invalidate the /status page in-memory cache so next render is fresh.
+    try:
+        from src.app.status_page import invalidate_cache
+        invalidate_cache()
+    except Exception:
+        pass  # best-effort; cache TTL will expire naturally
+
     logger.info(
         "incident_publish_status: published",
         update_id=update_id,

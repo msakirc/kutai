@@ -135,6 +135,10 @@ async def run_outreach_send(
     # ── Gate 3: Warmup quota ────────────────────────────────────────────────
     # Determine the sending domain from the email
     send_domain = target_email.rsplit("@", 1)[-1] if "@" in target_email else ""
+    # Day-1 quota (50/day) is the most restrictive ramp bucket.
+    # A domain with NO warmup row is treated as day-1 to prevent zero-throttle
+    # sends on fresh domains.
+    _DAY1_QUOTA = 50
     if send_domain:
         # Find the highest-day warmup row for this product+domain
         cur = await db.execute(
@@ -144,6 +148,22 @@ async def run_outreach_send(
             (product_id, send_domain),
         )
         warmup_row = await cur.fetchone()
+        if warmup_row is None:
+            # No warmup row → seed a day-1 row and enforce the day-1 limit.
+            await db.execute(
+                "INSERT OR IGNORE INTO outreach_warmup "
+                "(product_id, domain, day, sent_count, target_count) "
+                "VALUES (?, ?, 1, 0, ?)",
+                (product_id, send_domain, _DAY1_QUOTA),
+            )
+            await db.commit()
+            # Re-fetch so the rest of the path works uniformly.
+            cur = await db.execute(
+                "SELECT sent_count, target_count, day FROM outreach_warmup "
+                "WHERE product_id=? AND domain=? AND day=1",
+                (product_id, send_domain),
+            )
+            warmup_row = await cur.fetchone()
         if warmup_row is not None:
             sent_count, target_count, day = warmup_row
             if sent_count >= target_count:

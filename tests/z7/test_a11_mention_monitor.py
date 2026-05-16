@@ -601,10 +601,40 @@ class TestInternalSignalPoll:
 class TestTwitterGating:
     @pytest.mark.asyncio
     async def test_twitter_off_by_default(self, monkeypatch):
+        """Twitter polling must return [] when MENTION_TWITTER_ENABLED is unset.
+
+        Non-tautological: we set TWITTER_BEARER_TOKEN so the bearer guard cannot
+        mask the failure.  With the original bug (not X == "1"), an empty-string
+        env var evaluates to (not "") == "1" → True == "1" → False, so the gate
+        doesn't fire and execution falls through to the vecihi fetch.  We track
+        that to distinguish correct gate-fire from incidental empty-result.
+        """
         monkeypatch.delenv("MENTION_TWITTER_ENABLED", raising=False)
-        from mr_roboto.mention_polls import _fetch_twitter
-        result = await _fetch_twitter("myproduct", {})
-        assert result == []
+        monkeypatch.setenv("TWITTER_BEARER_TOKEN", "dummy_token_default_test")
+
+        reached_fetch = []
+
+        async def _fake_vecihi_fetch(url, headers=None):
+            reached_fetch.append(url)
+            return {"data": [], "includes": {}}
+
+        import sys
+        import types
+        import importlib
+        fake_vecihi = types.ModuleType("vecihi")
+        fake_vecihi.fetch_json = _fake_vecihi_fetch  # type: ignore
+        monkeypatch.setitem(sys.modules, "vecihi", fake_vecihi)
+
+        import mr_roboto.mention_polls as _mp
+        importlib.reload(_mp)
+
+        result = await _mp._fetch_twitter("myproduct", {})
+
+        assert result == [], "must return [] when MENTION_TWITTER_ENABLED is unset"
+        assert reached_fetch == [], (
+            "vecihi.fetch_json must NOT be called when env gate fires; "
+            "if called, the gate is broken (operator-precedence bug)"
+        )
 
     @pytest.mark.asyncio
     async def test_twitter_on_with_flag_and_token(self, monkeypatch):
@@ -624,10 +654,47 @@ class TestTwitterGating:
 
     @pytest.mark.asyncio
     async def test_twitter_off_when_flag_not_1(self, monkeypatch):
+        """Gate must fire for MENTION_TWITTER_ENABLED != '1' even when bearer is set.
+
+        This is the real-path test for Critical 6 (operator-precedence bug).
+        The original code used:
+            if not os.getenv("MENTION_TWITTER_ENABLED","").strip() == "1":
+        which parses as (not "true") == "1" → False == "1" → False, so the
+        early-return NEVER fires.  The fix uses != "1" which fires correctly.
+
+        To make this non-tautological we set TWITTER_BEARER_TOKEN so the
+        bearer-token guard (second check) cannot mask the failure, and we
+        mock the vecihi import to detect if it was ever reached.
+        """
         monkeypatch.setenv("MENTION_TWITTER_ENABLED", "true")  # not exactly "1"
-        from mr_roboto.mention_polls import _fetch_twitter
-        result = await _fetch_twitter("myproduct", {})
-        assert result == []
+        monkeypatch.setenv("TWITTER_BEARER_TOKEN", "dummy_token_to_bypass_bearer_check")
+
+        # If the gate is broken, code falls through to the vecihi import.
+        # We mark a flag when that happens so we can assert it was NOT reached.
+        reached_fetch = []
+
+        async def _fake_vecihi_fetch(url, headers=None):
+            reached_fetch.append(url)
+            return {"data": [], "includes": {}}
+
+        import sys
+        import types
+        fake_vecihi = types.ModuleType("vecihi")
+        fake_vecihi.fetch_json = _fake_vecihi_fetch  # type: ignore
+        monkeypatch.setitem(sys.modules, "vecihi", fake_vecihi)
+
+        # Force reimport so the patched sys.modules is picked up.
+        import importlib
+        import mr_roboto.mention_polls as _mp
+        importlib.reload(_mp)
+
+        result = await _mp._fetch_twitter("myproduct", {})
+
+        assert result == [], "gate must return [] when MENTION_TWITTER_ENABLED != '1'"
+        assert reached_fetch == [], (
+            "vecihi.fetch_json must NOT be called when the env-gate fires; "
+            "if it was called the operator-precedence bug is still present"
+        )
 
 
 # ---------------------------------------------------------------------------

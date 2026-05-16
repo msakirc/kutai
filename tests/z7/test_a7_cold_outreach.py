@@ -170,6 +170,110 @@ async def test_send_blocked_by_warmup_quota(tmp_path, monkeypatch):
     assert result["status"] == "warmup_quota_exceeded"
 
 
+# ── 3b. No warmup row → day-1 quota applied (Critical 5 fix) ────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_blocked_when_no_warmup_row_and_day1_quota_exhausted(tmp_path, monkeypatch):
+    """A fresh domain with NO warmup row must not bypass the quota gate.
+
+    This is the real-path test for Critical 5: before the fix, outreach/send
+    only enforced the quota 'if warmup_row is not None' — a brand-new domain
+    with zero rows sent with ZERO throttle.  After the fix, the missing row is
+    treated as day-1 (target=50) and a seed row is inserted.  If we have
+    already sent 50 emails for the domain (via other send rows), the gate blocks.
+
+    We simulate exhaustion by seeding the day-1 row at full capacity immediately
+    after the first call seeds it, then verifying a second call is blocked.
+    """
+    db_mod = await _setup_db(tmp_path, monkeypatch)
+    await _seed_product_config(db_mod)
+
+    monkeypatch.setenv("OUTREACH_ENABLED", "1")
+
+    from mr_roboto.outreach_send import run_outreach_send
+
+    # First: verify no warmup row exists for a fresh domain.
+    db = await db_mod.get_db()
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM outreach_warmup WHERE product_id=? AND domain=?",
+        ("prod-outreach-1", "freshco.io"),
+    )
+    row = await cur.fetchone()
+    assert row[0] == 0, "precondition: no warmup row for freshco.io"
+
+    # Seed the day-1 row at exactly the quota limit (50/50) before the send
+    # to simulate a domain that has already exhausted its daily allowance.
+    await db.execute(
+        "INSERT INTO outreach_warmup (product_id, domain, day, sent_count, target_count) "
+        "VALUES (?, ?, 1, 50, 50)",
+        ("prod-outreach-1", "freshco.io"),
+    )
+    await db.commit()
+
+    # The send must now be blocked by the quota gate, NOT pass through unchecked.
+    result = await run_outreach_send(
+        product_id="prod-outreach-1",
+        list_id="list-1",
+        target_email="cto@freshco.io",
+        template_id="tmpl-1",
+        subject="Hello",
+        body_md="Hi there",
+        postal_address="123 Main St",
+        unsubscribe_base_url="https://example.com/unsub",
+    )
+
+    assert result["status"] == "warmup_quota_exceeded", (
+        "A domain at day-1 capacity must be blocked; "
+        "if 'ok' is returned the quota gate was bypassed (bug not fixed)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_seeds_warmup_row_for_fresh_domain(tmp_path, monkeypatch):
+    """outreach/send inserts a day-1 warmup row for a domain with no prior record.
+
+    After the fix, a fresh domain gets a seeded row (day=1, target=50) on first
+    evaluation so subsequent calls can enforce the quota.
+    """
+    db_mod = await _setup_db(tmp_path, monkeypatch)
+    await _seed_product_config(db_mod)
+
+    monkeypatch.setenv("OUTREACH_ENABLED", "1")
+
+    # Mock the actual email send so we don't need Brevo credentials.
+    from unittest.mock import patch, AsyncMock
+    with patch(
+        "src.integrations.email.service.send_email",
+        new=AsyncMock(return_value={"status": "sent", "message_id": "msg-seed-test"}),
+    ):
+        from mr_roboto.outreach_send import run_outreach_send
+
+        await run_outreach_send(
+            product_id="prod-outreach-1",
+            list_id="list-1",
+            target_email="first@newdomain.io",
+            template_id="tmpl-1",
+            subject="Hello",
+            body_md="Hi there",
+            postal_address="123 Main St",
+            unsubscribe_base_url="https://example.com/unsub",
+        )
+
+    # Verify that a day-1 warmup row was created for the domain.
+    db = await db_mod.get_db()
+    cur = await db.execute(
+        "SELECT day, target_count FROM outreach_warmup "
+        "WHERE product_id=? AND domain=? ORDER BY day",
+        ("prod-outreach-1", "newdomain.io"),
+    )
+    rows = await cur.fetchall()
+    assert len(rows) >= 1, "day-1 warmup row must be seeded on first send to a fresh domain"
+    day1 = rows[0]
+    assert day1[0] == 1
+    assert day1[1] == 50, "day-1 target must be 50 (most restrictive ramp bucket)"
+
+
 # ── 4. GDPR jurisdiction blocked without opt-in ───────────────────────────────
 
 

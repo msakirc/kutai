@@ -399,7 +399,7 @@ async def _fetch_google(product_name: str, config: dict) -> list[dict]:
 
 async def _fetch_twitter(product_name: str, config: dict) -> list[dict]:
     """X API v2 — PAID. Off by default; gated behind MENTION_TWITTER_ENABLED=1."""
-    if not os.getenv("MENTION_TWITTER_ENABLED", "").strip() == "1":
+    if os.getenv("MENTION_TWITTER_ENABLED", "").strip() != "1":
         logger.debug("mention_polls.twitter: MENTION_TWITTER_ENABLED not set; skipping")
         return []
     bearer_token = os.getenv("TWITTER_BEARER_TOKEN")

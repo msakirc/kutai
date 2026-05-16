@@ -95,3 +95,45 @@ async def test_run_full_migration_seeds_and_migrates(yalayut_db, monkeypatch):
     assert result["sources_seeded"] == 4
     assert result["policy_seeded"] is True
     assert result["skills_migrated"] == 2
+
+
+# ── H1 regression ──────────────────────────────────────────────────────────────
+
+async def test_run_full_migration_indexes_20_seed_manifests(
+    yalayut_db, monkeypatch
+):
+    """H1: run_full_migration() must install all 20 seed manifests into the
+    index so they are queryable.  Before the fix this yields seeds_indexed=0."""
+    async def fake_embed(text, is_query=True):
+        return [1.0] + [0.0] * 767
+    monkeypatch.setattr("yalayut.migration._embed", fake_embed)
+
+    result = await run_full_migration(yalayut_db)
+    assert result.get("seeds_indexed", 0) == 20, (
+        f"expected 20 seed manifests in index, got {result}"
+    )
+
+    cur = await yalayut_db.execute(
+        "SELECT COUNT(*) c FROM yalayut_index WHERE source != 'internal'"
+    )
+    count = (await cur.fetchone())["c"]
+    assert count == 20, f"expected 20 seed rows in yalayut_index, got {count}"
+
+
+async def test_run_full_migration_seed_index_is_idempotent(
+    yalayut_db, monkeypatch
+):
+    """H1 idempotency: running run_full_migration() twice must not duplicate
+    seed rows — UNIQUE(source, name, version) must hold."""
+    async def fake_embed(text, is_query=True):
+        return [1.0] + [0.0] * 767
+    monkeypatch.setattr("yalayut.migration._embed", fake_embed)
+
+    await run_full_migration(yalayut_db)
+    await run_full_migration(yalayut_db)
+
+    cur = await yalayut_db.execute(
+        "SELECT COUNT(*) c FROM yalayut_index WHERE source != 'internal'"
+    )
+    count = (await cur.fetchone())["c"]
+    assert count == 20, f"double-run must not duplicate seeds; got {count} rows"

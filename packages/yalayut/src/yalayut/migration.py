@@ -6,18 +6,20 @@ source='internal'. The embedding is built from description + strategies so the
 hint is searchable by query() exactly like a fetched skill.
 
 run_full_migration() is the single boot-time entry: schema -> policy seed ->
-owner/source/disabled-import seed -> skills copy. Idempotent throughout.
+owner/source/disabled-import seed -> seed manifests -> skills copy. Idempotent.
 """
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import aiosqlite
 
-from yalayut.index import embedding_to_blob
+from yalayut.index import embedding_to_blob, store
+from yalayut.manifest import parse_manifest_yaml
 from yalayut.schema import ensure_yalayut_schema
 from yalayut.seed.seed_data import (
-    seed_disabled_imports, seed_owners, seed_sources,
+    seed_disabled_imports, seed_owners, seed_sources, load_seed_manifests,
 )
 from yalayut.vetting.policy import seed_policy
 
@@ -80,18 +82,68 @@ async def migrate_skills_to_yalayut(db: aiosqlite.Connection) -> dict:
     return {"migrated": migrated, "skipped_no_table": False}
 
 
+async def install_seed_manifests(db: aiosqlite.Connection) -> int:
+    """Parse + embed + store every YAML in seed/manifests/ into yalayut_index.
+
+    Idempotent: store() uses ON CONFLICT(source,name,version) DO UPDATE so a
+    second run is a no-op for already-present rows.  Returns the number of rows
+    newly inserted (0 on re-run).
+    """
+    # Collect the YAML paths alongside their text so we can pass the real
+    # on-disk path to store() — _to_artifact needs it to load intent_keywords
+    # and inputs_schema.
+    from yalayut.seed.seed_data import _MANIFEST_DIR
+    seed_pairs: list[tuple[Path, str]] = []
+    for p in sorted(_MANIFEST_DIR.glob("*.yaml")):
+        seed_pairs.append((p, p.read_text(encoding="utf-8")))
+
+    inserted = 0
+    for manifest_path, yaml_text in seed_pairs:
+        manifest = parse_manifest_yaml(yaml_text)
+        # Curated seeds are T0 by definition (hand-authored + vetted offline).
+        tier = 0
+        audit: dict = {"source_max": 0, "check_maxes": {}}
+        embed_text = (
+            f"{manifest.name} {manifest.name_original} "
+            f"{' '.join(manifest.intent_keywords)}"
+        ).strip()
+        emb = await _embed(embed_text, is_query=False)
+        # store() counts inserted rows via SELECT after upsert; we track via
+        # a pre-check to distinguish insert vs update (idempotency signal).
+        cur = await db.execute(
+            "SELECT id FROM yalayut_index "
+            "WHERE source=? AND name=? AND version=?",
+            (manifest.source, manifest.name, manifest.version),
+        )
+        already = await cur.fetchone()
+        await store(
+            db, manifest,
+            body="",       # seed manifests have no separate body file
+            tier=tier,
+            audit=audit,
+            embedding=emb or [0.0] * 768,
+            manifest_path=str(manifest_path),
+        )
+        if already is None:
+            inserted += 1
+    return inserted
+
+
 async def run_full_migration(db: aiosqlite.Connection) -> dict:
-    """Boot-time entry: schema + all seeds + skills copy. Idempotent."""
+    """Boot-time entry: schema + all seeds + seed manifests + skills copy.
+    Idempotent."""
     await ensure_yalayut_schema(db)
     await seed_policy(db)
     owners = await seed_owners(db)
     sources = await seed_sources(db)
     disabled = await seed_disabled_imports(db)
+    seeds_indexed = await install_seed_manifests(db)
     skills = await migrate_skills_to_yalayut(db)
     return {
         "owners_seeded": owners,
         "sources_seeded": sources,
         "disabled_imports_seeded": disabled,
         "policy_seeded": True,
+        "seeds_indexed": seeds_indexed,
         "skills_migrated": skills["migrated"],
     }

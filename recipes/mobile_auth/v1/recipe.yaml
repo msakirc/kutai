@@ -1,0 +1,56 @@
+name: mobile_auth
+version: v1
+description: "Expo/React Native auth — Sign in with Apple + Google + email/password, expo-secure-store session, FastAPI ID-token verification + JWT issue/refresh"
+requires:
+  tech_stack:
+    - "fastapi+sqlite+expo"
+    - "fastapi+postgres+expo"
+  features: []
+conflicts_with:
+  - auth
+post_hooks:
+  - imports_check
+  - test_run
+  - pattern_lint
+templates:
+  backend: backend.template.py
+  frontend: frontend.template.tsx
+  migrations: migrations/
+  tests: tests/
+prompts:
+  expo: prompts/expo.md
+  fastapi: prompts/fastapi.md
+lessons_domain: mobile_auth
+dependencies:
+  backend:
+    - fastapi
+    - "python-jose[cryptography]"
+    - httpx
+    - "passlib[bcrypt]"
+    - aiosqlite
+  frontend:
+    - expo
+    - expo-router
+    - expo-secure-store
+    - expo-auth-session
+    - expo-apple-authentication
+    - expo-crypto
+    - expo-web-browser
+param_defaults:
+  JWT_ALGO: "HS256"
+  JWT_SECRET_ENV: "MOBILE_AUTH_JWT_SECRET"
+  JWT_TTL_MIN: "30"
+  REFRESH_TTL_DAYS: "30"
+  BCRYPT_COST: "12"
+  APPLE_CLIENT_ID_ENV: "APPLE_BUNDLE_ID"
+  GOOGLE_CLIENT_ID_ENV: "GOOGLE_OAUTH_CLIENT_ID"
+  APP_NAME: "MyApp"
+  API_BASE_ENV: "EXPO_PUBLIC_API_BASE"
+  SECURE_STORE_TOKEN_KEY: "session_jwt"
+  AUTH_SCHEME: "myapp"
+  PK_TYPE: "INTEGER PRIMARY KEY AUTOINCREMENT"
+entry_points:
+  backend_routes: backend.template.py
+  frontend_components: frontend.template.tsx
+  migration: migrations/001_mobile_users.sql.template
+  smoke_tests: tests/backend_smoke.template.py

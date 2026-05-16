@@ -117,7 +117,7 @@ async def clarify(task: dict) -> dict:
         if mission_id is not None:
             # Primary: ArtifactStore (cache-first, blackboard fallback).
             try:
-                from src.workflows.engine.artifacts import get_artifact_store
+                from src.workflows.engine.hooks import get_artifact_store
                 import json as _json
                 store = get_artifact_store()
                 raw = await store.retrieve(mission_id, payload_from)

@@ -41,7 +41,7 @@ logger = get_logger("mr_roboto.stripe_provision_products")
 
 async def _load_artifact_dict(mission_id: int, name: str) -> dict | None:
     try:
-        from src.workflows.engine.artifacts import get_artifact_store
+        from src.workflows.engine.hooks import get_artifact_store
         store = get_artifact_store()
         raw = await store.retrieve(mission_id, name)
         if isinstance(raw, dict):
@@ -72,7 +72,7 @@ async def _load_artifact_dict(mission_id: int, name: str) -> dict | None:
 
 async def _persist_artifact(mission_id: int, name: str, value: dict) -> None:
     try:
-        from src.workflows.engine.artifacts import get_artifact_store
+        from src.workflows.engine.hooks import get_artifact_store
         await get_artifact_store().store(mission_id, name, json.dumps(value))
     except Exception as exc:  # noqa: BLE001
         logger.debug("artifact store persist failed: %s", exc)

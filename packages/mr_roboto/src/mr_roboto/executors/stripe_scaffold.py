@@ -73,7 +73,7 @@ def _detect_stack(system_architecture: dict | None) -> tuple[str, str]:
 async def _load_artifact_dict(mission_id: int, name: str) -> dict | None:
     """Best-effort dict load from artifact store, blackboard fallback."""
     try:
-        from src.workflows.engine.artifacts import get_artifact_store
+        from src.workflows.engine.hooks import get_artifact_store
         store = get_artifact_store()
         raw = await store.retrieve(mission_id, name)
         if isinstance(raw, dict):

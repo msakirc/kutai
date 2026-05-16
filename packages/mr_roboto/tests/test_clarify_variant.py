@@ -2,6 +2,17 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 
+def _blackboard_returning(gate_result: dict, chat_id):
+    """An AsyncMock for read_blackboard(mission_id, 'artifacts').
+
+    clarify.py reads the source artifact AND chat_id from the blackboard
+    artifact bag — the task dict itself does not carry artifacts on the
+    dispatch path.
+    """
+    bag = {"gate_result": gate_result, "chat_id": chat_id}
+    return AsyncMock(return_value=bag)
+
+
 @pytest.mark.asyncio
 async def test_clarify_variant_choice_sends_keyboard():
     """variant_choice kind: calls send_variant_keyboard and returns needs_clarification."""
@@ -16,30 +27,36 @@ async def test_clarify_variant_choice_sends_keyboard():
             "kind": "variant_choice",
             "payload_from": "gate_result",
         },
-        "artifacts": {
-            "gate_result": {
-                "gate": {"kind": "clarify"},
-                "clarify_options": [
-                    {"label": "Galaxy S25", "group_id": 0, "prominence": 2.0},
-                    {"label": "Galaxy S25 Ultra", "group_id": 1, "prominence": 1.0},
-                ],
-                "base_label": "Samsung Galaxy S25",
-            }
-        },
     }
+    gate_result = {
+        "gate": {"kind": "clarify"},
+        "clarify_options": [
+            {"label": "Galaxy S25", "group_id": 0, "prominence": 2.0},
+            {"label": "Galaxy S25 Ultra", "group_id": 1, "prominence": 1.0},
+        ],
+        "base_label": "Samsung Galaxy S25",
+    }
+    # ArtifactStore.retrieve misses → blackboard fallback supplies the data.
+    _store = AsyncMock()
+    _store.retrieve = AsyncMock(return_value=None)
 
-    with patch("mr_roboto.clarify.send_variant_keyboard", new=AsyncMock(return_value=None)) as sent, \
-         patch("mr_roboto.clarify.update_task", new=AsyncMock()):
+    with patch("mr_roboto.clarify.send_variant_keyboard", new=AsyncMock(return_value=True)) as sent, \
+         patch("mr_roboto.clarify.update_task", new=AsyncMock()), \
+         patch("src.workflows.engine.hooks.get_artifact_store", return_value=_store), \
+         patch("src.collaboration.blackboard.read_blackboard",
+               new=_blackboard_returning(gate_result, 555)):
         action = await run(task)
 
     sent.assert_awaited_once_with(
-        1, 9, "Samsung Galaxy S25",
+        1, 9, 555, "Samsung Galaxy S25",
         [
             {"label": "Galaxy S25", "group_id": 0, "prominence": 2.0},
             {"label": "Galaxy S25 Ultra", "group_id": 1, "prominence": 1.0},
         ],
     )
-    assert action.status == "completed"
+    # Keyboard sent → dispatch surfaces the task as needs_clarification
+    # (it is genuinely waiting for the founder's variant pick).
+    assert action.status == "needs_clarification"
     result = action.result or {}
     assert result.get("status") == "needs_clarification"
     assert result.get("kind") == "variant_choice"
@@ -60,22 +77,29 @@ async def test_clarify_variant_choice_default_payload_from():
             "kind": "variant_choice",
             # no payload_from — should default to "gate_result"
         },
-        "artifacts": {
-            "gate_result": {
-                "clarify_options": [
-                    {"label": "iPhone 15", "group_id": 0, "prominence": 1.5},
-                ],
-                "base_label": "Apple iPhone 15",
-            }
-        },
     }
+    gate_result = {
+        "clarify_options": [
+            {"label": "iPhone 15", "group_id": 0, "prominence": 1.5},
+        ],
+        "base_label": "Apple iPhone 15",
+    }
+    _store = AsyncMock()
+    _store.retrieve = AsyncMock(return_value=None)
 
-    with patch("mr_roboto.clarify.send_variant_keyboard", new=AsyncMock(return_value=None)) as sent, \
-         patch("mr_roboto.clarify.update_task", new=AsyncMock()):
+    with patch("mr_roboto.clarify.send_variant_keyboard", new=AsyncMock(return_value=True)) as sent, \
+         patch("mr_roboto.clarify.update_task", new=AsyncMock()), \
+         patch("src.workflows.engine.hooks.get_artifact_store", return_value=_store), \
+         patch("src.collaboration.blackboard.read_blackboard",
+               new=_blackboard_returning(gate_result, 777)):
         action = await run(task)
 
-    sent.assert_awaited_once()
-    assert action.status == "completed"
+    # Default payload_from="gate_result" → base_label resolved from blackboard.
+    sent.assert_awaited_once_with(
+        2, 10, 777, "Apple iPhone 15",
+        [{"label": "iPhone 15", "group_id": 0, "prominence": 1.5}],
+    )
+    assert action.status == "needs_clarification"
     assert action.result.get("status") == "needs_clarification"
 
 

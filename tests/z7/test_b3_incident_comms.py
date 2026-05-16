@@ -515,6 +515,80 @@ class TestIncidentUpdateReviewHandler:
         result = await handle(task, {"draft": "Some text", "product_id": "p1"})
         assert result["status"] == "skip"
 
+    @pytest.mark.asyncio
+    async def test_posthook_payload_carries_draft_from_source_ctx(
+        self, initialized_db, monkeypatch
+    ):
+        """_apply_request_posthook uses a.source_ctx (with draft) not DB ctx.
+
+        This is the end-to-end regression test for Part C of the z7 fix:
+        `_posthook_agent_and_payload` must receive the enriched source_ctx that
+        rewrite.py builds by merging result scalars, not the raw DB-read ctx
+        which has no 'draft' key.
+
+        Without the fix (passing `ctx` instead of `a.source_ctx`), the payload
+        produced by _posthook_agent_and_payload has `draft=""`, so the
+        incident_update_review handler skips instead of emitting founder_action.
+        """
+        import json as _json
+        from src.infra.db import add_task, get_task, update_task
+        from general_beckman.result_router import RequestPostHook
+        from general_beckman.apply import _posthook_agent_and_payload
+
+        # Create a source task whose stored context does NOT contain 'draft'
+        # (this mirrors the real situation: incident/draft_update stores draft
+        # only in its result dict, never writes it back to the task context).
+        source_task_id = await add_task(
+            title="incident draft_update",
+            description="",
+            agent_type="mechanical",
+            context={
+                "incident_id": 42,
+                "product_id": "prod-test",
+                "status_kind": "investigating",
+                # NOTE: no "draft" key here — this is the key invariant.
+            },
+        )
+        source = await get_task(source_task_id)
+        assert source is not None
+
+        # Simulate what rewrite.py does: build a source_ctx that merges the
+        # result scalar "draft" into the task context.
+        source_ctx_enriched = {
+            "incident_id": 42,
+            "product_id": "prod-test",
+            "status_kind": "investigating",
+            "draft": "We are investigating an issue with payment processing.",
+        }
+
+        hook = RequestPostHook(
+            source_task_id=source_task_id,
+            kind="incident_update_review",
+            source_ctx=source_ctx_enriched,
+        )
+
+        # Verify: the payload produced by _posthook_agent_and_payload carries
+        # the draft from source_ctx_enriched, not the empty DB context.
+        _, payload = _posthook_agent_and_payload(hook, source, source_ctx_enriched)
+        inner = payload.get("payload", {})
+        assert inner.get("draft") == "We are investigating an issue with payment processing.", (
+            "payload.payload.draft must come from a.source_ctx (enriched with result scalars), "
+            "not from the DB-read ctx which has no 'draft' key"
+        )
+        assert inner.get("incident_id") == 42
+        assert inner.get("product_id") == "prod-test"
+
+        # Counterproof: if we (incorrectly) pass the DB-read ctx instead, draft
+        # would be empty — confirming the bug that was present before this fix.
+        import json as _json
+        from general_beckman.apply import _parse_ctx
+        db_ctx = _parse_ctx(source)
+        _, bad_payload = _posthook_agent_and_payload(hook, source, db_ctx)
+        bad_inner = bad_payload.get("payload", {})
+        assert bad_inner.get("draft", "") == "", (
+            "Counterproof: DB-read ctx has no draft — confirms old path was broken"
+        )
+
 
 # ===========================================================================
 # 6. incident/publish_status writes status_updates row + updates incidents

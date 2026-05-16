@@ -89,8 +89,9 @@ Confidence stacks across signals; D+C+E on same pattern = high priority, single 
 Each artifact lands in one of T0..T3 via **owner-elevated source cap min-with checks**:
 
 ```
-trust_cap = max(source_max, owner_max)        # owner elevates source
-final_tier = min(trust_cap, *check_maxes)     # checks always cap; no elevation past checks
+# tiers are integers: T0=0 (best/most privilege) .. T3=3 (quarantine).
+trust_cap  = min(source_max, owner_max)       # owner elevates source — lower int = more privilege
+final_tier = max(trust_cap, *check_maxes)     # most-restrictive (highest int) wins; checks always cap
 ```
 
 - `SOURCE_MAX[trusted]=T0, [review]=T1, [untrusted]=T2` — automated source-level trust
@@ -472,7 +473,7 @@ Plugins live in `yalayut/plugins/<artifact>.py`. `SkillApplication` is a structu
 5. **Tier classify**
    - Run all auto-checks → collect per-check max tiers
    - Look up source_max + owner_max
-   - `trust_cap = max(source_max, owner_max)`; `final_tier = min(trust_cap, *check_maxes)` (see Tier classifier section)
+   - `trust_cap = min(source_max, owner_max)`; `final_tier = max(trust_cap, *check_maxes)` (see Tier classifier section)
    - Audit row with each cap's contribution
 6. **Enable**
    - T0/T1: auto-enable, move staging → `vendor/skills/<source>/<name>/v<version>/`
@@ -812,7 +813,7 @@ All exposed via `inject` unless noted. `applies_to` in parens.
 
 - **Unit**: each source adapter against fixture HTTP responses; each parser against frozen sample artifacts
 - **Unit**: each auto-check against positive/negative fixtures (shell with `chmod`, injection regex hits, etc.)
-- **Unit**: tier_classifier — verify `min(max(source,owner), *checks)` semantics across all combinations
+- **Unit**: tier_classifier — verify `max(min(source,owner), *checks)` semantics across all combinations
 - **Unit**: each plugin's `parse_manifest` / `vet_checks` / `to_application` / `bind_args` / `execute`
 - **Unit**: intersect — scoring, exposure-class decision per (tier × kind × confidence) tuple, budget caps, conflict resolution, failure-isolation graceful degrade
 - **Integration**: end-to-end fetch → synthesize → tier → enable → query → intersect → SkillApplication, mocked sources for all 6 adapter types

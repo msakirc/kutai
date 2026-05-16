@@ -43,21 +43,52 @@ async def _in_flight_missions() -> list[dict]:
     return [dict(zip(cols, r)) for r in await cur.fetchall()]
 
 
-async def _pending_founder_actions() -> list[dict]:
-    """Return founder_actions with status pending or in_progress."""
+async def _pending_founder_actions() -> tuple[list[dict], list[dict]]:
+    """Return (active, resurfaced) founder_actions split by defer_until.
+
+    - ``active``: pending/in_progress cards that are not deferred past now.
+    - ``resurfaced``: cards that *were* deferred but whose review window
+      has now arrived (``defer_until <= now``). These are surfaced as a
+      distinct section so deferred attention cards re-enter the A0
+      briefing when their window comes due — wiring up the
+      ``attention_budget.next_review_window`` deferral cycle.
+    """
     from src.infra.db import get_db
     db = await get_db()
     try:
         cur = await db.execute(
-            "SELECT id, mission_id, kind, title, status "
+            "SELECT id, mission_id, kind, title, status, defer_until "
             "FROM founder_actions "
             "WHERE status IN ('pending', 'in_progress') "
-            "ORDER BY id DESC LIMIT 10"
+            "ORDER BY id DESC LIMIT 30"
         )
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in await cur.fetchall()]
+        rows = [dict(zip(cols, r)) for r in await cur.fetchall()]
     except Exception:
-        return []
+        return [], []
+
+    import datetime as _dt
+
+    now = _dt.datetime.utcnow()
+    active: list[dict] = []
+    resurfaced: list[dict] = []
+    for r in rows:
+        defer_until = r.get("defer_until")
+        if defer_until:
+            try:
+                dt = _dt.datetime.strptime(defer_until, "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                dt = None
+            if dt is not None and dt > now:
+                # Still deferred — its review window has not arrived; skip.
+                continue
+            if dt is not None and dt <= now:
+                # Review window reached — re-surface this card.
+                resurfaced.append(r)
+                continue
+        active.append(r)
+
+    return active[:10], resurfaced[:10]
 
 
 async def _cost_burn_last_24h() -> float:
@@ -92,6 +123,7 @@ def _compose_daily_body(
     *,
     missions: list[dict],
     actions: list[dict],
+    resurfaced: list[dict],
     cost_usd: float,
 ) -> str:
     sections: list[str] = []
@@ -104,6 +136,16 @@ def _compose_daily_body(
         sections.append("\n".join(lines))
     else:
         sections.append("## In-Flight Missions\n_(none running)_")
+
+    # Resurfaced (deferred cards whose review window has arrived)
+    if resurfaced:
+        lines = ["## Resurfaced — Deferred Review Window Reached"]
+        for a in resurfaced:
+            lines.append(
+                f"- [{a['kind']}] #{a['id']} — {a['title']} "
+                f"(was deferred to {a.get('defer_until') or '?'})"
+            )
+        sections.append("\n".join(lines))
 
     # Pending founder actions
     if actions:
@@ -129,12 +171,13 @@ async def run_daily_briefing() -> dict:
             return {"ok": True, "skipped": True, "reason": "already_ran_today"}
 
         missions = await _in_flight_missions()
-        actions = await _pending_founder_actions()
+        actions, resurfaced = await _pending_founder_actions()
         cost_usd = await _cost_burn_last_24h()
 
         body_md = _compose_daily_body(
             missions=missions,
             actions=actions,
+            resurfaced=resurfaced,
             cost_usd=cost_usd,
         )
 
@@ -152,9 +195,15 @@ async def run_daily_briefing() -> dict:
             "daily_briefing: wrote daily briefing",
             missions_count=len(missions),
             actions_count=len(actions),
+            resurfaced_count=len(resurfaced),
             cost_usd=cost_usd,
         )
-        return {"ok": True, "missions": len(missions), "actions": len(actions)}
+        return {
+            "ok": True,
+            "missions": len(missions),
+            "actions": len(actions),
+            "resurfaced": len(resurfaced),
+        }
 
     except Exception as exc:
         logger.error("daily_briefing: failed", error=str(exc))

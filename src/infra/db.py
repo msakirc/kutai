@@ -3699,7 +3699,7 @@ async def init_db():
         reversal_sql=(
             "DROP INDEX IF EXISTS idx_external_reviews_rating;\n"
             "DROP INDEX IF EXISTS idx_external_reviews_product_platform;\n"
-            "DROP UNIQUE INDEX IF EXISTS uq_external_reviews_platform_id;\n"
+            "DROP INDEX IF EXISTS uq_external_reviews_platform_id;\n"
             "DROP TABLE IF EXISTS external_reviews;\n"
         ),
         description=(
@@ -3926,6 +3926,39 @@ async def init_db():
             "different products were mentioned in the same external thread, "
             "silently dropping the second via INSERT OR IGNORE. Table rebuilt "
             "preserving existing rows."
+        ),
+    )
+
+    # ── Z7 fix-pass A6: outreach_pauses — real campaign-pause flag ───────────────
+    # outreach_deliverability_check used to only *emit a founder_action* saying
+    # "campaign paused" — it set no flag, so outreach/send kept sending. This
+    # table is the real pause flag: one row per paused (product_id, list_id).
+    # outreach/send refuses to send when an un-cleared row exists.
+    await apply_migration(
+        version="2026-05-17-z7-a6-outreach-pauses",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS outreach_pauses ("
+            " pause_id   INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id TEXT    NOT NULL,"
+            " list_id    TEXT    NOT NULL,"
+            " reason     TEXT    NOT NULL DEFAULT '',"
+            " paused_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " cleared_at TEXT,"
+            " UNIQUE(product_id, list_id)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_outreach_pauses_active "
+            "ON outreach_pauses(product_id, list_id, cleared_at);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_outreach_pauses_active;\n"
+            "DROP TABLE IF EXISTS outreach_pauses;\n"
+        ),
+        description=(
+            "Z7 fix-pass A6: outreach_pauses — campaign-pause flag. "
+            "outreach_deliverability_check INSERTs a row (cleared_at NULL) when "
+            "bounce/complaint thresholds are exceeded; outreach/send refuses to "
+            "send while an un-cleared row exists for (product_id, list_id). "
+            "Founder clears the pause by stamping cleared_at."
         ),
     )
 

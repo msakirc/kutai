@@ -70,15 +70,22 @@ async def _get_cost_actual(mission_id: int) -> float:
 
 
 async def _get_recovered_lessons(mission_id: int) -> list[dict]:
-    """Pull mission_lessons rows that reference this mission_id in source_ref."""
+    """Pull mission_lessons rows that reference this mission_id in source_ref.
+
+    ``source_ref`` is a JSON TEXT column (no real ``mission_id`` column on
+    ``mission_lessons``). We match with SQLite's ``json_extract`` so
+    ``mission_id == 42`` does not also match ``421``/``4210`` the way a
+    naive ``LIKE '%"mission_id": 42%'`` substring match would.
+    """
     from src.infra.db import get_db
     db = await get_db()
     try:
         cur = await db.execute(
             "SELECT pattern, fix, domain FROM mission_lessons "
-            "WHERE source_ref LIKE ? AND suppressed = 0 "
+            "WHERE json_extract(source_ref, '$.mission_id') = ? "
+            "  AND suppressed = 0 "
             "ORDER BY occurrences DESC LIMIT 5",
-            (f'%"mission_id": {mission_id}%',),
+            (int(mission_id),),
         )
         return [dict(zip([d[0] for d in cur.description], r)) for r in await cur.fetchall()]
     except Exception:

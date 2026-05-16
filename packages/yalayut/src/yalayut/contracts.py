@@ -83,6 +83,7 @@ class IndexRow:
     mechanizable: bool
     model_hint: str | None
     enabled: bool
+    env_status: str = "ready"
 
 
 @dataclass
@@ -142,6 +143,12 @@ class Artifact:
     mechanizable: bool
     body_excerpt: str | None
     payload: dict[str, Any] = field(default_factory=dict)
+    # --- Phase 2 enrichment ---
+    source: str = ""
+    owner: str | None = None
+    env_status: str = "ready"
+    intent_keywords: list[str] = field(default_factory=list)
+    inputs_schema: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

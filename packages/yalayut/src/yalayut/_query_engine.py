@@ -33,7 +33,25 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+def _load_manifest_fields(manifest_path: str | None) -> tuple[list, dict]:
+    """Load intent_keywords and inputs_schema from a manifest file.
+
+    Returns (intent_keywords, inputs_schema). On any failure (missing file,
+    parse error) returns ([], {}) — must not break the hot read path.
+    """
+    if not manifest_path:
+        return [], {}
+    try:
+        from yalayut.manifest import parse_manifest_yaml
+        with open(manifest_path, encoding="utf-8") as fh:
+            m = parse_manifest_yaml(fh.read())
+        return list(m.intent_keywords or []), dict(m.inputs_schema or {})
+    except Exception:
+        return [], {}
+
+
 def _to_artifact(row: IndexRow, score: float) -> Artifact:
+    intent_keywords, inputs_schema = _load_manifest_fields(row.manifest_path)
     return Artifact(
         artifact_id=row.id, name=row.name, name_original=row.name_original,
         artifact_type=row.artifact_type, kind=row.kind,
@@ -41,6 +59,11 @@ def _to_artifact(row: IndexRow, score: float) -> Artifact:
         score=score, exposure_class=row.exposure_class,
         applies_to=row.applies_to, mechanizable=row.mechanizable,
         body_excerpt=row.body_excerpt, payload={},
+        source=row.source or "",
+        owner=row.owner,
+        env_status=row.env_status if row.env_status is not None else "ready",
+        intent_keywords=intent_keywords,
+        inputs_schema=inputs_schema,
     )
 
 
@@ -67,6 +90,7 @@ async def query_db(
             vet_tier=r["vet_tier"], exposure_class=r["exposure_class"],
             applies_to=r["applies_to"], mechanizable=bool(r["mechanizable"]),
             model_hint=r["model_hint"], enabled=bool(r["enabled"]),
+            env_status=r["env_status"] if r["env_status"] is not None else "ready",
         )
         scored.append(_to_artifact(ir, score))
     scored.sort(key=lambda a: a.score, reverse=True)

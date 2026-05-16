@@ -45,6 +45,7 @@ def _row_to_indexrow(r: aiosqlite.Row) -> IndexRow:
         vet_tier=r["vet_tier"], exposure_class=r["exposure_class"],
         applies_to=r["applies_to"], mechanizable=bool(r["mechanizable"]),
         model_hint=r["model_hint"], enabled=bool(r["enabled"]),
+        env_status=r["env_status"] if r["env_status"] is not None else "ready",
     )
 
 

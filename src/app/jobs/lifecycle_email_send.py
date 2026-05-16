@@ -67,6 +67,7 @@ async def run_lifecycle_email_send() -> dict:
     import src.app.lifecycle_email as _le_mod
     _get_template = _le_mod._get_template
     _send_email = _le_mod.send_email
+    _is_subscribed = _le_mod.is_subscribed
 
     sent_count = 0
     skipped_count = 0
@@ -84,9 +85,33 @@ async def run_lifecycle_email_send() -> dict:
         send_id = row["send_id"]
         product_id = row["product_id"]
         user_id = row["user_id"]
+        sequence_id = row.get("sequence_id")
         template_id = row.get("template_id")
 
         try:
+            # Preference gate (B1) — never send to an unsubscribed recipient.
+            # email_sends.user_id carries the preference-center user_token.
+            # An explicit `false` for this sequence in email_preferences means
+            # the user opted out (via unsubscribe link / webhook). We mark the
+            # row done (sent_at=now) so the cron does not re-evaluate it every
+            # tick — the send is intentionally suppressed, not retried.
+            if sequence_id is not None and not await _is_subscribed(
+                product_id, str(user_id), sequence_id
+            ):
+                await db.execute(
+                    "UPDATE email_sends SET sent_at=? WHERE send_id=?",
+                    (_db_now(), send_id),
+                )
+                await db.commit()
+                skipped_count += 1
+                logger.info(
+                    "lifecycle_email_send: skipped — recipient unsubscribed",
+                    send_id=send_id,
+                    product_id=product_id,
+                    sequence_id=sequence_id,
+                )
+                continue
+
             # Load template
             tmpl = await _get_template(db, template_id) if template_id else None
             if tmpl is None:

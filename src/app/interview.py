@@ -129,17 +129,26 @@ async def transcribe_interview(
 ) -> dict:
     """Run Whisper transcription on the audio_path stored in interview_notes.
 
-    Reads audio_path from the DB, calls _transcribe(), writes transcript_md
-    back. Returns ``{"ok": True, "note_id": note_id, "transcript_length": N}``.
+    Reads audio_path + contact_id from the DB, calls _transcribe(), writes
+    transcript_md back.
+    Returns ``{"ok": True, "note_id": note_id, "transcript_length": N}``.
+
+    Consent gate (A10.r1): customer audio is NEVER transcribed without an
+    ``interview_recording`` consent record on file for the contact. If consent
+    is absent, this returns ``{"ok": False, "error": ..., "reason":
+    "consent_missing"}`` and no transcription is performed — the caller must
+    surface this (e.g. request consent before re-running).
     """
     import os
     from src.infra.db import get_db
+    from src.app import crm
 
     size = model_size or os.getenv("WHISPER_MODEL_SIZE", DEFAULT_MODEL_SIZE)
 
     db = await get_db()
     cur = await db.execute(
-        "SELECT audio_path FROM interview_notes WHERE note_id=? AND product_id=?",
+        "SELECT audio_path, contact_id FROM interview_notes "
+        "WHERE note_id=? AND product_id=?",
         (note_id, product_id),
     )
     row = await cur.fetchone()
@@ -147,8 +156,43 @@ async def transcribe_interview(
         return {"ok": False, "error": f"interview_notes row not found: note_id={note_id}"}
 
     audio_path = row[0]
+    contact_id = row[1]
     if not audio_path:
         return {"ok": False, "error": "audio_path is empty; cannot transcribe"}
+
+    # A10.r1 consent gate — do NOT transcribe customer audio without recording
+    # consent. db.py migration 2026-05-16-z7-consent-records mandates this.
+    if contact_id is None:
+        return {
+            "ok": False,
+            "error": (
+                f"interview note #{note_id} has no contact_id; cannot verify "
+                "interview_recording consent — refusing to transcribe."
+            ),
+            "reason": "consent_missing",
+        }
+    has_recording_consent = await crm.has_consent(
+        product_id, contact_id, "interview_recording"
+    )
+    if not has_recording_consent:
+        logger.warning(
+            "interview: transcription blocked — no interview_recording consent",
+            note_id=note_id,
+            product_id=product_id,
+            contact_id=contact_id,
+        )
+        return {
+            "ok": False,
+            "error": (
+                f"interview_recording consent is not on file for contact "
+                f"#{contact_id} (note #{note_id}); refusing to transcribe "
+                "customer audio. Grant consent via crm/grant_consent "
+                "(purpose=interview_recording) then re-run interview/transcribe."
+            ),
+            "reason": "consent_missing",
+            "note_id": note_id,
+            "contact_id": contact_id,
+        }
 
     try:
         transcript = _transcribe(audio_path, model_size=size)

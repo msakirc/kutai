@@ -220,6 +220,110 @@ def test_transcribe_uses_faster_whisper_when_openai_whisper_missing():
     assert "Hello faster" in result
 
 
+# ── 3b. interview/transcribe — A10.r1 consent gate ───────────────────────────
+
+
+async def _grant_consent(db, product_id, contact_id, purpose):
+    """Insert a valid (not revoked, not expired) consent_records row."""
+    await db.execute(
+        "INSERT INTO consent_records "
+        "(product_id, contact_id, purpose, granted_at, expires_at, "
+        " source_evidence_url, revoked_at) "
+        "VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%S','now'), NULL, ?, NULL)",
+        (product_id, contact_id, purpose, "https://evidence.example/consent"),
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_blocked_without_recording_consent(db):
+    """transcribe_interview refuses to transcribe when interview_recording
+    consent is absent — exercises the REAL crm.has_consent path (no mock).
+
+    Tautology guard: removing the consent gate would let this transcribe
+    and return ok=True, failing the assertions below.
+    """
+    contact_id = await _add_contact(db)
+    note_id = await _insert_interview(db, contact_id=contact_id)
+
+    transcribe_calls = []
+
+    def _fake_transcribe(audio_path, model_size=None):
+        transcribe_calls.append(audio_path)
+        return "SHOULD NOT BE REACHED"
+
+    # Only the whisper boundary is faked; crm.has_consent runs for real
+    # against the real (empty) consent_records table.
+    with patch("src.app.interview._transcribe", side_effect=_fake_transcribe):
+        from src.app.interview import transcribe_interview
+        result = await transcribe_interview(note_id=note_id, product_id="prod1")
+
+    assert result["ok"] is False
+    assert result.get("reason") == "consent_missing"
+    # _transcribe must NOT have been called — no audio decode without consent.
+    assert transcribe_calls == [], "audio was transcribed despite missing consent"
+
+    # transcript_md must remain unset in the DB.
+    cur = await db.execute(
+        "SELECT transcript_md FROM interview_notes WHERE note_id=?", (note_id,)
+    )
+    row = await cur.fetchone()
+    assert not row[0], "transcript written despite missing consent"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_proceeds_with_recording_consent(db):
+    """transcribe_interview transcribes when a real interview_recording
+    consent record exists — verifies the gate is a gate, not a wall.
+    """
+    contact_id = await _add_contact(db)
+    note_id = await _insert_interview(db, contact_id=contact_id)
+    # Grant real consent via the real schema.
+    await _grant_consent(db, "prod1", contact_id, "interview_recording")
+
+    def _fake_transcribe(audio_path, model_size=None):
+        return "Speaker A: Hello from the interview."
+
+    with patch("src.app.interview._transcribe", side_effect=_fake_transcribe):
+        from src.app.interview import transcribe_interview
+        result = await transcribe_interview(note_id=note_id, product_id="prod1")
+
+    assert result["ok"] is True
+    assert result["transcript_length"] > 0
+
+    cur = await db.execute(
+        "SELECT transcript_md FROM interview_notes WHERE note_id=?", (note_id,)
+    )
+    row = await cur.fetchone()
+    assert "Hello from the interview" in (row[0] or "")
+
+
+@pytest.mark.asyncio
+async def test_transcribe_blocked_after_consent_revoked(db):
+    """A revoked interview_recording consent must block transcription —
+    exercises has_consent's revoked_at branch via the real ledger.
+    """
+    contact_id = await _add_contact(db)
+    note_id = await _insert_interview(db, contact_id=contact_id)
+    await _grant_consent(db, "prod1", contact_id, "interview_recording")
+    # Revoke it.
+    await db.execute(
+        "UPDATE consent_records "
+        "SET revoked_at=strftime('%Y-%m-%d %H:%M:%S','now') "
+        "WHERE product_id='prod1' AND contact_id=? AND purpose='interview_recording'",
+        (contact_id,),
+    )
+    await db.commit()
+
+    with patch("src.app.interview._transcribe",
+               side_effect=AssertionError("must not transcribe")):
+        from src.app.interview import transcribe_interview
+        result = await transcribe_interview(note_id=note_id, product_id="prod1")
+
+    assert result["ok"] is False
+    assert result.get("reason") == "consent_missing"
+
+
 # ── 4. interview/summarize — LLM-bound (mocked beckman.enqueue OVERHEAD) ─────
 
 

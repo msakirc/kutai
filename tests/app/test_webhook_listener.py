@@ -117,6 +117,47 @@ async def test_distinct_events_both_enqueue(tmp_path, monkeypatch, client):
 
 
 @pytest.mark.asyncio
+async def test_email_webhook_error_path_logs_without_typeerror(
+    tmp_path, monkeypatch, client
+):
+    """Critical 2: the email-webhook error handler calls logger.error(...) with
+    kwargs (provider=, product_id=, exc=). With the old stdlib logging.getLogger
+    that raised TypeError; the structured get_logger must accept the kwargs.
+
+    Tautology guard: reverting to logging.getLogger('kutai.webhook') makes the
+    handler raise TypeError instead of returning a clean 500 — the assertions
+    on status_code/json below would then fail.
+    """
+    await _setup(tmp_path, monkeypatch)
+
+    # Confirm the module logger is the structured (kwargs-accepting) logger,
+    # not a bare stdlib logging.Logger.
+    import logging as _stdlib_logging
+    from src.app import webhook_listener as _wl
+
+    assert not type(_wl.logger) is _stdlib_logging.Logger, (
+        "webhook_listener.logger is a bare stdlib logger — kwargs will TypeError"
+    )
+
+    # Force the email-webhook handler down its error branch.
+    async def _boom(*a, **kw):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(
+        "src.integrations.email.service.handle_webhook_event", _boom
+    )
+
+    r = client.post(
+        "/webhook/email/brevo/prod-x",
+        json={"event": "bounce", "email": "u@x.com"},
+    )
+    # The handler must reach its `raise HTTPException(500)` cleanly — i.e. the
+    # logger.error(..., provider=..., exc=...) call did NOT itself raise.
+    assert r.status_code == 500
+    assert r.json()["detail"] == "handler error"
+
+
+@pytest.mark.asyncio
 async def test_alert_triage_lands_on_ongoing_lane(tmp_path, monkeypatch, client):
     db_mod = await _setup(tmp_path, monkeypatch)
 

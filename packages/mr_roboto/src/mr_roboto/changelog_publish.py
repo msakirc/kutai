@@ -49,16 +49,23 @@ async def _queue_announcement_email(product_id: str, **kwargs) -> dict:
     """Queue a B1 announcement email blast for the product.
 
     Calls lifecycle_email.trigger_sequence_by_kind(product_id, user_id=None,
-    trigger_kind='announcement') — degrades gracefully when:
+    trigger_kind='announcement'). With user_id=None + the 'announcement'
+    trigger_kind, trigger_sequence_by_kind fans out as a broadcast: it
+    enumerates every opted-in recipient in email_preferences and creates one
+    email_sends row per subscribed user_token per step.
+
+    Degrades gracefully when:
     - B1 lifecycle_email module is not yet installed.
     - No enabled announcement sequence exists for the product.
+    - No subscribed recipients exist (ok=True, sends_created=0).
 
-    Returns: {"ok": bool, "sends_created": int, "reason": str | None}
+    Returns: {"ok": bool, "sends_created": int, "recipients": int,
+              "reason": str | None}
     """
     try:
         from src.app.lifecycle_email import trigger_sequence_by_kind
-        # Announcement blasts target all opted-in subscribers (user_id=None
-        # is treated as a broadcast by trigger_sequence_by_kind).
+        # Announcement blasts target all opted-in subscribers — user_id=None
+        # triggers the broadcast fan-out over email_preferences.
         result = await trigger_sequence_by_kind(
             product_id=product_id,
             user_id=None,

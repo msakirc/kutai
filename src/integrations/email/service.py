@@ -239,6 +239,29 @@ async def handle_webhook_event(
             event_type=event_type,
         )
 
+    # B1 — propagate unsubscribe / spam-complaint to the preference center so
+    # email_preferences (not just the suppression list) reflects the opt-out.
+    # The preference center is what broadcast fan-out + the lifecycle send job
+    # consult; the suppression list alone would not stop new sends being
+    # queued (only block them at the provider boundary).
+    if event_type in ("unsub", "complaint") and recipient:
+        try:
+            from src.app.lifecycle_email import handle_email_event_for_lifecycle
+
+            await handle_email_event_for_lifecycle(
+                product_id=product_id,
+                event_type=event_type,
+                recipient=recipient,
+            )
+        except Exception as exc:
+            logger.error(
+                "preference-center update failed after webhook",
+                product_id=product_id,
+                recipient=recipient,
+                event_type=event_type,
+                exc=str(exc),
+            )
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

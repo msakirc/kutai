@@ -23,15 +23,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 
 from fastapi import FastAPI, HTTPException, Request
 
 from src.app.webhook_dedup import already_seen, mark_seen
 from src.app.webhook_signing import verify_signature
 from src.infra.db import get_db
+from src.infra.logging_config import get_logger
 
-logger = logging.getLogger("kutai.webhook")
+logger = get_logger("kutai.webhook")
 app = FastAPI()
 
 # Z9 T3A — providers whose webhooks carry *growth signals* (support tickets,

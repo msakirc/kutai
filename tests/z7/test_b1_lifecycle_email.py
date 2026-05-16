@@ -220,6 +220,135 @@ class TestTriggerSequence:
         assert result["ok"] is False
 
 
+# ── 2b. Announcement broadcast fan-out (Critical 9) ──────────────────────────
+
+
+class TestAnnouncementBroadcast:
+    """B1 announcement blast — broadcast fan-out over email_preferences."""
+
+    async def _setup_announcement(self, db, product_id="prod-ann"):
+        """Create a template + an enabled 'announcement' sequence; return seq_id."""
+        await db.execute(
+            "INSERT INTO email_templates (product_id, kind, subject, body_md, "
+            "variants_json, status, brand_voice_lint_pass, copy_compliance_pass) "
+            "VALUES (?, 'announcement', 'News!', 'We shipped {x}', '[]', "
+            "'approved', 1, 1)",
+            (product_id,),
+        )
+        await db.commit()
+        cur = await db.execute(
+            "SELECT template_id FROM email_templates WHERE product_id=?",
+            (product_id,),
+        )
+        tmpl_id = (await cur.fetchone())[0]
+        steps = [{"template_id": tmpl_id, "delay_hours": 0}]
+        await db.execute(
+            "INSERT INTO email_sequences (product_id, name, trigger_kind, "
+            "steps_json, enabled) VALUES (?, 'Announce', 'announcement', ?, 1)",
+            (product_id, json.dumps(steps)),
+        )
+        await db.commit()
+        cur = await db.execute(
+            "SELECT sequence_id FROM email_sequences WHERE product_id=?",
+            (product_id,),
+        )
+        return (await cur.fetchone())[0]
+
+    @pytest.mark.asyncio
+    async def test_broadcast_fans_out_to_subscribers(self, db):
+        """trigger_sequence_by_kind(announcement, user_id=None) creates one
+        email_sends row per subscribed recipient — real SQLite, real fan-out.
+
+        Tautology guard: the old user_id=None code inserted NULL into the
+        NOT NULL user_id column and failed; this test asserts real rows exist.
+        """
+        from src.app.lifecycle_email import (
+            trigger_sequence_by_kind,
+            set_preferences,
+        )
+
+        seq_id = await self._setup_announcement(db)
+
+        # Three recipients in the preference center: two opted-in, one opted-out.
+        await set_preferences("prod-ann", "tok-a", {})            # default-on
+        await set_preferences("prod-ann", "tok-b", {str(seq_id): True})
+        await set_preferences("prod-ann", "tok-c", {str(seq_id): False})  # unsub
+
+        result = await trigger_sequence_by_kind(
+            product_id="prod-ann", user_id=None, trigger_kind="announcement"
+        )
+
+        assert result["ok"] is True
+        assert result["recipients"] == 2, "should fan out to the 2 opted-in tokens"
+        assert result["sends_created"] == 2  # 1 step each
+
+        cur = await db.execute(
+            "SELECT user_id FROM email_sends WHERE sequence_id=?", (seq_id,)
+        )
+        recipients = {r[0] for r in await cur.fetchall()}
+        assert recipients == {"tok-a", "tok-b"}
+        assert "tok-c" not in recipients, "unsubscribed token got an email_send"
+
+        # No NULL user_id rows (the original Critical 9 bug).
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM email_sends WHERE user_id IS NULL"
+        )
+        assert (await cur.fetchone())[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_broadcast_no_subscribers_is_ok(self, db):
+        """A broadcast with zero preference rows degrades to ok=True, 0 sends."""
+        from src.app.lifecycle_email import trigger_sequence_by_kind
+
+        await self._setup_announcement(db, product_id="prod-empty")
+        result = await trigger_sequence_by_kind(
+            product_id="prod-empty", user_id=None, trigger_kind="announcement"
+        )
+        assert result["ok"] is True
+        assert result["sends_created"] == 0
+        assert result["recipients"] == 0
+
+    @pytest.mark.asyncio
+    async def test_changelog_publish_blast_creates_real_sends(self, db):
+        """changelog/publish → _queue_announcement_email creates real
+        email_sends rows for subscribers (end-to-end, real lifecycle_email)."""
+        from src.app.lifecycle_email import set_preferences
+
+        seq_id = await self._setup_announcement(db, product_id="prod-cl")
+        await set_preferences("prod-cl", "sub-1", {})
+        await set_preferences("prod-cl", "sub-2", {})
+
+        # A draft changelog entry to publish.
+        await db.execute(
+            "INSERT INTO changelog_entries "
+            "(product_id, version, title, body_md, kind_breakdown_json, "
+            " shipped_features_json, related_mission_ids_json, published) "
+            "VALUES ('prod-cl', '1.0.0', 'Launch', 'Body.', '{}', '[]', '[]', 0)"
+        )
+        await db.commit()
+        cur = await db.execute(
+            "SELECT entry_id FROM changelog_entries WHERE product_id='prod-cl'"
+        )
+        entry_id = (await cur.fetchone())[0]
+
+        # Only the page-cache invalidation is mocked (no real changelog_page
+        # module state needed); the email blast runs for real.
+        with patch("mr_roboto.changelog_publish._invalidate_changelog_cache"):
+            from mr_roboto.changelog_publish import run as publish_run
+            result = await publish_run(
+                {"entry_id": entry_id, "product_id": "prod-cl"}
+            )
+
+        assert result["status"] == "ok"
+        assert result["email_blast_result"]["ok"] is True
+        assert result["email_blast_result"]["sends_created"] == 2
+
+        cur = await db.execute(
+            "SELECT user_id FROM email_sends WHERE sequence_id=?", (seq_id,)
+        )
+        assert {r[0] for r in await cur.fetchall()} == {"sub-1", "sub-2"}
+
+
 # ── 3. Cron: picks due rows, calls send_email ─────────────────────────────────
 
 
@@ -285,6 +414,65 @@ class TestLifecycleEmailSendCron:
             await run_lifecycle_email_send()
 
         assert len(sent_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_skips_unsubscribed_recipient(self, db):
+        """Cron must NOT send to a recipient unsubscribed in email_preferences
+        (Critical 12). Exercises the real is_subscribed lookup.
+
+        Tautology guard: without the preference check, send_email would be
+        called and sent_count would be >= 1.
+        """
+        from src.app.lifecycle_email import set_preferences
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        # Two due sends, same sequence: one subscribed, one unsubscribed.
+        await db.execute(
+            "INSERT INTO email_sends (product_id, user_id, sequence_id, "
+            "template_id, scheduled_for) VALUES ('prod-pref', 'tok-yes', 7, 1, ?)",
+            (past,),
+        )
+        await db.execute(
+            "INSERT INTO email_sends (product_id, user_id, sequence_id, "
+            "template_id, scheduled_for) VALUES ('prod-pref', 'tok-no', 7, 1, ?)",
+            (past,),
+        )
+        await db.commit()
+
+        # tok-no opted out of sequence 7; tok-yes left default-on.
+        await set_preferences("prod-pref", "tok-no", {"7": False})
+        await set_preferences("prod-pref", "tok-yes", {"7": True})
+
+        sent_to: list = []
+
+        async def mock_send(product_id, to, subject, body_md, **kw):
+            sent_to.append(to)
+            return {"status": "sent", "provider": "brevo", "message_id": "m"}
+
+        with patch("src.app.lifecycle_email.send_email", side_effect=mock_send):
+            with patch(
+                "src.app.lifecycle_email._get_template",
+                return_value={
+                    "template_id": 1, "product_id": "prod-pref",
+                    "subject": "Hi", "body_md": "Body", "status": "approved",
+                },
+            ):
+                from src.app.jobs.lifecycle_email_send import run_lifecycle_email_send
+                result = await run_lifecycle_email_send()
+
+        assert result["ok"] is True
+        assert sent_to == ["tok-yes"], "send_email called for unsubscribed recipient"
+        assert result["sent"] == 1
+        assert result["skipped"] >= 1
+
+        # The unsubscribed row is marked done (sent_at set) so it is not
+        # re-evaluated every tick.
+        cur = await db.execute(
+            "SELECT sent_at FROM email_sends WHERE user_id='tok-no'"
+        )
+        assert (await cur.fetchone())[0] is not None
 
     @pytest.mark.asyncio
     async def test_marks_sent_at_on_success(self, db):
@@ -415,7 +603,8 @@ class TestUnsubscribeWebhook:
 
     @pytest.mark.asyncio
     async def test_unsub_event_updates_preferences(self, db):
-        """Unsubscribe event toggles the sequence preference off."""
+        """Unsubscribe event toggles the sequence preference off (shape 1:
+        explicit user_token + sequence_id, the single-click link path)."""
         from src.app.lifecycle_email import handle_email_event_for_lifecycle
         from src.app.lifecycle_email import set_preferences, get_preferences
 
@@ -431,6 +620,68 @@ class TestUnsubscribeWebhook:
 
         prefs = await get_preferences("prod-ev", "tok-ev")
         assert prefs["subscriptions"].get("seq-10") is False
+
+    @pytest.mark.asyncio
+    async def test_webhook_unsub_reaches_preference_center(self, db):
+        """Critical 13: the email webhook (handle_webhook_event) must update
+        email_preferences, not just email_suppression.
+
+        Tautology guard: before the fix the webhook only touched
+        email_suppression; a future broadcast would still send to this user.
+        Here we run the REAL handle_webhook_event → handle_email_event_for_lifecycle
+        chain (only the provider adapter is faked) and assert email_preferences
+        now carries the opt-out.
+        """
+        from src.integrations.email.service import handle_webhook_event
+
+        await db.execute(
+            "INSERT OR IGNORE INTO product_email_config "
+            "(product_id, provider, from_domain, monthly_quota, tier) "
+            "VALUES ('prod-wpc', 'brevo', 'example.com', 300, 'free')"
+        )
+        # The recipient has prior email_sends for sequence 13 — so the
+        # recipient-only unsubscribe resolves and disables that sequence.
+        await db.execute(
+            "INSERT INTO email_sends (product_id, user_id, sequence_id, "
+            "template_id, scheduled_for) "
+            "VALUES ('prod-wpc', 'sub@example.com', 13, 1, "
+            "strftime('%Y-%m-%d %H:%M:%S','now'))"
+        )
+        await db.commit()
+
+        payload = {"event": "unsubscribe", "email": "sub@example.com"}
+
+        with patch(
+            "src.integrations.email.registry.get_provider_class"
+        ) as mock_registry:
+            mock_cls = MagicMock()
+            mock_instance = MagicMock()
+            mock_instance.parse_webhook_event.return_value = {
+                "event_type": "unsub",
+                "recipient": "sub@example.com",
+                "message_id": "m-1",
+                "should_suppress": True,
+            }
+            mock_cls.return_value = mock_instance
+            mock_registry.return_value = mock_cls
+
+            await handle_webhook_event("prod-wpc", "brevo", payload)
+
+        # email_suppression updated (existing behavior).
+        cur = await db.execute(
+            "SELECT reason FROM email_suppression "
+            "WHERE product_id='prod-wpc' AND email='sub@example.com'"
+        )
+        assert (await cur.fetchone())[0] == "unsub"
+
+        # email_preferences updated (the Critical 13 fix).
+        from src.app.lifecycle_email import get_preferences, is_subscribed
+
+        prefs = await get_preferences("prod-wpc", "sub@example.com")
+        assert prefs["subscriptions"].get("13") is False, (
+            "webhook unsubscribe did not reach the preference center"
+        )
+        assert await is_subscribed("prod-wpc", "sub@example.com", 13) is False
 
 
 # ── 6. Template approval requires lint passes ────────────────────────────────

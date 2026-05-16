@@ -192,7 +192,7 @@ async def handle_webhook_event(
         provider_cls = get_provider_class(provider)
         adapter = provider_cls(api_key="", from_domain="")
         event = adapter.parse_webhook_event(raw_payload)
-    except (KeyError, Exception) as exc:
+    except Exception as exc:
         logger.error(
             "webhook parse failed",
             product_id=product_id,

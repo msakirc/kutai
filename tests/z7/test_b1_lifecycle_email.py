@@ -219,6 +219,67 @@ class TestTriggerSequence:
         )
         assert result["ok"] is False
 
+    @pytest.mark.asyncio
+    async def test_mid_loop_failure_leaves_no_orphan_rows(self, db):
+        """I1: a mid-loop INSERT failure in trigger_sequence must roll back —
+        no partial UNCOMMITTED rows may survive to be flushed by a LATER
+        caller's commit() on the shared aiosqlite connection.
+
+        Tautology guard: without the try/except+rollback, the partial inserts
+        stay pending and the unrelated set_preferences() commit below flushes
+        them as orphan email_sends rows.
+        """
+        import src.app.lifecycle_email as _le_mod
+        from src.app.lifecycle_email import trigger_sequence, set_preferences
+
+        # A sequence with 3 steps so the loop runs several inserts.
+        steps = [
+            {"template_id": 1, "delay_hours": 0},
+            {"template_id": 1, "delay_hours": 1},
+            {"template_id": 1, "delay_hours": 2},
+        ]
+        await db.execute(
+            "INSERT INTO email_sequences (product_id, name, trigger_kind, "
+            "steps_json, enabled) VALUES ('prod-i1', 'Orphan', 'signup', ?, 1)",
+            (json.dumps(steps),),
+        )
+        await db.commit()
+        cur = await db.execute(
+            "SELECT sequence_id FROM email_sequences WHERE product_id='prod-i1'"
+        )
+        seq_id = (await cur.fetchone())[0]
+
+        # Make the 2nd step's scheduled_for computation blow up mid-loop, so
+        # the 1st INSERT has already executed (uncommitted) when the failure
+        # propagates.
+        real_to_db = _le_mod.to_db
+        calls = {"n": 0}
+
+        def boom(dt):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated mid-loop failure")
+            return real_to_db(dt)
+
+        with patch.object(_le_mod, "to_db", side_effect=boom):
+            result = await trigger_sequence(
+                product_id="prod-i1", user_id="user-i1", sequence_id=seq_id
+            )
+
+        # The function returns an error result (not a raised exception).
+        assert result["ok"] is False
+        assert "insert" in result.get("reason", "").lower()
+
+        # An unrelated later commit must NOT flush orphan rows.
+        await set_preferences("prod-i1", "someone", {})
+
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM email_sends WHERE product_id='prod-i1'"
+        )
+        assert (await cur.fetchone())[0] == 0, (
+            "rollback failed — orphan email_sends rows survived"
+        )
+
 
 # ── 2b. Announcement broadcast fan-out (Critical 9) ──────────────────────────
 
@@ -467,12 +528,64 @@ class TestLifecycleEmailSendCron:
         assert result["sent"] == 1
         assert result["skipped"] >= 1
 
-        # The unsubscribed row is marked done (sent_at set) so it is not
-        # re-evaluated every tick.
+        # The unsubscribed row is stamped via unsubscribed_at (NOT sent_at) so
+        # it is not re-evaluated every tick AND is not miscounted as delivered.
         cur = await db.execute(
-            "SELECT sent_at FROM email_sends WHERE user_id='tok-no'"
+            "SELECT sent_at, unsubscribed_at FROM email_sends WHERE user_id='tok-no'"
         )
-        assert (await cur.fetchone())[0] is not None
+        sent_at, unsub_at = await cur.fetchone()
+        assert sent_at is None, "suppressed send must NOT set sent_at"
+        assert unsub_at is not None, "suppressed send must set unsubscribed_at"
+
+    @pytest.mark.asyncio
+    async def test_suppressed_send_not_counted_and_not_repolled(self, db):
+        """I2: a suppressed (unsubscribed) send is not counted as sent and is
+        not re-polled by _pick_due_sends on the next tick.
+
+        Tautology guard: the old code stamped sent_at — which both inflates an
+        'emails sent' metric and (correctly) hides it from re-polling. This
+        test asserts sent_at stays NULL while the row still drops out of the
+        due-pick query.
+        """
+        from src.app.lifecycle_email import set_preferences
+        from src.app.jobs.lifecycle_email_send import (
+            run_lifecycle_email_send,
+            _pick_due_sends,
+        )
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        await db.execute(
+            "INSERT INTO email_sends (product_id, user_id, sequence_id, "
+            "template_id, scheduled_for) VALUES ('prod-i2', 'tok-off', 21, 1, ?)",
+            (past,),
+        )
+        await db.commit()
+        await set_preferences("prod-i2", "tok-off", {"21": False})
+
+        async def mock_send(*a, **kw):
+            raise AssertionError("send_email must not run for a suppressed row")
+
+        with patch("src.app.lifecycle_email.send_email", side_effect=mock_send):
+            result = await run_lifecycle_email_send()
+
+        # Not counted as sent.
+        assert result["sent"] == 0
+        assert result["skipped"] >= 1
+
+        cur = await db.execute(
+            "SELECT sent_at, unsubscribed_at FROM email_sends WHERE user_id='tok-off'"
+        )
+        sent_at, unsub_at = await cur.fetchone()
+        assert sent_at is None, "suppressed send counted toward sent_at metric"
+        assert unsub_at is not None
+
+        # Not re-polled on the next tick.
+        due = await _pick_due_sends()
+        assert all(r["user_id"] != "tok-off" for r in due), (
+            "suppressed row was re-polled by _pick_due_sends"
+        )
 
     @pytest.mark.asyncio
     async def test_marks_sent_at_on_success(self, db):
@@ -682,6 +795,63 @@ class TestUnsubscribeWebhook:
             "webhook unsubscribe did not reach the preference center"
         )
         assert await is_subscribed("prod-wpc", "sub@example.com", 13) is False
+
+    @pytest.mark.asyncio
+    async def test_account_unsub_for_recipient_with_no_prior_sends(self, db):
+        """M3: an account-wide webhook unsubscribe for a recipient who has NO
+        prior email_sends rows must still unsubscribe them from everything.
+
+        Tautology guard: the old code wrote subscriptions_json='{}' when
+        seq_rows was empty — and is_subscribed read '{}' as default-on True
+        for every sequence, so the unsubscribe was a no-op. This test asserts
+        is_subscribed returns False for an arbitrary sequence the recipient
+        never received, and that a broadcast fan-out excludes them.
+        """
+        from src.app.lifecycle_email import (
+            handle_email_event_for_lifecycle,
+            is_subscribed,
+            list_subscribed_tokens,
+            get_preferences,
+        )
+
+        # No email_sends rows for this recipient at all — webhook path only.
+        await handle_email_event_for_lifecycle(
+            product_id="prod-m3",
+            event_type="unsub",
+            recipient="ghost@example.com",
+        )
+
+        # Default-on no longer applies — the account-wide opt-out wins.
+        for seq in (1, 42, "anything"):
+            assert await is_subscribed("prod-m3", "ghost@example.com", seq) is False, (
+                f"recipient still subscribed to sequence {seq!r} after "
+                "account-wide unsubscribe"
+            )
+
+        # The reserved flag is actually persisted.
+        prefs = await get_preferences("prod-m3", "ghost@example.com")
+        assert prefs["subscriptions"].get("_all") is False
+
+        # A broadcast fan-out must exclude them.
+        tokens = await list_subscribed_tokens("prod-m3", 99)
+        assert "ghost@example.com" not in tokens, (
+            "account-unsubscribed recipient included in broadcast fan-out"
+        )
+
+    @pytest.mark.asyncio
+    async def test_account_unsub_via_complaint_event(self, db):
+        """A spam-complaint event also triggers the account-wide opt-out."""
+        from src.app.lifecycle_email import (
+            handle_email_event_for_lifecycle,
+            is_subscribed,
+        )
+
+        await handle_email_event_for_lifecycle(
+            product_id="prod-m3c",
+            event_type="complaint",
+            recipient="angry@example.com",
+        )
+        assert await is_subscribed("prod-m3c", "angry@example.com", 5) is False
 
 
 # ── 6. Template approval requires lint passes ────────────────────────────────

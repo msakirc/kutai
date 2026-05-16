@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.infra.logging_config import get_logger
+from src.infra.times import db_now, to_db
 
 logger = get_logger("app.lifecycle_email")
 
@@ -45,10 +46,6 @@ from src.integrations.email.service import send_email as send_email  # noqa: F40
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-
-def _db_str(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 async def _get_template(db, template_id: int) -> dict | None:
@@ -147,21 +144,42 @@ async def trigger_sequence(
 
     now = datetime.now(timezone.utc)
     sends_created = 0
-    for recipient in recipients:
-        for step in steps:
-            tmpl_id = step.get("template_id")
-            delay_hours = float(step.get("delay_hours", 0))
-            scheduled_for = _db_str(now + timedelta(hours=delay_hours))
+    # Transactional insert loop. The aiosqlite connection is process-wide,
+    # shared, and runs in autocommit mode (isolation_level=None) — without an
+    # explicit transaction each INSERT commits on its own, so a mid-loop
+    # failure would leave the already-inserted rows permanently committed as
+    # orphans. Wrap the loop in an explicit BEGIN; ROLLBACK on any failure so
+    # the whole expansion is atomic, then return an error result.
+    await db.execute("BEGIN")
+    try:
+        for recipient in recipients:
+            for step in steps:
+                tmpl_id = step.get("template_id")
+                delay_hours = float(step.get("delay_hours", 0))
+                scheduled_for = to_db(now + timedelta(hours=delay_hours))
 
-            await db.execute(
-                "INSERT INTO email_sends "
-                "(product_id, user_id, sequence_id, template_id, scheduled_for) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (product_id, recipient, sequence_id, tmpl_id, scheduled_for),
-            )
-            sends_created += 1
-
-    await db.commit()
+                await db.execute(
+                    "INSERT INTO email_sends "
+                    "(product_id, user_id, sequence_id, template_id, scheduled_for) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (product_id, recipient, sequence_id, tmpl_id, scheduled_for),
+                )
+                sends_created += 1
+        await db.execute("COMMIT")
+    except Exception as exc:
+        await db.execute("ROLLBACK")
+        logger.error(
+            "lifecycle_email.trigger_sequence: insert loop failed, rolled back",
+            product_id=product_id,
+            sequence_id=sequence_id,
+            sends_attempted=sends_created,
+            error=str(exc),
+        )
+        return {
+            "ok": False,
+            "reason": f"insert failed: {exc}",
+            "sequence_id": sequence_id,
+        }
     logger.info(
         "lifecycle_email.trigger_sequence: sends created",
         product_id=product_id,
@@ -253,6 +271,13 @@ async def get_preferences(product_id: str, user_token: str) -> dict[str, Any]:
     return {"product_id": product_id, "user_token": user_token, "subscriptions": subs}
 
 
+# Reserved key in subscriptions_json carrying an account-wide opt-out.
+# ``{"_all": false}`` means the recipient is unsubscribed from EVERY sequence
+# regardless of per-sequence keys — used by the recipient-only webhook unsub
+# path (which has no sequence to scope to when the recipient has no sends).
+_ALL_OPT_OUT_KEY = "_all"
+
+
 async def is_subscribed(
     product_id: str,
     user_token: str,
@@ -265,12 +290,19 @@ async def is_subscribed(
     preferences row) → subscribed (default-on). Unsubscribe links / webhook
     events flip the flag to ``false`` via set_preferences.
 
+    Account-wide opt-out: a reserved ``"_all": false`` key in
+    subscriptions_json unsubscribes the recipient from every sequence,
+    regardless of per-sequence keys (set by the recipient-only webhook unsub).
+
     Shared by:
       - B1 announcement fan-out (changelog_publish → trigger_sequence).
       - B1 lifecycle send job (lifecycle_email_send) — skip unsubscribed.
     """
     prefs = await get_preferences(product_id, user_token)
     subs = prefs.get("subscriptions", {}) or {}
+    # Account-wide opt-out wins over any per-sequence key.
+    if subs.get(_ALL_OPT_OUT_KEY) is False:
+        return False
     # Explicit False = unsubscribed. Missing key or True = subscribed.
     return subs.get(str(sequence_id), True) is not False
 
@@ -282,8 +314,16 @@ async def list_subscribed_tokens(
     """Return user_tokens opted-in to ``sequence_id`` for a broadcast fan-out.
 
     Audience = every email_preferences row for the product whose
-    subscriptions_json does NOT carry an explicit ``false`` for sequence_id.
+    subscriptions_json does NOT carry an explicit ``false`` for sequence_id
+    (nor an account-wide ``"_all": false`` opt-out).
     Used by B1 announcement blasts (trigger_sequence with broadcast=True).
+
+    Note — broadcast fan-out is intentionally DEFAULT-OFF at the audience
+    level: this only returns recipients who already have an ``email_preferences``
+    row. Recipients with no preferences row are NOT included in a blast (the
+    product has no way to email them). This is the deliberate opposite of the
+    per-recipient ``is_subscribed`` default-ON model, which governs a send the
+    product has *already queued* for a specific known recipient.
     """
     from src.infra.db import get_db
 
@@ -301,6 +341,9 @@ async def list_subscribed_tokens(
             subs = json.loads(subs_json) if subs_json else {}
         except (json.JSONDecodeError, TypeError):
             subs = {}
+        # Account-wide opt-out wins over any per-sequence key.
+        if subs.get(_ALL_OPT_OUT_KEY) is False:
+            continue
         if subs.get(seq_key, True) is not False:
             tokens.append(user_token)
     return tokens
@@ -429,10 +472,13 @@ async def handle_email_event_for_lifecycle(
     subs = dict(prefs.get("subscriptions", {}))
     for (seq_id,) in seq_rows:
         subs[str(seq_id)] = False
-    # Even if the recipient has no email_sends rows yet, persist an (empty or
-    # updated) preferences row so a future broadcast fan-out treats explicit
-    # entries correctly. If there are no sequences, write a sentinel so the
-    # row exists; list_subscribed_tokens default-on still applies per-sequence.
+    # The email webhook unsubscribe is account-wide — the provider payload
+    # carries only an email address, with no sequence to scope to. Set the
+    # reserved account-level opt-out flag so the recipient is unsubscribed
+    # from EVERY sequence, including ones they have no email_sends row for
+    # yet (otherwise is_subscribed / list_subscribed_tokens default-on would
+    # leave a no-prior-send recipient still subscribed to everything).
+    subs[_ALL_OPT_OUT_KEY] = False
     await set_preferences(product_id, token, subs)
     logger.info(
         "lifecycle_email.handle_email_event_for_lifecycle: unsubscribed (recipient)",

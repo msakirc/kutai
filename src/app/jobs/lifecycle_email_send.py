@@ -6,6 +6,7 @@ Runs every 5 minutes (registered in beckman cron_seed as
 Picks email_sends rows where:
   - scheduled_for <= datetime('now')
   - sent_at IS NULL
+  - unsubscribed_at IS NULL  (deliberately suppressed rows are skipped)
 
 For each due row:
   1. Load the template (subject + body_md).
@@ -23,9 +24,8 @@ Public API
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from src.infra.logging_config import get_logger
+from src.infra.times import db_now
 
 logger = get_logger("app.jobs.lifecycle_email_send")
 
@@ -33,12 +33,13 @@ logger = get_logger("app.jobs.lifecycle_email_send")
 _MAX_PER_TICK = 50
 
 
-def _db_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-
 async def _pick_due_sends() -> list[dict]:
-    """Return email_sends rows due for sending."""
+    """Return email_sends rows due for sending.
+
+    Filters out both already-sent rows (``sent_at`` set) and deliberately
+    suppressed rows (``unsubscribed_at`` set) so suppressed sends are not
+    re-polled every tick and are never counted as "sent".
+    """
     from src.infra.db import get_db
 
     db = await get_db()
@@ -48,6 +49,7 @@ async def _pick_due_sends() -> list[dict]:
         "FROM email_sends "
         "WHERE scheduled_for <= strftime('%Y-%m-%d %H:%M:%S','now') "
         "AND sent_at IS NULL "
+        "AND unsubscribed_at IS NULL "
         f"LIMIT {_MAX_PER_TICK}"
     )
     cols = [d[0] for d in cur.description]
@@ -92,15 +94,16 @@ async def run_lifecycle_email_send() -> dict:
             # Preference gate (B1) — never send to an unsubscribed recipient.
             # email_sends.user_id carries the preference-center user_token.
             # An explicit `false` for this sequence in email_preferences means
-            # the user opted out (via unsubscribe link / webhook). We mark the
-            # row done (sent_at=now) so the cron does not re-evaluate it every
-            # tick — the send is intentionally suppressed, not retried.
+            # the user opted out (via unsubscribe link / webhook). We stamp
+            # ``unsubscribed_at`` (NOT ``sent_at``) so the cron does not
+            # re-evaluate the row every tick AND the send is not miscounted as
+            # delivered by any "emails sent" metric reading sent_at.
             if sequence_id is not None and not await _is_subscribed(
                 product_id, str(user_id), sequence_id
             ):
                 await db.execute(
-                    "UPDATE email_sends SET sent_at=? WHERE send_id=?",
-                    (_db_now(), send_id),
+                    "UPDATE email_sends SET unsubscribed_at=? WHERE send_id=?",
+                    (db_now(), send_id),
                 )
                 await db.commit()
                 skipped_count += 1
@@ -138,7 +141,7 @@ async def run_lifecycle_email_send() -> dict:
             if status == "sent":
                 await db.execute(
                     "UPDATE email_sends SET sent_at=? WHERE send_id=?",
-                    (_db_now(), send_id),
+                    (db_now(), send_id),
                 )
                 await db.commit()
                 sent_count += 1

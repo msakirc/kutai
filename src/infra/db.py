@@ -3782,6 +3782,59 @@ async def init_db():
         ),
     )
 
+    # ── Z7 T6 A11: mentions — mention monitor ingestion table ────────────────────
+    # One row per unique mention. UNIQUE(source, source_id) for within-source dedup.
+    # Cross-source dedup via canonical_url + 24h window is enforced in the poll verb.
+    # sentiment: 'pos' | 'neg' | 'neu'
+    # signal_score: 0-10 (0=noise, 4-7=digest, >=7=immediate founder_action)
+    # acted_on: 1 when a founder_action has been surfaced for this mention.
+    # product_id NOT NULL (per-product scoping, founder decision 2026-05-15).
+    await apply_migration(
+        version="2026-05-16-z7-a11-mentions",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS mentions ("
+            " mention_id    INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id    TEXT    NOT NULL,"
+            " source        TEXT    NOT NULL,"
+            " source_id     TEXT    NOT NULL,"
+            " url           TEXT,"
+            " canonical_url TEXT,"
+            " author        TEXT,"
+            " author_followers INTEGER NOT NULL DEFAULT 0,"
+            " text          TEXT    NOT NULL DEFAULT '',"
+            " sentiment     TEXT    NOT NULL DEFAULT 'neu',"  # 'pos' | 'neg' | 'neu'
+            " signal_score  INTEGER NOT NULL DEFAULT 0,"  # 0-10
+            " seen_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " acted_on      INTEGER NOT NULL DEFAULT 0,"
+            " UNIQUE(source, source_id)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_product_seen "
+            "ON mentions(product_id, seen_at DESC);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_product_sentiment_score "
+            "ON mentions(product_id, sentiment, signal_score);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_canonical_url "
+            "ON mentions(canonical_url, seen_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_acted_on "
+            "ON mentions(product_id, acted_on, signal_score DESC);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_mentions_acted_on;\n"
+            "DROP INDEX IF EXISTS idx_mentions_canonical_url;\n"
+            "DROP INDEX IF EXISTS idx_mentions_product_sentiment_score;\n"
+            "DROP INDEX IF EXISTS idx_mentions_product_seen;\n"
+            "DROP TABLE IF EXISTS mentions;\n"
+        ),
+        description=(
+            "Z7 T6 A11: mentions — mention monitor ingestion table. "
+            "UNIQUE(source, source_id) for within-source dedup. "
+            "sentiment='pos'|'neg'|'neu'; signal_score 0-10. "
+            "score<4 silent, 4-7 daily digest, >=7 immediate founder_action. "
+            "acted_on=1 after founder_action surfaced. "
+            "canonical_url + 24h window used for cross-source dedup in poll verbs. "
+            "product_id NOT NULL (per-product scoping, founder decision 2026-05-15)."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

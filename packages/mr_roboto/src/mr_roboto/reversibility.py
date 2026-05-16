@@ -268,6 +268,17 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "outreach_deliverability_check": "full",
     # outreach/domain_verify: DNS read-only + optional founder_action. full.
     "outreach/domain_verify": "full",
+    # ---- Z7 T6 A11 mention monitor (A11 + A11.r1 + A11.r2) ------------------
+    # mention_polls/<source>: append-only mentions rows (UNIQUE dedup); no ext write.
+    "mention_polls/hn": "full",
+    "mention_polls/reddit": "full",
+    "mention_polls/google": "full",
+    # twitter: PAID + off by default. Append-only DB; external read. full.
+    "mention_polls/twitter": "full",
+    # discord: bot read + append-only DB. full.
+    "mention_polls/discord": "full",
+    # internal_signal_poll: reads tickets + appends mentions; idempotent. full.
+    "internal_signal_poll": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

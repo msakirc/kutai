@@ -203,6 +203,16 @@ REFLECTION_BLOCKS: dict[str, str] = {
         "If any 'no' — read the missing files and update findings before "
         "emitting final_answer."
     ),
+    "mention_monitor": (
+        "Self-check before final_answer:\n"
+        "1. Did you CHECK the score tier? (silent<4, digest 4-7, immediate>=7)\n"
+        "2. Did you DEDUP — UNIQUE(source, source_id) + 24h canonical_url window?\n"
+        "3. Is Twitter GATED? MENTION_TWITTER_ENABLED=1 required — never poll without it.\n"
+        "4. Negative cluster >=3 in 1h → MUST trigger crisis_comms_draft (B6). Did it?\n"
+        "5. Internal signal is a PROXY (tickets table) — never treat as authoritative.\n"
+        "6. Never AUTO-RESPOND — score>=7 → founder_action only, never direct reply.\n"
+        "If any 'no' — fix before final_answer."
+    ),
 }
 
 _GENERIC_REFLECTION_BLOCK = (

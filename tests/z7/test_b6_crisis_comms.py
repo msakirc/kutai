@@ -341,6 +341,79 @@ class TestDraftHolding:
         assert result["status"] == "ok"
         assert len(result["variants"]) >= 1
 
+    def test_variant_text_split_strips_label_prefix(self):
+        """_call_llm_draft text-split heuristic strips 'Variant A:' labels, keeping content.
+
+        Regression test for the bug where lines starting with 'Variant' were
+        discarded wholesale, leaving variants empty when the LLM followed the
+        requested 'Variant A: ...' format exactly.
+        """
+        import re
+        from mr_roboto.crisis_draft_holding import _VARIANT_PREFIX_RE
+
+        lines = [
+            "Variant A: We are aware of the service disruption and our team is actively investigating.",
+            "Variant B: We know about the issue and are working hard to resolve it quickly.",
+        ]
+        results = []
+        for line in lines:
+            line = line.strip()
+            cleaned = _VARIANT_PREFIX_RE.sub("", line).strip()
+            if len(cleaned) > 20:
+                results.append(cleaned)
+
+        assert len(results) == 2, f"Both variants should be kept, got: {results}"
+        assert not any(r.startswith("Variant") for r in results), (
+            "Label prefix should be stripped from each variant"
+        )
+        assert "service disruption" in results[0]
+        assert "working hard" in results[1]
+
+    def test_variant_text_split_non_variant_lines_still_work(self):
+        """Non-'Variant'-prefixed lines with >20 chars are included unchanged."""
+        from mr_roboto.crisis_draft_holding import _VARIANT_PREFIX_RE
+
+        line = "We are aware of the service disruption and are investigating."
+        cleaned = _VARIANT_PREFIX_RE.sub("", line.strip()).strip()
+        assert cleaned == line  # unchanged
+        assert len(cleaned) > 20
+
+    @pytest.mark.asyncio
+    async def test_draft_holding_non_completed_status_returns_hardcoded_fallback(
+        self, monkeypatch
+    ):
+        """_call_llm_draft returns [] (triggering hardcoded fallback) when status is not 'completed'.
+
+        Covers timeout/exhausted/other non-failed, non-completed statuses that
+        previously fell through silently to empty result extraction.
+        """
+        import types
+        import general_beckman as _gb
+
+        async def _mock_enqueue(spec, *, lane, await_inline=False):
+            return types.SimpleNamespace(
+                status="exhausted",
+                error="token budget exhausted",
+                result=None,
+            )
+
+        # Patch the module attribute so the local `from general_beckman import enqueue`
+        # inside _call_llm_draft picks up the mock.
+        monkeypatch.setattr(_gb, "enqueue", _mock_enqueue)
+
+        import mr_roboto.crisis_draft_holding as _cdh
+
+        # Call _call_llm_draft directly — it should return [] on non-completed status
+        result = await _cdh._call_llm_draft(
+            tier=2,
+            summary="Service outage",
+            playbook_text="",
+        )
+        assert result == [], (
+            "_call_llm_draft must return [] for non-completed status so run() "
+            "falls back to hardcoded variants"
+        )
+
 
 # ===========================================================================
 # 5. crisis/disclosure_timer — Tier 3 escalating reminders

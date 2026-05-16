@@ -26,12 +26,18 @@ Returns::
 """
 from __future__ import annotations
 
+import json as _json
 import os
+import re
 from typing import Any
 
 from src.infra.logging_config import get_logger
 
 logger = get_logger("mr_roboto.crisis_draft_holding")
+
+# Matches "Variant A:", "Variant B:", "Variant 1:", etc. (case-insensitive).
+# Used by the text-split heuristic to strip the label prefix and keep the content.
+_VARIANT_PREFIX_RE = re.compile(r'^Variant\s+\w+\s*:\s*', re.IGNORECASE)
 
 
 def _playbook_path(tier: int) -> str:
@@ -91,8 +97,6 @@ async def _call_llm_draft(
     from general_beckman.lanes import LANE_ONESHOT
     import time
     import uuid
-    import re
-    import json as _json
 
     playbook_excerpt = playbook_text[:1200] if playbook_text else "(playbook not available)"
 
@@ -153,8 +157,12 @@ async def _call_llm_draft(
         logger.warning("crisis_draft_holding: LLM enqueue failed: %r", exc)
         return []
 
-    if task_result.status == "failed":
-        logger.warning("crisis_draft_holding: LLM task failed: %s", task_result.error)
+    if task_result.status != "completed":
+        logger.warning(
+            "crisis_draft_holding: LLM task did not complete (status=%s): %s",
+            task_result.status,
+            getattr(task_result, "error", ""),
+        )
         return []
 
     result_data = getattr(task_result, "result", None) or {}
@@ -176,13 +184,19 @@ async def _call_llm_draft(
         except Exception:
             pass
 
-    # Fallback: split on obvious variant markers
+    # Fallback: split on obvious variant markers.
+    # Strip "Variant A:" / "Variant B:" prefixes and keep the content —
+    # discarding the whole line (old behaviour) left variants empty when the
+    # LLM followed the requested format exactly.
     variants = []
     for line in raw_str.splitlines():
         line = line.strip()
-        if line and not line.startswith("#") and not line.startswith("Variant"):
-            if len(line) > 20:
-                variants.append(line)
+        if not line or line.startswith("#"):
+            continue
+        # Strip label prefix if present, then keep the remainder
+        line = _VARIANT_PREFIX_RE.sub("", line).strip()
+        if len(line) > 20:
+            variants.append(line)
     return variants[:2] if variants else []
 
 

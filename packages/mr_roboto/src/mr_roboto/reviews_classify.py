@@ -100,8 +100,11 @@ async def _call_llm_classify(body_md: str, rating: int) -> dict:
         logger.warning("reviews_classify: LLM enqueue failed: %s", exc)
         return _heuristic_classify(body_md, rating)
 
-    if task_result.status == "failed":
-        logger.warning("reviews_classify: LLM task failed; using heuristic fallback")
+    if task_result.status != "completed":
+        logger.warning(
+            "reviews_classify: LLM task did not complete (status=%s); using heuristic fallback",
+            task_result.status,
+        )
         return _heuristic_classify(body_md, rating)
 
     result_data = getattr(task_result, "result", None) or {}
@@ -213,7 +216,11 @@ async def _emit_low_star_founder_action(
 
 
 async def _enqueue_bug_investigation(spec: dict, **kwargs) -> int:
-    """Enqueue a bug investigation task in the mission backlog via beckman."""
+    """Enqueue a bug investigation task in the mission backlog via beckman.
+
+    Intentionally NOT called with await_inline=True — this is a fire-and-forget
+    backlog task that should run asynchronously, not block the classify response.
+    """
     try:
         from general_beckman import enqueue
         from general_beckman.lanes import LANE_ONESHOT

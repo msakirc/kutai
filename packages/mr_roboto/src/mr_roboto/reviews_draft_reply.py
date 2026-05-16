@@ -126,8 +126,11 @@ async def _call_llm_draft_reply(
         logger.warning("reviews_draft_reply: LLM enqueue failed: %s", exc)
         return _fallback_draft(platform, author, rating)
 
-    if task_result.status == "failed":
-        logger.warning("reviews_draft_reply: LLM task failed; returning fallback draft")
+    if task_result.status != "completed":
+        logger.warning(
+            "reviews_draft_reply: LLM task did not complete (status=%s); returning fallback draft",
+            task_result.status,
+        )
         return _fallback_draft(platform, author, rating)
 
     result_data = getattr(task_result, "result", None) or {}

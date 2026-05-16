@@ -8,6 +8,7 @@ founder review — it is NOT published automatically.
 """
 from __future__ import annotations
 
+import json as _json
 import re
 from typing import Any
 
@@ -125,12 +126,11 @@ async def _call_llm_draft(
     """
     from general_beckman import enqueue, TaskResult
     from general_beckman.lanes import LANE_ONESHOT
-    import json
     import time
     import uuid
 
     components_str = ", ".join(affected_components) if affected_components else "the service"
-    safe_details_str = json.dumps(safe_alert_details, ensure_ascii=False)[:800]
+    safe_details_str = _json.dumps(safe_alert_details, ensure_ascii=False)[:800]
 
     prompt = (
         f"You are drafting a public-facing status page update for customers.\n"
@@ -182,8 +182,12 @@ async def _call_llm_draft(
         logger.warning("incident_draft_update: LLM enqueue failed: %r", exc)
         return ""
 
-    if task_result.status == "failed":
-        logger.warning("incident_draft_update: LLM task failed: %s", task_result.error)
+    if task_result.status != "completed":
+        logger.warning(
+            "incident_draft_update: LLM task did not complete (status=%s): %s",
+            task_result.status,
+            getattr(task_result, "error", ""),
+        )
         return ""
 
     result_data = getattr(task_result, "result", None) or {}
@@ -236,7 +240,6 @@ async def run(payload: dict) -> dict:
         ) as cur:
             row = await cur.fetchone()
         if row:
-            import json as _json
             severity = row[0] or "minor"
             try:
                 affected_components = _json.loads(row[1] or "[]")

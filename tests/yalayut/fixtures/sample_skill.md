@@ -6,4 +6,4 @@ license: Proprietary
 
 # PDF Skill
 
-This skill handles PDF manipulation. Use pypdf for text extraction.
+This skill handles PDF files — manipulation, extraction, merging, and more. Use pypdf for text extraction.

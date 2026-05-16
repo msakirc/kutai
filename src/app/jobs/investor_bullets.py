@@ -114,10 +114,12 @@ def _detect_anomaly(
         stdev = 0.0
 
     if stdev == 0.0:
-        # Zero variance — flag only if current differs materially
+        # Zero variance — flag only if current differs materially. A real
+        # z-score would be infinite; we return None for sigma so the render
+        # layer omits the "+Nσ" annotation instead of printing "+infσ".
         if current != median:
             direction = "up" if current > median else "down"
-            return {"is_anomaly": True, "direction": direction, "sigma": float("inf"), "median": median}
+            return {"is_anomaly": True, "direction": direction, "sigma": None, "median": median}
         return {"is_anomaly": False, "direction": "none", "sigma": 0.0, "median": median}
 
     sigma = (current - median) / stdev
@@ -239,12 +241,17 @@ async def _fetch_z6_metrics(product_id: str) -> dict:
     """
     from src.infra.db import get_db
     db = await get_db()
-    # Z6 growth_events: look for metric_emit rows for this product
+    # Z6 growth_events: look for metric_emit rows for this product.
+    # growth_events has no product_id column — it links to a product via
+    # mission_id -> missions.product_id, so we JOIN to scope the query and
+    # avoid mixing telemetry across products.
     try:
         cur = await db.execute(
-            "SELECT properties_json, occurred_at FROM growth_events "
-            "WHERE kind = 'metric_emit' "
-            "ORDER BY occurred_at DESC LIMIT 90",
+            "SELECT ge.properties_json, ge.occurred_at FROM growth_events ge "
+            "JOIN missions m ON ge.mission_id = m.id "
+            "WHERE ge.kind = 'metric_emit' AND m.product_id = ? "
+            "ORDER BY ge.occurred_at DESC LIMIT 90",
+            (product_id,),
         )
         rows = await cur.fetchall()
     except Exception:
@@ -320,11 +327,15 @@ async def _fetch_review_density(product_id: str) -> dict:
     from src.infra.db import get_db
     db = await get_db()
     try:
-        # mission_events tagged with 'prs_shipped' or 'security_issues'
+        # growth_events rows tagged 'review_density_metric'. Scope to this
+        # product via mission_id -> missions.product_id (no product_id column
+        # on growth_events) so review density never mixes across products.
         cur = await db.execute(
-            "SELECT properties_json FROM growth_events "
-            "WHERE kind = 'review_density_metric' "
-            "ORDER BY occurred_at DESC LIMIT 12",
+            "SELECT ge.properties_json FROM growth_events ge "
+            "JOIN missions m ON ge.mission_id = m.id "
+            "WHERE ge.kind = 'review_density_metric' AND m.product_id = ? "
+            "ORDER BY ge.occurred_at DESC LIMIT 12",
+            (product_id,),
         )
         rows = await cur.fetchall()
         if not rows:
@@ -361,10 +372,16 @@ async def _fetch_support_metrics(product_id: str) -> dict:
     from src.infra.db import get_db
     db = await get_db()
     try:
+        # tickets has no product_id column — scope to this product via
+        # mission_id -> missions.product_id so support volume / escalation
+        # rate never mix across products.
         # Current month
         cur = await db.execute(
-            "SELECT COUNT(*), SUM(escalated_to_founder) FROM tickets "
-            "WHERE created_at >= strftime('%Y-%m-01', 'now')",
+            "SELECT COUNT(*), SUM(t.escalated_to_founder) FROM tickets t "
+            "JOIN missions m ON t.mission_id = m.id "
+            "WHERE m.product_id = ? "
+            "AND t.created_at >= strftime('%Y-%m-01', 'now')",
+            (product_id,),
         )
         row = await cur.fetchone()
         total = int(row[0]) if row else 0
@@ -374,10 +391,12 @@ async def _fetch_support_metrics(product_id: str) -> dict:
         esc_history: list[float] = []
         for offset in (1, 2, 3):
             cur2 = await db.execute(
-                "SELECT COUNT(*), SUM(escalated_to_founder) FROM tickets "
-                "WHERE created_at >= strftime('%Y-%m-01', 'now', ? || ' months') "
-                "AND created_at < strftime('%Y-%m-01', 'now', ? || ' months')",
-                (f"-{offset + 1}", f"-{offset}"),
+                "SELECT COUNT(*), SUM(t.escalated_to_founder) FROM tickets t "
+                "JOIN missions m ON t.mission_id = m.id "
+                "WHERE m.product_id = ? "
+                "AND t.created_at >= strftime('%Y-%m-01', 'now', ? || ' months') "
+                "AND t.created_at < strftime('%Y-%m-01', 'now', ? || ' months')",
+                (product_id, f"-{offset + 1}", f"-{offset}"),
             )
             row2 = await cur2.fetchone()
             vol = float(row2[0]) if row2 else 0.0
@@ -471,6 +490,29 @@ _METRICS_WHERE_UP_IS_BAD = frozenset({
 })
 
 
+def _sigma_sort_key(sigma) -> float:
+    """Sort key for anomalies by sigma magnitude.
+
+    Zero-variance anomalies have ``sigma=None`` (a real z-score would be
+    infinite) — sort them to the top by treating them as +inf magnitude.
+    """
+    if sigma is None or not math.isfinite(sigma):
+        return float("inf")
+    return abs(sigma)
+
+
+def _format_sigma(sigma) -> str:
+    """Render the sigma annotation, e.g. ``" (+2.3σ vs ...)"``.
+
+    Returns an empty annotation body when sigma is ``None`` or non-finite
+    (zero-variance case) so founder Markdown never shows the literal
+    ``"+infσ"``.
+    """
+    if sigma is None or not math.isfinite(sigma):
+        return ""
+    return f"{sigma:+.1f}σ"
+
+
 def _classify_anomaly(metric_name: str, direction: str) -> str:
     """Return 'positive' or 'negative' given the metric name + direction."""
     if direction == "none":
@@ -520,15 +562,16 @@ async def render_bullets(
                 "hypothesis": hypotheses.get(name, ""),
             })
 
-    # Sort: positives by sigma desc, negatives by |sigma| desc
+    # Sort: positives by sigma desc, negatives by |sigma| desc.
+    # Zero-variance anomalies (sigma=None) sort to the top.
     positives = sorted(
         [a for a in anomalies if a["sentiment"] == "positive"],
-        key=lambda a: abs(a["sigma"]),
+        key=lambda a: _sigma_sort_key(a["sigma"]),
         reverse=True,
     )
     negatives = sorted(
         [a for a in anomalies if a["sentiment"] == "negative"],
-        key=lambda a: abs(a["sigma"]),
+        key=lambda a: _sigma_sort_key(a["sigma"]),
         reverse=True,
     )
 
@@ -539,9 +582,14 @@ async def render_bullets(
     if positives:
         for a in positives[:3]:
             direction_str = "above" if a["direction"] == "up" else "below"
+            sigma_str = _format_sigma(a["sigma"])
+            detail = (
+                f"{sigma_str} {direction_str} 3-month median"
+                if sigma_str
+                else f"{direction_str} flat 3-month baseline"
+            )
             lines.append(
-                f"- **{a['name']}** {a['current']} "
-                f"({a['sigma']:+.1f}σ {direction_str} 3-month median)"
+                f"- **{a['name']}** {a['current']} ({detail})"
             )
     else:
         lines.append("- No positive outliers this month.")
@@ -552,9 +600,14 @@ async def render_bullets(
     if negatives:
         for a in negatives[:3]:
             direction_str = "above" if a["direction"] == "up" else "below"
+            sigma_str = _format_sigma(a["sigma"])
+            detail = (
+                f"{sigma_str} {direction_str} 3-month median"
+                if sigma_str
+                else f"{direction_str} flat 3-month baseline"
+            )
             lines.append(
-                f"- **{a['name']}** {a['current']} "
-                f"({a['sigma']:+.1f}σ {direction_str} 3-month median)"
+                f"- **{a['name']}** {a['current']} ({detail})"
             )
     else:
         lines.append("- No negative outliers this month.")
@@ -584,7 +637,9 @@ async def render_bullets(
     if top_anomalies:
         for a in top_anomalies:
             hyp = a["hypothesis"] or "_needs founder explanation_"
-            lines.append(f"- **{a['name']}** ({a['sigma']:+.1f}σ): {hyp}")
+            sigma_str = _format_sigma(a["sigma"])
+            label = f" ({sigma_str})" if sigma_str else " (flat-baseline shift)"
+            lines.append(f"- **{a['name']}**{label}: {hyp}")
     else:
         lines.append("- No significant anomalies this month.")
     lines.append("")

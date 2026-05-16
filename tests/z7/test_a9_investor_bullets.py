@@ -103,6 +103,35 @@ def test_anomaly_detect_insufficient_history():
     assert result2["is_anomaly"] is False
 
 
+def test_anomaly_zero_variance_does_not_yield_inf_sigma():
+    """A zero-variance history with a differing current value is an anomaly,
+    but sigma must be None (not inf) so the render layer can omit it."""
+    from src.app.jobs.investor_bullets import _detect_anomaly
+
+    # Flat history — stdev is 0.
+    result = _detect_anomaly("mrr", 500.0, [100.0, 100.0, 100.0])
+    assert result["is_anomaly"] is True
+    assert result["sigma"] is None  # NOT float("inf")
+
+    # Flat history, current equals median — not an anomaly.
+    flat = _detect_anomaly("mrr", 100.0, [100.0, 100.0])
+    assert flat["is_anomaly"] is False
+
+
+@pytest.mark.asyncio
+async def test_render_zero_variance_anomaly_no_literal_inf_sigma():
+    """A zero-variance anomaly must not render the literal '+infσ' in the
+    founder-facing Markdown."""
+    from src.app.jobs.investor_bullets import render_bullets
+
+    metrics = {
+        "mrr": {"current": 500.0, "history": [100.0, 100.0, 100.0]},
+    }
+    md = await render_bullets(metrics, {}, [])
+    assert "inf" not in md.lower()
+    assert "σ" not in md or "infσ" not in md
+
+
 # ===========================================================================
 # 2. Bullet sections rendered
 # ===========================================================================

@@ -310,7 +310,10 @@ async def run(
         # --- Upload to YouTube as unlisted ---
         title = f"{product_name} — Demo ({label})"
         try:
-            upload_info = _youtube_upload(
+            # _youtube_upload is a synchronous (blocking) network upload —
+            # run it off the event loop so the demo pipeline doesn't stall.
+            upload_info = await asyncio.to_thread(
+                _youtube_upload,
                 cut_path,
                 title,
                 description or f"Demo video for {product_name} ({label} cut).",

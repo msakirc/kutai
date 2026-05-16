@@ -134,18 +134,19 @@ async def _record_scene(
             ),
         }
 
-    # Transcode .webm → .mp4 for this scene (raw, un-trimmed)
-    out_mp4 = os.path.join(raw_dir, f"{scene_id}.webm")
-    if webm_path != out_mp4:
+    # Copy the raw .webm for this scene into raw_dir (un-trimmed).
+    # No transcode here — demo_edit re-encodes the assembled cut downstream.
+    out_webm = os.path.join(raw_dir, f"{scene_id}.webm")
+    if webm_path != out_webm:
         import shutil
-        shutil.copy2(webm_path, out_mp4)
+        shutil.copy2(webm_path, out_webm)
 
-    duration_s = _video_duration_seconds(out_mp4)
+    duration_s = _video_duration_seconds(out_webm)
 
     return {
         "ok": True,
         "scene_id": scene_id,
-        "path": out_mp4,
+        "path": out_webm,
         "target_seconds": target_seconds,
         "duration_s": duration_s,
         "viewport_state": viewport_state,

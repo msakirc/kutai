@@ -9373,6 +9373,57 @@
    "reversibility": "full"
   },
   {
+   "id": "13.0a",
+   "phase": "phase_13",
+   "name": "marketing_copy_draft",
+   "agent": "mechanical",
+   "executor": "mechanical",
+   "reversibility": "full",
+   "difficulty": "medium",
+   "tools_hint": [],
+   "skip_when": "goal does not include public_launch OR product_audience NOT IN [b2c, b2b]",
+   "depends_on": [
+    "12.5",
+    "9.11"
+   ],
+   "payload": {
+    "action": "marketing_copy"
+   },
+   "post_hooks": [
+    "brand_voice_lint",
+    "copy_compliance_review"
+   ],
+   "instruction": "Z7 T6 A12 — generate structured marketing copy artifact: hero (x3 variants), features, pricing tiers, FAQ. Copy is content-only — founder pastes into Webflow/Framer. Artifact written to artifacts/marketing_copy/{mission_id}.json. Runs through A5 brand_voice_lint + A6 copy_compliance posthooks. Emits founder_action 'review marketing copy' with approve/regenerate-hero/regenerate-FAQ options. Only fires for public-facing b2c/b2b products with a public launch goal.",
+   "done_when": "artifacts/marketing_copy/{mission_id}.json exists with hero (3 variants), features, pricing, and faq sections. founder_action emitted for review.",
+   "artifact_schema": {
+    "marketing_copy": {
+     "type": "object",
+     "required_fields": [
+      "hero",
+      "features",
+      "pricing",
+      "faq"
+     ],
+     "hero": {
+      "type": "array",
+      "min_items": 3,
+      "max_items": 3
+     },
+     "features": {
+      "type": "array",
+      "min_items": 1
+     },
+     "pricing": {
+      "type": "array",
+      "min_items": 1
+     },
+     "faq": {
+      "type": "array"
+     }
+    }
+   }
+  },
+  {
    "id": "13.1",
    "phase": "phase_13",
    "name": "production_infrastructure",
@@ -10276,10 +10327,14 @@
    "payload": {
     "action": "demo/storyboard"
    },
-   "post_hooks": ["demo_artifact_check"],
+   "post_hooks": [
+    "demo_artifact_check"
+   ],
    "instruction": "Z7 T3B A3 — generate demo storyboard from mission spec via LLM. Produces workspace/demo/storyboard.json with ordered scenes (target_seconds, viewport_state, narrator_text). Only runs when mission goal includes public_demo.",
    "done_when": "demo/storyboard.json written with at least 2 scenes.",
-   "produces": ["demo/storyboard.json"],
+   "produces": [
+    "demo/storyboard.json"
+   ],
    "context": {}
   },
   {
@@ -10320,7 +10375,9 @@
    },
    "instruction": "Z7 T3B A3 — generate script-driven WebVTT captions from storyboard narrator_text. Produces demo/demo.vtt. No speech-to-text — purely script-driven. Only runs when mission goal includes public_demo.",
    "done_when": "demo/demo.vtt written and starts with WEBVTT header.",
-   "produces": ["demo/demo.vtt"],
+   "produces": [
+    "demo/demo.vtt"
+   ],
    "context": {}
   },
   {
@@ -10340,10 +10397,16 @@
    "payload": {
     "action": "demo/edit"
    },
-   "post_hooks": ["demo_artifact_check"],
+   "post_hooks": [
+    "demo_artifact_check"
+   ],
    "instruction": "Z7 T3B A3 — concat + trim scene recordings into three cuts via ffmpeg: cuts/30s.mp4 (30s), cuts/60s.mp4 (60s), cuts/3min.mp4 (3min). Only runs when mission goal includes public_demo.",
    "done_when": "cuts/30s.mp4, cuts/60s.mp4, cuts/3min.mp4 all exist.",
-   "produces": ["demo/cuts/30s.mp4", "demo/cuts/60s.mp4", "demo/cuts/3min.mp4"],
+   "produces": [
+    "demo/cuts/30s.mp4",
+    "demo/cuts/60s.mp4",
+    "demo/cuts/3min.mp4"
+   ],
    "context": {}
   },
   {
@@ -10362,10 +10425,14 @@
    "payload": {
     "action": "demo/accessibility_pass"
    },
-   "post_hooks": ["demo_accessibility_check"],
+   "post_hooks": [
+    "demo_accessibility_check"
+   ],
    "instruction": "Z7 T3B A3.r1 — generate demo accessibility manifest: alt_texts per scene, audio_description_track for visual-only scenes, keyboard_nav_variant walkthrough. Produces demo/accessibility_manifest.json. Only runs when mission goal includes public_demo.",
    "done_when": "demo/accessibility_manifest.json written with all three sections.",
-   "produces": ["demo/accessibility_manifest.json"],
+   "produces": [
+    "demo/accessibility_manifest.json"
+   ],
    "context": {}
   },
   {

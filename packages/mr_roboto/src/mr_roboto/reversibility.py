@@ -279,6 +279,10 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "mention_polls/discord": "full",
     # internal_signal_poll: reads tickets + appends mentions; idempotent. full.
     "internal_signal_poll": "full",
+    # ---- Z7 T6 A12 marketing copy generator (A12 / A1) ----------------------
+    # marketing_copy: writes local JSON artifact + emits founder_action (advisory).
+    # Artifact is git-reversible; founder_action is advisory (no external publish).
+    "marketing_copy": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

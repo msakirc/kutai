@@ -95,6 +95,8 @@ import mr_roboto.outreach_handle_reply as outreach_handle_reply_module  # noqa: 
 import mr_roboto.outreach_draft as outreach_draft_module  # noqa: F401
 import mr_roboto.outreach_deliverability_check as outreach_deliverability_check_module  # noqa: F401
 import mr_roboto.outreach_domain_verify as outreach_domain_verify_module  # noqa: F401
+# Z7 T6 A12 — marketing copy generator (A12 / A1)
+import mr_roboto.marketing_copy as marketing_copy_module  # noqa: F401
 
 __all__ = [
     "Action",
@@ -4364,6 +4366,47 @@ async def _run_dispatch(task: dict) -> Action:
                 mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
                 domain=payload.get("domain") or "",
             )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    # ── Z7 T6 A11: mention_polls/<source> — mention monitor poll verbs ───────
+    if action.startswith("mention_polls/"):
+        source = action[len("mention_polls/"):]
+        try:
+            from mr_roboto.mention_polls import run as _mp_run
+            res = await _mp_run({**payload, "source": source})
+            if res.get("status") == "failed":
+                return Action(status="failed", error=res.get("error") or "mention_polls failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    # ── Z7 T6 A11.r2: internal_signal_poll — proxy until Z6 event stream ────
+    if action == "internal_signal_poll":
+        try:
+            from mr_roboto.internal_signal_poll import run as _isp_run
+            res = await _isp_run(payload)
+            if res.get("status") == "failed":
+                return Action(status="failed", error=res.get("error") or "internal_signal_poll failed", result=res)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    # ── Z7 T6 A12: marketing_copy — marketing copy generator ─────────────────
+    if action == "marketing_copy":
+        try:
+            from mr_roboto.marketing_copy import run_marketing_copy
+            res = await run_marketing_copy(
+                product_id=payload.get("product_id") or str(task.get("mission_id") or ""),
+                mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
+                product_spec=payload.get("product_spec") or {},
+                brand_voice_audience=payload.get("brand_voice_audience"),
+                faq_artifact_path=payload.get("faq_artifact_path"),
+                task_id=task.get("id"),
+            )
+            if res.get("status") == "error":
+                return Action(status="failed", error=res.get("error") or "marketing_copy failed", result=res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

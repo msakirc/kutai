@@ -357,7 +357,31 @@ async def run(task: dict) -> Action:
         payload=payload,
         status=action_obj.status,
     )
+
+    # Z7 B9 — external-comms audit trail. When an external-publish verb
+    # completes successfully, land an immutable external_comms_log row
+    # (content hash + gzip body + channel/recipient/mission). Best-effort:
+    # log_publish_action never raises into the dispatch path.
+    await _log_external_publish(str(verb), action_obj, task)
+
     return action_obj
+
+
+async def _log_external_publish(verb: str, action_obj: Action, task: dict) -> None:
+    """Best-effort B9 audit-log writer for external-publish verbs.
+
+    Delegates to mr_roboto.audit_log.log_publish_action, which no-ops for
+    non-publish verbs and for verbs that did not actually deliver content.
+    Never raises into the dispatch path.
+    """
+    try:
+        from mr_roboto.audit_log import log_publish_action
+        await log_publish_action(verb, action_obj, task)
+    except Exception:
+        import logging
+        logging.getLogger("mr_roboto.audit_log").debug(
+            "log_publish_action failed", exc_info=True
+        )
 
 
 async def _log_action_event(
@@ -723,7 +747,13 @@ async def _run_dispatch(task: dict) -> Action:
         try:
             res = await _verify(
                 mission_id=task.get("mission_id"),
-                paths=_resolve_path_list(payload.get("paths")) or [],
+                # Pass paths RAW — verify_artifacts resolves each under its
+                # own `workspace_path` via `_resolve_under`, which *rejects*
+                # absolute paths as a traversal guard. `_resolve_path_list`
+                # always returns absolutes, so routing through it made every
+                # verify_artifacts call fail "path rejected". It also can't
+                # express the any_of / glob path entries this verb accepts.
+                paths=payload.get("paths") or [],
                 min_bytes=int(payload.get("min_bytes", 1)),
                 compile_check=bool(payload.get("compile_check", False)),
                 workspace_path=payload.get("workspace_path"),

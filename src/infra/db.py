@@ -3835,6 +3835,100 @@ async def init_db():
         ),
     )
 
+    # ── Z7 fix-pass: product-scope the mentions UNIQUE constraint ────────────────
+    # The original 2026-05-16-z7-a11-mentions migration used
+    # UNIQUE(source, source_id). Two *different* products mentioned in the same
+    # HN/Reddit thread share (source, source_id) and would collide — the second
+    # product's mention is silently dropped by INSERT OR IGNORE. The correct
+    # within-source dedup key is per-product: UNIQUE(product_id, source, source_id).
+    # This corrective migration rebuilds the table preserving any existing rows
+    # (the table is normally empty in practice — A11 polls had not run live).
+    await apply_migration(
+        version="2026-05-17-z7-a11-mentions-product-scope",
+        sql=(
+            "ALTER TABLE mentions RENAME TO mentions_old;\n"
+            "CREATE TABLE mentions ("
+            " mention_id    INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id    TEXT    NOT NULL,"
+            " source        TEXT    NOT NULL,"
+            " source_id     TEXT    NOT NULL,"
+            " url           TEXT,"
+            " canonical_url TEXT,"
+            " author        TEXT,"
+            " author_followers INTEGER NOT NULL DEFAULT 0,"
+            " text          TEXT    NOT NULL DEFAULT '',"
+            " sentiment     TEXT    NOT NULL DEFAULT 'neu',"
+            " signal_score  INTEGER NOT NULL DEFAULT 0,"
+            " seen_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " acted_on      INTEGER NOT NULL DEFAULT 0,"
+            " UNIQUE(product_id, source, source_id)"
+            ");\n"
+            "INSERT OR IGNORE INTO mentions "
+            "(mention_id, product_id, source, source_id, url, canonical_url, "
+            " author, author_followers, text, sentiment, signal_score, "
+            " seen_at, acted_on) "
+            "SELECT mention_id, product_id, source, source_id, url, canonical_url, "
+            " author, author_followers, text, sentiment, signal_score, "
+            " seen_at, acted_on FROM mentions_old;\n"
+            "DROP TABLE mentions_old;\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_product_seen "
+            "ON mentions(product_id, seen_at DESC);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_product_sentiment_score "
+            "ON mentions(product_id, sentiment, signal_score);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_canonical_url "
+            "ON mentions(canonical_url, seen_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_acted_on "
+            "ON mentions(product_id, acted_on, signal_score DESC);\n"
+        ),
+        reversal_sql=(
+            # Reverse to the original (source, source_id) unique key.
+            "DROP INDEX IF EXISTS idx_mentions_acted_on;\n"
+            "DROP INDEX IF EXISTS idx_mentions_canonical_url;\n"
+            "DROP INDEX IF EXISTS idx_mentions_product_sentiment_score;\n"
+            "DROP INDEX IF EXISTS idx_mentions_product_seen;\n"
+            "ALTER TABLE mentions RENAME TO mentions_new;\n"
+            "CREATE TABLE mentions ("
+            " mention_id    INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id    TEXT    NOT NULL,"
+            " source        TEXT    NOT NULL,"
+            " source_id     TEXT    NOT NULL,"
+            " url           TEXT,"
+            " canonical_url TEXT,"
+            " author        TEXT,"
+            " author_followers INTEGER NOT NULL DEFAULT 0,"
+            " text          TEXT    NOT NULL DEFAULT '',"
+            " sentiment     TEXT    NOT NULL DEFAULT 'neu',"
+            " signal_score  INTEGER NOT NULL DEFAULT 0,"
+            " seen_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " acted_on      INTEGER NOT NULL DEFAULT 0,"
+            " UNIQUE(source, source_id)"
+            ");\n"
+            "INSERT OR IGNORE INTO mentions "
+            "(mention_id, product_id, source, source_id, url, canonical_url, "
+            " author, author_followers, text, sentiment, signal_score, "
+            " seen_at, acted_on) "
+            "SELECT mention_id, product_id, source, source_id, url, canonical_url, "
+            " author, author_followers, text, sentiment, signal_score, "
+            " seen_at, acted_on FROM mentions_new;\n"
+            "DROP TABLE mentions_new;\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_product_seen "
+            "ON mentions(product_id, seen_at DESC);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_product_sentiment_score "
+            "ON mentions(product_id, sentiment, signal_score);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_canonical_url "
+            "ON mentions(canonical_url, seen_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_mentions_acted_on "
+            "ON mentions(product_id, acted_on, signal_score DESC);\n"
+        ),
+        description=(
+            "Z7 fix-pass: re-scope mentions UNIQUE from (source, source_id) to "
+            "(product_id, source, source_id). The original key collided when two "
+            "different products were mentioned in the same external thread, "
+            "silently dropping the second via INSERT OR IGNORE. Table rebuilt "
+            "preserving existing rows."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

@@ -346,10 +346,16 @@ async def test_audit_completeness_check_gaps_trigger_alerts(tmp_path, monkeypatc
 
 def test_external_publish_verbs_includes_key_verbs():
     from mr_roboto.audit_log import EXTERNAL_PUBLISH_VERBS
+    # Telegram / founder-facing sends
     assert "notify_user" in EXTERNAL_PUBLISH_VERBS
     assert "clarify" in EXTERNAL_PUBLISH_VERBS
     assert "escalate_to_founder" in EXTERNAL_PUBLISH_VERBS
-    assert "vendor_call" in EXTERNAL_PUBLISH_VERBS
+    # Public publish + real email
+    assert "changelog/publish" in EXTERNAL_PUBLISH_VERBS
+    assert "incident/publish_status" in EXTERNAL_PUBLISH_VERBS
+    assert "publish_synchronized" in EXTERNAL_PUBLISH_VERBS
+    assert "outreach/send" in EXTERNAL_PUBLISH_VERBS
+    assert "email/send_via_provider" in EXTERNAL_PUBLISH_VERBS
 
 
 def test_external_publish_verbs_excludes_readonly():
@@ -357,3 +363,161 @@ def test_external_publish_verbs_excludes_readonly():
     assert "verify_artifacts" not in EXTERNAL_PUBLISH_VERBS
     assert "workspace_snapshot" not in EXTERNAL_PUBLISH_VERBS
     assert "git_commit" not in EXTERNAL_PUBLISH_VERBS
+
+
+def test_every_publish_verb_has_a_channel():
+    """Every external-publish verb must resolve a default channel so
+    log_publish_action never writes a useless 'unknown' channel."""
+    from mr_roboto.audit_log import EXTERNAL_PUBLISH_VERBS, _CHANNEL_BY_VERB
+    missing = EXTERNAL_PUBLISH_VERBS - set(_CHANNEL_BY_VERB)
+    assert not missing, f"verbs missing a default channel: {missing}"
+
+
+def test_publish_verbs_are_real_dispatcher_verbs():
+    """EXTERNAL_PUBLISH_VERBS must name verbs the mr_roboto dispatcher
+    actually knows — a stale name would silently never log."""
+    from mr_roboto.audit_log import EXTERNAL_PUBLISH_VERBS
+    from mr_roboto.reversibility import VERB_REVERSIBILITY
+    unknown = EXTERNAL_PUBLISH_VERBS - set(VERB_REVERSIBILITY)
+    assert not unknown, f"publish verbs not in reversibility registry: {unknown}"
+
+
+# ── log_publish_action — REAL-PATH wiring tests ───────────────────────────────
+# These exercise the actual run() → dispatch → log_publish_action path. Only
+# the outermost network/Telegram boundary is faked; the audit-log write is
+# real (real SQLite, real INSERT). If B9 wiring regresses (decorator removed,
+# wrong status key), these tests fail.
+
+@pytest.mark.asyncio
+async def test_log_publish_action_logs_completed_action(tmp_path, monkeypatch):
+    """An Action(status='completed') for an external-publish verb writes a row."""
+    await _setup_db(tmp_path, monkeypatch)
+    from mr_roboto.audit_log import log_publish_action, search_sends
+    from mr_roboto.actions import Action
+
+    action = Action(status="completed", result={"sent": True})
+    task = {
+        "mission_id": 7,
+        "payload": {
+            "action": "notify_user",
+            "message": "Mission 7 deployed.",
+            "recipient": "@founder",
+        },
+    }
+    log_id = await log_publish_action("notify_user", action, task)
+    assert isinstance(log_id, int) and log_id > 0
+
+    rows = await search_sends(mission_id=7)
+    assert len(rows) == 1
+    assert rows[0]["channel"] == "telegram"
+    assert rows[0]["recipient"] == "@founder"
+
+
+@pytest.mark.asyncio
+async def test_log_publish_action_skips_failed_action(tmp_path, monkeypatch):
+    """A failed Action writes NO audit row — the send did not happen."""
+    await _setup_db(tmp_path, monkeypatch)
+    from mr_roboto.audit_log import log_publish_action, search_sends
+    from mr_roboto.actions import Action
+
+    action = Action(status="failed", error="critic vetoed")
+    task = {"mission_id": 8, "payload": {"action": "notify_user", "message": "x"}}
+    log_id = await log_publish_action("notify_user", action, task)
+    assert log_id is None
+    assert await search_sends(mission_id=8) == []
+
+
+@pytest.mark.asyncio
+async def test_log_publish_action_skips_suppressed_inner_result(tmp_path, monkeypatch):
+    """email/send_via_provider returns a 'completed' Action whose inner result
+    says status='suppressed' — nothing was delivered, so no audit row."""
+    await _setup_db(tmp_path, monkeypatch)
+    from mr_roboto.audit_log import log_publish_action, search_sends
+    from mr_roboto.actions import Action
+
+    action = Action(status="completed", result={"status": "suppressed"})
+    task = {
+        "mission_id": 9,
+        "payload": {"action": "email/send_via_provider", "to": "a@b.com",
+                    "body_md": "hi"},
+    }
+    log_id = await log_publish_action("email/send_via_provider", action, task)
+    assert log_id is None
+    assert await search_sends(mission_id=9) == []
+
+
+@pytest.mark.asyncio
+async def test_log_publish_action_logs_sent_email(tmp_path, monkeypatch):
+    """email/send_via_provider with inner status='sent' writes a row."""
+    await _setup_db(tmp_path, monkeypatch)
+    from mr_roboto.audit_log import log_publish_action, search_sends
+    from mr_roboto.actions import Action
+
+    action = Action(status="completed", result={"status": "sent"})
+    task = {
+        "mission_id": 10,
+        "payload": {"action": "email/send_via_provider",
+                    "to": "customer@example.com", "body_md": "Release notes"},
+    }
+    log_id = await log_publish_action("email/send_via_provider", action, task)
+    assert isinstance(log_id, int) and log_id > 0
+    rows = await search_sends(mission_id=10)
+    assert len(rows) == 1
+    assert rows[0]["channel"] == "email"
+    assert rows[0]["recipient"] == "customer@example.com"
+
+
+@pytest.mark.asyncio
+async def test_log_publish_action_ignores_non_publish_verb(tmp_path, monkeypatch):
+    """A read-only verb never produces an audit row even if it 'completed'."""
+    await _setup_db(tmp_path, monkeypatch)
+    from mr_roboto.audit_log import log_publish_action, search_sends
+    from mr_roboto.actions import Action
+
+    action = Action(status="completed", result={})
+    task = {"mission_id": 11, "payload": {"action": "verify_artifacts"}}
+    log_id = await log_publish_action("verify_artifacts", action, task)
+    assert log_id is None
+    assert await search_sends(mission_id=11) == []
+
+
+@pytest.mark.asyncio
+async def test_run_dispatch_wires_audit_log_for_notify_user(tmp_path, monkeypatch):
+    """END-TO-END: mr_roboto.run() on a real external-publish verb lands an
+    external_comms_log row. Only the Telegram boundary (notify_user executor)
+    is faked. If the run() → log_publish_action wiring is removed, this fails."""
+    await _setup_db(tmp_path, monkeypatch)
+
+    # Fake ONLY the Telegram-send boundary; everything else is real.
+    import mr_roboto.notify_user as _nu
+
+    async def _fake_notify(task):
+        return {"sent": True, "chat_id": task["payload"].get("chat_id")}
+
+    monkeypatch.setattr(_nu, "notify_user", _fake_notify)
+    # Disable the critic gate so the test stays at the audit-log boundary.
+    monkeypatch.setenv("KUTAI_CRITIC_GATE", "off")
+
+    from mr_roboto import run as mr_run
+    from mr_roboto.audit_log import search_sends
+
+    msg = "Build green - deploying."
+    task = {
+        "mission_id": 55,
+        "payload": {
+            "action": "notify_user",
+            "message": msg,
+            "chat_id": 123,
+            "critic_gate": False,
+        },
+    }
+    result = await mr_run(task)
+    assert result.status == "completed"
+
+    rows = await search_sends(mission_id=55)
+    assert len(rows) == 1, "run() must auto-log external-publish verbs (B9)"
+    assert rows[0]["channel"] == "telegram"
+    # The logged content hash must match the message body.
+    assert rows[0]["content_hash"] == hashlib.sha256(
+        msg.encode("utf-8")
+    ).hexdigest()

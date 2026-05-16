@@ -79,6 +79,17 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 3600,  # hourly
         "payload": {"_marker": "btable_rollup"},
     },
+    # Z7 B9 — hourly external-comms audit completeness check. Finds
+    # vendor_call / external-publish rows (reversibility != 'full') that
+    # have no external_comms_log row within the audit window and escalates
+    # one founder_action per gap. Pure read-only scan + alert; the
+    # `audit_completeness_check` mr_roboto verb owns the logic.
+    {
+        "title": "audit_completeness_check",
+        "description": "Hourly external-comms audit: flag external sends with no external_comms_log row",
+        "interval_seconds": 3600,  # hourly
+        "payload": {"_executor": "audit_completeness_check"},
+    },
     {
         "title": "monitoring_check",
         "description": "URL uptime and GitHub repo poll; alerts via notify_user sub-tasks",

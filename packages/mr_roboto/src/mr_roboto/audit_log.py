@@ -44,22 +44,67 @@ from src.infra.logging_config import get_logger
 
 logger = get_logger("mr_roboto.audit_log")
 
-# Verbs that publish content to external parties (founder, users, public).
-# Source: reversibility.py irreversible verbs that involve content delivery.
+# Verbs that publish content to an external party (founder, users, public).
+# These are the irreversible content-delivery verbs registered in the
+# mr_roboto.run() dispatcher (cross-checked against reversibility.py). The
+# dispatcher (run()) calls log_publish_action() after any of these completes
+# successfully, landing an external_comms_log row.
+#
+# NOTE: keys must match the dispatcher verb strings exactly (slash-paths
+# included). The reversibility-tag-derived check is: verb in this set AND the
+# returned Action.status == "completed".
 EXTERNAL_PUBLISH_VERBS: frozenset[str] = frozenset({
+    # ---- Telegram message to founder / user ----------------------------
     "notify_user",
     "todo_reminder",
-    "price_watch_check",
     "clarify",
-    "emit_preview_url",
-    "stripe_revenue_digest",
-    "tax_export_ledger",
-    "mission_deliverable_bundle",
+    "price_watch_check",
     "escalate_to_founder",
-    "vendor_call",          # gated: only when vendor_call delivers content
-    "rollback_to_last_green",  # notifies founder
-    "rotate_failed_key",       # notifies affected parties
+    "mission_deliverable_bundle",
+    "stripe_revenue_digest",
+    # ---- founder_action surfaced to Telegram (user sees the card) ------
+    "incident_update_review",
+    "crisis/disclosure_timer",
+    "meeting/outcome_prompt",
+    "tax_export_ledger",
+    # ---- public publish (customers / world see it) ---------------------
+    "incident/publish_status",
+    "changelog/publish",
+    "publish_synchronized",
+    # ---- real email sent to a recipient --------------------------------
+    "outreach/send",
+    "email/send_via_provider",
+    # ---- other irreversible external-facing sends ----------------------
+    "stripe_provision_products",
+    "rotate_failed_key",
+    "rollback_to_last_green",
 })
+
+# Default channel per external-publish verb — used when the payload does not
+# carry an explicit ``channel`` field. Verbs that surface a founder_action /
+# Telegram message default to "telegram"; email verbs to "email"; public
+# publish verbs to "public".
+_CHANNEL_BY_VERB: dict[str, str] = {
+    "notify_user": "telegram",
+    "todo_reminder": "telegram",
+    "clarify": "telegram",
+    "price_watch_check": "telegram",
+    "escalate_to_founder": "telegram",
+    "mission_deliverable_bundle": "telegram",
+    "stripe_revenue_digest": "telegram",
+    "incident_update_review": "telegram",
+    "crisis/disclosure_timer": "telegram",
+    "meeting/outcome_prompt": "telegram",
+    "tax_export_ledger": "telegram",
+    "incident/publish_status": "public",
+    "changelog/publish": "public",
+    "publish_synchronized": "public",
+    "outreach/send": "email",
+    "email/send_via_provider": "email",
+    "stripe_provision_products": "vendor",
+    "rotate_failed_key": "telegram",
+    "rollback_to_last_green": "telegram",
+}
 
 
 def _encode_content(body: str | bytes) -> tuple[str, str]:
@@ -276,39 +321,145 @@ async def pending_audit_gaps(window_minutes: int = 5) -> list[dict[str, Any]]:
         return []
 
 
+# Result statuses that mean "the send actually happened".
+#  - mr_roboto Action objects use status="completed" on success.
+#  - inner result dicts (e.g. email/send_via_provider) use status="sent".
+# A verb can return Action(status="completed") while its inner result dict
+# reports status="suppressed"/"quota_blocked" — in that case nothing was
+# delivered, so we must NOT log it. log_publish_action() inspects both.
+_SENT_STATUSES: frozenset[str] = frozenset({"completed", "sent", "ok"})
+_NOT_DELIVERED_STATUSES: frozenset[str] = frozenset({
+    "suppressed", "quota_blocked", "skipped", "blocked", "rejected",
+})
+
+
+def _result_status(result: Any) -> str | None:
+    """Extract a status string from an Action object or a dict."""
+    if result is None:
+        return None
+    # mr_roboto Action dataclass — has a `status` attribute.
+    status = getattr(result, "status", None)
+    if status is not None:
+        return str(status)
+    if isinstance(result, dict):
+        if "status" in result:
+            return str(result["status"])
+        # legacy callers used an `ok` boolean.
+        if "ok" in result:
+            return "ok" if result["ok"] else "failed"
+    return None
+
+
+def _was_sent(outer: Any, inner: Any = None) -> bool:
+    """True iff the verb actually delivered content externally.
+
+    ``outer`` is the verb's top-level return (Action or dict). ``inner`` is
+    the verb's nested ``result`` dict, if any — some verbs (email send) return
+    a top-level "completed" Action whose inner dict says "suppressed".
+    """
+    outer_status = _result_status(outer)
+    if outer_status not in _SENT_STATUSES:
+        return False
+    inner_status = _result_status(inner)
+    if inner_status is not None and inner_status in _NOT_DELIVERED_STATUSES:
+        return False
+    return True
+
+
+async def log_publish_action(verb: str, action_obj: Any, task: dict) -> int | None:
+    """Land an external_comms_log row for a completed external-publish verb.
+
+    Called by ``mr_roboto.run()`` after dispatching any verb in
+    :data:`EXTERNAL_PUBLISH_VERBS`. Best-effort — never raises into the
+    dispatch path. Returns the new ``log_id`` (or ``None`` if nothing was
+    logged: not an external verb, the send did not happen, or an error).
+
+    Result-shape handling
+    ---------------------
+    External-publish verbs return a :class:`mr_roboto.actions.Action`.
+    Success is ``Action.status == "completed"``. The verb's inner
+    ``result`` dict is also inspected: a "completed" Action whose inner
+    result dict reports ``status`` in {suppressed, quota_blocked, ...}
+    means nothing was delivered → no audit row.
+    """
+    if verb not in EXTERNAL_PUBLISH_VERBS:
+        return None
+
+    inner = getattr(action_obj, "result", None)
+    if inner is None and isinstance(action_obj, dict):
+        inner = action_obj.get("result")
+    if not _was_sent(action_obj, inner):
+        return None
+
+    payload = task.get("payload") or {}
+    inner = inner if isinstance(inner, dict) else {}
+
+    content = (
+        payload.get("content")
+        or payload.get("body")
+        or payload.get("body_md")
+        or payload.get("message")
+        or payload.get("text")
+        or payload.get("summary")
+        or inner.get("content")
+        or inner.get("body_md")
+        or inner.get("summary")
+        # last resort: a stable repr of the verb's result so the audit row
+        # is never empty (the hash still proves *something* was sent).
+        or str(inner or action_obj)
+    )
+    channel = str(
+        payload.get("channel")
+        or inner.get("channel")
+        or _CHANNEL_BY_VERB.get(verb)
+        or "unknown"
+    )
+    recipient = (
+        payload.get("recipient")
+        or payload.get("to")
+        or payload.get("target_email")
+        or inner.get("recipient")
+    )
+
+    try:
+        return await log_external_send(
+            channel=channel,
+            content=content,
+            recipient=recipient,
+            source_mission_id=task.get("mission_id"),
+            source_action_id=payload.get("source_action_id"),
+            product_id=payload.get("product_id") if str(
+                payload.get("product_id") or ""
+            ).isdigit() else None,
+            reversibility="irreversible",
+        )
+    except Exception as e:
+        logger.warning(
+            "log_publish_action: audit log failed for verb=%s: %s", verb, e
+        )
+        return None
+
+
 def wrap_external_verb(func):
-    """Decorator: auto-log external sends for vendor_call executors.
+    """Decorator: auto-log external sends for an executor.
 
-    Expects the wrapped coroutine to accept a ``task`` dict with:
-      - task["mission_id"]
-      - task["payload"]["channel"] (optional)
-      - task["payload"]["recipient"] (optional)
-      - task["payload"]["content"] (optional, extracted for hash/md)
+    Alternative to the central ``run()`` wiring — decorate an executor
+    directly when it is invoked outside the dispatcher. The wrapped
+    coroutine must take a ``task`` dict and return an
+    :class:`mr_roboto.actions.Action` (or a dict). The decorator writes an
+    audit-log row AFTER the executor reports a successful delivery; on
+    failure / non-delivery (suppressed, quota-blocked) no row is written.
 
-    The decorator writes an audit log row AFTER the executor completes
-    successfully. On failure, no row is written (the send didn't happen).
+    The verb name is read from ``task["payload"]["action"]``.
     """
     @functools.wraps(func)
-    async def wrapper(task: dict, *args, **kwargs) -> dict:
+    async def wrapper(task: dict, *args, **kwargs):
         result = await func(task, *args, **kwargs)
-        if result and result.get("ok"):
-            payload = task.get("payload") or {}
-            content = (
-                payload.get("content")
-                or payload.get("body")
-                or payload.get("message")
-                or str(result)
-            )
-            try:
-                await log_external_send(
-                    channel=str(payload.get("channel") or "unknown"),
-                    content=content,
-                    recipient=payload.get("recipient") or payload.get("to"),
-                    source_mission_id=task.get("mission_id"),
-                    reversibility="irreversible",
-                )
-            except Exception as e:
-                logger.warning("wrap_external_verb: audit log failed: %s", e)
+        verb = str((task.get("payload") or {}).get("action") or func.__name__)
+        try:
+            await log_publish_action(verb, result, task)
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning("wrap_external_verb: audit log failed: %s", e)
         return result
     return wrapper
 
@@ -316,6 +467,7 @@ def wrap_external_verb(func):
 __all__ = [
     "EXTERNAL_PUBLISH_VERBS",
     "log_external_send",
+    "log_publish_action",
     "revoke_send",
     "search_sends",
     "pending_audit_gaps",

@@ -292,18 +292,54 @@ class TestMentionsMigration:
         assert required.issubset(cols), f"missing columns: {required - cols}"
 
     @pytest.mark.asyncio
-    async def test_mentions_unique_source_source_id(self, db):
+    async def test_mentions_unique_is_product_scoped(self, db):
+        """Within-source dedup is per-product: the UNIQUE key is
+        (product_id, source, source_id), NOT (source, source_id).
+
+        Same product + same (source, source_id) → conflict (dedup).
+        Different product + same (source, source_id) → both survive
+        (two products mentioned in the same HN/Reddit thread)."""
         await db.execute(
             "INSERT INTO mentions (product_id, source, source_id, text) VALUES (?, ?, ?, ?)",
             ("p1", "hn", "abc123", "first"),
         )
         await db.commit()
+
+        # Same product, same (source, source_id) → still a conflict.
         with pytest.raises(Exception):
             await db.execute(
                 "INSERT INTO mentions (product_id, source, source_id, text) VALUES (?, ?, ?, ?)",
                 ("p1", "hn", "abc123", "duplicate"),
             )
             await db.commit()
+        await db.rollback()
+
+        # DIFFERENT product, SAME (source, source_id) → must NOT collide.
+        # Two products discussed in the same thread both need their mention.
+        await db.execute(
+            "INSERT INTO mentions (product_id, source, source_id, text) VALUES (?, ?, ?, ?)",
+            ("p2", "hn", "abc123", "other product, same thread"),
+        )
+        await db.commit()
+
+        cur = await db.execute(
+            "SELECT product_id FROM mentions WHERE source='hn' AND source_id='abc123' "
+            "ORDER BY product_id"
+        )
+        rows = [r[0] for r in await cur.fetchall()]
+        assert rows == ["p1", "p2"], (
+            "both products' mentions must survive — UNIQUE is product-scoped"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mentions_product_scope_migration_recorded(self, db):
+        cur = await db.execute(
+            "SELECT 1 FROM schema_migrations "
+            "WHERE version = '2026-05-17-z7-a11-mentions-product-scope'"
+        )
+        assert await cur.fetchone() is not None, (
+            "corrective product-scope migration must be applied"
+        )
 
     @pytest.mark.asyncio
     async def test_mentions_migration_key_recorded(self, db):

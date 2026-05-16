@@ -1140,34 +1140,34 @@ async def build_user_context(
             except Exception as exc:
                 logger.debug("Workflow exemplar injection failed: %s", exc)
 
-        # Free-text path: yalayut Phase 2 — render the task["skills"]
-        # envelope intersect attached. The old src.memory.skills
-        # free-text vector match is retired here; intersect now owns
-        # matching, coulson owns rendering. Workflow tasks still skip
-        # this path — exemplar lookup above is authoritative for them.
-        if not _step_id:
-            try:
-                from coulson.skill_render import (
-                    render_skill_envelope, tool_names_from_envelope,
+        # yalayut Phase 2 — render the task["skills"] envelope intersect
+        # attached.  This runs for ALL tasks, including workflow steps: the
+        # exemplar block (above) and the envelope block are complementary, not
+        # mutually exclusive.  Intersect matches catalog skills specifically for
+        # workflow steps via recipe_hint; silently discarding that envelope
+        # (old `if not _step_id:` guard) wasted every such match.
+        try:
+            from coulson.skill_render import (
+                render_skill_envelope, tool_names_from_envelope,
+            )
+            envelope = task.get("skills") or []
+            if envelope:
+                skills_block = render_skill_envelope(envelope)
+                if skills_block:
+                    parts.append(skills_block)
+                for tool in tool_names_from_envelope(envelope):
+                    if tool not in _injected_skills_tools:
+                        _injected_skills_tools.append(tool)
+                        logger.info(
+                            "Skill-injected tool from envelope "
+                            "(deferred to caller): %s", tool,
+                        )
+                logger.info(
+                    "Skills rendered from envelope: %s",
+                    [a.get("name") for a in envelope],
                 )
-                envelope = task.get("skills") or []
-                if envelope:
-                    skills_block = render_skill_envelope(envelope)
-                    if skills_block:
-                        parts.append(skills_block)
-                    for tool in tool_names_from_envelope(envelope):
-                        if tool not in _injected_skills_tools:
-                            _injected_skills_tools.append(tool)
-                            logger.info(
-                                "Skill-injected tool from envelope "
-                                "(deferred to caller): %s", tool,
-                            )
-                    logger.info(
-                        "Skills rendered from envelope: %s",
-                        [a.get("name") for a in envelope],
-                    )
-            except Exception as exc:
-                logger.debug("Envelope skill render failed: %s", exc)
+        except Exception as exc:
+            logger.debug("Envelope skill render failed: %s", exc)
 
     if "api" in policy:
         try:

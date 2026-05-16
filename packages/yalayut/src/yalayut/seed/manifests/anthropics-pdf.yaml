@@ -1,0 +1,11 @@
+name: anthropics-pdf
+name_original: pdf
+version: 1.0.0
+artifact_type: skill
+kind: prompt_skill
+source: github:anthropics/skills@/skills
+owner: anthropics
+license: proprietary
+mechanizable: false
+applies_to: execution
+intent_keywords: [pdf, extract-text, merge-pdf, split-pdf, ocr, watermark, forms]

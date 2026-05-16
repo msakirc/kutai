@@ -1,0 +1,20 @@
+name: cc-data-science
+name_original: cookiecutter-data-science
+version: 1.0.0
+artifact_type: skill
+kind: shell_recipe
+source: github:drivendataorg/cookiecutter-data-science
+owner: drivendataorg
+license: MIT
+mechanizable: true
+applies_to: execution
+intent_keywords: [data-science, ml, jupyter, notebooks, pipeline, scaffold]
+inputs_schema:
+  project_name:
+    type: string
+    bind_from: [task.payload.project_name, task.title]
+invocation:
+  steps:
+    - cmd: "uvx cookiecutter --no-input gh:drivendataorg/cookiecutter-data-science project_name={project_name}"
+artifacts: [Makefile, data/, notebooks/]
+disabled_imports_check: true

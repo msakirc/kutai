@@ -1,0 +1,11 @@
+name: superpowers-writing-plans
+name_original: writing-plans
+version: 1.0.0
+artifact_type: skill
+kind: prompt_skill
+source: github:obra/superpowers@/skills
+owner: obra
+license: MIT
+mechanizable: false
+applies_to: execution
+intent_keywords: [plan, planning, spec, implementation-plan, tasks]

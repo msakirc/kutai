@@ -1,0 +1,11 @@
+name: anthropics-mcp-builder
+name_original: mcp-builder
+version: 1.0.0
+artifact_type: skill
+kind: prompt_skill
+source: github:anthropics/skills@/skills
+owner: anthropics
+license: proprietary
+mechanizable: false
+applies_to: execution
+intent_keywords: [mcp, server, fastmcp, mcp-sdk, tool-design]

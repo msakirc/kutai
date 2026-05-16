@@ -34,7 +34,13 @@ async def test_default_flow_no_confirmation_row(tmp_path, monkeypatch):
     task = {
         "id": 1,
         "mission_id": 10,
-        "payload": {"action": "notify_user", "message": "hi"},
+        # critic_gate=False: the notify_user critic pre-hook makes an LLM
+        # call via beckman inline-wait; with no worker draining the queue
+        # in a unit test it would hang forever. This test exercises the
+        # confirmation gate, not the critic gate.
+        "payload": {
+            "action": "notify_user", "message": "hi", "critic_gate": False,
+        },
     }
     action = await mr_roboto.run(task)
     assert action.status == "completed"
@@ -66,6 +72,7 @@ async def test_require_confirmation_approved_proceeds(
             "action": "notify_user",
             "message": "hi",
             "require_confirmation": True,
+            "critic_gate": False,
         },
     }
 
@@ -116,6 +123,7 @@ async def test_require_confirmation_rejected_blocks(
             "action": "notify_user",
             "message": "bye",
             "require_confirmation": True,
+            "critic_gate": False,
         },
     }
 

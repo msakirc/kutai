@@ -10,7 +10,7 @@ AND after the vendor_call, capturing:
 
 Usage::
 
-    from mr_roboto.audit_log import log_external_send, wrap_external_verb
+    from mr_roboto.audit_log import log_external_send
 
     # Direct row write:
     row_id = await log_external_send(
@@ -21,15 +21,11 @@ Usage::
         reversibility="irreversible",
     )
 
-    # Decorator for vendor_call executors:
-    @wrap_external_verb
-    async def my_executor(task):
-        ...
-
-External-publish verbs (from reversibility.py): any verb whose reversibility
-is "irreversible" AND that delivers content to an external party. The check
-is: VERB_REVERSIBILITY[verb] == "irreversible" AND verb is in
-EXTERNAL_PUBLISH_VERBS below.
+External-publish verbs: a verb is treated as an external publish when it is a
+member of the :data:`EXTERNAL_PUBLISH_VERBS` set below. ``log_publish_action``
+gates on set-membership plus :func:`_was_sent` (the verb's Action/inner result
+must report a delivered status) — it does NOT derive publish-ness from
+``VERB_REVERSIBILITY``.
 """
 from __future__ import annotations
 
@@ -37,7 +33,6 @@ import base64
 import gzip
 import hashlib
 import datetime
-import functools
 from typing import Any
 
 from src.infra.logging_config import get_logger
@@ -304,30 +299,51 @@ async def search_sends(
 
 
 async def pending_audit_gaps(window_minutes: int = 5) -> list[dict[str, Any]]:
-    """Return vendor_call rows with reversibility != 'full' that have no
-    external_comms_log entry within ``window_minutes``.
+    """Return external-publish confirmations that have no audit-log row.
 
-    Used by the audit_completeness_check posthook to flag missing audit rows.
+    A "gap" is an ``action_confirmations`` row that:
+
+    - has ``reversibility != 'full'`` (an irreversible / partial external act),
+    - was requested more than ``window_minutes`` ago (so a freshly-issued
+      confirmation still mid-flight is not flagged),
+    - and has NO matching ``external_comms_log`` row joined on
+      ``external_comms_log.vendor_call_id = action_confirmations.id``.
+
+    Such a row means a publish/send/upload was confirmed but produced no
+    immutable audit record — a compliance + post-incident-review hole. Used
+    by the hourly ``audit_completeness_check`` cron to escalate one
+    founder_action per gap.
+
+    The ``action_confirmations`` table (see ``src/infra/db.py``) has columns
+    ``id, task_id, verb, reversibility, payload_summary, requested_at,
+    responded_at, verdict`` — there is no ``mission_id`` column, so it is
+    derived by LEFT JOINing ``tasks`` on ``action_confirmations.task_id =
+    tasks.id``.
     """
     from src.infra.db import get_db
     db = await get_db()
 
-    # action_confirmations holds vendor_call approvals.
-    # We join against external_comms_log on vendor_call_id.
-    # Rows that have no matching log entry within window_minutes are gaps.
+    # action_confirmations holds external-publish confirmation requests.
+    # mission_id is NOT on action_confirmations — derive it via tasks.id.
+    # A row with reversibility != 'full', requested > window_minutes ago, and
+    # no matching external_comms_log row (joined on vendor_call_id) is a gap.
     gap_sql = f"""
-        SELECT ac.id        AS vendor_call_id,
-               ac.action    AS verb,
-               ac.mission_id,
-               ac.created_at
+        SELECT ac.id           AS vendor_call_id,
+               ac.verb         AS verb,
+               t.mission_id    AS mission_id,
+               ac.requested_at AS created_at,
+               ac.reversibility AS reversibility,
+               ac.verdict      AS verdict
         FROM action_confirmations ac
+        LEFT JOIN tasks t ON t.id = ac.task_id
         WHERE ac.reversibility != 'full'
-          AND ac.created_at <= datetime('now', '-{window_minutes} minutes')
+          AND ac.requested_at IS NOT NULL
+          AND ac.requested_at <= datetime('now', '-{window_minutes} minutes')
           AND NOT EXISTS (
               SELECT 1 FROM external_comms_log ecl
               WHERE ecl.vendor_call_id = ac.id
           )
-        ORDER BY ac.created_at DESC
+        ORDER BY ac.requested_at DESC
         LIMIT 50
     """
     try:
@@ -337,7 +353,12 @@ async def pending_audit_gaps(window_minutes: int = 5) -> list[dict[str, Any]]:
         await cur.close()
         return [dict(zip(cols, r)) for r in rows]
     except Exception as e:
-        logger.warning("pending_audit_gaps: query failed: %s", e)
+        # A failure here is almost always a schema drift in
+        # action_confirmations / tasks — surface it loudly so it is not
+        # silently swallowed into an empty (no-gap) result.
+        logger.warning(
+            "pending_audit_gaps: gap-scan query failed (schema drift?): %s", e
+        )
         return []
 
 
@@ -475,30 +496,6 @@ async def log_publish_action(verb: str, action_obj: Any, task: dict) -> int | No
         return None
 
 
-def wrap_external_verb(func):
-    """Decorator: auto-log external sends for an executor.
-
-    Alternative to the central ``run()`` wiring — decorate an executor
-    directly when it is invoked outside the dispatcher. The wrapped
-    coroutine must take a ``task`` dict and return an
-    :class:`mr_roboto.actions.Action` (or a dict). The decorator writes an
-    audit-log row AFTER the executor reports a successful delivery; on
-    failure / non-delivery (suppressed, quota-blocked) no row is written.
-
-    The verb name is read from ``task["payload"]["action"]``.
-    """
-    @functools.wraps(func)
-    async def wrapper(task: dict, *args, **kwargs):
-        result = await func(task, *args, **kwargs)
-        verb = str((task.get("payload") or {}).get("action") or func.__name__)
-        try:
-            await log_publish_action(verb, result, task)
-        except Exception as e:  # pragma: no cover — defensive
-            logger.warning("wrap_external_verb: audit log failed: %s", e)
-        return result
-    return wrapper
-
-
 __all__ = [
     "EXTERNAL_PUBLISH_VERBS",
     "log_external_send",
@@ -507,5 +504,4 @@ __all__ = [
     "search_sends",
     "pending_audit_gaps",
     "decode_content",
-    "wrap_external_verb",
 ]

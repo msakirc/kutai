@@ -221,51 +221,58 @@ async def test_pending_audit_gaps_empty_when_no_vendor_calls(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_pending_audit_gaps_finds_gap(tmp_path, monkeypatch):
-    """A vendor_call row with reversibility != 'full' and no comms log row = gap."""
+    """An action_confirmations row with reversibility != 'full' and no
+    external_comms_log row = gap. Exercises the REAL action_confirmations
+    schema (id, task_id, verb, reversibility, requested_at, ...)."""
     db = await _setup_db(tmp_path, monkeypatch)
-    # Insert a fake action_confirmations row older than 5 minutes
+    # Insert a task so mission_id can be derived via the tasks join.
+    await db.execute(
+        "INSERT INTO tasks (id, mission_id, title) VALUES (?, ?, ?)",
+        (5001, 1, "publish task"),
+    )
+    # Insert a confirmation row requested more than 5 minutes ago.
     import datetime as _dt
     old_ts = (_dt.datetime.utcnow() - _dt.timedelta(minutes=10)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
-    # Check if action_confirmations table exists; if not, skip
-    try:
-        await db.execute(
-            "INSERT INTO action_confirmations "
-            "(id, action, mission_id, reversibility, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (9001, "vendor_call", 1, "partial", "approved", old_ts),
-        )
-        await db.commit()
-    except Exception:
-        pytest.skip("action_confirmations table not available in this schema")
+    await db.execute(
+        "INSERT INTO action_confirmations "
+        "(id, task_id, verb, reversibility, requested_at, verdict) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (9001, 5001, "notify_user", "partial", old_ts, "approved"),
+    )
+    await db.commit()
 
     from mr_roboto.audit_log import pending_audit_gaps
     gaps = await pending_audit_gaps(window_minutes=5)
     gap_ids = [g["vendor_call_id"] for g in gaps]
     assert 9001 in gap_ids
+    gap = next(g for g in gaps if g["vendor_call_id"] == 9001)
+    assert gap["verb"] == "notify_user"
+    assert gap["mission_id"] == 1  # derived via tasks join
 
 
 @pytest.mark.asyncio
 async def test_pending_audit_gaps_no_gap_when_logged(tmp_path, monkeypatch):
-    """A vendor_call with an existing comms log row is not a gap."""
+    """A confirmation with a matching external_comms_log row is not a gap."""
     db = await _setup_db(tmp_path, monkeypatch)
+    await db.execute(
+        "INSERT INTO tasks (id, mission_id, title) VALUES (?, ?, ?)",
+        (5002, 1, "publish task"),
+    )
     import datetime as _dt
     old_ts = (_dt.datetime.utcnow() - _dt.timedelta(minutes=10)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
-    try:
-        await db.execute(
-            "INSERT INTO action_confirmations "
-            "(id, action, mission_id, reversibility, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (9002, "vendor_call", 1, "partial", "approved", old_ts),
-        )
-        await db.commit()
-    except Exception:
-        pytest.skip("action_confirmations table not available in this schema")
+    await db.execute(
+        "INSERT INTO action_confirmations "
+        "(id, task_id, verb, reversibility, requested_at, verdict) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (9002, 5002, "notify_user", "partial", old_ts, "approved"),
+    )
+    await db.commit()
 
-    # Now log the send with vendor_call_id=9002
+    # Now log the send with vendor_call_id=9002 — closes the gap.
     from mr_roboto.audit_log import log_external_send, pending_audit_gaps
     await log_external_send(
         channel="telegram", content="done", vendor_call_id=9002

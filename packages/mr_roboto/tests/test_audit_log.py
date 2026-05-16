@@ -382,6 +382,79 @@ def test_publish_verbs_are_real_dispatcher_verbs():
     assert not unknown, f"publish verbs not in reversibility registry: {unknown}"
 
 
+def _dispatcher_verb_strings() -> set[str]:
+    """Parse mr_roboto/__init__.py for every `if action == "<verb>"` string.
+
+    The reversibility registry can name verbs that no longer have a
+    dispatcher branch (e.g. demo/distribute/flip_to_public is only an
+    instruction string). This scans the *actual* dispatch chain so we catch
+    a publish verb that would never be matched and never logged.
+    """
+    import ast
+    import pathlib
+    import mr_roboto
+
+    src = pathlib.Path(mr_roboto.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    verbs: set[str] = set()
+    for node in ast.walk(tree):
+        # `action == "<verb>"`
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 \
+                and isinstance(node.ops[0], ast.Eq):
+            left, right = node.left, node.comparators[0]
+            for a, b in ((left, right), (right, left)):
+                if isinstance(a, ast.Name) and a.id == "action" \
+                        and isinstance(b, ast.Constant) \
+                        and isinstance(b.value, str):
+                    verbs.add(b.value)
+        # `action.startswith("<prefix>")` — record the prefix
+        if isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "startswith" \
+                and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id == "action" \
+                and node.args and isinstance(node.args[0], ast.Constant):
+            verbs.add(node.args[0].value)
+    return verbs
+
+
+def test_publish_verbs_match_dispatcher_if_chain():
+    """Every EXTERNAL_PUBLISH_VERBS entry must be reachable by the real
+    dispatcher — not merely present in the reversibility registry. A
+    registry-only name (e.g. the `demo/distribute/flip_to_public` instruction
+    string) would silently never produce an audit row.
+
+    A verb is reachable if it is an exact `if action == ...` match, is
+    covered by an `action.startswith(prefix)` branch, OR is an
+    `oncall_action` sub-verb (dispatched through the on-call gateway, which
+    IS a real `if action ==` branch)."""
+    from mr_roboto.audit_log import EXTERNAL_PUBLISH_VERBS
+    from mr_roboto.executors.oncall_action import WHITELISTED_VERBS
+
+    dispatcher_verbs = _dispatcher_verb_strings()
+    missing = set()
+    for verb in EXTERNAL_PUBLISH_VERBS:
+        if verb in dispatcher_verbs:
+            continue
+        if any(verb.startswith(p) and p != verb for p in dispatcher_verbs):
+            continue
+        if verb in WHITELISTED_VERBS:
+            continue
+        missing.add(verb)
+    assert not missing, (
+        f"publish verbs with no dispatcher branch (stale names): {missing}"
+    )
+
+
+def test_new_publish_verbs_present():
+    """The Z7 fix Task 4 Gap 2 verbs are registered."""
+    from mr_roboto.audit_log import EXTERNAL_PUBLISH_VERBS, _CHANNEL_BY_VERB
+    for verb in ("init_mission_github_repo", "emit_preview_url",
+                 "demo/distribute", "eas_submit", "fastlane"):
+        assert verb in EXTERNAL_PUBLISH_VERBS, f"{verb} not registered"
+        assert verb in _CHANNEL_BY_VERB, f"{verb} missing a default channel"
+
+
 # ── log_publish_action — REAL-PATH wiring tests ───────────────────────────────
 # These exercise the actual run() → dispatch → log_publish_action path. Only
 # the outermost network/Telegram boundary is faked; the audit-log write is
@@ -444,6 +517,70 @@ async def test_log_publish_action_skips_suppressed_inner_result(tmp_path, monkey
     log_id = await log_publish_action("email/send_via_provider", action, task)
     assert log_id is None
     assert await search_sends(mission_id=9) == []
+
+
+@pytest.mark.asyncio
+async def test_log_publish_action_skips_warmup_quota_exceeded_outreach(
+    tmp_path, monkeypatch
+):
+    """outreach/send returns a 'completed' Action whose inner result says
+    status='warmup_quota_exceeded' — the email was held, NOT sent — so no
+    audit row. (Before the Gap 1 fix this wrote a false audit row.)"""
+    await _setup_db(tmp_path, monkeypatch)
+    from mr_roboto.audit_log import log_publish_action, search_sends
+    from mr_roboto.actions import Action
+
+    action = Action(
+        status="completed", result={"status": "warmup_quota_exceeded"}
+    )
+    task = {
+        "mission_id": 21,
+        "payload": {"action": "outreach/send", "target_email": "p@b.com",
+                    "body_md": "Hi there"},
+    }
+    log_id = await log_publish_action("outreach/send", action, task)
+    assert log_id is None
+    assert await search_sends(mission_id=21) == []
+
+
+@pytest.mark.asyncio
+async def test_log_publish_action_skips_disabled_and_gdpr_outreach(
+    tmp_path, monkeypatch
+):
+    """outreach/send 'disabled' (feature flag off) and 'gdpr_blocked' (no
+    opt-in) inner statuses also write NO audit row — nothing was delivered."""
+    await _setup_db(tmp_path, monkeypatch)
+    from mr_roboto.audit_log import log_publish_action, search_sends
+    from mr_roboto.actions import Action
+
+    for inner_status in ("disabled", "gdpr_blocked"):
+        action = Action(status="completed", result={"status": inner_status})
+        task = {
+            "mission_id": 22,
+            "payload": {"action": "outreach/send", "target_email": "p@b.com",
+                        "body_md": "Hi"},
+        }
+        log_id = await log_publish_action("outreach/send", action, task)
+        assert log_id is None, f"{inner_status} must not log"
+    assert await search_sends(mission_id=22) == []
+
+
+@pytest.mark.asyncio
+async def test_log_publish_action_skips_skipped_flag_verb(tmp_path, monkeypatch):
+    """eas_submit / fastlane return a 'completed' Action wrapping
+    {'skipped': True} when the CLI is absent — nothing was published."""
+    await _setup_db(tmp_path, monkeypatch)
+    from mr_roboto.audit_log import log_publish_action, search_sends
+    from mr_roboto.actions import Action
+
+    action = Action(status="completed", result={"skipped": True})
+    task = {
+        "mission_id": 23,
+        "payload": {"action": "eas_submit", "platform": "ios"},
+    }
+    log_id = await log_publish_action("eas_submit", action, task)
+    assert log_id is None
+    assert await search_sends(mission_id=23) == []
 
 
 @pytest.mark.asyncio

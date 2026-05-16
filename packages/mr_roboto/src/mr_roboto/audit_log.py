@@ -78,6 +78,21 @@ EXTERNAL_PUBLISH_VERBS: frozenset[str] = frozenset({
     "stripe_provision_products",
     "rotate_failed_key",
     "rollback_to_last_green",
+    # ---- irreversible publish: content delivered to an external party --
+    # init_mission_github_repo: creates a public GitHub repo — visible to
+    #   the world.
+    # emit_preview_url: opens a tunnelled URL that is publicly discoverable
+    #   once shared.
+    # demo/distribute: uploads demo cuts to YouTube (unlisted) — the dispatcher
+    #   verb is "demo/distribute"; "demo/distribute/flip_to_public" is only an
+    #   instruction string surfaced to the founder, NOT a dispatcher verb.
+    # eas_submit / fastlane: push a binary to an app-store track (TestFlight /
+    #   Play internal) — testers receive it.
+    "init_mission_github_repo",
+    "emit_preview_url",
+    "demo/distribute",
+    "eas_submit",
+    "fastlane",
 })
 
 # Default channel per external-publish verb — used when the payload does not
@@ -104,6 +119,11 @@ _CHANNEL_BY_VERB: dict[str, str] = {
     "stripe_provision_products": "vendor",
     "rotate_failed_key": "telegram",
     "rollback_to_last_green": "telegram",
+    "init_mission_github_repo": "github",
+    "emit_preview_url": "public",
+    "demo/distribute": "youtube",
+    "eas_submit": "app_store",
+    "fastlane": "app_store",
 }
 
 
@@ -328,8 +348,15 @@ async def pending_audit_gaps(window_minutes: int = 5) -> list[dict[str, Any]]:
 # reports status="suppressed"/"quota_blocked" — in that case nothing was
 # delivered, so we must NOT log it. log_publish_action() inspects both.
 _SENT_STATUSES: frozenset[str] = frozenset({"completed", "sent", "ok"})
+# Inner statuses that mean the verb completed but delivered NOTHING. A
+# "completed" Action wrapping any of these must not produce an audit row.
+#  - suppressed / quota_blocked / skipped / blocked / rejected: generic.
+#  - disabled: outreach/send when OUTREACH_ENABLED is off — no email left.
+#  - warmup_quota_exceeded: outreach/send hit the per-day warmup cap — held.
+#  - gdpr_blocked: outreach/send refused for lack of explicit opt-in.
 _NOT_DELIVERED_STATUSES: frozenset[str] = frozenset({
     "suppressed", "quota_blocked", "skipped", "blocked", "rejected",
+    "disabled", "warmup_quota_exceeded", "gdpr_blocked",
 })
 
 
@@ -356,12 +383,20 @@ def _was_sent(outer: Any, inner: Any = None) -> bool:
     ``outer`` is the verb's top-level return (Action or dict). ``inner`` is
     the verb's nested ``result`` dict, if any — some verbs (email send) return
     a top-level "completed" Action whose inner dict says "suppressed".
+
+    A few verbs (eas_submit / eas_build / fastlane / expo_cli / android_build)
+    do not carry a non-delivery ``status`` string — they return a "completed"
+    Action wrapping ``{"skipped": True}`` when the CLI is absent. A truthy
+    ``skipped`` flag on the inner dict also means nothing was published.
     """
     outer_status = _result_status(outer)
     if outer_status not in _SENT_STATUSES:
         return False
     inner_status = _result_status(inner)
     if inner_status is not None and inner_status in _NOT_DELIVERED_STATUSES:
+        return False
+    # Skip-flag verbs (mobile build/submit adapters) report no status string.
+    if isinstance(inner, dict) and inner.get("skipped"):
         return False
     return True
 

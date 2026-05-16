@@ -10,7 +10,9 @@ async def test_notify_user_sends_message():
         from mr_roboto import run
         action = await run(task)
     assert action.status == "completed"
-    fake_tg.send_message.assert_awaited_once_with(222, "Mission done")
+    fake_tg.app.bot.send_message.assert_awaited_once_with(
+        chat_id=222, text="Mission done", reply_markup=None
+    )
 
 
 @pytest.mark.asyncio

@@ -64,12 +64,22 @@ def test_all_tags_are_valid() -> None:
 
 
 def test_every_registry_verb_is_a_real_dispatcher_action() -> None:
-    """Cross-check: every verb in VERB_REVERSIBILITY must appear as an
-    `if action == "<verb>"` block in mr_roboto/__init__.py.
+    """Cross-check: every verb in VERB_REVERSIBILITY must be wired into the
+    mr_roboto dispatcher.
 
-    Allowed exceptions: ``git_push`` (real verb but executed via git_ops,
-    not as a top-level mr_roboto action — registered for shell-side
-    tagging) and ``propose_spec_patch`` (kept as alias for compat).
+    The dispatcher routes verbs in three shapes, all of which count:
+      1. ``if action == "<verb>"``           — the common case
+      2. ``if action in ("<verb>", ...)``    — cron + sub-verb groups
+      3. ``action.startswith("<family>/")``  — slash-verb families
+         (``reviews/poll/*``, ``mention_polls/*``, …) routed by prefix
+
+    A verb is "wired" if its literal appears as a quoted string in
+    ``__init__.py`` (covers shapes 1+2) or a slash ancestor is prefix-routed
+    (shape 3).
+
+    EXEMPT holds verbs intentionally NOT dispatched as top-level actions:
+    they carry a reversibility tag for the shared taxonomy but reach
+    execution another way.
     """
     init_path = (
         Path(__file__).resolve().parents[1]
@@ -78,24 +88,33 @@ def test_every_registry_verb_is_a_real_dispatcher_action() -> None:
         / "__init__.py"
     )
     src = init_path.read_text(encoding="utf-8")
-    pattern = re.compile(r'if action == "([a-z_][a-z0-9_]*)"')
-    dispatched = set(pattern.findall(src))
-    # ``propose_spec_patch_from_html_diff`` IS in dispatcher; the registry
-    # uses the shorter alias too. ``git_push`` and ``propose_spec_patch``
-    # are intentional non-dispatcher entries (see docstring).
-    # ``sandbox_local_mode`` and ``broader_egress`` (Z10-T3B) are
-    # caller-opened confirmation verbs (src/tools/shell.py opens them
-    # directly via request_confirmation); they do not have dispatcher
-    # blocks. They share the tag taxonomy so live with the registry.
+
+    def _is_dispatched(verb: str) -> bool:
+        # Shapes 1+2 — verb literal appears in an `==` or `in (...)` check.
+        if f'"{verb}"' in src or f"'{verb}'" in src:
+            return True
+        # Shape 3 — a slash ancestor is routed by a `startswith` prefix.
+        if "/" in verb:
+            parts = verb.split("/")
+            for i in range(1, len(parts)):
+                prefix = "/".join(parts[:i]) + "/"
+                if (
+                    f'startswith("{prefix}")' in src
+                    or f"startswith('{prefix}')" in src
+                ):
+                    return True
+        return False
+
     EXEMPT = {
+        # git_ops shell-side tag only; propose_spec_patch is a compat alias.
         "git_push",
         "propose_spec_patch",
+        # Z10-T3B caller-opened confirmation verbs — src/tools/shell.py opens
+        # them directly via request_confirmation; no dispatcher block.
         "sandbox_local_mode",
         "broader_egress",
         # Z8 T4B on-call verbs — executed under the ``oncall_action``
-        # gateway (whitelist + cooldown check), not as top-level dispatcher
-        # actions. They share the reversibility taxonomy so the gate logic
-        # can consult per-verb tags after the gateway hands off.
+        # gateway (whitelist + cooldown check), not as top-level actions.
         "restart_service",
         "rollback_to_last_green",
         "scale_up",
@@ -104,25 +123,19 @@ def test_every_registry_verb_is_a_real_dispatcher_action() -> None:
         "rotate_failed_key",
         "archive_flake_test",
         "escalate_to_founder",
-        # Z9 growth verbs — reversibility registered in T1C; the verb
-        # implementations land in later tiers (T2-T5). Until then they
-        # have no dispatcher block, so they live in the registry alone.
-        "inject_north_star",
+        # Sub-mode of demo/distribute — flips an already-uploaded video to
+        # public from inside the distribute handler, not a top-level action.
+        "demo/distribute/flip_to_public",
+        # Z9 growth verbs still pending a dispatcher block (later tiers).
         "emit_metric",
-        "record_hypothesis",
-        "record_verdict",
         "suppress_hypothesis",
-        "assign_variant",
-        "retire_variant",
-        "score_backlog",
-        "score_sunset",
     }
     for verb in VERB_REVERSIBILITY:
         if verb in EXEMPT:
             continue
-        assert verb in dispatched, (
-            f"registry verb {verb!r} not found as a dispatcher action; "
-            f"either rename the registry entry or add to EXEMPT"
+        assert _is_dispatched(verb), (
+            f"registry verb {verb!r} not wired into the dispatcher; "
+            f"either fix the registry entry or add to EXEMPT"
         )
 
 

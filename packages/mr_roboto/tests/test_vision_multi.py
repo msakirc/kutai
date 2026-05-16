@@ -139,7 +139,7 @@ def test_analyze_image_file_not_found_returns_error(tmp_path):
     async def run():
         return await analyze_image("/nonexistent/path/img.png")
 
-    result = asyncio.get_event_loop().run_until_complete(run())
+    result = asyncio.run(run())
     assert result.startswith("Error: file not found")
 
 
@@ -154,5 +154,5 @@ def test_analyze_image_multi_one_missing_returns_error(tmp_path):
     async def run():
         return await analyze_image([str(img1), "/nonexistent/missing.png"])
 
-    result = asyncio.get_event_loop().run_until_complete(run())
+    result = asyncio.run(run())
     assert result.startswith("Error: file not found")

@@ -308,6 +308,38 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # base entry is the conservative default — used only when the lane cannot
     # be resolved; the dispatcher injects the lane-derived override otherwise.
     "fastlane": "irreversible",
+    # ---- Scanners / reviewers / checks (read-only or local artifact) -------
+    # All produce a verdict, a report, or a git-reversible local artifact.
+    # founder_actions some of them emit are advisory (see marketing_copy /
+    # launch_readiness_gate precedent) — the verb itself is fully reversible.
+    "run_tests": "full",                   # Z2 T1 — test runner, read-only
+    "check_imports": "full",               # Z2 — import check
+    "run_axe": "full",                     # Z3 T3B — a11y scan, read-only
+    "run_bandit": "full",                  # Z3 T3A — security scan, read-only
+    "run_npm_audit": "full",               # Z3 T3A — dep audit, read-only
+    "run_schemathesis": "full",            # Z3 T3C — contract test, read-only
+    "run_semgrep_layer_filtered": "full",  # Z3 T4C — static analysis, read-only
+    "security_review": "full",             # Z3 T3A — review verdict
+    "performance_review": "full",          # Z3 T3C — review verdict
+    "visual_review": "full",               # Z4 — visual review verdict
+    "check_adr_drift": "full",             # Z3 T4B — ADR drift check
+    "extract_signatures": "full",          # Z3 T2C — API signature extraction
+    "compliance_template_staleness": "full",  # compliance freshness check
+    "documentation_gap_detect": "full",    # docs gap scan
+    "mine_dlq_patterns": "full",           # DLQ pattern analysis
+    "press_kit_freshness": "full",         # Z7 — press kit freshness check
+    "verdict_window_sweep": "full",        # Z9 — hypothesis verdict sweep
+    "validate_target_segment": "full",     # target-segment validation
+    "alert_triage": "full",                # Z8 — alert classification
+    # ---- Local artifact emitters (git-reversible) -------------------------
+    "capture_screenshots": "full",         # Z4 — writes screenshot files
+    "legal_document_render": "full",       # renders legal doc to local file
+    "investor_bullets": "full",            # writes investor-bullets artifact
+    "faq_regen": "full",                   # regenerates FAQ artifact
+    "quote_harvest": "full",               # harvests quotes into DB; deletable
+    "roadmap_sync": "full",                # roadmap DB sync; reversible
+    # credential_rotation_reminder emits an advisory founder_action only.
+    "credential_rotation_reminder": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

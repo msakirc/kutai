@@ -5,7 +5,7 @@ Public API
   create_meeting(product_id, contact_id, scheduled_for, purpose) -> int
   list_meetings(product_id, contact_id=None) -> list[dict]
   build_brief_context(meeting_id, product_id) -> dict
-  compose_brief_md(ctx, talking_points) -> str
+  compose_brief_md(ctx, talking_points, suggested_asks, *, llm_unavailable=False) -> str
   emit_outcome_prompt(meeting_id, product_id) -> dict
   log_meeting_outcome(meeting_id, product_id, contact_id, summary,
                       next_action=None, follow_up=None) -> int
@@ -21,6 +21,7 @@ B4 hooks into:
 from __future__ import annotations
 
 import json as _json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -39,6 +40,7 @@ _TALKING_POINTS_UNAVAILABLE = (
     "_(Talking points unavailable — LLM draft failed; "
     "review the context sections above and prepare manually.)_"
 )
+_SUGGESTED_ASKS_UNAVAILABLE = "_(Suggested asks unavailable — LLM draft failed.)_"
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +349,7 @@ async def _call_llm_meeting_brief(ctx: dict) -> tuple[list[str], list[str]]:
     import time
     import uuid
 
-    from general_beckman import enqueue
+    from general_beckman import TaskResult, enqueue
     from general_beckman.lanes import LANE_ONESHOT
 
     ctx_summary = _summarise_ctx_for_llm(ctx)
@@ -393,15 +395,15 @@ async def _call_llm_meeting_brief(ctx: dict) -> tuple[list[str], list[str]]:
     }
 
     try:
-        task_result = await enqueue(spec, lane=LANE_ONESHOT, await_inline=True)
+        task_result: TaskResult = await enqueue(spec, lane=LANE_ONESHOT, await_inline=True)
     except Exception as exc:
         logger.warning("meeting_brief: LLM enqueue failed: %r", exc)
         return [], []
 
-    if getattr(task_result, "status", None) != "completed":
+    if task_result.status != "completed":
         logger.warning(
             "meeting_brief: LLM task did not complete (status=%s): %s",
-            getattr(task_result, "status", None),
+            task_result.status,
             getattr(task_result, "error", ""),
         )
         return [], []
@@ -439,11 +441,9 @@ def _parse_brief_llm_response(raw: str) -> tuple[list[str], list[str]] | None:
     # Strip code fences if present.
     if text.startswith("```"):
         lines = text.split("\n")
-        text = "\n".join(l for l in lines if not l.strip().startswith("```")).strip()
+        text = "\n".join(line for line in lines if not line.strip().startswith("```")).strip()
 
     candidates = [text]
-    import re
-
     m = re.search(r"\{[\s\S]*\}", text)
     if m:
         candidates.append(m.group())
@@ -579,10 +579,7 @@ def compose_brief_md(
             lines.append(f"{i}. {ask}")
         sections.append("\n".join(lines))
     elif llm_unavailable:
-        sections.append(
-            "## Suggested Asks\n"
-            "_(Suggested asks unavailable — LLM draft failed.)_"
-        )
+        sections.append("## Suggested Asks\n" + _SUGGESTED_ASKS_UNAVAILABLE)
 
     return "\n\n".join(sections)
 

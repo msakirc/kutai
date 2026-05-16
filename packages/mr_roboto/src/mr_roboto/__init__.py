@@ -3604,15 +3604,7 @@ async def _run_dispatch(task: dict) -> Action:
             talking_points: list[str] = []
             suggested_asks: list[str] = []
             llm_failed = False
-            try:
-                talking_points, suggested_asks = await _call_llm_meeting_brief(ctx)
-            except Exception as _llm_exc:
-                from src.infra.logging_config import get_logger as _gl
-                _gl("mr_roboto.meeting_brief").warning(
-                    "meeting/brief: LLM draft raised; degrading gracefully",
-                    error=str(_llm_exc),
-                )
-                llm_failed = True
+            talking_points, suggested_asks = await _call_llm_meeting_brief(ctx)
             if not talking_points and not suggested_asks:
                 llm_failed = True
 

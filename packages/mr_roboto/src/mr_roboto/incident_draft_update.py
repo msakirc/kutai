@@ -119,14 +119,15 @@ async def _call_llm_draft(
     existing_summary: str,
     status_kind: str,
 ) -> str:
-    """Call LLM (OVERHEAD lane via beckman.enqueue) to draft the update.
+    """Call LLM (ONESHOT lane via beckman.enqueue await_inline) to draft the update.
 
     Returns the raw draft text.  Caller redacts again before returning.
     """
-    from general_beckman import enqueue
-    from general_beckman.lanes import LANE_OVERHEAD
-    import asyncio
+    from general_beckman import enqueue, TaskResult
+    from general_beckman.lanes import LANE_ONESHOT
     import json
+    import time
+    import uuid
 
     components_str = ", ".join(affected_components) if affected_components else "the service"
     safe_details_str = json.dumps(safe_alert_details, ensure_ascii=False)[:800]
@@ -149,35 +150,50 @@ async def _call_llm_draft(
         f"Draft only — no sign-off or signature needed."
     )
 
-    result_holder: list[str] = []
-    done_event = asyncio.Event()
+    messages = [
+        {"role": "user", "content": prompt},
+    ]
 
-    async def _on_finish(task_result: dict) -> None:
-        result_holder.append(task_result.get("output") or task_result.get("result") or "")
-        done_event.set()
-
-    await enqueue(
-        {
-            "title": "incident_draft_update:llm",
-            "description": "Draft customer-facing status update.",
-            "agent_type": "assistant",
-            "kind": "overhead",
-            "context": {
-                "prompt": prompt,
-                "_callback": _on_finish,
+    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
+    spec = {
+        "title": f"incident_draft_update:llm:{_suffix}",
+        "description": "Draft customer-facing status update.",
+        "agent_type": "reviewer",
+        "kind": "overhead",
+        "priority": 2,
+        "context": {
+            "llm_call": {
+                "raw_dispatch": True,
+                "call_category": "overhead",
+                "task": "reviewer",
+                "agent_type": "reviewer",
+                "difficulty": 3,
+                "messages": messages,
+                "failures": [],
+                "estimated_input_tokens": 400,
+                "estimated_output_tokens": 200,
             },
         },
-        lane=LANE_OVERHEAD,
-    )
+    }
 
-    # Await with a 30s timeout (OVERHEAD tasks should be fast).
     try:
-        await asyncio.wait_for(done_event.wait(), timeout=30.0)
-    except asyncio.TimeoutError:
-        logger.warning("incident_draft_update: LLM task timed out; returning empty draft")
+        task_result: TaskResult = await enqueue(spec, lane=LANE_ONESHOT, await_inline=True)
+    except Exception as exc:
+        logger.warning("incident_draft_update: LLM enqueue failed: %r", exc)
         return ""
 
-    return result_holder[0] if result_holder else ""
+    if task_result.status == "failed":
+        logger.warning("incident_draft_update: LLM task failed: %s", task_result.error)
+        return ""
+
+    result_data = getattr(task_result, "result", None) or {}
+    content = result_data.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    return str(content or "").strip()
 
 
 # ---------------------------------------------------------------------------

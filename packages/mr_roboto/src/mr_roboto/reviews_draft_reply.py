@@ -18,8 +18,6 @@ Public API
 """
 from __future__ import annotations
 
-import asyncio
-
 from src.infra.logging_config import get_logger
 
 logger = get_logger("mr_roboto.reviews_draft_reply")
@@ -70,12 +68,14 @@ async def _call_llm_draft_reply(
     body_md: str,
     product_id: str,
 ) -> str:
-    """Call LLM (OVERHEAD lane) to draft a reply.
+    """Call LLM (ONESHOT lane, await_inline=True) to draft a reply.
 
     Returns draft reply text. Falls back to a generic template on error.
     """
-    from general_beckman import enqueue
-    from general_beckman.lanes import LANE_OVERHEAD
+    import time
+    import uuid
+    from general_beckman import enqueue, TaskResult
+    from general_beckman.lanes import LANE_ONESHOT
 
     convention = _PLATFORM_CONVENTIONS.get(platform, _DEFAULT_CONVENTION)
     star_label = f"{rating}/5 star{'s' if rating != 1 else ''}"
@@ -94,35 +94,51 @@ async def _call_llm_draft_reply(
         "Draft the reply only — no meta-commentary."
     )
 
-    result_holder: list[str] = []
-    done_event = asyncio.Event()
-
-    async def _on_finish(task_result: dict) -> None:
-        output = task_result.get("output") or task_result.get("result") or ""
-        result_holder.append(str(output))
-        done_event.set()
-
-    await enqueue(
-        {
-            "title": "reviews_draft_reply:llm",
-            "description": f"Draft reply for {platform} review.",
-            "agent_type": "assistant",
-            "kind": "overhead",
-            "context": {
-                "prompt": prompt,
-                "_callback": _on_finish,
-            },
-        },
-        lane=LANE_OVERHEAD,
-    )
+    messages = [{"role": "user", "content": prompt}]
+    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
 
     try:
-        await asyncio.wait_for(done_event.wait(), timeout=30.0)
-    except asyncio.TimeoutError:
-        logger.warning("reviews_draft_reply: LLM timed out; returning fallback draft")
+        task_result: TaskResult = await enqueue(
+            {
+                "title": f"reviews_draft_reply:llm:{_suffix}",
+                "description": f"Draft reply for {platform} review.",
+                "agent_type": "reviewer",
+                "kind": "overhead",
+                "priority": 2,
+                "context": {
+                    "llm_call": {
+                        "raw_dispatch": True,
+                        "call_category": "overhead",
+                        "task": "reviewer",
+                        "agent_type": "reviewer",
+                        "difficulty": 3,
+                        "messages": messages,
+                        "failures": [],
+                        "estimated_input_tokens": 350,
+                        "estimated_output_tokens": 150,
+                    },
+                },
+            },
+            lane=LANE_ONESHOT,
+            await_inline=True,
+        )
+    except Exception as exc:
+        logger.warning("reviews_draft_reply: LLM enqueue failed: %s", exc)
         return _fallback_draft(platform, author, rating)
 
-    return result_holder[0].strip() if result_holder else _fallback_draft(platform, author, rating)
+    if task_result.status == "failed":
+        logger.warning("reviews_draft_reply: LLM task failed; returning fallback draft")
+        return _fallback_draft(platform, author, rating)
+
+    result_data = getattr(task_result, "result", None) or {}
+    content = result_data.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    text = str(content or "").strip()
+    return text if text else _fallback_draft(platform, author, rating)
 
 
 def _fallback_draft(platform: str, author: str, rating: int) -> str:

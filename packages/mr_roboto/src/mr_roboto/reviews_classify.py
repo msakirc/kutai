@@ -28,7 +28,6 @@ Public API
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from src.infra.logging_config import get_logger
@@ -50,13 +49,15 @@ LOW_STAR_THRESHOLD = 2
 # ---------------------------------------------------------------------------
 
 async def _call_llm_classify(body_md: str, rating: int) -> dict:
-    """Call LLM (OVERHEAD lane) to classify the review.
+    """Call LLM (ONESHOT lane, await_inline=True) to classify the review.
 
     Returns {"sentiment": str, "theme_tag": str}.
-    Falls back to heuristic on timeout / error.
+    Falls back to heuristic on error.
     """
-    from general_beckman import enqueue
-    from general_beckman.lanes import LANE_OVERHEAD
+    import time
+    import uuid
+    from general_beckman import enqueue, TaskResult
+    from general_beckman.lanes import LANE_ONESHOT
 
     prompt = (
         "You are classifying a product review. Return JSON only.\n\n"
@@ -67,35 +68,50 @@ async def _call_llm_classify(body_md: str, rating: int) -> dict:
         "Pick the single most relevant theme_tag."
     )
 
-    result_holder: list[str] = []
-    done_event = asyncio.Event()
-
-    async def _on_finish(task_result: dict) -> None:
-        output = task_result.get("output") or task_result.get("result") or ""
-        result_holder.append(str(output))
-        done_event.set()
-
-    await enqueue(
-        {
-            "title": "reviews_classify:llm",
-            "description": "Classify review sentiment + theme.",
-            "agent_type": "assistant",
-            "kind": "overhead",
-            "context": {
-                "prompt": prompt,
-                "_callback": _on_finish,
-            },
-        },
-        lane=LANE_OVERHEAD,
-    )
+    messages = [{"role": "user", "content": prompt}]
+    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
 
     try:
-        await asyncio.wait_for(done_event.wait(), timeout=30.0)
-    except asyncio.TimeoutError:
-        logger.warning("reviews_classify: LLM timed out; using heuristic fallback")
+        task_result: TaskResult = await enqueue(
+            {
+                "title": f"reviews_classify:llm:{_suffix}",
+                "description": "Classify review sentiment + theme.",
+                "agent_type": "reviewer",
+                "kind": "overhead",
+                "priority": 2,
+                "context": {
+                    "llm_call": {
+                        "raw_dispatch": True,
+                        "call_category": "overhead",
+                        "task": "reviewer",
+                        "agent_type": "reviewer",
+                        "difficulty": 3,
+                        "messages": messages,
+                        "failures": [],
+                        "estimated_input_tokens": 250,
+                        "estimated_output_tokens": 50,
+                    },
+                },
+            },
+            lane=LANE_ONESHOT,
+            await_inline=True,
+        )
+    except Exception as exc:
+        logger.warning("reviews_classify: LLM enqueue failed: %s", exc)
         return _heuristic_classify(body_md, rating)
 
-    raw = result_holder[0] if result_holder else ""
+    if task_result.status == "failed":
+        logger.warning("reviews_classify: LLM task failed; using heuristic fallback")
+        return _heuristic_classify(body_md, rating)
+
+    result_data = getattr(task_result, "result", None) or {}
+    content = result_data.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    raw = str(content or "").strip()
     return _parse_llm_response(raw, body_md, rating)
 
 
@@ -200,8 +216,8 @@ async def _enqueue_bug_investigation(spec: dict, **kwargs) -> int:
     """Enqueue a bug investigation task in the mission backlog via beckman."""
     try:
         from general_beckman import enqueue
-        from general_beckman.lanes import LANE_OVERHEAD
-        return await enqueue(spec, lane=LANE_OVERHEAD, **kwargs)
+        from general_beckman.lanes import LANE_ONESHOT
+        return await enqueue(spec, lane=LANE_ONESHOT, **kwargs)
     except Exception as exc:
         logger.warning("reviews_classify._enqueue_bug_investigation failed: %s", exc)
         return 0

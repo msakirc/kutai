@@ -422,25 +422,36 @@ async def test_support_metrics_reads_tickets_table(db):
 
 
 @pytest.mark.asyncio
-async def test_llm_hypothesis_call_uses_overhead_lane():
-    """_call_llm_anomaly_hypothesis enqueues via OVERHEAD lane."""
+async def test_llm_hypothesis_call_uses_await_inline():
+    """_call_llm_anomaly_hypothesis enqueues via await_inline=True and returns str content."""
     from unittest.mock import patch, AsyncMock
-    import asyncio
+    from general_beckman import TaskResult
 
-    async def _fake_enqueue(spec, *, lane):
-        # simulate callback
-        cb = spec.get("context", {}).get("_callback")
-        if cb:
-            await cb({"output": "Hypothesis: seasonality spike."})
-        return MagicMock(id=1)
+    # Return a TaskResult with content in the result dict (real awaitable path).
+    fake_result = TaskResult(
+        status="completed",
+        result={"content": "Hypothesis: seasonality spike from Q1 campaign."},
+        error=None,
+    )
 
-    with patch("src.app.jobs.investor_bullets._enqueue_overhead",
-               new=AsyncMock(side_effect=_fake_enqueue)) as mock_enqueue:
+    async def _fake_enqueue(spec, *, lane, await_inline=False):
+        # Verify the spec uses raw_dispatch (real llm_call structure)
+        llm_call = (spec.get("context") or {}).get("llm_call") or {}
+        assert llm_call.get("raw_dispatch") is True, "Must use raw_dispatch=True pattern"
+        assert "_callback" not in (spec.get("context") or {}), \
+            "Must NOT use deprecated _callback pattern"
+        assert await_inline is True, "Must call with await_inline=True"
+        return fake_result
+
+    with patch(
+        "src.app.jobs.investor_bullets._enqueue_overhead",
+        new=AsyncMock(side_effect=_fake_enqueue),
+    ):
         from src.app.jobs.investor_bullets import _call_llm_anomaly_hypothesis
         hyp = await _call_llm_anomaly_hypothesis("mrr", 180.0, [100.0, 102.0, 98.0])
 
     assert isinstance(hyp, str)
-    assert len(hyp) > 0
+    assert "seasonality" in hyp
 
 
 # ===========================================================================

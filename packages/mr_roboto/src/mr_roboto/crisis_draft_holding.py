@@ -83,14 +83,16 @@ async def _call_llm_draft(
     summary: str,
     playbook_text: str,
 ) -> list[str]:
-    """Call LLM (OVERHEAD lane via beckman.enqueue) to produce holding variants.
+    """Call LLM (ONESHOT lane via beckman.enqueue await_inline) to produce holding variants.
 
     Returns a list of 2+ holding-statement strings.
     """
-    from general_beckman import enqueue
-    from general_beckman.lanes import LANE_OVERHEAD
-    import asyncio
-    import json
+    from general_beckman import enqueue, TaskResult
+    from general_beckman.lanes import LANE_ONESHOT
+    import time
+    import uuid
+    import re
+    import json as _json
 
     playbook_excerpt = playbook_text[:1200] if playbook_text else "(playbook not available)"
 
@@ -119,40 +121,52 @@ async def _call_llm_draft(
         f"Return ONLY a JSON array of 2 strings: [\"Variant A text\", \"Variant B text\"]"
     )
 
-    result_holder: list[Any] = []
-    done_event = asyncio.Event()
+    messages = [
+        {"role": "user", "content": prompt},
+    ]
 
-    async def _on_finish(task_result: dict) -> None:
-        result_holder.append(task_result.get("output") or task_result.get("result") or "")
-        done_event.set()
-
-    await enqueue(
-        {
-            "title": "crisis_draft_holding:llm",
-            "description": f"Draft Tier {tier} crisis holding statement variants.",
-            "agent_type": "assistant",
-            "kind": "overhead",
-            "context": {
-                "prompt": prompt,
-                "_callback": _on_finish,
+    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
+    spec = {
+        "title": f"crisis_draft_holding:llm:{_suffix}",
+        "description": f"Draft Tier {tier} crisis holding statement variants.",
+        "agent_type": "reviewer",
+        "kind": "overhead",
+        "priority": 2,
+        "context": {
+            "llm_call": {
+                "raw_dispatch": True,
+                "call_category": "overhead",
+                "task": "reviewer",
+                "agent_type": "reviewer",
+                "difficulty": 3,
+                "messages": messages,
+                "failures": [],
+                "estimated_input_tokens": 500,
+                "estimated_output_tokens": 200,
             },
         },
-        lane=LANE_OVERHEAD,
-    )
+    }
 
     try:
-        await asyncio.wait_for(done_event.wait(), timeout=30.0)
-    except asyncio.TimeoutError:
-        logger.warning("crisis_draft_holding: LLM timed out")
+        task_result: TaskResult = await enqueue(spec, lane=LANE_ONESHOT, await_inline=True)
+    except Exception as exc:
+        logger.warning("crisis_draft_holding: LLM enqueue failed: %r", exc)
         return []
 
-    raw = result_holder[0] if result_holder else ""
-    # Parse JSON array from LLM output
-    import re
-    import json as _json
+    if task_result.status == "failed":
+        logger.warning("crisis_draft_holding: LLM task failed: %s", task_result.error)
+        return []
+
+    result_data = getattr(task_result, "result", None) or {}
+    content = result_data.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    raw_str = str(content or "").strip()
 
     # Try to extract JSON array from the response
-    raw_str = str(raw)
     m = re.search(r'\[.*?\]', raw_str, re.DOTALL)
     if m:
         try:

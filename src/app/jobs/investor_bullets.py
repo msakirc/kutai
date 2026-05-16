@@ -140,10 +140,10 @@ def _detect_anomaly(
 # ---------------------------------------------------------------------------
 
 
-async def _enqueue_overhead(spec: dict, *, lane: str) -> Any:
+async def _enqueue_overhead(spec: dict, *, lane: str, await_inline: bool = False) -> Any:
     """Thin wrapper around ``general_beckman.enqueue`` (monkeypatchable)."""
     from general_beckman import enqueue
-    return await enqueue(spec, lane=lane)
+    return await enqueue(spec, lane=lane, await_inline=await_inline)
 
 
 async def _call_llm_anomaly_hypothesis(
@@ -151,11 +151,13 @@ async def _call_llm_anomaly_hypothesis(
     current: float,
     history: list[float],
 ) -> str:
-    """Enqueue a one-sentence anomaly hypothesis via OVERHEAD lane.
+    """Enqueue a one-sentence anomaly hypothesis via ONESHOT lane (await_inline=True).
 
-    Returns the hypothesis string, or an empty string on timeout/failure.
+    Returns the hypothesis string, or an empty string on failure.
     """
-    from general_beckman.lanes import LANE_ONESHOT as LANE_OVERHEAD  # OVERHEAD tasks use oneshot lane
+    import time
+    import uuid
+    from general_beckman.lanes import LANE_ONESHOT
 
     median_val = statistics.median(history) if len(history) >= 2 else 0.0
     direction = "above" if current > median_val else "below"
@@ -171,36 +173,34 @@ async def _call_llm_anomaly_hypothesis(
         f"No prose, no preamble. Just the hypothesis sentence."
     )
 
-    result_holder: list[str] = []
-    done_event = asyncio.Event()
-
-    async def _on_finish(task_result: dict) -> None:
-        result_holder.append(
-            task_result.get("output") or task_result.get("result") or ""
-        )
-        done_event.set()
+    messages = [{"role": "user", "content": prompt}]
+    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
 
     try:
-        await _enqueue_overhead(
+        task_result = await _enqueue_overhead(
             {
-                "title": f"investor_bullets:hypothesis:{metric_name}",
+                "title": f"investor_bullets:hypothesis:{metric_name}:{_suffix}",
                 "description": f"One-sentence anomaly hypothesis for {metric_name}.",
-                "agent_type": "assistant",
+                "agent_type": "reviewer",
                 "kind": "overhead",
+                "priority": 2,
                 "context": {
-                    "prompt": prompt,
-                    "_callback": _on_finish,
+                    "llm_call": {
+                        "raw_dispatch": True,
+                        "call_category": "overhead",
+                        "task": "reviewer",
+                        "agent_type": "reviewer",
+                        "difficulty": 3,
+                        "messages": messages,
+                        "failures": [],
+                        "estimated_input_tokens": 300,
+                        "estimated_output_tokens": 100,
+                    },
                 },
             },
-            lane=LANE_OVERHEAD,
+            lane=LANE_ONESHOT,
+            await_inline=True,
         )
-        await asyncio.wait_for(done_event.wait(), timeout=20.0)
-    except asyncio.TimeoutError:
-        logger.warning(
-            "investor_bullets: LLM hypothesis timed out",
-            metric=metric_name,
-        )
-        return ""
     except Exception as exc:
         logger.warning(
             "investor_bullets: LLM hypothesis failed",
@@ -209,7 +209,22 @@ async def _call_llm_anomaly_hypothesis(
         )
         return ""
 
-    return result_holder[0].strip() if result_holder else ""
+    if getattr(task_result, "status", None) == "failed":
+        logger.warning(
+            "investor_bullets: LLM hypothesis task failed",
+            metric=metric_name,
+            error=getattr(task_result, "error", ""),
+        )
+        return ""
+
+    result_data = getattr(task_result, "result", None) or {}
+    content = result_data.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    return str(content or "").strip()
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ from typing import Iterable
 
 from general_beckman.result_router import (
     Action, Complete, SpawnSubtasks, RequestClarification, RequestReview,
-    Failed, MissionAdvance, CompleteWithReusedAnswer,
+    Failed, Exhausted, MissionAdvance, CompleteWithReusedAnswer,
     RequestPostHook, PostHookVerdict,
 )
 from general_beckman.posthooks import determine_posthooks
@@ -24,6 +24,52 @@ from general_beckman.posthooks import determine_posthooks
 
 def _is_workflow_step(task_ctx: dict) -> bool:
     return bool(task_ctx.get("workflow_step") or task_ctx.get("is_workflow_step"))
+
+
+# Config-only LLM reviewer agents that run as post-hooks but — unlike
+# GraderAgent / CodeReviewerAgent — have no ``execute`` override to build a
+# ``posthook_verdict`` payload. They emit a plain ``{"verdict": ..., "findings":
+# [...]}`` JSON string in ``final_answer.result``. Rule 0d below parses that
+# into a PostHookVerdict so the source task is not stranded in ``ungraded``.
+_CONFIG_ONLY_REVIEWER_AGENTS: frozenset[str] = frozenset({
+    "integration_reviewer",  # Z3 T2C
+    "adr_drift_judge",       # Z3 R3
+})
+
+
+def _parse_reviewer_verdict(a: Complete) -> dict:
+    """Extract {passed, raw} from a config-only reviewer's Complete.
+
+    The reviewer emits ``{"verdict": "pass"|"fail", "findings": [...]}`` as a
+    JSON string in ``Complete.result``. Fall back to ``a.raw`` keys. When the
+    payload cannot be parsed at all, default to ``passed=False`` so a garbled
+    reviewer output retries the source rather than silently passing it.
+    """
+    import json as _json
+
+    parsed: dict = {}
+    result = a.result
+    if isinstance(result, dict):
+        parsed = result
+    elif isinstance(result, str) and result.strip():
+        try:
+            loaded = _json.loads(result)
+            if isinstance(loaded, dict):
+                parsed = loaded
+        except (ValueError, TypeError):
+            parsed = {}
+
+    # Fallback: some dispatch paths put the structured dict on raw.
+    if not parsed and isinstance(a.raw, dict):
+        inner = a.raw.get("result")
+        if isinstance(inner, dict):
+            parsed = inner
+
+    verdict = str(parsed.get("verdict") or "").strip().lower()
+    # Accept the explicit "pass"; anything else (fail / blank / garbled) is a
+    # fail so the source is retried with the findings as feedback.
+    passed = verdict == "pass"
+    return {"passed": passed, "raw": parsed}
 
 
 def _format_history(history: list) -> str:
@@ -71,6 +117,29 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
         # No posthook_verdict payload — treat as regular Complete (bookkeeping),
         # fall through to existing logic which won't emit MissionAdvance because
         # agent_type in the skip list.
+
+    # Rule 0d: config-only LLM reviewer post-hook completion → synthesise a
+    # PostHookVerdict from the {verdict, findings} JSON the reviewer emits.
+    # integration_reviewer (Z3 T2C) and adr_drift_judge (Z3 R3) have no
+    # execute() override to build a posthook_verdict payload the way grader /
+    # code_reviewer do — without this rule their source task is stranded in
+    # 'ungraded' forever (the kind is never dropped from _pending_posthooks).
+    if (
+        isinstance(a, Complete)
+        and task.get("agent_type") in _CONFIG_ONLY_REVIEWER_AGENTS
+        and task_ctx.get("source_task_id") is not None
+        and task_ctx.get("posthook_kind")
+    ):
+        parsed = _parse_reviewer_verdict(a)
+        return [
+            a,
+            PostHookVerdict(
+                source_task_id=int(task_ctx["source_task_id"]),
+                kind=str(task_ctx["posthook_kind"]),
+                passed=parsed["passed"],
+                raw=parsed["raw"],
+            ),
+        ]
 
     # Rule 0b: mechanical post-hook completion → synthesise PostHookVerdict.
     # Mechanical executors (mr_roboto) don't emit a posthook_verdict field —
@@ -148,16 +217,19 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
             ),
         ]
 
-    # Rule 0c: mechanical post-hook FAILED (e.g. mr_roboto returned status=failed,
-    # such as "no paths supplied" or workspace resolution error). Surfaces
-    # as Failed action; we still want a PostHookVerdict with passed=False so
-    # the source advances down the retry-with-feedback path rather than
-    # waiting on a verdict that will never arrive. The Failed action remains
-    # in the action list so the verifier task itself goes through normal DLQ
-    # / retry handling.
+    # Rule 0c: post-hook FAILED / EXHAUSTED (mechanical mr_roboto status=failed,
+    # such as "no paths supplied"; or a config-only reviewer that exhausted its
+    # iteration budget). Surfaces as Failed/Exhausted; we still want a
+    # PostHookVerdict with passed=False so the source advances down the
+    # retry-with-feedback path rather than waiting on a verdict that will never
+    # arrive. The Failed/Exhausted action remains in the list so the post-hook
+    # task itself goes through normal DLQ / retry handling.
     if (
-        isinstance(a, Failed)
-        and task.get("agent_type") == "mechanical"
+        isinstance(a, (Failed, Exhausted))
+        and (
+            task.get("agent_type") == "mechanical"
+            or task.get("agent_type") in _CONFIG_ONLY_REVIEWER_AGENTS
+        )
         and task_ctx.get("source_task_id") is not None
         and task_ctx.get("posthook_kind")
     ):
@@ -196,11 +268,25 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
             )
         )
         for kind in determine_posthooks(task, task_ctx, a.raw):
+            # Merge result scalar fields into source_ctx so posthook handlers
+            # can read them.  incident/draft_update returns {"draft": ...,
+            # "incident_id": ..., "status_kind": ...} in its result dict but
+            # never writes these to the task context, so apply.py's
+            # _posthook_agent_and_payload would find source_ctx.get("draft")
+            # empty.  Using setdefault means task_ctx values win (they were
+            # set intentionally); result fills only fields the task didn't set.
+            _posthook_ctx = dict(task_ctx)
+            if isinstance(a.raw, dict):
+                for _rk, _rv in a.raw.items():
+                    if _rk not in ("status", "ok") and isinstance(
+                        _rv, (str, int, float, bool)
+                    ):
+                        _posthook_ctx.setdefault(_rk, _rv)
             result_actions.append(
                 RequestPostHook(
                     source_task_id=a.task_id,
                     kind=kind,
-                    source_ctx=dict(task_ctx),
+                    source_ctx=_posthook_ctx,
                 )
             )
         return result_actions

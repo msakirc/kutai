@@ -3159,33 +3159,39 @@ async def _apply_security_review_verdict(
 
 
 async def _maybe_spawn_adr_drift_judge(
-    *, source: dict, verdict: PostHookVerdict
-) -> None:
+    *, source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict
+) -> bool:
     """Z3 R3 — spawn adr_drift_judge LLM task for judgment_only ADRs.
 
     Reads ``verdict.raw.judgment_only_adr_ids`` (populated by check_adr_drift
     when an ADR's falsification_signal is v1-string / null / unknown-shape).
     Enqueues a single ``adr_drift_judge`` task carrying the ADR ids + paths
-    + produced_files. Subsequent verdict goes through the simple_blocker path
-    because the judge's post-hook kind is also in the blocker tuple.
+    + produced_files.
 
-    Verdict precedence:
-        mechanical-fail  >  judge-fail  >  judge-pass
+    MUST be called BEFORE ``_apply_simple_blocker_verdict`` for the
+    adr_drift_check verdict: it appends ``adr_drift_judge`` to both *ctx*'s
+    ``_pending_posthooks`` and the in-memory *pending* list IN PLACE, so the
+    subsequent simple_blocker pass sees a non-empty pending list and does NOT
+    prematurely complete the source / fire workflow_advance. The judge's own
+    verdict (kind=``adr_drift_judge``, also in the simple_blocker tuple) then
+    drains the last pending entry and completes the source properly.
 
-    Because we only spawn the judge when mechanical *passed*, the mechanical-
-    fail leg never reaches here — the source has already been retried/DLQ'd.
+    Verdict precedence: mechanical-fail > judge-fail > judge-pass — enforced
+    by the caller gating on ``verdict.passed`` (judge only spawns on a
+    mechanical pass).
+
+    Returns True when a judge was spawned (ctx/pending mutated), else False.
     """
     raw = verdict.raw or {}
     judgment_ids: list[str] = list(raw.get("judgment_only_adr_ids") or [])
     if not judgment_ids:
-        return
+        return False
 
     import json as _json
-    from src.infra.db import add_task, update_task
+    from src.infra.db import add_task
 
-    source_ctx = _parse_ctx(source)
-    workspace_path = source_ctx.get("workspace_path") or ""
-    produced = list(source_ctx.get("produces") or [])
+    workspace_path = ctx.get("workspace_path") or ""
+    produced = list(ctx.get("produces") or [])
 
     # Resolve adr_paths from workspace .adr/ dir.
     adr_paths: dict[str, str] = {}
@@ -3206,17 +3212,11 @@ async def _maybe_spawn_adr_drift_judge(
         "workspace_path": workspace_path,
     }
 
-    # Mark adr_drift_judge as pending on the source so verdict-time
-    # bookkeeping flows through the same simple_blocker path.
-    pending = list(source_ctx.get("_pending_posthooks") or [])
+    # Mutate ctx + pending IN PLACE so the caller's simple_blocker pass keeps
+    # the source ungraded until the judge verdict lands.
     if "adr_drift_judge" not in pending:
         pending.append("adr_drift_judge")
-    source_ctx["_pending_posthooks"] = pending
-    await update_task(
-        source.get("id"),
-        status="ungraded",
-        context=_json.dumps(source_ctx),
-    )
+    ctx["_pending_posthooks"] = list(pending)
 
     await add_task(
         title=f"ADR drift judge for {len(judgment_ids)} judgment_only ADR(s)",
@@ -3234,6 +3234,73 @@ async def _maybe_spawn_adr_drift_judge(
         source_id=source.get("id"),
         adr_count=len(judgment_ids),
     )
+    return True
+
+
+async def _maybe_spawn_integration_bisect(
+    *, source: dict, ctx: dict, verdict: PostHookVerdict
+) -> bool:
+    """Z3 R4 — spawn an advisory integration_bisect mechanical task.
+
+    Called when an ``integration_replay`` verdict failed. Reads the replayed
+    commit list from ``verdict.raw.commits_replayed`` and enqueues a
+    fire-and-forget mechanical ``integration_bisect`` task. The bisect verb's
+    dispatch wrapper (mr_roboto.__init__) upserts a ``mission_lessons`` row
+    when it isolates a breaking pair — that lesson is the entire point.
+
+    NOT a post-hook: the task carries no ``source_task_id``/``posthook_kind``
+    so it never produces a PostHookVerdict and never gates the source. The
+    source has already been retried/DLQ'd by ``_apply_simple_blocker_verdict``.
+
+    Returns True when a bisect task was enqueued, else False (too few commits).
+    """
+    raw = verdict.raw or {}
+    commits = list(raw.get("commits_replayed") or [])
+    # Bisect needs at least 2 commits to narrow a pair.
+    if len(commits) < 2:
+        return False
+
+    import json as _json
+    from src.infra.db import add_task
+
+    workspace_path = ctx.get("workspace_path") or ""
+    if not workspace_path:
+        return False
+
+    suite_glob = ctx.get("integration_suite_glob") or "tests/integration/**"
+    stack = str(ctx.get("tech_stack_detected") or ctx.get("stack") or "unknown")
+
+    # Deliberately enqueued with mission_id=None: the bisect is advisory, not
+    # a workflow step. A mission-scoped task would make rewrite.py emit a
+    # spurious MissionAdvance on completion. The real mission_id is carried in
+    # the payload so the mission_lessons row is still attributed correctly.
+    await add_task(
+        title=f"Integration bisect for #{source.get('id')} ({len(commits)} commits)",
+        description=(
+            "Binary-search the replayed commit list for the regression. "
+            "Advisory — emits a mission_lessons row, does not gate."
+        ),
+        agent_type="mechanical",
+        mission_id=None,
+        context={
+            # No source_task_id / posthook_kind — deliberately NOT a post-hook.
+            "executor": "mechanical",
+            "payload": {
+                "action": "integration_bisect",
+                "commits": commits,
+                "suite_glob": suite_glob,
+                "workspace_path": workspace_path,
+                "mission_id": source.get("mission_id"),
+                "stack": stack,
+                "source_task_id": source.get("id"),
+            },
+        },
+    )
+    logger.info(
+        "integration_bisect spawned (advisory)",
+        source_id=source.get("id"), commit_count=len(commits),
+    )
+    return True
 
 
 async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
@@ -3409,27 +3476,47 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         )
         return
 
-    # Z3 T3 + T4B + T5 + Z4 T3B — security/accessibility/contract/performance/
-    # adr_drift_check/integration_replay/visual_review share the simple
-    # blocker-or-pass pattern (mechanical verb produces {findings, verdict}).
+    # Z3 T2C + T3 + T4B + T5 + Z4 T3B — integration_review/security/accessibility/
+    # contract/performance/adr_drift_check/integration_replay/adr_drift_judge/
+    # visual_review share the simple blocker-or-pass pattern: the producing
+    # verb (mechanical OR config-only LLM reviewer) emits {verdict, findings}.
     if a.kind in (
+        "integration_review",
         "security_review", "accessibility_review", "contract_review",
         "performance_review", "adr_drift_check", "integration_replay",
         "adr_drift_judge", "visual_review",
     ):
+        # Z3 R3 — ADR drift gray-zone path: when the mechanical check passed
+        # but some ADRs were judgment_only, spawn an LLM judge. This MUST run
+        # BEFORE simple_blocker so the judge kind is in `pending` — otherwise
+        # simple_blocker completes the source + fires workflow_advance and the
+        # judge verdict can no longer gate anything. Best-effort: a spawn
+        # failure leaves pending untouched and the source completes normally.
+        if a.kind == "adr_drift_check" and a.passed:
+            try:
+                await _maybe_spawn_adr_drift_judge(
+                    source=source, ctx=ctx, pending=pending, verdict=a,
+                )
+            except Exception as _exc:
+                logger.debug(
+                    "adr_drift_judge spawn skipped",
+                    source_id=source.get("id"), error=str(_exc),
+                )
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
             feedback_prefix=f"{a.kind} gate",
         )
-        # Z3 R3 — ADR drift gray-zone path: when mechanical check passed but
-        # some ADRs were judgment_only, spawn an LLM judge to inspect them.
-        # Best-effort — failure to spawn never blocks the verdict path.
-        if a.kind == "adr_drift_check" and a.passed:
+        # Z3 R4 — integration_replay fail → spawn an advisory integration_bisect
+        # mechanical task to narrow the breaking commit pair. Fire-and-forget:
+        # it is NOT a post-hook (carries no source_task_id/posthook_kind) so it
+        # never gates the source — its only job is to emit a mission_lessons
+        # row. Needs >= 2 replayed commits to bisect anything.
+        if a.kind == "integration_replay" and not a.passed:
             try:
-                await _maybe_spawn_adr_drift_judge(source=source, verdict=a)
+                await _maybe_spawn_integration_bisect(source=source, ctx=ctx, verdict=a)
             except Exception as _exc:
                 logger.debug(
-                    "adr_drift_judge spawn skipped",
+                    "integration_bisect spawn skipped",
                     source_id=source.get("id"), error=str(_exc),
                 )
         # Z4 T4A — fire founder-loop visual-review notification (best-effort).

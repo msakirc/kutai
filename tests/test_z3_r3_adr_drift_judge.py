@@ -91,114 +91,157 @@ class TestSpawnHelper:
         from general_beckman.apply import _maybe_spawn_adr_drift_judge
 
         added: list[dict] = []
-        updates: list[dict] = []
 
         async def _fake_add(**kwargs):
             added.append(kwargs)
             return 99
 
-        async def _fake_update(task_id, **kwargs):
-            updates.append({"id": task_id, **kwargs})
-
         monkeypatch.setattr("src.infra.db.add_task", _fake_add)
-        monkeypatch.setattr("src.infra.db.update_task", _fake_update)
 
-        source = {
-            "id": 1, "mission_id": 7,
-            "context": json.dumps({"workspace_path": str(tmp_path)}),
-        }
+        source = {"id": 1, "mission_id": 7}
+        ctx = {"workspace_path": str(tmp_path)}
+        pending = ["adr_drift_check"]
         v = self._make_verdict({"verdict": "pass", "judgment_only_adr_ids": []})
 
-        _run(_maybe_spawn_adr_drift_judge(source=source, verdict=v))
+        spawned = _run(_maybe_spawn_adr_drift_judge(
+            source=source, ctx=ctx, pending=pending, verdict=v,
+        ))
+        assert spawned is False
         assert added == []
-        assert updates == []
+        # pending untouched — simple_blocker will complete the source.
+        assert pending == ["adr_drift_check"]
 
     def test_spawn_when_judgment_only_present(self, monkeypatch, tmp_path):
         from general_beckman.apply import _maybe_spawn_adr_drift_judge
 
-        # Create ADR files so adr_paths resolves.
         adr_dir = tmp_path / ".adr"
         adr_dir.mkdir()
         (adr_dir / "ADR-0001.json").write_text('{"id": "ADR-0001"}')
         (adr_dir / "ADR-0007.json").write_text('{"id": "ADR-0007"}')
 
         added: list[dict] = []
-        updates: list[dict] = []
 
         async def _fake_add(**kwargs):
             added.append(kwargs)
             return 42
 
-        async def _fake_update(task_id, **kwargs):
-            updates.append({"id": task_id, **kwargs})
-
         monkeypatch.setattr("src.infra.db.add_task", _fake_add)
-        monkeypatch.setattr("src.infra.db.update_task", _fake_update)
 
-        source = {
-            "id": 1, "mission_id": 7,
-            "context": json.dumps({
-                "workspace_path": str(tmp_path),
-                "produces": ["src/a.py", "src/b.py"],
-            }),
+        source = {"id": 1, "mission_id": 7}
+        ctx = {
+            "workspace_path": str(tmp_path),
+            "produces": ["src/a.py", "src/b.py"],
         }
+        pending = ["adr_drift_check"]
         v = self._make_verdict({
             "verdict": "pass",
             "judgment_only_adr_ids": ["ADR-0001", "ADR-0007"],
         })
 
-        _run(_maybe_spawn_adr_drift_judge(source=source, verdict=v))
+        spawned = _run(_maybe_spawn_adr_drift_judge(
+            source=source, ctx=ctx, pending=pending, verdict=v,
+        ))
+        assert spawned is True
 
         assert len(added) == 1
         kw = added[0]
         assert kw["agent_type"] == "adr_drift_judge"
         assert kw["mission_id"] == 7
-        ctx = json.loads(kw["context"])
-        assert ctx["adr_ids"] == ["ADR-0001", "ADR-0007"]
-        assert "ADR-0001" in ctx["adr_paths"]
-        assert "ADR-0007" in ctx["adr_paths"]
-        assert ctx["produced_files"] == ["src/a.py", "src/b.py"]
-        assert ctx["posthook_kind"] == "adr_drift_judge"
-        assert ctx["source_task_id"] == 1
+        jctx = json.loads(kw["context"])
+        assert jctx["adr_ids"] == ["ADR-0001", "ADR-0007"]
+        assert "ADR-0001" in jctx["adr_paths"]
+        assert "ADR-0007" in jctx["adr_paths"]
+        assert jctx["produced_files"] == ["src/a.py", "src/b.py"]
+        assert jctx["posthook_kind"] == "adr_drift_judge"
+        assert jctx["source_task_id"] == 1
 
-        # Source bookkeeping: adr_drift_judge added to _pending_posthooks.
-        assert len(updates) == 1
-        source_ctx = json.loads(updates[0]["context"])
-        assert "adr_drift_judge" in source_ctx["_pending_posthooks"]
-        assert updates[0]["status"] == "ungraded"
+        # In-place mutation: adr_drift_judge appended to BOTH pending + ctx.
+        assert "adr_drift_judge" in pending
+        assert "adr_drift_judge" in ctx["_pending_posthooks"]
+        # adr_drift_check still there — simple_blocker drops it, leaving
+        # adr_drift_judge so the source stays ungraded.
+        assert "adr_drift_check" in pending
 
     def test_spawn_handles_missing_adr_files_gracefully(self, monkeypatch, tmp_path):
         """When workspace .adr/ is missing the ADR json file, the spawn still
         proceeds but adr_paths omits the missing id."""
         from general_beckman.apply import _maybe_spawn_adr_drift_judge
 
-        # Don't create the adr dir at all.
         added: list[dict] = []
 
         async def _fake_add(**kwargs):
             added.append(kwargs)
             return 1
 
-        async def _fake_update(*a, **kw):
-            return None
-
         monkeypatch.setattr("src.infra.db.add_task", _fake_add)
-        monkeypatch.setattr("src.infra.db.update_task", _fake_update)
 
-        source = {
-            "id": 1, "mission_id": 7,
-            "context": json.dumps({"workspace_path": str(tmp_path)}),
-        }
+        source = {"id": 1, "mission_id": 7}
+        ctx = {"workspace_path": str(tmp_path)}
+        pending = ["adr_drift_check"]
         v = self._make_verdict({
             "verdict": "pass",
             "judgment_only_adr_ids": ["ADR-9999"],
         })
 
-        _run(_maybe_spawn_adr_drift_judge(source=source, verdict=v))
+        spawned = _run(_maybe_spawn_adr_drift_judge(
+            source=source, ctx=ctx, pending=pending, verdict=v,
+        ))
+        assert spawned is True
         assert len(added) == 1
-        ctx = json.loads(added[0]["context"])
-        assert ctx["adr_ids"] == ["ADR-9999"]
-        assert ctx["adr_paths"] == {}  # nothing on disk
+        jctx = json.loads(added[0]["context"])
+        assert jctx["adr_ids"] == ["ADR-9999"]
+        assert jctx["adr_paths"] == {}  # nothing on disk
+
+    def test_spawn_keeps_source_ungraded_via_pending(self, monkeypatch, tmp_path):
+        """Regression — the ordering bug: judge must be in pending BEFORE
+        simple_blocker runs, else the source completes + workflow advances and
+        the judge verdict gates nothing."""
+        from general_beckman.apply import (
+            _maybe_spawn_adr_drift_judge, _apply_simple_blocker_verdict,
+        )
+
+        async def _fake_add(**kwargs):
+            return 1
+
+        completed: list = []
+
+        async def _fake_update(task_id, **kwargs):
+            if kwargs.get("status") == "completed":
+                completed.append(task_id)
+
+        advances: list = []
+
+        async def _fake_advance(source, raw):
+            advances.append(source.get("id"))
+
+        monkeypatch.setattr("src.infra.db.add_task", _fake_add)
+        monkeypatch.setattr("src.infra.db.update_task", _fake_update)
+        from general_beckman import apply as apply_module
+        monkeypatch.setattr(
+            apply_module, "_spawn_workflow_advance_if_mission", _fake_advance
+        )
+
+        source = {"id": 1, "mission_id": 7, "result": ""}
+        ctx = {"workspace_path": str(tmp_path), "_pending_posthooks": ["adr_drift_check"]}
+        pending = ["adr_drift_check"]
+        v = self._make_verdict({
+            "verdict": "pass",
+            "judgment_only_adr_ids": ["ADR-1"],
+        })
+
+        # Real flow order: spawn judge FIRST, then simple_blocker.
+        _run(_maybe_spawn_adr_drift_judge(
+            source=source, ctx=ctx, pending=pending, verdict=v,
+        ))
+        _run(_apply_simple_blocker_verdict(
+            kind="adr_drift_check", source=source, ctx=ctx, pending=pending,
+            verdict=v, feedback_prefix="adr_drift_check gate",
+        ))
+        # simple_blocker dropped adr_drift_check, but adr_drift_judge remains
+        # → source NOT completed, workflow NOT advanced.
+        assert completed == []
+        assert advances == []
+        assert ctx["_pending_posthooks"] == ["adr_drift_judge"]
 
 
 # ---------------------------------------------------------------------------
@@ -212,45 +255,44 @@ class TestPrecedence:
     _maybe_spawn_adr_drift_judge.
     """
 
-    def test_apply_branch_does_not_spawn_on_mechanical_fail(self, monkeypatch, tmp_path):
-        """Direct test of the conditional branch: passed=False → no spawn."""
-        from general_beckman import apply as apply_module
+    def test_no_spawn_on_mechanical_fail(self, monkeypatch, tmp_path):
+        """passed=False → judge never spawned regardless of judgment_only ids."""
+        from general_beckman.apply import _maybe_spawn_adr_drift_judge
 
-        spawn_calls: list[dict] = []
+        added: list = []
 
-        async def _capture_spawn(*, source, verdict):
-            spawn_calls.append({"source": source, "verdict": verdict})
+        async def _fake_add(**kwargs):
+            added.append(kwargs)
+            return 1
 
-        monkeypatch.setattr(
-            apply_module, "_maybe_spawn_adr_drift_judge", _capture_spawn
-        )
+        monkeypatch.setattr("src.infra.db.add_task", _fake_add)
 
-        # Simulate the gating logic from _apply_posthook_verdict.
         from general_beckman.result_router import PostHookVerdict
         verdict = PostHookVerdict(
             source_task_id=1, kind="adr_drift_check", passed=False,
             raw={"verdict": "fail", "judgment_only_adr_ids": ["ADR-1"]},
         )
-        # In the real flow, passed=False would skip the spawn block.
         source = {"id": 1, "mission_id": 7}
+        ctx = {"workspace_path": str(tmp_path)}
+        pending = ["adr_drift_check"]
+        # Real flow gates on verdict.passed before calling the helper.
         if verdict.kind == "adr_drift_check" and verdict.passed:
-            _run(apply_module._maybe_spawn_adr_drift_judge(
-                source=source, verdict=verdict
+            _run(_maybe_spawn_adr_drift_judge(
+                source=source, ctx=ctx, pending=pending, verdict=verdict,
             ))
-        assert spawn_calls == []
+        assert added == []
 
-    def test_apply_branch_spawns_on_mechanical_pass(self, monkeypatch, tmp_path):
+    def test_spawn_on_mechanical_pass(self, monkeypatch, tmp_path):
         """passed=True + judgment_only ids non-empty → spawn fires."""
-        from general_beckman import apply as apply_module
+        from general_beckman.apply import _maybe_spawn_adr_drift_judge
 
-        spawn_calls: list[dict] = []
+        added: list = []
 
-        async def _capture_spawn(*, source, verdict):
-            spawn_calls.append({"source": source, "verdict": verdict})
+        async def _fake_add(**kwargs):
+            added.append(kwargs)
+            return 1
 
-        monkeypatch.setattr(
-            apply_module, "_maybe_spawn_adr_drift_judge", _capture_spawn
-        )
+        monkeypatch.setattr("src.infra.db.add_task", _fake_add)
 
         from general_beckman.result_router import PostHookVerdict
         verdict = PostHookVerdict(
@@ -258,11 +300,13 @@ class TestPrecedence:
             raw={"verdict": "pass", "judgment_only_adr_ids": ["ADR-1"]},
         )
         source = {"id": 1, "mission_id": 7}
+        ctx = {"workspace_path": str(tmp_path)}
+        pending = ["adr_drift_check"]
         if verdict.kind == "adr_drift_check" and verdict.passed:
-            _run(apply_module._maybe_spawn_adr_drift_judge(
-                source=source, verdict=verdict
+            _run(_maybe_spawn_adr_drift_judge(
+                source=source, ctx=ctx, pending=pending, verdict=verdict,
             ))
-        assert len(spawn_calls) == 1
+        assert len(added) == 1
 
 
 # ---------------------------------------------------------------------------

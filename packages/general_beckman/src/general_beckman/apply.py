@@ -1046,7 +1046,14 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
         context=_json.dumps(ctx),
     )
 
-    agent_type, payload = _posthook_agent_and_payload(a, source, ctx)
+    # Use a.source_ctx (built by rewrite.py with result scalars merged in, e.g.
+    # "draft" from incident/draft_update) rather than the DB-read ctx.  The DB
+    # ctx is intentionally not updated with result scalars — it stores the task's
+    # original input context.  a.source_ctx is the enriched view that posthook
+    # handlers need to read fields like "draft", "incident_id", "status_kind".
+    # ctx above is still used for _pending_posthooks tracking + update_task only.
+    posthook_ctx = a.source_ctx if a.source_ctx else ctx
+    agent_type, payload = _posthook_agent_and_payload(a, source, posthook_ctx)
 
     # Z3 T2C: For integration_review, run the mechanical AST pre-check here
     # (async context) and inject the result into the payload before enqueue.

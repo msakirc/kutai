@@ -109,6 +109,15 @@ async def on_demand_discovery(demand: dict) -> dict:
     row = await cur.fetchone()
     if row is None or row["source_type"] not in _ADAPTERS:
         return {"discovered": 0, "note": f"no adapter for {source_id}"}
+    # Capture prior state so we can restore it after the temporary cron run.
+    prior_cur = await db.execute(
+        "SELECT discovery_mode, trusted FROM yalayut_sources WHERE source_id=?",
+        (source_id,),
+    )
+    prior_row = await prior_cur.fetchone()
+    prior_mode = prior_row["discovery_mode"] if prior_row else None
+    prior_trusted = prior_row["trusted"] if prior_row else None
+
     # temporarily treat as a cron-eligible run for this one source
     await db.execute(
         "UPDATE yalayut_sources SET discovery_mode='cron', trusted=1 "
@@ -116,7 +125,17 @@ async def on_demand_discovery(demand: dict) -> dict:
         (source_id,),
     )
     await db.commit()
-    result = await run_cron_discovery(db)
+    try:
+        result = await run_cron_discovery(db)
+    finally:
+        # Restore original discovery_mode and trusted regardless of outcome.
+        if prior_mode is not None:
+            await db.execute(
+                "UPDATE yalayut_sources SET discovery_mode=?, trusted=? "
+                "WHERE source_id=?",
+                (prior_mode, prior_trusted, source_id),
+            )
+            await db.commit()
     return {"discovered": result["artifacts_indexed"], "detail": result}
 
 

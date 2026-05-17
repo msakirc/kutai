@@ -49,6 +49,20 @@ def clean_yalayut_index(loop):
 
 
 @pytest.fixture(autouse=False)
+def clean_yalayut_sources(loop):
+    """Wipe yalayut_sources before each cron-discovery test so rows seeded
+    by a prior test session do not leak into sources_scanned counts."""
+    async def _clean():
+        from src.infra.db import init_db, get_db
+        await init_db()
+        db = await get_db()
+        await db.execute("DELETE FROM yalayut_sources")
+        await db.commit()
+    loop.run_until_complete(_clean())
+    yield
+
+
+@pytest.fixture(autouse=False)
 def clean_demand_signals(loop):
     """Wipe yalayut_demand_signals before each Phase 4 demand test so that
     the 7-day cooldown does not leak across test runs on the real DB."""

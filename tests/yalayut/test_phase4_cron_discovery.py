@@ -25,7 +25,7 @@ async def _seed_trusted_source():
     await db.commit()
 
 
-def test_daily_discovery_returns_summary(loop, monkeypatch):
+def test_daily_discovery_returns_summary(loop, monkeypatch, clean_yalayut_sources):
     async def _run():
         await init_db()
         await _seed_trusted_source()
@@ -41,7 +41,7 @@ def test_daily_discovery_returns_summary(loop, monkeypatch):
     loop.run_until_complete(_run())
 
 
-def test_daily_discovery_respects_min_interval(loop, monkeypatch):
+def test_daily_discovery_respects_min_interval(loop, monkeypatch, clean_yalayut_sources):
     async def _run():
         await init_db()
         db = await get_db()

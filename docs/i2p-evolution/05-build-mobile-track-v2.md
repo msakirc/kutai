@@ -299,3 +299,14 @@ Framework / build-infra / cost were founder calls — see **Founder decisions
   free-first). T3 marked shipped; T3b GH-Actions+Fastlane addendum added;
   T5 submit path switched from `eas_submit` to Fastlane `pilot`/`supply`.
   T1+T2+T3 shipped to `main` (9 commits).
+- 2026-05-17 — **Z5 COMPLETE**. All tiers on `main`: T1 branching rails ·
+  T2 three Expo recipes (auth/nav/persistence) · T3 four adapters +
+  T3b GH-Actions/Fastlane + `mobile_ci` recipe · T4a device visual review
+  (`capture_mode="device"`) · T4b Maestro adapter + `mobile_smoke` post-hook +
+  3 recipes (push/deep_links/offline_sync) · T5 distribution (14.8 submit
+  chain + `mobile_release_rejection` recipe). ~136 Z5 tests passing. Merged
+  surgically through heavy concurrent-writer churn on `main` (T3b/T4b base
+  predated T3 + the Z7 fix-pass — `git apply --3way` + hand-resolved shared
+  files). Known carry-over (not Z5): `competitor_deep_dive` `fallback_steps`
+  never insert steps; pre-existing `test_reversibility_registry` gaps (being
+  fixed by the parallel Z7 pass).

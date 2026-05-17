@@ -122,8 +122,16 @@ async def test_full_path_task_to_agent_prompt(e2e_db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_preempt_routes_task_to_mechanical_lane(e2e_db, monkeypatch):
+    """Preempt routing to the mechanical lane works when the Phase 3 gate is
+    explicitly enabled.  The gate (PHASE2_PREEMPT_ENABLED) is False by default;
+    we monkeypatch it True here so the routing code stays tested end-to-end.
+    The yalayut_recipe executor lands in Phase 3 — see flash.PHASE2_PREEMPT_ENABLED.
+    """
+    import sys
     import intersect
     import yalayut
+    flash_mod = sys.modules["intersect.flash"]
+    monkeypatch.setattr(flash_mod, "PHASE2_PREEMPT_ENABLED", True)
 
     async def _query(task_ctx):
         return [_Art(artifact_id=18, name="cc-pypackage", kind="shell_recipe",

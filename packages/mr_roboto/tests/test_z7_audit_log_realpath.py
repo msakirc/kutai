@@ -179,14 +179,17 @@ async def test_audit_completeness_check_handler_clean_when_logged(
         (910, "incident/publish_status", "irreversible", "publish", "approved"),
     )
     await db.commit()
-    confirmation_id = cur.lastrowid
+    _ = cur.lastrowid
 
-    # Audit row joined on vendor_call_id == action_confirmations.id closes the gap.
+    # pending_audit_gaps() correlates on the dispatching tasks.id shared by
+    # action_confirmations.task_id and external_comms_log.task_id (the real
+    # correlation key fixed in 596509eb). Audit row with task_id=910 closes
+    # the gap.
     await log_external_send(
         channel="public",
         content="We resolved the incident.",
         source_mission_id=66,
-        vendor_call_id=confirmation_id,
+        task_id=910,
     )
 
     from general_beckman.posthook_handlers.audit_completeness_check import handle

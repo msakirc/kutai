@@ -289,6 +289,53 @@ Framework / build-infra / cost were founder calls — see **Founder decisions
 - **Outbound:** Z8/operations — mobile crash reporting (Sentry mobile SDK /
   Firebase Crashlytics) is a follow-up, noted not built.
 
+## Known gaps / deferred
+
+The 2026-05-17 review pass closed 4 dead/shallow fragments. One gap remains,
+deliberately left — documented here so it is not silently lost.
+
+### G-1 — `android_build` mr_roboto verb has no pipeline consumer
+
+**State.** T3 shipped the `android_build` mr_roboto verb (wraps local
+`./gradlew assembleRelease|assembleDebug` + `adb install|devices`). After the
+review pass, **no i2p workflow step invokes it** — `grep '"action": "android_build"'`
+on `i2p_v3.json` returns nothing.
+
+**Why it is not wired.** The founder picked GitHub Actions macOS/Linux runners
+as the build path. `gen_mobile_ci` generates `.github/workflows/mobile.yml`
+whose Android job runs `expo prebuild --platform android` + `./gradlew
+assembleRelease` **inside the ubuntu runner**. So the Android build is covered
+— by the CI workflow, not by the mr_roboto verb. The verb would only fire if
+a workflow step ran a gradle build on the orchestrator host itself, which the
+pipeline never does.
+
+**Why it is not a bug.** The verb is tested (`test_z5_mobile_adapters.py`),
+soft-skips cleanly when `gradlew`/`adb` are absent, and is a legitimate
+standalone tool — reachable via an ad-hoc `/task` with `agent: mechanical`,
+and a candidate consumer for a future *local* Android smoke/build step (e.g.
+running an APK on a connected device for `capture_mode="device"`'s adb arm).
+It is dead *weight in the i2p workflow*, not dead *code*.
+
+**Decision.** Keep the verb (no maintenance cost, real standalone use, plausible
+future consumer). Do **not** add a workflow step for it now — that would
+duplicate the CI gradle job. Revisit if a local-device Android test step is
+ever added.
+
+### G-2 — `eas_build` / `eas_submit` are fallback-only (intentional, not a gap)
+
+Per the founder decision (Expo / GitHub Actions / free-first), EAS is the
+documented fallback, not the default. `eas_build` has no workflow step;
+`eas_submit` is referenced only as the fallback channel in the `14.8.submit` /
+`14.8.submit_play` instructions. This is by design — recorded here so a future
+audit does not re-flag it as "unwired".
+
+### Out of scope (noted, not built)
+
+- Native Swift+Kotlin recipes — deferred (Expo-only v1; see Founder decisions).
+- Real-device iOS screenshots — need a macOS runner; `capture_screenshots`'
+  `xcrun simctl` arm is present but dormant on the Windows host.
+- Mobile crash reporting (Sentry / Crashlytics) — Z8/operations follow-up.
+
 ## Updates
 
 - 2026-05-08 — v1 initial doc (pre-Z6 surface sketch).

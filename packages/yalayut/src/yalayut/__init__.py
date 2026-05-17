@@ -17,7 +17,8 @@ from yalayut.executor import run_recipe  # noqa: F401  (operational API)
 
 __all__ = [
     "query", "daily_discovery", "source_scout_scan", "on_demand_discovery",
-    "capture_hint", "run_recipe", "dispatch_tool", "Artifact",
+    "capture_hint", "run_recipe", "dispatch_tool", "observe_and_propose",
+    "Artifact",
 ]
 
 
@@ -71,6 +72,13 @@ async def on_demand_discovery(demand: dict) -> dict:
 async def source_scout_scan() -> dict:
     """Mechanical-executor body: propose candidate sources."""
     from yalayut.discovery.source_scout import source_scout_scan as _impl
+    return await _impl()
+
+
+async def observe_and_propose() -> int:
+    """Scan vetting audit data; write founder policy proposals. Returns the
+    count of new proposals written."""
+    from yalayut.policy_observer import observe_and_propose as _impl
     return await _impl()
 
 

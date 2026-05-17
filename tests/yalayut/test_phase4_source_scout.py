@@ -83,6 +83,63 @@ def test_source_scout_respects_daily_cap(loop, monkeypatch):
     loop.run_until_complete(_run())
 
 
+def test_source_scout_executor_runs_policy_observer(loop, monkeypatch):
+    """Fix 2: the source_scout mechanical executor must call
+    yalayut.observe_and_propose() after scanning — best-effort, so a failure
+    there must not fail the scout run."""
+    async def _run():
+        await init_db()
+        import yalayut
+        from mr_roboto.executors import source_scout as scout_exec
+
+        reached = {"observe": False}
+
+        async def _fake_scan():
+            return {"candidates_proposed": 0}
+
+        async def _fake_observe():
+            reached["observe"] = True
+            return 4
+
+        monkeypatch.setattr(yalayut, "source_scout_scan",
+                            lambda: _fake_scan())
+        monkeypatch.setattr(yalayut, "observe_and_propose",
+                            lambda: _fake_observe())
+
+        result = await scout_exec.run({"id": 9, "agent_type": "mechanical",
+                                       "payload": {"action": "source_scout"}})
+        assert reached["observe"], (
+            "source_scout executor must reach observe_and_propose")
+        assert result["policy_proposals_written"] == 4
+    loop.run_until_complete(_run())
+
+
+def test_source_scout_executor_survives_observer_failure(loop, monkeypatch):
+    """observe_and_propose failure must not fail the scout run."""
+    async def _run():
+        await init_db()
+        import yalayut
+        from mr_roboto.executors import source_scout as scout_exec
+
+        async def _fake_scan():
+            return {"candidates_proposed": 1}
+
+        async def _boom():
+            raise RuntimeError("observer exploded")
+
+        monkeypatch.setattr(yalayut, "source_scout_scan",
+                            lambda: _fake_scan())
+        monkeypatch.setattr(yalayut, "observe_and_propose",
+                            lambda: _boom())
+
+        result = await scout_exec.run({"id": 10, "agent_type": "mechanical",
+                                       "payload": {"action": "source_scout"}})
+        # scout result still returned, no policy_proposals_written key
+        assert result["candidates_proposed"] == 1
+        assert "policy_proposals_written" not in result
+    loop.run_until_complete(_run())
+
+
 def test_source_scout_dedupes_existing(loop, monkeypatch):
     async def _run():
         await init_db()

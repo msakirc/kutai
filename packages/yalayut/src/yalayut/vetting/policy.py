@@ -1,12 +1,11 @@
 """DB-backed policy allowlists for the auto-checks.
 
 No static YAML — yalayut_policy is the single source of truth, seeded by
-seed_policy(). KutAI proposes additions via propose_policy() (rows in
-yalayut_policy_proposals); founder approves via Telegram (Phase 3).
+seed_policy(). Phase 3 will add a policy-proposal API backed by
+yalayut_policy_proposals once the founder-approval flow is wired.
 """
 from __future__ import annotations
 
-import json
 import re
 
 import aiosqlite
@@ -80,20 +79,3 @@ async def get_injection_regexes(
             continue
     return out
 
-
-async def propose_policy(
-    db: aiosqlite.Connection,
-    check_name: str,
-    key: str,
-    proposed_value: str,
-    evidence: dict | None = None,
-) -> int:
-    """Record a policy-addition proposal for founder review. Returns row id."""
-    cur = await db.execute(
-        "INSERT INTO yalayut_policy_proposals "
-        "(check_name, key, proposed_value, evidence_json, state, proposed_at) "
-        "VALUES (?, ?, ?, ?, 'pending', strftime('%Y-%m-%d %H:%M:%S','now'))",
-        (check_name, key, proposed_value, json.dumps(evidence or {})),
-    )
-    await db.commit()
-    return cur.lastrowid

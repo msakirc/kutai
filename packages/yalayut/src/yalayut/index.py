@@ -127,15 +127,3 @@ async def read_all_enabled(db: aiosqlite.Connection) -> list[IndexRow]:
     )
     return [_row_to_indexrow(r) for r in await cur.fetchall()]
 
-
-async def read_embeddings(
-    db: aiosqlite.Connection,
-) -> list[tuple[int, list[float]]]:
-    """(id, embedding) for every enabled artifact — query() hot path."""
-    cur = await db.execute(
-        "SELECT id, embedding FROM yalayut_index WHERE enabled = 1"
-    )
-    return [
-        (r["id"], blob_to_embedding(r["embedding"]))
-        for r in await cur.fetchall()
-    ]

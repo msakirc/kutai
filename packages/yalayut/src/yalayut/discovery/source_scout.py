@@ -104,7 +104,7 @@ async def _scan_demand_websearch() -> list[dict]:
     pending = await _demand.pending_signals(limit=3)
     out: list[dict] = []
     for sig in pending:
-        if sig["stacked_confidence"] < 0.5:
+        if sig["stacked_confidence"] < _demand.DEMAND_DISCOVERY_THRESHOLD:
             continue
         query = " ".join(sig["intent_keywords"][:4]) + " skill OR mcp github"
         try:

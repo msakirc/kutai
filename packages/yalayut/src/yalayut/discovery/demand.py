@@ -27,6 +27,11 @@ SIGNAL_TYPES: frozenset[str] = frozenset({
 #: Per-(pattern, type) cooldown — spec "start at 7d per source_step_pattern".
 COOLDOWN_SECONDS: int = 7 * 24 * 3600
 
+#: Stacked-confidence threshold a pattern must cross before an autonomous
+#: on-demand discovery run is triggered for it. Shared with source_scout's
+#: demand web-search scan so both autonomy paths agree on "high confidence".
+DEMAND_DISCOVERY_THRESHOLD: float = 0.5
+
 
 @dataclass
 class DemandSignal:
@@ -146,3 +151,21 @@ async def mark_discovered(pattern: str) -> None:
         (pattern,),
     )
     await db.commit()
+
+
+async def record(
+    *,
+    source_step_pattern: str,
+    intent_keywords: list[str],
+    signal_type: str,
+    confidence: float = 0.3,
+) -> int:
+    """Kwargs convenience over ``record_signal`` — build a ``DemandSignal``
+    and insert it. Returns the new row id, or ``-1`` when deduped. Lets a
+    firing site fire one signal without importing ``DemandSignal`` itself."""
+    return await record_signal(DemandSignal(
+        source_step_pattern=source_step_pattern,
+        intent_keywords=list(intent_keywords),
+        signal_type=signal_type,
+        confidence=confidence,
+    ))

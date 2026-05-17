@@ -78,3 +78,19 @@ async def test_flash_empty_query_with_recipe_hint_fires_planning_miss(db):
         "WHERE source_step_pattern LIKE ?", ("%Send a Slack notification%",))
     types = {r[0] for r in await cur.fetchall()}
     assert types == {"planning_miss"}
+
+
+@pytest.mark.asyncio
+async def test_react_unresolved_tool_fires_tool_call_signal(db):
+    from coulson import react as _react
+
+    await _react._fire_tool_call_signal("scrape_pdf_table", task_id=903)
+
+    dbc = await _get_db_for_test()
+    cur = await dbc.execute(
+        "SELECT signal_type, intent_keywords_json FROM yalayut_demand_signals "
+        "WHERE source_step_pattern = ?", ("tool_call:scrape_pdf_table",))
+    rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "tool_call"
+    assert "scrape_pdf_table" in rows[0][1]

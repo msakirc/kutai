@@ -143,6 +143,23 @@ def _record_tool_call(
     })
 
 
+async def _fire_tool_call_signal(tool_name: str, *, task_id: int | None = None) -> None:
+    """Record a ``tool_call`` demand signal — an agent requested a tool with
+    no backing skill/tool in any registry. Best-effort: a signal failure must
+    never affect the agent loop."""
+    try:
+        import yalayut
+        await yalayut.record_demand_signal(
+            source_step_pattern=f"tool_call:{tool_name}",
+            intent_keywords=[tool_name],
+            signal_type="tool_call",
+            confidence=0.3,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tool_call demand signal skipped (task %s): %s",
+                     task_id, exc)
+
+
 async def run(profile, task: dict, progress_callback: Callable | None = None) -> dict:
     """ReAct loop with requirements-based model selection."""
     _start_time = time.time()
@@ -1118,6 +1135,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         or "yalayut: no output"
                     )
                 else:
+                    await _fire_tool_call_signal(tool_name, task_id=task_id)
                     tool_output = (
                         f"❌ Unknown tool '{tool_name}'. "
                         f"Available: {list(TOOL_REGISTRY.keys())}"

@@ -1,0 +1,8 @@
+{
+  "project_name": "My Awesome Project",
+  "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '_') }}",
+  "author_name": "Your Name",
+  "use_celery": "n",
+  "open_source_license": ["MIT", "BSD-3-Clause", "Not open source"],
+  "_copy_without_render": ["docs/*"]
+}

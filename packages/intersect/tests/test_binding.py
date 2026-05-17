@@ -90,3 +90,106 @@ async def test_bind_cache_roundtrip(intersect_db, fake_artifact):
     await binding.write_bind_cache(art, ctx, {"project_name": "x"})
     hit = await binding.lookup_bind_cache(art, ctx)
     assert hit == {"project_name": "x"}
+
+
+# ---------------------------------------------------------------------------
+# P2-4 regression: Cause 1 — seed manifests use task.payload.* convention
+# ---------------------------------------------------------------------------
+
+def test_static_bind_seed_convention_task_payload(fake_artifact):
+    """bind_from: [task.payload.project_name, task.title] must resolve when
+    task_ctx exposes task.payload (the real seed convention used by
+    cc-pypackage, cc-django, cc-data-science).
+
+    This FAILS before the Cause-1 fix because _build_task_ctx exposes the
+    payload at task.parent_mission.payload.* only — task.payload is absent.
+    """
+    art = fake_artifact(
+        kind="shell_recipe", mechanizable=True,
+        inputs_schema={
+            "project_name": {
+                "type": "string",
+                "bind_from": ["task.payload.project_name", "task.title"],
+            },
+            "author_name": {
+                "type": "string",
+                "bind_from": ["task.payload.author_name"],
+                "default": "unknown",
+            },
+        },
+    )
+    # task_ctx as _build_task_ctx will produce after the fix:
+    # task.payload is the mission/task payload dict.
+    task_ctx = {
+        "task": {
+            "id": 1,
+            "title": "wt",
+            "description": "",
+            "mission_id": 10,
+            "payload": {"project_name": "wt", "author_name": "alice"},
+            "parent_mission": {"payload": {"project_name": "wt", "author_name": "alice"}},
+            "context": {},
+        }
+    }
+    args, complete = binding.static_bind(art, task_ctx)
+    assert complete is True, f"binding incomplete; bound={args}"
+    assert args["project_name"] == "wt"
+    assert args["author_name"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_flash_produces_prebind_envelope_with_seed_convention(
+    intersect_db, fake_artifact, monkeypatch,
+):
+    """End-to-end: flash must produce render='prebind' + bound_args when the
+    artifact uses the real seed bind_from convention (task.payload.*) and the
+    task context carries payload: {project_name: 'wt'}.
+
+    This FAILS before the Cause-1 fix because _build_task_ctx does not expose
+    task.payload — binding degrades to incomplete → render='prose'.
+    """
+    from intersect.flash import flash as do_flash
+
+    art = fake_artifact(
+        artifact_id=42, kind="shell_recipe", mechanizable=True,
+        vet_tier=0, score=1.0, name="cc-pypackage",
+        inputs_schema={
+            "project_name": {
+                "type": "string",
+                "bind_from": ["task.payload.project_name", "task.title"],
+            },
+        },
+    )
+
+    async def _query(_task):
+        return [art]
+
+    import yalayut
+    monkeypatch.setattr(yalayut, "query", _query, raising=False)
+
+    task = {
+        "id": 99,
+        "title": "[3.2] Scaffold the Python package",
+        "description": "Create the package",
+        "agent_type": "coder",
+        "mission_id": 57,
+        "context": json.dumps({
+            "is_workflow_step": True,
+            "recipe_lookup": True,
+            "payload": {"project_name": "wt"},
+        }),
+    }
+
+    out = await do_flash(task)
+    skills = out.get("skills", [])
+    assert skills, "expected at least one skills entry"
+    entry = skills[0]
+    assert entry["render"] == "prebind", (
+        f"expected render='prebind' but got render={entry['render']!r}; "
+        "task.payload.* bind_from not resolving — Cause 1 unfixed"
+    )
+    payload = entry.get("payload", {})
+    bound = payload.get("bound_args") or {}
+    assert bound.get("project_name") == "wt", (
+        f"bound_args missing project_name='wt'; got {bound}"
+    )

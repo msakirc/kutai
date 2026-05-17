@@ -4,7 +4,7 @@ import json
 import pytest
 
 from src.workflows.engine.loader import load_workflow
-from src.workflows.engine.expander import build_step_context
+from src.workflows.engine.expander import build_step_context, expand_steps_to_tasks
 
 
 def test_loader_preserves_recipe_fields():
@@ -51,3 +51,39 @@ def test_expander_explicit_flag_overrides_phase_default():
             "phase": "architecture", "recipe_lookup": True}
     ctx = build_step_context(step, mission_id=1)
     assert ctx["recipe_lookup"] is True
+
+
+# ---------------------------------------------------------------------------
+# P2-4 regression: Cause 2 — expander must thread mission payload into
+# per-step task context under a 'payload' key.
+# ---------------------------------------------------------------------------
+
+def test_expander_threads_mission_payload_into_step_context():
+    """expand_steps_to_tasks must put initial_context (mission payload) under
+    context['payload'] so flash._build_task_ctx can expose task.payload.*.
+
+    This FAILS before the Cause-2 fix because the expander only puts the
+    initial_context into context['workflow_context'] — the 'payload' key is
+    absent and ctx.get('payload') returns {} in flash._build_task_ctx.
+    """
+    step = {
+        "id": "3.2",
+        "name": "Scaffold the Python package",
+        "instruction": "Create the package",
+        "agent": "coder",
+        "phase": "scaffold",
+    }
+    mission_payload = {"project_name": "wt", "author_name": "alice"}
+
+    tasks = expand_steps_to_tasks([step], mission_id=1,
+                                  initial_context=mission_payload)
+    assert tasks, "expected at least one task from expansion"
+    ctx = tasks[0]["context"]
+
+    assert "payload" in ctx, (
+        f"context is missing 'payload' key; keys={list(ctx.keys())} — "
+        "Cause 2 unfixed: expander never threads mission payload into step context"
+    )
+    assert ctx["payload"] == mission_payload, (
+        f"context['payload']={ctx['payload']!r} != mission_payload={mission_payload!r}"
+    )

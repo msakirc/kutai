@@ -52,18 +52,30 @@ def _parse_context(task: dict) -> dict:
 def _build_task_ctx(task: dict, ctx: dict) -> dict:
     """Assemble the binding context — the dict bind_from paths walk.
 
-    Exposes ``task`` (title/description/mission/payload) so manifest
-    bind_from paths like ``task.parent_mission.payload.project_name``
-    resolve. ``parent_mission.payload`` is populated from the task
-    context's own payload bucket when present.
+    Exposes ``task`` at both the real seed convention (``task.payload.*``)
+    and the legacy convention (``task.parent_mission.payload.*``) so all
+    manifests resolve regardless of which convention their bind_from uses.
+
+    Seed convention (cc-pypackage, cc-django, cc-data-science):
+        bind_from: [task.payload.project_name, task.title]
+    Legacy convention (kept for backward compat):
+        bind_from: [task.parent_mission.payload.project_name]
+
+    The mission/task payload dict is expected at ``ctx["payload"]``, which
+    the expander now injects for every workflow step (Cause 2 fix in
+    src/workflows/engine/expander.py).
     """
+    payload = ctx.get("payload") or {}
     return {
         "task": {
             "id": task.get("id"),
             "title": task.get("title", ""),
             "description": task.get("description", ""),
             "mission_id": task.get("mission_id"),
-            "parent_mission": {"payload": ctx.get("payload", {})},
+            # Real seed convention: task.payload.*
+            "payload": payload,
+            # Legacy convention: task.parent_mission.payload.*
+            "parent_mission": {"payload": payload},
             "context": ctx,
         },
     }

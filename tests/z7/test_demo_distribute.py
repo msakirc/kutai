@@ -608,3 +608,73 @@ class TestOgVideoSnippet:
         loaded = json.loads(result_file.read_text())
         assert "uploads" in loaded
         assert "og_video_snippet" in loaded
+
+
+# ===========================================================================
+# Host-path wiring — i2p_v3.json step + mr_roboto dispatch (wiring-audit sweep)
+# ===========================================================================
+
+class TestDemoDistributeHostPath:
+    """The verb is only reachable if an i2p step invokes it and the dispatcher
+    routes the action. Both were missing before the 2026-05-17 wiring sweep."""
+
+    def test_i2p_step_invokes_demo_distribute(self):
+        wf_path = os.path.join("src", "workflows", "i2p", "i2p_v3.json")
+        with open(wf_path, encoding="utf-8") as f:
+            wf = json.load(f)
+        step = next(
+            (s for s in wf["steps"] if s.get("id") == "13.demo_distribute"), None
+        )
+        assert step is not None, "13.demo_distribute step missing from i2p_v3.json"
+        assert step["agent"] == "mechanical"
+        assert (step.get("payload") or {}).get("action") == "demo/distribute"
+        assert "13.demo_edit" in (step.get("depends_on") or [])
+        assert "public_demo" in (step.get("skip_when") or "")
+        assert "demo/distribute_result.json" in (step.get("produces") or [])
+
+    @pytest.mark.asyncio
+    async def test_dispatch_resolves_cuts_from_workspace(self, tmp_path, monkeypatch):
+        """An i2p step payload carries only the action; the dispatcher must
+        resolve the three cuts from workspace/demo/cuts/ on its own."""
+        import mr_roboto
+
+        cuts_dir = tmp_path / "demo" / "cuts"
+        cuts_dir.mkdir(parents=True)
+        for lbl in ("30s", "60s", "3min"):
+            (cuts_dir / f"{lbl}.mp4").write_bytes(b"fake mp4")
+
+        monkeypatch.setattr(
+            "mr_roboto.demo_distribute._youtube_upload", _fake_youtube_upload
+        )
+
+        async def _mock_thumbnail(cut_path, out_path, **kw):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            with open(out_path, "wb") as f:
+                f.write(b"\x89PNG")
+            return True
+
+        monkeypatch.setattr(
+            "mr_roboto.demo_distribute._extract_thumbnail", _mock_thumbnail
+        )
+
+        async def _mock_fa(**kw):
+            return {"id": 9}
+
+        monkeypatch.setattr(
+            "mr_roboto.demo_distribute._emit_flip_to_public_action", _mock_fa
+        )
+
+        task = {
+            "id": 1,
+            "mission_id": 1,
+            "agent_type": "mechanical",
+            "payload": {
+                "action": "demo/distribute",
+                "workspace_path": str(tmp_path),
+                "product_name": "TestProduct",
+                # NOTE: no `cuts` key — the dispatcher must resolve them.
+            },
+        }
+        action = await mr_roboto.run(task)
+        assert action.status == "completed", action.error
+        assert set(action.result["uploads"].keys()) == {"30s", "60s", "3min"}

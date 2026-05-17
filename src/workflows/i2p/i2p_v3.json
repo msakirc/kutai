@@ -10538,6 +10538,30 @@
       "context": {}
     },
     {
+      "id": "13.demo_distribute",
+      "phase": "phase_13",
+      "name": "demo_distribute",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "reversibility": "partial",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "skip_when": "goal does not include public_demo",
+      "depends_on": [
+        "13.demo_edit"
+      ],
+      "payload": {
+        "action": "demo/distribute"
+      },
+      "post_hooks": [],
+      "instruction": "Z7 T6D A3 — upload the three demo cuts (30s/60s/3min) to YouTube as unlisted, extract a thumbnail per cut, generate an og:video meta snippet, and emit a founder_action 'review demo cuts -> flip to public?'. cuts resolve from workspace/demo/cuts/ when not passed explicitly. Never auto-public. Only runs when mission goal includes public_demo.",
+      "done_when": "demo/distribute_result.json written with uploads + og_video_snippet + flip_to_public_action_id.",
+      "produces": [
+        "demo/distribute_result.json"
+      ],
+      "context": {}
+    },
+    {
       "id": "14.1",
       "phase": "phase_14",
       "name": "launch_planning",

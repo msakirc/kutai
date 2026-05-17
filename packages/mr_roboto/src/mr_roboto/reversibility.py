@@ -350,6 +350,16 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # body may write files, scaffold directories, or run build tools; impact
     # depends on the recipe. Conservative partial default (same as run_cmd).
     "yalayut_recipe": "partial",
+    # ---- Yalayut Phase 4 — discovery + autonomy ----------------------------
+    # capture_hint: post-hook that records a capability hint into the catalog;
+    # append-only DB write, deletable. full.
+    "capture_hint": "full",
+    # source_scout: scans configured source adapters for new candidates and
+    # appends discovery rows; idempotent re-run. full.
+    "source_scout": "full",
+    # yalayut_discovery: drains pending demand signals + runs on-demand
+    # discovery; DB writes are idempotent and re-runnable. full.
+    "yalayut_discovery": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

@@ -4523,6 +4523,17 @@ async def _run_dispatch(task: dict) -> Action:
                     cuts = _json.loads(cuts)
                 except Exception:
                     cuts = {}
+            # Workspace-convention fallback: when an i2p step does not pass an
+            # explicit `cuts` map, resolve the three cuts demo/edit produces
+            # under workspace/demo/cuts/. Keeps the i2p step payload minimal.
+            if not cuts:
+                import os as _os
+                _ws = payload.get("workspace_path") or ""
+                _cuts_dir = _os.path.join(_ws, "demo", "cuts")
+                for _lbl in ("30s", "60s", "3min"):
+                    _p = _os.path.join(_cuts_dir, f"{_lbl}.mp4")
+                    if _ws and _os.path.exists(_p):
+                        cuts[_lbl] = _p
             res = await _demo_distribute(
                 mission_id=int(payload.get("mission_id") or task.get("mission_id") or 0),
                 workspace_path=payload.get("workspace_path") or "",

@@ -183,3 +183,54 @@ async def test_dlq_write_enqueues_yalayut_demand_task(db, monkeypatch):
     p = demand_tasks[0]["context"]["payload"]
     assert p["signal_type"] == "dlq"
     assert p["source_step_pattern"] == "dlq:777"
+
+
+@pytest.mark.asyncio
+async def test_repeat_pattern_scan_amplifies_recurring_pattern(db):
+    from yalayut.discovery.demand_drain import _scan_repeat_patterns
+
+    # Same pattern, 3 distinct signal types — a recurrence.
+    for st in ("step_entry_miss", "tool_call", "dlq"):
+        await _demand.record(source_step_pattern="recur:pdf-parse",
+                             intent_keywords=["pdf"], signal_type=st,
+                             confidence=0.3)
+    added = await _scan_repeat_patterns()
+    assert added == 1
+
+    dbc = await _get_db_for_test()
+    cur = await dbc.execute(
+        "SELECT COUNT(*) FROM yalayut_demand_signals "
+        "WHERE source_step_pattern = 'recur:pdf-parse' "
+        "AND signal_type = 'repeat_pattern'")
+    assert (await cur.fetchone())[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_demand_drain_triggers_discovery_above_threshold(db, monkeypatch):
+    from yalayut.discovery import demand_drain
+
+    # Stack a pattern over 0.5: two 0.3 signals -> 1-(0.7*0.7)=0.51.
+    await _demand.record(source_step_pattern="drain:slack-bot",
+                         intent_keywords=["slack"], signal_type="tool_call",
+                         confidence=0.3)
+    await _demand.record(source_step_pattern="drain:slack-bot",
+                         intent_keywords=["slack"], signal_type="dlq",
+                         confidence=0.3)
+
+    discovered = []
+
+    async def _fake_on_demand(demand):
+        discovered.append(demand["source_step_pattern"])
+        await _demand.mark_discovered(demand["source_step_pattern"])
+        return {"pattern": demand["source_step_pattern"], "artifacts_ingested": 0}
+
+    monkeypatch.setattr("yalayut.discovery.on_demand.on_demand_discovery",
+                        _fake_on_demand)
+
+    summary = await demand_drain.run_demand_drain()
+    assert "drain:slack-bot" in discovered
+    assert summary["patterns_discovered"] >= 1
+
+    # Drained -> no longer pending.
+    pending = await _demand.pending_signals(limit=50)
+    assert all(p["source_step_pattern"] != "drain:slack-bot" for p in pending)

@@ -18,7 +18,7 @@ from yalayut.executor import run_recipe  # noqa: F401  (operational API)
 __all__ = [
     "query", "daily_discovery", "source_scout_scan", "on_demand_discovery",
     "capture_hint", "record_demand_signal", "run_recipe", "dispatch_tool",
-    "observe_and_propose", "Artifact",
+    "observe_and_propose", "run_demand_drain", "Artifact",
 ]
 
 
@@ -72,6 +72,13 @@ async def on_demand_discovery(demand: dict) -> dict:
 async def source_scout_scan() -> dict:
     """Mechanical-executor body: propose candidate sources."""
     from yalayut.discovery.source_scout import source_scout_scan as _impl
+    return await _impl()
+
+
+async def run_demand_drain() -> dict:
+    """Autonomous drain: derive repeat_pattern + run on-demand discovery for
+    every demand pattern above the discovery threshold."""
+    from yalayut.discovery.demand_drain import run_demand_drain as _impl
     return await _impl()
 
 

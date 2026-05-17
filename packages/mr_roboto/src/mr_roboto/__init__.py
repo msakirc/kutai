@@ -4724,4 +4724,19 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "yalayut_discovery":
+        from mr_roboto.executors.yalayut_discovery import run as _yal_disc_run
+        res = await _yal_disc_run(task)
+        return Action(status="completed", result=res)
+
+    if action == "source_scout":
+        from mr_roboto.executors.source_scout import run as _scout_run
+        res = await _scout_run(task)
+        return Action(status="completed", result=res)
+
+    if action == "capture_hint":
+        from mr_roboto.executors.capture_hint import run as _capture_run
+        res = await _capture_run(task)
+        return Action(status="completed", result=res)
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

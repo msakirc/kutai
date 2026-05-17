@@ -320,6 +320,13 @@ def expand_steps_to_tasks(
             context["done_when"] = step["done_when"]
         if initial_context is not None:
             context["workflow_context"] = initial_context
+            # Yalayut Phase 2 — expose the mission payload at context["payload"]
+            # so flash._build_task_ctx can surface it at task.payload.* for
+            # static arg-binding (seed manifest bind_from convention).
+            # Only set when not already present (mechanical steps may declare
+            # their own payload dict which must not be overwritten).
+            if "payload" not in context:
+                context["payload"] = initial_context
 
         # v3 fields — difficulty, tools_hint, artifact_schema, skip_when
         difficulty = step.get("difficulty")

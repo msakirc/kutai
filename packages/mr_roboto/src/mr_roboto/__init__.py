@@ -87,6 +87,8 @@ from mr_roboto.extract_signatures import extract_signatures
 from mr_roboto.check_adr_drift import check_adr_drift  # Z3 T4B
 from mr_roboto.integration_replay import integration_replay  # Z3 T5
 from mr_roboto.integration_bisect import integration_bisect  # Z3 T5
+# Z5 T4b — Maestro mobile-QA adapter (feeds the `mobile_smoke` post-hook)
+from mr_roboto.maestro_run import maestro_run  # Z5 T4b
 from mr_roboto.visual_review import visual_review  # Z4 T2B
 from mr_roboto.capture_screenshots import capture_screenshots  # Z4 T1A
 # Z7 T6 A7 — cold outreach + deliverability spine (A7 + A7.r1)
@@ -160,6 +162,7 @@ __all__ = [
     "pick_recipe",
     "instantiate_recipe_verb",
     "extract_signatures",
+    "maestro_run",
     "visual_review",
     "capture_screenshots",
     "expo_cli",
@@ -4668,6 +4671,32 @@ async def _run_dispatch(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=res.get("error") or "fastlane failed",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "maestro":
+        # Z5 T4b — run one or more Maestro mobile-QA flow YAMLs. Drives the
+        # `mobile_smoke` post-hook (sign in → onboard → core action → sign
+        # out). Read-only test run — reversibility `full`. Soft-skips when
+        # the Maestro CLI is not installed (treated as a soft pass).
+        from mr_roboto.maestro_run import maestro_run as _maestro_run
+        try:
+            res = await _maestro_run(
+                mission_id=task.get("mission_id"),
+                flow_paths=list(payload.get("flow_paths") or []),
+                workspace_path=payload.get("workspace_path") or None,
+                extra_args=list(payload.get("extra_args") or []) or None,
+                timeout_s=float(payload.get("timeout_s", 600.0)),
+            )
+            if res.get("skipped"):
+                return Action(status="completed", result=res)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=res.get("error") or "maestro flows failed",
                     result=res,
                 )
             return Action(status="completed", result=res)

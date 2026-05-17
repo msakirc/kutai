@@ -931,10 +931,12 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
         return
 
     # Z3 R1 — review-density blocker kinds. DLQ cascades source to failed.
+    # Z5 T4b — mobile_smoke joins this group: a DLQ'd Maestro flow gate
+    # means the build step can't advance, so cascade source to failed.
     if posthook_kind in (
         "security_review", "accessibility_review", "contract_review",
         "performance_review", "adr_drift_check", "integration_replay",
-        "integration_review", "adr_drift_judge", "visual_review",
+        "integration_review", "adr_drift_judge", "visual_review", "mobile_smoke",
     ):
         source_ctx["_pending_posthooks"] = [
             k for k in (source_ctx.get("_pending_posthooks") or [])
@@ -1251,6 +1253,34 @@ def _posthook_agent_and_payload(
                 "workspace_path": workspace_path,
                 "stack_hint": stack_hint,
                 "enable_testcontainers": enable_tc,
+            },
+        })
+    if a.kind == "mobile_smoke":
+        # Z5 T4b — run a recipe-driven Maestro mobile-QA flow against the
+        # running app. flow_paths come from step context (the mobile
+        # recipes ship a smoke-flow .yaml and the step declares them via
+        # `maestro_flows`). Falls back to scanning produces for flow YAMLs
+        # so a step that emits a *.flow.yaml needs no extra wiring.
+        produces = list(source_ctx.get("produces") or [])
+        flow_paths = list(source_ctx.get("maestro_flows") or [])
+        if not flow_paths:
+            flow_paths = [
+                p for p in produces
+                if isinstance(p, str)
+                and (p.endswith(".flow.yaml") or p.endswith(".flow.yml")
+                     or "maestro" in p.lower())
+            ]
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "mobile_smoke",
+            "executor": "mechanical",
+            "payload": {
+                "action": "maestro",
+                "flow_paths": flow_paths,
+                "workspace_path": workspace_path,
+                "extra_args": list(source_ctx.get("maestro_extra_args") or []),
+                "timeout_s": float(source_ctx.get("maestro_timeout_s", 600.0)),
             },
         })
     if a.kind == "compliance_template_present":
@@ -3027,6 +3057,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Grounding check for #{a.source_task_id}"
     if a.kind == "test_run":
         return f"Test run for #{a.source_task_id}"
+    if a.kind == "mobile_smoke":
+        return f"Mobile smoke flow for #{a.source_task_id}"
     if a.kind == "pattern_lint":
         return f"Pattern lint for #{a.source_task_id}"
     if a.kind == "design_system_check":
@@ -3162,6 +3194,117 @@ async def _apply_security_review_verdict(
     await _apply_simple_blocker_verdict(
         kind="security_review", source=source, ctx=ctx, pending=pending,
         verdict=verdict, feedback_prefix="security_review gate",
+    )
+
+
+# Z5 T4b — mobile_smoke verdict. The Maestro verb result has no `findings`
+# list (it carries {flows_run, passed, failed, exit, error}), so the generic
+# _apply_simple_blocker_verdict's findings-based summary would be empty.
+# This handler mirrors _apply_test_run_verdict: pass drops the kind from
+# pending; fail retries the source with the Maestro flow failure detail and
+# DLQs on attempts-exhausted (bonus path honoured). A soft-skipped run
+# (Maestro CLI absent) arrives as passed=True via rewrite.py Rule 0b reading
+# the `ok` key — so it drains pending without blocking.
+async def _apply_mobile_smoke_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a mobile_smoke (Maestro flow) post-hook verdict to the source."""
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "mobile_smoke"]
+        ctx["_pending_posthooks"] = new_pending
+        if raw.get("skipped"):
+            logger.debug(
+                "mobile_smoke: soft-skipped",
+                source_id=verdict.source_task_id,
+                reason=raw.get("reason") or "",
+            )
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None, next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", raw)
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Fail path: at least one Maestro flow failed (or the verb itself failed).
+    failed_n = int(raw.get("failed") or 0)
+    flows_n = int(raw.get("flows_run") or 0)
+    error_detail = raw.get("error") or ""
+    stdout_tail = (raw.get("stdout_tail") or "")[:400]
+    if error_detail:
+        error_str = f"mobile_smoke: {error_detail}"
+    elif failed_n:
+        error_str = f"mobile_smoke: {failed_n}/{flows_n} Maestro flow(s) failed"
+    else:
+        error_str = "mobile_smoke: Maestro gate failed"
+    if stdout_tail:
+        error_str = (error_str + f" output={stdout_tail!r}")[:500]
+    error_str = error_str[:500]
+
+    feedback = (
+        "The Maestro mobile smoke flow failed (sign in → onboard → core "
+        "action → sign out). Fix the app behaviour or the flow YAML so the "
+        f"Maestro run goes green. Details: {error_str}"
+    )
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None and progress >= 0.5 and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id, status="pending",
+                worker_attempts=attempts, max_worker_attempts=max_attempts,
+                error=error_str, error_category="quality",
+                next_retry_at=None, context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "mobile_smoke gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id, status="pending",
+        worker_attempts=attempts, error=error_str, error_category="quality",
+        next_retry_at=None, context=_json.dumps(ctx),
     )
 
 
@@ -3566,6 +3709,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
 
     if a.kind == "test_run":
         await _apply_test_run_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "mobile_smoke":
+        await _apply_mobile_smoke_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return

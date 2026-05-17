@@ -1,0 +1,44 @@
+name: mobile_deep_links
+version: v1
+kind: mobile_deep_links
+description: "Expo deep linking — universal links (iOS) + app links (Android) via expo-linking and expo-router linking config, with app.json scheme + associated-domains wiring."
+requires:
+  tech_stack:
+    - "fastapi+sqlite+expo"
+    - "fastapi+postgres+expo"
+    - "expo"
+features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - test_run
+  - pattern_lint
+templates:
+  linking_config: linking.template.ts
+  app_config: app.config.template.ts
+  well_known: well_known/apple-app-site-association.template.json
+  smoke_flow: flows/deep_links_smoke.flow.yaml
+  tests: tests/
+prompts:
+  expo: prompts/expo.md
+lessons_domain: mobile_deep_links
+dependencies:
+  backend:
+    - fastapi
+  frontend:
+    - expo-linking
+    - expo-router
+    - expo-constants
+param_defaults:
+  APP_SCHEME: "myapp"
+  ASSOCIATED_DOMAIN: "links.example.com"
+  ANDROID_PACKAGE: "com.example.app"
+  IOS_BUNDLE_ID: "com.example.app"
+  APPLE_TEAM_ID: "ABCDE12345"
+  DEEP_LINK_PREFIX_PATH: "/app"
+entry_points:
+  linking_config: linking.template.ts
+  app_config: app.config.template.ts
+  aasa: well_known/apple-app-site-association.template.json
+  smoke_flow: flows/deep_links_smoke.flow.yaml
+  smoke_tests: tests/linking_smoke.template.ts

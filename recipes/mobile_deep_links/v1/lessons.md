@@ -1,0 +1,17 @@
+# mobile_deep_links Recipe v1 — Known Lessons
+
+Pitfalls captured from prior implementations. Seeded into `mission_lessons` on recipe instantiation under `lessons_domain: mobile_deep_links`.
+
+- **AASA is served without a `.json` extension**: the file is `apple-app-site-association` at `https://<domain>/.well-known/apple-app-site-association`. Serving it as `...association.json` makes iOS not find it. The template file is named `.template.json` only so the template engine treats it as text — strip the extension when deploying.
+- **AASA must be HTTPS, `application/json`, and have NO redirect**: Apple fetches it directly. A 301/302, a wrong content type, or HTTP-only hosting all silently break universal links with no error surfaced to the app.
+- **Apple's AASA CDN caches aggressively**: after publishing or changing AASA, propagation can take up to ~24h. "It doesn't work" right after deploy is usually cache, not a config bug. Use Apple's CDN-bypass and the device console to confirm.
+- **`appID` is `TEAMID.BUNDLEID`**: e.g. `ABCDE12345.com.example.app`. The team id is the 10-char Apple Developer team identifier, NOT the app name. A wrong team id is the most common universal-links failure.
+- **`associatedDomains` entries have no scheme and no path**: the value is `applinks:` + bare host (`applinks:links.example.com`). Adding `https://` or a trailing path makes iOS reject the entitlement silently.
+- **Android App Links need `assetlinks.json` + the RELEASE signing fingerprint**: `https://<domain>/.well-known/assetlinks.json` must list the SHA-256 fingerprint of the *upload/release* key. Debug builds are signed with a different (debug) cert and will NOT verify — App Links only work in release/internal-track builds.
+- **`autoVerify:true` is required for direct opens**: without it, Android shows the disambiguation chooser ("Open with...") instead of going straight to the app. With it, Android verifies `assetlinks.json` at install time.
+- **Custom-scheme links need no verification; https links do**: `myapp://...` works the instant the `scheme` is set. `https://...` links only resolve to the app after AASA/assetlinks are live AND the app is reinstalled — verification happens at install time, not at runtime.
+- **The `scheme` must be globally-ish unique**: a generic scheme like `app://` collides with other installed apps; the OS resolution is then nondeterministic. Use a project-specific scheme.
+- **expo-router derives routes from `app/`**: the explicit `screens` map in the linking config is a fallback for custom path parsing. If a deep link 404s, check the `app/` directory route exists before editing the linking config.
+- **`Linking.getInitialURL()` vs the listener**: a link that *cold-starts* the app arrives via `getInitialURL()`; a link received while the app is *already running* arrives via the `addEventListener("url", ...)` callback. Handle both — expo-router does this internally, but custom handlers that only use the listener miss cold-start links.
+- **Test scheme links with `npx uri-scheme open`**: `npx uri-scheme open myapp://item/42 --ios` drives a deep link without rebuilding. Universal links can't be faked this way — they genuinely need the well-known files live.
+- **A trailing-slash mismatch in `paths` breaks matching**: AASA `paths` like `/app/*` matches `/app/item/42` but NOT `/app` itself. Include both `/app` and `/app/*` if the bare prefix is also a valid link target.

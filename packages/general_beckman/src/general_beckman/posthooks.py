@@ -578,6 +578,25 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "in random shuffle; bisect on fail emits mission_lessons row."
         ),
     ),
+    # Z5 T4b — mobile_smoke (Maestro mobile-QA flow gate).
+    "mobile_smoke": PostHookSpec(
+        kind="mobile_smoke",
+        verb="maestro",
+        default_severity="blocker",
+        # Heavy: drives a long-running Maestro flow against a launched app
+        # (sign in → onboard → core action → sign out).
+        cost_band="heavy",
+        # No glob auto-wire: Maestro needs an already-running app + a flow
+        # YAML, so mobile_smoke is opted in explicitly per step (the mobile
+        # recipes ship a smoke-flow .yaml and declare the hook).
+        auto_wire_triggers=[],
+        description=(
+            "Run a recipe-driven Maestro mobile-QA flow (sign in → onboard → "
+            "core action → sign out) against the running app; gate the step "
+            "on the Maestro exit code / failed-flow count. Soft-skipped when "
+            "the Maestro CLI is not installed."
+        ),
+    ),
     # Z3 T4B — adr_drift_check (mechanical violation gate against ADR falsification_signal).
     "adr_drift_check": PostHookSpec(
         kind="adr_drift_check",

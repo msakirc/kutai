@@ -211,6 +211,11 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "score_backlog": "full",  # writes backlog scores; re-runnable
     "score_sunset": "full",  # writes sunset scores; re-runnable
     "classify_signals": "full",  # Z9 T3B — query + Beckman enqueue + append-only rows
+    # ---- Z5 T4b — Maestro mobile-QA adapter --------------------------------
+    # maestro: drives an already-running app through UI test flows. Writes
+    # nothing durable to the workspace and makes no real-world change — a
+    # read-only test run, fully reversible.
+    "maestro": "full",
     # ---- Z7 T3C press kit verbs (A4 + A4.r1) --------------------------------
     "press_kit/assemble": "full",   # writes zips + manifest to workspace; git-reversible
     "press_kit/publish": "partial", # copies zips to local store or S3; uploaded bytes persist

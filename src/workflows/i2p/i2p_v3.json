@@ -183,15 +183,37 @@
       },
       {
         "group_id": "mobile_app_submission",
-        "description": "Run the App Store / Google Play submission chain only when the mission ships a native mobile app. Z5 T5 wired this onto the real submit chain: 14.8 (LLM: store metadata + privacy nutrition labels) followed by the mechanical siblings 14.8.gen_ci (generate the GitHub Actions CI workflow), 14.8.screenshots (per-device/per-locale capture), 14.8.submit (fastlane pilot/supply binary upload — eas_submit fallback) and 14.8.review_status (vendor_call review-status poll). The old 14.10 wiring went dead when Z9 reused that id for arm_analytics_digest_cron.",
+        "description": "Platform-agnostic submission prep — runs when the mission ships any native mobile app. 14.8 (LLM: store metadata + privacy nutrition labels) then the mechanical siblings 14.8.gen_ci (generate the GitHub Actions CI workflow), 14.8.export_web (Expo Web bundle), 14.8.preview (preview URL) and 14.8.screenshots (per-device/per-locale capture). The per-store binary upload + review-poll steps live in the ios_submission / android_submission groups so each store fires only for the platforms the mission targets. The old 14.10 wiring went dead when Z9 reused that id for arm_analytics_digest_cron.",
         "condition_artifact": "platform_requirements",
         "condition_check": "platforms_include('ios') OR platforms_include('android')",
         "if_true": [
           "14.8",
           "14.8.gen_ci",
-          "14.8.screenshots",
+          "14.8.export_web",
+          "14.8.preview",
+          "14.8.screenshots"
+        ],
+        "if_false": []
+      },
+      {
+        "group_id": "ios_submission",
+        "description": "iOS-only submit + review-poll. 14.8.submit (fastlane pilot → TestFlight) and 14.8.review_status (vendor_call apple_appstore) run only when the mission targets iOS.",
+        "condition_artifact": "platform_requirements",
+        "condition_check": "platforms_include('ios')",
+        "if_true": [
           "14.8.submit",
           "14.8.review_status"
+        ],
+        "if_false": []
+      },
+      {
+        "group_id": "android_submission",
+        "description": "Android-only submit + review-poll. 14.8.submit_play (fastlane supply → Play internal) and 14.8.review_status_play (vendor_call google_play) run only when the mission targets Android.",
+        "condition_artifact": "platform_requirements",
+        "condition_check": "platforms_include('android')",
+        "if_true": [
+          "14.8.submit_play",
+          "14.8.review_status_play"
         ],
         "if_false": []
       },
@@ -10880,6 +10902,72 @@
       "reversibility": "full"
     },
     {
+      "id": "14.8.export_web",
+      "phase": "phase_14",
+      "name": "expo_web_export",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "14.8.gen_ci"
+      ],
+      "skip_when": [
+        "no_mobile_app"
+      ],
+      "input_artifacts": [
+        "mobile_frontend_scaffold"
+      ],
+      "output_artifacts": [
+        "expo_web_export"
+      ],
+      "produces": [
+        ".prototype/index.html"
+      ],
+      "payload": {
+        "action": "expo_cli",
+        "subcommand": "export",
+        "extra_args": [
+          "--platform",
+          "web",
+          "--output-dir",
+          ".prototype"
+        ]
+      },
+      "instruction": "Z5 mechanical step (no LLM): produce the Expo Web bundle via `expo export --platform web` into `.prototype/`. This static bundle is the target 14.8.preview tunnels and 14.8.screenshots (capture_mode=device) screenshots with Playwright device descriptors — without it device-mode capture has nothing to point at. Soft-skips when the Expo CLI is absent.",
+      "done_when": "the Expo Web bundle is written to .prototype/.",
+      "context": {},
+      "reversibility": "full"
+    },
+    {
+      "id": "14.8.preview",
+      "phase": "phase_14",
+      "name": "expo_web_preview_url",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "14.8.export_web"
+      ],
+      "skip_when": [
+        "no_mobile_app"
+      ],
+      "input_artifacts": [
+        "expo_web_export"
+      ],
+      "output_artifacts": [
+        "mobile_preview_url"
+      ],
+      "payload": {
+        "action": "emit_preview_url"
+      },
+      "instruction": "Z5 mechanical step (no LLM): emit a preview URL for the Expo Web bundle in `.prototype/` via emit_preview_url. Writes `.preview/last_preview_url.txt` — the URL 14.8.screenshots reads for device-mode capture. Soft-skips to a pending placeholder when no tunnel provider is configured.",
+      "done_when": "a preview URL (or pending placeholder) is written for the Expo Web bundle.",
+      "context": {},
+      "reversibility": "irreversible"
+    },
+    {
       "id": "14.8.screenshots",
       "phase": "phase_14",
       "name": "app_store_screenshots_capture",
@@ -10888,7 +10976,7 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "14.8.gen_ci"
+        "14.8.preview"
       ],
       "skip_when": [
         "no_mobile_app"
@@ -10916,7 +11004,7 @@
       "executor": "mechanical",
       "difficulty": "medium",
       "needs_real_tools": true,
-      "real_tool_kind": "apple_appstore|google_play",
+      "real_tool_kind": "apple_appstore",
       "tools_hint": [],
       "depends_on": [
         "14.8.screenshots"
@@ -10935,7 +11023,7 @@
         "action": "fastlane",
         "lane": "pilot"
       },
-      "instruction": "Z5 T5 mechanical step (no LLM): submit the mobile binary. Primary path — trigger the generated GitHub Actions workflow (gen_mobile_ci output `.github/workflows/mobile.yml`) running `fastlane pilot` (TestFlight) for iOS and `fastlane supply` (Play internal) for Android. Documented fallback — `eas_submit` when the GitHub Actions / Fastlane path is unavailable. This step is irreversible: a binary pushed to a TestFlight / Play internal track is ingested by the store immediately. Needs apple_appstore / google_play credentials — z6_admission emits a vendor_enroll founder-action if they are absent.",
+      "instruction": "Z5 mechanical step (no LLM): submit the iOS binary to TestFlight via `fastlane pilot`, triggered through the generated GitHub Actions workflow (14.8.gen_ci output `.github/workflows/mobile.yml`). `eas_submit` is the documented fallback when the GitHub Actions / Fastlane path is unavailable. Irreversible — a binary pushed to a TestFlight track is ingested by Apple immediately. Needs apple_appstore credentials — z6_admission emits a vendor_enroll founder-action if absent. The Android Play-internal upload is the sibling step 14.8.submit_play. Runs only when the mission targets iOS (ios_submission conditional group).",
       "done_when": "the mobile binary is uploaded to the TestFlight / Play internal track.",
       "context": {},
       "reversibility": "irreversible"
@@ -10948,7 +11036,7 @@
       "executor": "mechanical",
       "difficulty": "easy",
       "needs_real_tools": true,
-      "real_tool_kind": "apple_appstore|google_play",
+      "real_tool_kind": "apple_appstore",
       "tools_hint": [],
       "depends_on": [
         "14.8.submit"
@@ -10968,8 +11056,73 @@
         "action_name": "list_review_states",
         "params": {}
       },
-      "instruction": "Z5 T5 mechanical step (no LLM): poll the App Store / Play review status via vendor_call against apple_appstore (list_review_states) / google_play (list_review_status). Surfaces the current review verdict to the founder; a rejection routes to the mobile_release_rejection recipe playbook.",
-      "done_when": "app_store_review_status reflects the current Apple / Google review verdict.",
+      "instruction": "Z5 T5 mechanical step (no LLM): poll the App Store review status via vendor_call against apple_appstore (list_review_states). Surfaces the current review verdict to the founder; a rejection routes to the mobile_release_rejection recipe playbook. Runs only when the mission targets iOS (ios_submission conditional group).",
+      "done_when": "app_store_review_status reflects the current Apple review verdict.",
+      "context": {},
+      "reversibility": "full"
+    },
+    {
+      "id": "14.8.submit_play",
+      "phase": "phase_14",
+      "name": "play_internal_submit_binary",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "medium",
+      "needs_real_tools": true,
+      "real_tool_kind": "google_play",
+      "tools_hint": [],
+      "depends_on": [
+        "14.8.screenshots"
+      ],
+      "skip_when": [
+        "no_mobile_app"
+      ],
+      "input_artifacts": [
+        "app_store_submission",
+        "store_screenshots"
+      ],
+      "output_artifacts": [
+        "play_submission_result"
+      ],
+      "payload": {
+        "action": "fastlane",
+        "lane": "supply"
+      },
+      "instruction": "Z5 mechanical step (no LLM): submit the Android binary to the Google Play internal track via `fastlane supply`, triggered through the generated GitHub Actions workflow (14.8.gen_ci output). `eas_submit` is the documented fallback. Irreversible — a binary on a Play internal track is ingested immediately. Needs google_play credentials — z6_admission emits a vendor_enroll founder-action if absent. Runs only when the mission targets Android (android_submission conditional group).",
+      "done_when": "the Android binary is uploaded to the Play internal track.",
+      "context": {},
+      "reversibility": "irreversible"
+    },
+    {
+      "id": "14.8.review_status_play",
+      "phase": "phase_14",
+      "name": "play_review_status_poll",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "needs_real_tools": true,
+      "real_tool_kind": "google_play",
+      "tools_hint": [],
+      "depends_on": [
+        "14.8.submit_play"
+      ],
+      "skip_when": [
+        "no_mobile_app"
+      ],
+      "input_artifacts": [
+        "play_submission_result"
+      ],
+      "output_artifacts": [
+        "play_review_status"
+      ],
+      "payload": {
+        "action": "vendor_call",
+        "service": "google_play",
+        "action_name": "list_review_status",
+        "params": {}
+      },
+      "instruction": "Z5 mechanical step (no LLM): poll the Google Play review status via vendor_call against google_play (list_review_status). Surfaces the current review verdict to the founder; a rejection routes to the mobile_release_rejection recipe playbook. Runs only when the mission targets Android (android_submission conditional group).",
+      "done_when": "play_review_status reflects the current Google review verdict.",
       "context": {},
       "reversibility": "full"
     },

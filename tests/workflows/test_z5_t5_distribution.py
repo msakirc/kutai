@@ -75,38 +75,86 @@ def test_submit_chain_siblings_present_and_mechanical():
     d = _load_i2p()
     steps = {s["id"]: s for s in d["steps"]}
 
-    for sid in ("14.8.gen_ci", "14.8.screenshots", "14.8.submit",
-                "14.8.review_status"):
+    for sid in ("14.8.gen_ci", "14.8.export_web", "14.8.preview",
+                "14.8.screenshots", "14.8.submit", "14.8.review_status",
+                "14.8.submit_play", "14.8.review_status_play"):
         assert sid in steps, f"missing sibling step {sid}"
         s = steps[sid]
         assert s["agent"] == "mechanical"
         assert s["executor"] == "mechanical"
         assert isinstance(s["payload"], dict) and s["payload"].get("action")
 
-    # gen_ci generates the GitHub Actions workflow 14.8.submit triggers.
+    # gen_ci generates the GitHub Actions workflow the submit steps trigger.
     gc = steps["14.8.gen_ci"]
     assert gc["payload"]["action"] == "gen_mobile_ci"
     assert gc["depends_on"] == ["14.8"]
     assert ".github/workflows/mobile.yml" in gc["produces"]
 
+    # export_web produces the Expo Web bundle device capture screenshots.
+    ew = steps["14.8.export_web"]
+    assert ew["payload"]["action"] == "expo_cli"
+    assert ew["payload"]["subcommand"] == "export"
+    assert ew["depends_on"] == ["14.8.gen_ci"]
+
+    # preview emits the URL device-mode capture reads.
+    pv = steps["14.8.preview"]
+    assert pv["payload"]["action"] == "emit_preview_url"
+    assert pv["depends_on"] == ["14.8.export_web"]
+
     # screenshots reuses capture_screenshots in device mode.
     sc = steps["14.8.screenshots"]
     assert sc["payload"]["action"] == "capture_screenshots"
     assert sc["payload"]["capture_mode"] == "device"
-    assert sc["depends_on"] == ["14.8.gen_ci"]
+    assert sc["depends_on"] == ["14.8.preview"]
 
-    # submit ships the binary via fastlane — irreversible, needs creds.
+    # iOS submit — fastlane pilot → TestFlight, irreversible, apple creds.
     sub = steps["14.8.submit"]
     assert sub["payload"]["action"] == "fastlane"
-    assert sub["payload"]["lane"] in ("pilot", "supply")
+    assert sub["payload"]["lane"] == "pilot"
     assert sub["reversibility"] == "irreversible"
-    assert sub["real_tool_kind"] == "apple_appstore|google_play"
+    assert sub["real_tool_kind"] == "apple_appstore"
     assert sub["depends_on"] == ["14.8.screenshots"]
 
-    # review_status polls via vendor_call.
+    # Android submit — fastlane supply → Play internal.
+    subp = steps["14.8.submit_play"]
+    assert subp["payload"]["action"] == "fastlane"
+    assert subp["payload"]["lane"] == "supply"
+    assert subp["reversibility"] == "irreversible"
+    assert subp["real_tool_kind"] == "google_play"
+    assert subp["depends_on"] == ["14.8.screenshots"]
+
+    # review_status steps poll via vendor_call, one per store.
     rev = steps["14.8.review_status"]
     assert rev["payload"]["action"] == "vendor_call"
+    assert rev["payload"]["service"] == "apple_appstore"
     assert rev["depends_on"] == ["14.8.submit"]
+    revp = steps["14.8.review_status_play"]
+    assert revp["payload"]["action"] == "vendor_call"
+    assert revp["payload"]["service"] == "google_play"
+    assert revp["depends_on"] == ["14.8.submit_play"]
+
+
+def test_per_platform_submission_conditional_groups():
+    """iOS and Android submit chains are gated by per-platform groups."""
+    d = _load_i2p()
+    groups = {g["group_id"]: g for g in d["metadata"]["conditional_groups"]}
+
+    ios = groups["ios_submission"]
+    assert ios["condition_check"] == "platforms_include('ios')"
+    assert ios["if_true"] == ["14.8.submit", "14.8.review_status"]
+
+    android = groups["android_submission"]
+    assert android["condition_check"] == "platforms_include('android')"
+    assert android["if_true"] == [
+        "14.8.submit_play", "14.8.review_status_play",
+    ]
+
+    # The shared prep steps stay in the platform-agnostic group.
+    mas = groups["mobile_app_submission"]
+    assert "14.8.submit" not in mas["if_true"]
+    assert "14.8.submit_play" not in mas["if_true"]
+    assert "14.8.export_web" in mas["if_true"]
+    assert "14.8.preview" in mas["if_true"]
 
 
 def test_no_orphan_depends_on_in_submit_chain():

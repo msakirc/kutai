@@ -19,15 +19,13 @@ Never imports LLMDispatcher (Phase 2 has no LLM-bind).
 """
 from __future__ import annotations
 
-# Phase gate: the yalayut_recipe mechanical executor is Phase 3 scope.
-# Until it exists, preempt-classified artifacts are treated as inject so they
-# still surface their body in the agent's context instead of routing to a
-# mechanical lane that cannot handle them (guaranteed task failure in mr_roboto).
-#
-# Flip to True in Phase 3 once packages/mr_roboto gains the yalayut_recipe
-# executor.  ALL preempt routing code below stays intact — only this flag gates
-# whether the preempt path is taken.
-PHASE2_PREEMPT_ENABLED: bool = False
+# Phase gate: preempt routes a yalayut shell_recipe to the mechanical lane via
+# the yalayut_recipe mr_roboto executor. Enabled in Phase 3 — the executor now
+# exists (packages/mr_roboto/src/mr_roboto/executors/yalayut_recipe.py) and
+# yalayut.run_recipe is wired end-to-end. Kept as a flag so the preempt path
+# can be disabled without reverting code if a regression surfaces; when False,
+# preempt-classified artifacts are downgraded to inject instead.
+PHASE2_PREEMPT_ENABLED: bool = True
 
 import json
 

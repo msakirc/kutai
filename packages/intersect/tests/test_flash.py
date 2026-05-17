@@ -107,19 +107,19 @@ async def test_flash_routes_preempt_to_mechanical_lane(
 
 @pytest.mark.asyncio
 async def test_flash_phase2_gate_downgrades_preempt_to_inject(
-    intersect_db, sample_task, patch_yalayut, fake_artifact,
+    intersect_db, sample_task, patch_yalayut, fake_artifact, monkeypatch,
 ):
-    """Phase 2 regression: with PHASE2_PREEMPT_ENABLED=False (the default),
+    """Gate-off regression: with PHASE2_PREEMPT_ENABLED monkeypatched to False,
     a T0 mechanizable shell_recipe artifact that would route to the mechanical
     lane must instead appear as an 'inject' entry in task['skills'].
 
-    The yalayut_recipe executor does not exist until Phase 3 — routing to it
-    now causes a guaranteed task failure in mr_roboto.  The gate must be off
-    by default and the preempt routing code must NOT fire.
-
-    This test FAILS against the pre-fix code because the gate does not exist
-    and every qualifying artifact unconditionally routes to preempt.
+    The gate defaults to True as of Phase 3, but the downgrade-to-inject code
+    path is kept for the case where preempt is disabled to dodge a regression —
+    this test keeps that fallback covered.
     """
+    import sys
+    flash_mod = sys.modules["intersect.flash"]
+    monkeypatch.setattr(flash_mod, "PHASE2_PREEMPT_ENABLED", False)
     patch_yalayut([fake_artifact(
         artifact_id=18, kind="shell_recipe", mechanizable=True, vet_tier=0,
         score=1.0, name="cc-pypackage",

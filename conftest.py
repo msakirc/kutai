@@ -32,6 +32,8 @@ _PACKAGE_SRCS = [
     _ROOT / "packages" / "coulson" / "src",
     _ROOT / "packages" / "sade_kalsin" / "src",
     _ROOT / "packages" / "c21_paraflow_diff" / "src",
+    _ROOT / "packages" / "intersect" / "src",
+    _ROOT / "packages" / "yalayut" / "src",
 ]
 for p in _PACKAGE_SRCS:
     if p.is_dir() and str(p) not in sys.path:

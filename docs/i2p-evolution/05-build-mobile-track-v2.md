@@ -310,3 +310,12 @@ Framework / build-infra / cost were founder calls — see **Founder decisions
   files). Known carry-over (not Z5): `competitor_deep_dive` `fallback_steps`
   never insert steps; pre-existing `test_reversibility_registry` gaps (being
   fixed by the parallel Z7 pass).
+- 2026-05-17 — review pass. Fixed the `fallback_steps` carry-over
+  (`runner.merge_fallback_steps`). Wiring audit found + fixed 4 dead/shallow
+  fragments: `mobile_smoke` post-hook was on zero steps → now gates 14.8;
+  `gen_mobile_ci` was never invoked → added `14.8.gen_ci`; submit chain was
+  iOS-only → added `14.8.submit_play` + `14.8.review_status_play` under new
+  per-platform `ios_submission`/`android_submission` groups; device capture
+  had no target → added `14.8.export_web` (expo export) + `14.8.preview`.
+  `eas_build` left intentionally unwired (founder-designated fallback);
+  `android_build` verb redundant with the GH-Actions gradle job.

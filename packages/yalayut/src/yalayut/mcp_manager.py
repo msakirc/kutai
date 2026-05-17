@@ -59,33 +59,42 @@ class McpManager:
             "last_probe_at": now,
             "consecutive_probe_fails": fields.get("consecutive_probe_fails", 0),
         }
-        await db.execute(
-            "INSERT INTO yalayut_mcp_processes "
-            "(artifact_id, pid, port, started_at, last_used_at, idle_timeout_s, "
-            " health, last_probe_at, consecutive_probe_fails) "
-            "VALUES (:aid, :pid, :port, :started, :used, :idle, :health, "
-            ":probe, :fails) "
-            "ON CONFLICT(artifact_id) DO UPDATE SET "
-            "pid=excluded.pid, port=excluded.port, last_used_at=excluded.last_used_at, "
-            "health=excluded.health, last_probe_at=excluded.last_probe_at, "
-            "consecutive_probe_fails=excluded.consecutive_probe_fails",
-            {"aid": artifact_id, "pid": cols["pid"], "port": cols["port"],
-             "started": cols["started_at"], "used": cols["last_used_at"],
-             "idle": cols["idle_timeout_s"], "health": cols["health"],
-             "probe": cols["last_probe_at"], "fails": cols["consecutive_probe_fails"]},
-        )
-        await db.commit()
+        try:
+            await db.execute(
+                "INSERT INTO yalayut_mcp_processes "
+                "(artifact_id, pid, port, started_at, last_used_at, idle_timeout_s, "
+                " health, last_probe_at, consecutive_probe_fails) "
+                "VALUES (:aid, :pid, :port, :started, :used, :idle, :health, "
+                ":probe, :fails) "
+                "ON CONFLICT(artifact_id) DO UPDATE SET "
+                "pid=excluded.pid, port=excluded.port, last_used_at=excluded.last_used_at, "
+                "health=excluded.health, last_probe_at=excluded.last_probe_at, "
+                "consecutive_probe_fails=excluded.consecutive_probe_fails",
+                {"aid": artifact_id, "pid": cols["pid"], "port": cols["port"],
+                 "started": cols["started_at"], "used": cols["last_used_at"],
+                 "idle": cols["idle_timeout_s"], "health": cols["health"],
+                 "probe": cols["last_probe_at"], "fails": cols["consecutive_probe_fails"]},
+            )
+            await db.commit()
+        except Exception as e:
+            logger.debug("mcp process persist skipped (schema not ready?)",
+                         artifact_id=artifact_id, err=str(e))
 
     async def _load_process(self, artifact_id: int) -> dict[str, Any] | None:
         from src.infra.db import get_db
 
         db = await get_db()
-        cur = await db.execute(
-            "SELECT pid, port, health, last_probe_at, consecutive_probe_fails, "
-            "idle_timeout_s FROM yalayut_mcp_processes WHERE artifact_id = ?",
-            (artifact_id,),
-        )
-        row = await cur.fetchone()
+        try:
+            cur = await db.execute(
+                "SELECT pid, port, health, last_probe_at, consecutive_probe_fails, "
+                "idle_timeout_s FROM yalayut_mcp_processes WHERE artifact_id = ?",
+                (artifact_id,),
+            )
+            row = await cur.fetchone()
+        except Exception as e:
+            logger.debug("mcp process load skipped (schema not ready?)",
+                         artifact_id=artifact_id, err=str(e))
+            return None
         if row is None:
             return None
         return {"pid": row[0], "port": row[1], "health": row[2],

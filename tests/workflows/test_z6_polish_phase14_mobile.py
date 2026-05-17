@@ -47,6 +47,11 @@ def _phase14_steps():
 
 
 def _looks_mobile_vendor(step: dict) -> bool:
+    # Explicit opt-out: step declares it is a local step despite app-store
+    # keywords in its instruction text (e.g. screenshot capture that runs
+    # locally via Playwright / adb, not via an Apple/Google API).
+    if step.get("vendor_interaction") is False:
+        return False
     blob = " ".join((
         str(step.get("name", "")),
         str(step.get("instruction", "")),

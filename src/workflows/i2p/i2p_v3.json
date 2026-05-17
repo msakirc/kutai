@@ -10866,6 +10866,7 @@
       "post_hooks": [
         "mobile_smoke"
       ],
+      "read_only": true,
       "context": {},
       "reversibility": "full"
     },
@@ -10993,6 +10994,7 @@
       },
       "instruction": "Z5 T5 mechanical step (no LLM): capture per-device/per-locale App Store / Play store screenshots by reusing capture_screenshots with capture_mode='device' (Playwright device descriptors against the Expo Web export + adb screencap arm). Devices come from app_store_submission.screenshot_devices; locales from app_store_submission.locales.",
       "done_when": "store_screenshots captured for each declared device and locale.",
+      "vendor_interaction": false,
       "context": {},
       "reversibility": "full"
     },
@@ -11058,6 +11060,7 @@
       },
       "instruction": "Z5 T5 mechanical step (no LLM): poll the App Store review status via vendor_call against apple_appstore (list_review_states). Surfaces the current review verdict to the founder; a rejection routes to the mobile_release_rejection recipe playbook. Runs only when the mission targets iOS (ios_submission conditional group).",
       "done_when": "app_store_review_status reflects the current Apple review verdict.",
+      "read_only": true,
       "context": {},
       "reversibility": "full"
     },
@@ -11123,6 +11126,7 @@
       },
       "instruction": "Z5 mechanical step (no LLM): poll the Google Play review status via vendor_call against google_play (list_review_status). Surfaces the current review verdict to the founder; a rejection routes to the mobile_release_rejection recipe playbook. Runs only when the mission targets Android (android_submission conditional group).",
       "done_when": "play_review_status reflects the current Google review verdict.",
+      "read_only": true,
       "context": {},
       "reversibility": "full"
     },

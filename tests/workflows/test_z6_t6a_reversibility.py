@@ -47,14 +47,22 @@ def test_every_step_has_reversibility():
 
 
 def test_needs_real_tools_steps_are_irreversible():
+    """Real-tool steps with write side-effects must be irreversible.
+    Steps marked ``read_only: true`` are exempt — they call vendor APIs for
+    status polling or metadata authoring without mutating remote state, so
+    their reversibility is correctly ``full``.
+    """
     wf = _load_workflow()
     nrt = [
         s for s in wf["steps"]
-        if s.get("needs_real_tools")
-        or (isinstance(s.get("context"), dict)
-            and s["context"].get("needs_real_tools"))
+        if (
+            s.get("needs_real_tools")
+            or (isinstance(s.get("context"), dict)
+                and s["context"].get("needs_real_tools"))
+        )
+        and not s.get("read_only")  # read-only vendor calls are exempt
     ]
-    assert nrt, "expected at least one needs_real_tools step"
+    assert nrt, "expected at least one needs_real_tools (non-read-only) step"
     bad = [s["id"] for s in nrt if s.get("reversibility") != "irreversible"]
     assert not bad, f"needs_real_tools steps not irreversible: {bad}"
 

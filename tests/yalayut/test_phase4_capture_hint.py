@@ -99,3 +99,53 @@ def test_capture_hint_routes_to_mechanical(loop):
     assert agent_type == "mechanical"
     assert payload["payload"]["action"] == "capture_hint"
     assert payload["payload"]["source_task"]["id"] == 55
+
+
+def test_capture_hint_verdict_completes_source(loop):
+    """The capture_hint posthook verdict must drop the kind from
+    _pending_posthooks and complete the source — not strand it in 'ungraded'.
+    Regression guard: _apply_posthook_verdict had no capture_hint branch, so
+    the verdict hit the 'unknown kind' fallthrough and the source was stuck."""
+    async def _run():
+        await init_db()
+        from src.infra.db import add_task, get_task, update_task
+        from general_beckman.apply import (
+            _apply_posthook_verdict, PostHookVerdict)
+        sid = await add_task(title="cap-src", description="",
+                             agent_type="coder", mission_id=None,
+                             depends_on=[], context={})
+        await update_task(sid, status="ungraded", context=json.dumps(
+            {"_pending_posthooks": ["capture_hint"]}))
+        verdict = PostHookVerdict(source_task_id=sid, kind="capture_hint",
+                                  passed=True, raw={})
+        await _apply_posthook_verdict(
+            {"id": 0, "agent_type": "mechanical"}, verdict)
+        src = await get_task(sid)
+        assert src["status"] == "completed"
+        ctx = json.loads(src["context"])
+        assert "capture_hint" not in (ctx.get("_pending_posthooks") or [])
+    loop.run_until_complete(_run())
+
+
+def test_capture_hint_verdict_soft_drops_when_grade_pending(loop):
+    """When grade is still pending, the capture_hint verdict soft-drops only
+    its own kind and leaves the source ungraded for the grade verdict."""
+    async def _run():
+        await init_db()
+        from src.infra.db import add_task, get_task, update_task
+        from general_beckman.apply import (
+            _apply_posthook_verdict, PostHookVerdict)
+        sid = await add_task(title="cap-src2", description="",
+                             agent_type="coder", mission_id=None,
+                             depends_on=[], context={})
+        await update_task(sid, status="ungraded", context=json.dumps(
+            {"_pending_posthooks": ["grade", "capture_hint"]}))
+        verdict = PostHookVerdict(source_task_id=sid, kind="capture_hint",
+                                  passed=True, raw={})
+        await _apply_posthook_verdict(
+            {"id": 0, "agent_type": "mechanical"}, verdict)
+        src = await get_task(sid)
+        assert src["status"] == "ungraded"  # grade still pending
+        ctx = json.loads(src["context"])
+        assert ctx["_pending_posthooks"] == ["grade"]
+    loop.run_until_complete(_run())

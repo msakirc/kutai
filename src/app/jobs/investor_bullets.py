@@ -211,7 +211,7 @@ async def _call_llm_anomaly_hypothesis(
         )
         return ""
 
-    if getattr(task_result, "status", None) == "failed":
+    if getattr(task_result, "status", None) != "completed":
         logger.warning(
             "investor_bullets: LLM hypothesis task failed",
             metric=metric_name,

@@ -498,3 +498,37 @@ async def test_suggested_asks_degrades_when_no_lessons():
     # Pass empty gaps list → section present but may say "none found"
     md = await render_bullets({}, {}, [])
     assert "Suggested asks" in md
+
+
+# ===========================================================================
+# 11. LLM hypothesis non-completed statuses return safe fallback
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_status", ["exhausted", "timeout", "needs_clarification", "needs_subtasks"])
+async def test_llm_hypothesis_non_completed_returns_empty(bad_status):
+    """_call_llm_anomaly_hypothesis returns '' for any non-completed task status,
+    not just 'failed'. Covers the canonical != 'completed' gate."""
+    from unittest.mock import patch, AsyncMock
+    from general_beckman import TaskResult
+
+    fake_result = TaskResult(
+        status=bad_status,
+        result={"content": "should not appear"},
+        error=None,
+    )
+
+    async def _fake_enqueue(spec, *, lane, await_inline=False):
+        return fake_result
+
+    with patch(
+        "src.app.jobs.investor_bullets._enqueue_overhead",
+        new=AsyncMock(side_effect=_fake_enqueue),
+    ):
+        from src.app.jobs.investor_bullets import _call_llm_anomaly_hypothesis
+        hyp = await _call_llm_anomaly_hypothesis("mrr", 180.0, [100.0, 102.0, 98.0])
+
+    assert hyp == "", (
+        f"Expected empty string for status={bad_status!r}, got {hyp!r}"
+    )

@@ -12237,6 +12237,19 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         discover "<intent>" · scout <url> · auth missing · auth set <K>=<V> ·
         mcp status|restart|kill <id>.
         """
+        # Owner-only — /yalayut admin subcommands (enable / requeue / promote)
+        # are by-design founder overrides that can flip a T3-quarantined
+        # (unsafe) artifact to enabled with no re-vetting. Gate the whole
+        # command at the boundary. Single-tenant bots (no admin chat set)
+        # treat the gate as a no-op.
+        chat_id = update.effective_chat.id
+        if not self._is_admin_chat(chat_id):
+            await self._reply(
+                update,
+                "Not authorized — /yalayut is restricted to the bot owner.",
+            )
+            return
+
         from yalayut import admin
         from yalayut.discovery import demand as _demand
         args = list(getattr(context, "args", []) or [])
@@ -12467,6 +12480,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         """Route `yal:<action>:<id>` inline-button taps."""
         from yalayut import admin
         query = update.callback_query
+
+        # Owner-only — these taps drive admin overrides (approve / reject /
+        # promote) with no re-vetting. Reject any non-admin chat.
+        chat_id = update.effective_chat.id
+        if not self._is_admin_chat(chat_id):
+            await query.answer("Not authorized — owner only.")
+            return
+
         data = query.data or ""
         parts = data.split(":")
         if len(parts) != 3:

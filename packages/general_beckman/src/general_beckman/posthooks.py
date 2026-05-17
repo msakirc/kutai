@@ -666,9 +666,10 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         cost_band="cheap",
         auto_wire_triggers=[],
         description=(
-            "Z7 T1.0 (B5/B9): assert all required briefing and external_comms_log "
-            "rows were emitted for the mission; surface gaps to founder. "
-            "Stub handler: posthook_handlers/audit_completeness_check.py."
+            "Z7 T1.0 (B5/B9): assert every external send (action_confirmation "
+            "with reversibility != 'full') produced an external_comms_log row; "
+            "surface gaps to founder as an advisory warning. "
+            "Handler: posthook_handlers/audit_completeness_check.py."
         ),
     ),
     # ── Z7 T3B: demo pipeline posthooks (A3 + A3.r1) ────────────────────────
@@ -870,15 +871,22 @@ def determine_posthooks(
     they register a row.
     """
     agent_type = task.get("agent_type", "")
-    if agent_type in _NO_POSTHOOKS_AGENT_TYPES:
-        return []
+    no_posthooks = agent_type in _NO_POSTHOOKS_AGENT_TYPES
 
     kinds: list[str] = []
-    if task_ctx.get("requires_grading") is not False:
+    # Default `grade` hook — suppressed for the no-posthooks agent types
+    # (mechanical / reviewers etc.: a grader on a mechanical result is
+    # pointless, a grader on a reviewer is judge-of-judge).
+    if not no_posthooks and task_ctx.get("requires_grading") is not False:
         kinds.append("grade")
 
-    # Extra kinds declared on the step. Filter to registry so a typo
-    # doesn't spawn a task with no agent handler.
+    # Extra kinds EXPLICITLY declared on the step. These are honoured even
+    # for the no-posthooks agent types: a mechanical step that declares
+    # `incident_update_review` (Z7 B3 founder-review gate) must still spawn
+    # it — skipping it silently bypasses a trust-critical gate. Only the
+    # implicit `grade` hook is suppressed for those agent types, never an
+    # explicitly-requested hook. Filter to registry so a typo doesn't spawn
+    # a task with no handler.
     extra = task_ctx.get("post_hooks") or []
     if isinstance(extra, list):
         for k in extra:

@@ -12,6 +12,7 @@ Rules (order matters — earlier rules can short-circuit):
 """
 from __future__ import annotations
 
+import json as _json
 from typing import Iterable
 
 from general_beckman.result_router import (
@@ -267,21 +268,48 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
                 raw=a.raw,
             )
         )
-        for kind in determine_posthooks(task, task_ctx, a.raw):
-            # Merge result scalar fields into source_ctx so posthook handlers
-            # can read them.  incident/draft_update returns {"draft": ...,
-            # "incident_id": ..., "status_kind": ...} in its result dict but
-            # never writes these to the task context, so apply.py's
-            # _posthook_agent_and_payload would find source_ctx.get("draft")
-            # empty.  Using setdefault means task_ctx values win (they were
-            # set intentionally); result fills only fields the task didn't set.
+        determined = determine_posthooks(task, task_ctx, a.raw)
+        # Build the result-scalar view once, shared by every posthook kind.
+        # incident/draft_update returns {"draft": ..., "incident_id": ...,
+        # "status_kind": ...} in its result dict but never writes these to the
+        # task context, so apply.py's _posthook_agent_and_payload would find
+        # source_ctx.get("draft") empty — silently bypassing the B3 founder-
+        # review gate.  The result scalars must be merged into source_ctx.
+        #
+        # Mechanical executors (mr_roboto) return an Action whose .result is
+        # JSON-encoded by the orchestrator into
+        # ``{"status": "completed", "result": "<json-string>"}`` — so the
+        # interesting fields (draft, incident_id, ...) are NOT top-level keys
+        # of a.raw, they are nested inside the a.raw["result"] JSON string.
+        # Unwrap that string so the scalars actually reach the posthook ctx.
+        _result_scalars: dict = {}
+        if isinstance(a.raw, dict):
+            for _rk, _rv in a.raw.items():
+                if _rk in ("status", "ok", "result"):
+                    continue
+                if isinstance(_rv, (str, int, float, bool)):
+                    _result_scalars[_rk] = _rv
+            _inner = a.raw.get("result")
+            if isinstance(_inner, str) and _inner.strip():
+                try:
+                    _inner = _json.loads(_inner)
+                except (ValueError, TypeError):
+                    _inner = None
+            if isinstance(_inner, dict):
+                for _rk, _rv in _inner.items():
+                    if _rk in ("status", "ok"):
+                        continue
+                    if isinstance(_rv, (str, int, float, bool)):
+                        # top-level a.raw scalars (rare) take precedence over
+                        # the nested executor-result scalars.
+                        _result_scalars.setdefault(_rk, _rv)
+        for kind in determined:
+            # Using setdefault means task_ctx values win (they were set
+            # intentionally); result scalars fill only fields the task didn't
+            # set.
             _posthook_ctx = dict(task_ctx)
-            if isinstance(a.raw, dict):
-                for _rk, _rv in a.raw.items():
-                    if _rk not in ("status", "ok") and isinstance(
-                        _rv, (str, int, float, bool)
-                    ):
-                        _posthook_ctx.setdefault(_rk, _rv)
+            for _rk, _rv in _result_scalars.items():
+                _posthook_ctx.setdefault(_rk, _rv)
             result_actions.append(
                 RequestPostHook(
                     source_task_id=a.task_id,

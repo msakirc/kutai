@@ -93,11 +93,18 @@ def test_determine_posthooks_combinable_with_verify_artifacts():
     assert kinds == ["grade", "verify_artifacts", "code_review"]
 
 
-def test_determine_posthooks_excludes_code_reviewer_itself():
+def test_determine_posthooks_excludes_implicit_grade_for_code_reviewer():
+    """A code_reviewer task gets no IMPLICIT grade hook (judge-of-judge).
+
+    Z7 B3 corrected contract: excluded agent types suppress only the
+    implicit `grade` hook — an explicitly declared post-hook is still
+    honoured. A code_reviewer task that declares no post_hooks therefore
+    yields an empty list (the implicit grade is dropped).
+    """
     task = {"id": 1, "agent_type": "code_reviewer"}
-    ctx = {"post_hooks": ["code_review"]}
-    kinds = determine_posthooks(task, ctx, {})
-    assert kinds == []
+    assert determine_posthooks(task, {}, {}) == []
+    # requires_grading explicitly True still does not re-add grade.
+    assert determine_posthooks(task, {"requires_grading": True}, {}) == []
 
 
 # ── _posthook_agent_and_payload ──────────────────────────────────────────

@@ -40,6 +40,12 @@ def _bootstrap_ops_handlers() -> None:
 
     Called once at module load time.  Idempotent: re-importing this module
     replaces with identical handlers (no observable difference).
+
+    Also eagerly imports the other A11 domains (currently ``mention``) so
+    their import-time ``register_handler`` calls fire as soon as the
+    on-call dispatcher is set up — otherwise the ``mention`` domain stays
+    empty until the first cron poll and ``oncall_action.run()``'s mention
+    lookup misses every agent-dispatched mention event.
     """
     from coulson.agent_handlers.registry import register_handler
 
@@ -51,6 +57,14 @@ def _bootstrap_ops_handlers() -> None:
     register_handler("ops", "rotate_failed_key", _stub_handler)
     register_handler("ops", "archive_flake_test", _stub_handler)
     register_handler("ops", "escalate_to_founder", _escalate_handler)
+
+    # A11.r1 — trigger the 'mention' domain's import-time registration.
+    # mention_polls registers its handler at module import; importing it
+    # here makes the 'mention' domain live without waiting for a cron poll.
+    try:
+        import mr_roboto.mention_polls  # noqa: F401  (import for side effect)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("oncall_action: mention domain bootstrap skipped: %s", exc)
 
 
 # ---------------------------------------------------------------------------

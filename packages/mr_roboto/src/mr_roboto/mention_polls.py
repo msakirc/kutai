@@ -638,3 +638,67 @@ async def run(payload: dict) -> dict:
         config=config,
     )
     return {"status": "ok", **result}
+
+
+# ---------------------------------------------------------------------------
+# A11.r1 — agent-handler registry registration
+# ---------------------------------------------------------------------------
+# The Z7 v3 doc (A11.r1) says the mention domain must plug into the
+# oncall_agent dispatch chain via ``register_handler('mention', ...)``.
+# Without this, mention events can only reach this executor through the
+# direct cron path (run() above) — never the agent dispatch chain, and
+# oncall_action.run()'s 'mention' domain lookup always misses.
+
+
+async def _mention_poll_handler(
+    verb: str, params: dict, mission_id: int
+) -> dict:
+    """Agent-registry handler for the 'mention' domain.
+
+    Signature matches the registry contract
+    ``async (verb, params, mission_id) -> dict``. ``params`` carries the
+    same keys as the cron payload (source / product_id / product_name /
+    config). Delegates to :func:`poll_source` so both the cron path and
+    the agent-dispatch path share one implementation.
+    """
+    source = str(params.get("source") or "")
+    product_id = str(params.get("product_id") or "")
+    product_name = str(params.get("product_name") or "")
+    config = params.get("config") or {}
+
+    if not source:
+        return {"status": "failed", "error": "mention: missing 'source'",
+                "verb": verb}
+    if not product_id:
+        return {"status": "failed", "error": "mention: missing 'product_id'",
+                "verb": verb}
+    if not product_name:
+        return {"status": "failed", "error": "mention: missing 'product_name'",
+                "verb": verb}
+
+    result = await poll_source(
+        source=source,
+        product_id=product_id,
+        product_name=product_name,
+        config=config,
+    )
+    return {"status": "ok", "verb": verb, **result}
+
+
+def _register_mention_handlers() -> None:
+    """Register the 'mention' domain handler at import time.
+
+    Idempotent: re-importing this module replaces with the identical
+    handler. Best-effort — a missing coulson package must not break the
+    cron path, so registration failure is swallowed with a debug log.
+    """
+    try:
+        from coulson.agent_handlers.registry import register_handler
+    except Exception as exc:  # coulson not importable in this context
+        logger.debug("mention_polls: handler registry unavailable: %s", exc)
+        return
+    register_handler("mention", "mention_poll", _mention_poll_handler)
+
+
+# Register at import time so the 'mention' domain has a live runtime entry.
+_register_mention_handlers()

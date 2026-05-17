@@ -7969,6 +7969,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         await query.answer()
         data = query.data
 
+        if data.startswith("yal:"):
+            await self.handle_yalayut_callback(update, context)
+            return
+
         # ── Z1 T6C: github visibility flip confirmation ────────────
         if data.startswith("gh_vis:"):
             parts = data.split(":")
@@ -12192,102 +12196,285 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             parse_mode="Markdown",
         )
 
-    # ─── Yalayut Phase 3 — catalog auth + MCP control ────────────────────
+    # ─── Yalayut Phase 4 — /yalayut command group ───────────────────────
 
-    async def cmd_yalayut(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        """Manage yalayut catalog auth secrets and running MCP servers.
+    async def cmd_yalayut(self, update, context):
+        """`/yalayut <subcommand> ...` — catalog ops surface.
 
-        Sub-commands:
-          /yalayut auth missing          — list artifacts blocked on missing auth
-          /yalayut auth set KEY=VALUE    — store an auth secret and re-vet
-          /yalayut mcp status            — show running MCP server processes
-          /yalayut mcp restart <id>      — restart an MCP server by artifact_id
-          /yalayut mcp kill <id>         — kill an MCP server by artifact_id
+        Subcommands (spec Telegram UX): (no args) overview · sources pending ·
+        review <source> · pending · policy add|review · disable|enable|requeue
+        <id> · source promote <id> <tier> · owner promote <name> · stats ·
+        discover "<intent>" · scout <url> · auth missing · auth set <K>=<V> ·
+        mcp status|restart|kill <id>.
         """
-        args = context.args or []
-        if not args:
-            await self._reply(
-                update,
-                "*Yalayut commands*\n\n"
-                "`/yalayut auth missing` — artifacts blocked on missing auth\n"
-                "`/yalayut auth set KEY=VALUE` — store secret + re-vet\n"
-                "`/yalayut mcp status` — running MCP servers\n"
-                "`/yalayut mcp restart <id>` — restart MCP server\n"
-                "`/yalayut mcp kill <id>` — kill MCP server",
-                parse_mode="Markdown",
-            )
+        from yalayut import admin
+        from yalayut.discovery import demand as _demand
+        args = list(getattr(context, "args", []) or [])
+        sub = args[0] if args else ""
+
+        try:
+            if not sub:
+                st = await admin.stats()
+                lines = ["📚 *Yalayut catalog*"]
+                lines.append(f"Tiers: {st['tier_counts']}")
+                lines.append(f"Types: {st['type_counts']}")
+                lines.append(f"Vet queue: {st['vet_queue_depth']}")
+                lines.append(
+                    f"Source candidates: {st['source_candidate_queue_depth']}")
+                lines.append(
+                    f"Demand backlog: {st['demand_signal_backlog']}")
+                await self._reply(update, "\n".join(lines))
+                return
+
+            if sub == "sources" and len(args) > 1 and args[1] == "pending":
+                pend = await admin.pending_sources()
+                if not pend:
+                    await self._reply(update, "No pending source candidates.")
+                    return
+                for p in pend[:10]:
+                    text = (f"🔎 *Source candidate*\n`{p['candidate_source_id']}`"
+                            f"\ntype: {p['source_type']}\n{p['metadata']}")
+                    kb = self._yalayut_source_keyboard(p["id"])
+                    await self._reply(update, text, reply_markup=kb)
+                return
+
+            if sub == "review" and len(args) > 1:
+                # collapsed per-source digest = pending artifacts of a source.
+                src = args[1]
+                pend = [a for a in await admin.pending_artifacts()
+                        if a["source"] == src]
+                if not pend:
+                    await self._reply(update, f"No pending artifacts for {src}.")
+                    return
+                names = "\n".join(f"• {a['name']} (id {a['id']})"
+                                  for a in pend)
+                await self._reply(update, f"Pending in {src}:\n{names}")
+                return
+
+            if sub == "pending":
+                pend = await admin.pending_artifacts()
+                if not pend:
+                    await self._reply(update, "No T2 escalations pending.")
+                    return
+                for a in pend[:10]:
+                    text = (f"📦 *{a['name']}*\nsource: {a['source']}\n"
+                            f"kind: {a['kind']} · tier T{a['vet_tier']}")
+                    kb = self._yalayut_vet_keyboard(a["id"])
+                    await self._reply(update, text, reply_markup=kb)
+                return
+
+            if sub == "policy":
+                if len(args) > 1 and args[1] == "review":
+                    props = await admin.policy_proposals()
+                    if not props:
+                        await self._reply(update, "No policy proposals.")
+                        return
+                    for p in props[:10]:
+                        text = (f"⚙️ *Policy proposal*\n"
+                                f"{p['check_name']} → `{p['key']}` "
+                                f"= {p['proposed_value']}\n{p['evidence']}")
+                        kb = self._yalayut_policy_keyboard(p["id"])
+                        await self._reply(update, text, reply_markup=kb)
+                    return
+                if len(args) > 3 and args[1] == "add":
+                    await admin.propose_policy(args[2], args[3])
+                    await self._reply(
+                        update, f"Policy proposal queued: {args[2]}/{args[3]}")
+                    return
+                await self._reply(update,
+                                  "Usage: /yalayut policy add <check> <key> "
+                                  "| /yalayut policy review")
+                return
+
+            if sub in ("disable", "enable", "requeue") and len(args) > 1:
+                aid = int(args[1])
+                fn = {"disable": admin.disable, "enable": admin.enable,
+                      "requeue": admin.requeue}[sub]
+                await fn(aid)
+                await self._reply(update, f"Artifact {aid}: {sub} done.")
+                return
+
+            if sub == "source" and len(args) > 3 and args[1] == "promote":
+                await admin.promote_source(args[2], int(args[3]))
+                await self._reply(update,
+                                  f"Source {args[2]} promoted to T{args[3]}.")
+                return
+
+            if sub == "owner" and len(args) > 2 and args[1] == "promote":
+                await admin.promote_owner(args[2])
+                await self._reply(update, f"Owner {args[2]} promoted.")
+                return
+
+            if sub == "stats":
+                st = await admin.stats()
+                lines = ["📊 *Yalayut stats*"]
+                for cls, ab in (st.get("exposure_ab") or {}).items():
+                    tot = ab["total"] or 1
+                    rate = 100.0 * ab["succeeded"] / tot
+                    lines.append(f"{cls}: {ab['succeeded']}/{ab['total']} "
+                                 f"({rate:.0f}%)")
+                await self._reply(update, "\n".join(lines))
+                return
+
+            if sub == "discover" and len(args) > 1:
+                intent = " ".join(args[1:]).strip('"')
+                await _demand.record_signal(_demand.DemandSignal(
+                    source_step_pattern=f"founder:{intent[:40]}",
+                    intent_keywords=intent.split(),
+                    signal_type="founder", confidence=0.8))
+                # immediately enqueue an on-demand discovery for this intent.
+                import general_beckman
+                await general_beckman.enqueue(
+                    {"agent_type": "mechanical",
+                     "title": f"Yalayut discover: {intent[:40]}",
+                     "payload": {"action": "yalayut_discovery",
+                                 "mode": "on_demand",
+                                 "demand": {
+                                     "source_step_pattern":
+                                         f"founder:{intent[:40]}",
+                                     "intent_keywords": intent.split(),
+                                     "stacked_confidence": 0.8}}},
+                    lane="mechanical")
+                await self._reply(update,
+                                  f"Discovery queued for: {intent}")
+                return
+
+            if sub == "scout" and len(args) > 1:
+                res = await admin.queue_scout_url(args[1])
+                await self._reply(update,
+                                  f"Scout URL queued: {res['candidate_source_id']}")
+                return
+
+            if sub == "auth":
+                if len(args) > 1 and args[1] == "missing":
+                    miss = await admin.missing_auth()
+                    if not miss:
+                        await self._reply(update,
+                                          "No artifacts blocked on auth.")
+                        return
+                    txt = "\n".join(f"• {m['name']}: {m['env_status']}"
+                                    for m in miss)
+                    await self._reply(update, f"Missing auth:\n{txt}")
+                    return
+                if len(args) > 2 and args[1] == "set":
+                    kv = args[2]
+                    if "=" not in kv:
+                        await self._reply(update,
+                                          "Usage: /yalayut auth set KEY=VALUE")
+                        return
+                    k, v = kv.split("=", 1)
+                    await admin.set_secret(k.strip(), v.strip())
+                    await self._reply(update, f"Secret {k.strip()} stored.")
+                    return
+                await self._reply(update,
+                                  "Usage: /yalayut auth missing "
+                                  "| /yalayut auth set KEY=VALUE")
+                return
+
+            if sub == "mcp":
+                if len(args) > 1 and args[1] == "status":
+                    rows = await admin.mcp_status()
+                    if not rows:
+                        await self._reply(update, "No MCP servers running.")
+                        return
+                    txt = "\n".join(
+                        f"• {r['name']}: {r['health']} (pid {r['pid']})"
+                        for r in rows)
+                    await self._reply(update, f"MCP servers:\n{txt}")
+                    return
+                if len(args) > 2 and args[1] in ("restart", "kill"):
+                    aid = int(args[2])
+                    fn = (admin.mcp_restart if args[1] == "restart"
+                          else admin.mcp_kill)
+                    res = await fn(aid)
+                    await self._reply(update,
+                                      f"MCP {args[1]} {aid}: "
+                                      f"{'ok' if res.get('ok') else res}")
+                    return
+                await self._reply(update,
+                                  "Usage: /yalayut mcp status|restart|kill")
+                return
+
+            await self._reply(update,
+                              "Unknown subcommand. Try /yalayut for overview.")
+        except Exception as e:  # noqa: BLE001
+            await self._reply(update, f"⚠️ /yalayut error: {e}")
+
+    # ── inline keyboards ────────────────────────────────────────────────
+
+    def _yalayut_vet_keyboard(self, artifact_id: int):
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "✅ Approve", callback_data=f"yal:vet_approve:{artifact_id}"),
+            InlineKeyboardButton(
+                "❌ Reject", callback_data=f"yal:vet_reject:{artifact_id}"),
+        ]])
+
+    def _yalayut_source_keyboard(self, candidate_id: int):
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "Trust", callback_data=f"yal:src_approve_trusted:{candidate_id}"),
+            InlineKeyboardButton(
+                "Untrust",
+                callback_data=f"yal:src_approve_untrusted:{candidate_id}"),
+        ], [
+            InlineKeyboardButton(
+                "Reject", callback_data=f"yal:src_reject:{candidate_id}"),
+        ]])
+
+    def _yalayut_policy_keyboard(self, proposal_id: int):
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "Approve", callback_data=f"yal:pol_approve:{proposal_id}"),
+            InlineKeyboardButton(
+                "Reject", callback_data=f"yal:pol_reject:{proposal_id}"),
+        ]])
+
+    async def handle_yalayut_callback(self, update, context):
+        """Route `yal:<action>:<id>` inline-button taps."""
+        from yalayut import admin
+        query = update.callback_query
+        data = query.data or ""
+        parts = data.split(":")
+        if len(parts) != 3:
+            await query.answer("Bad callback")
+            return
+        _, action, raw_id = parts
+        try:
+            target_id = int(raw_id)
+        except ValueError:
+            await query.answer("Bad id")
             return
 
-        sub = args[0].lower()
-        args = args[1:]  # remaining args after sub-command
-
-        if sub == "auth" and args[:1] == ["missing"]:
-            from yalayut import admin
-            rows = await admin.missing_auth()
-            if not rows:
-                await self._reply(update, "yalayut: no artifacts blocked on auth.")
+        try:
+            if action == "vet_approve":
+                await admin.approve_artifact(target_id)
+                msg = f"Artifact {target_id} approved."
+            elif action == "vet_reject":
+                await admin.reject_artifact(target_id)
+                msg = f"Artifact {target_id} rejected."
+            elif action == "src_approve_trusted":
+                await admin.approve_source(target_id, trusted=True)
+                msg = f"Source candidate {target_id} approved (trusted)."
+            elif action == "src_approve_untrusted":
+                await admin.approve_source(target_id, trusted=False)
+                msg = f"Source candidate {target_id} approved (untrusted)."
+            elif action == "src_reject":
+                await admin.reject_source(target_id)
+                msg = f"Source candidate {target_id} rejected."
+            elif action == "pol_approve":
+                await admin.decide_policy(target_id, approve=True)
+                msg = f"Policy proposal {target_id} approved."
+            elif action == "pol_reject":
+                await admin.decide_policy(target_id, approve=False)
+                msg = f"Policy proposal {target_id} rejected."
             else:
-                lines = ["*Artifacts blocked on missing auth*"]
-                for r in rows:
-                    lines.append(f"- `{r['name']}` needs `{r['missing_key']}`")
-                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
-
-        elif sub == "auth" and args[:1] == ["set"] and len(args) >= 2:
-            # /yalayut auth set KEY=VALUE
-            kv = " ".join(args[1:])
-            if "=" not in kv:
-                await self._reply(update, "Usage: /yalayut auth set KEY=VALUE")
-            else:
-                key, value = kv.split("=", 1)
-                from yalayut import admin
-                res = await admin.set_secret(key.strip(), value.strip())
-                if res["ok"]:
-                    await self._reply(
-                        update,
-                        f"yalayut: stored `{key.strip()}` "
-                        f"and re-vetted dependent artifacts.",
-                        parse_mode="Markdown",
-                    )
-                else:
-                    await self._reply(
-                        update,
-                        f"yalayut: failed — {res.get('error')}",
-                    )
-
-        elif sub == "mcp" and args[:1] == ["status"]:
-            from yalayut import admin
-            rows = await admin.mcp_status()
-            if not rows:
-                await self._reply(update, "yalayut: no MCP servers running.")
-            else:
-                lines = ["*Running MCP servers*"]
-                for r in rows:
-                    lines.append(
-                        f"- artifact `{r['artifact_id']}` pid {r['pid']} "
-                        f"health={r['health']} fails={r['fails']}"
-                    )
-                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
-
-        elif sub == "mcp" and args[:1] == ["restart"] and len(args) >= 2:
-            from yalayut import admin
-            res = await admin.mcp_restart(int(args[1]))
-            await self._reply(
-                update,
-                f"yalayut: mcp restart artifact {args[1]} -> "
-                f"{res.get('health') or res.get('error')}",
-            )
-
-        elif sub == "mcp" and args[:1] == ["kill"] and len(args) >= 2:
-            from yalayut import admin
-            await admin.mcp_kill(int(args[1]))
-            await self._reply(update, f"yalayut: killed MCP artifact {args[1]}.")
-
-        else:
-            await self._reply(
-                update,
-                f"Unknown /yalayut subcommand: `{sub}`\n\n"
-                "Use `/yalayut` for help.",
-                parse_mode="Markdown",
-            )
+                msg = f"Unknown yalayut action: {action}"
+            await query.answer("Done")
+            await query.edit_message_text(msg)
+        except Exception as e:  # noqa: BLE001
+            await query.answer("Error")
+            await query.edit_message_text(f"⚠️ {e}")

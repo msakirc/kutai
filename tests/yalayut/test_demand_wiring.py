@@ -94,3 +94,34 @@ async def test_react_unresolved_tool_fires_tool_call_signal(db):
     assert len(rows) == 1
     assert rows[0][0] == "tool_call"
     assert "scrape_pdf_table" in rows[0][1]
+
+
+@pytest.mark.asyncio
+async def test_capture_repeat_fires_hint_miss(db):
+    from yalayut.capture import capture_hint
+
+    task = {"title": "Retry flaky HTTP with backoff",
+            "description": "wrap requests in exponential backoff"}
+    outcome = {"status": "completed", "iterations": 3}
+
+    # Ensure yalayut_index has no pre-existing row for this slug so the first
+    # capture always takes the INSERT path (not the UPDATE path).
+    dbc = await _get_db_for_test()
+    await dbc.execute(
+        "DELETE FROM yalayut_index WHERE source = 'internal' AND name = 'internal-retry-flaky-http-with-backoff'")
+    await dbc.commit()
+
+    # First capture — inserts, no hint_miss.
+    await capture_hint(task, outcome)
+    dbc = await _get_db_for_test()
+    cur = await dbc.execute("SELECT COUNT(*) FROM yalayut_demand_signals "
+                            "WHERE signal_type = 'hint_miss'")
+    assert (await cur.fetchone())[0] == 0
+
+    # Second capture of the same task — upsert path -> hint_miss fires.
+    await capture_hint(task, outcome)
+    cur = await dbc.execute("SELECT source_step_pattern FROM yalayut_demand_signals "
+                            "WHERE signal_type = 'hint_miss'")
+    rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0].startswith("hint_miss:internal-")

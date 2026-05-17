@@ -67,6 +67,18 @@ async def capture_hint(task: dict, outcome: dict) -> None:
             "UPDATE yalayut_index SET body_excerpt = ?, embedding = ?, "
             "vetted_at = ? WHERE id = ?",
             (body[:500], embedding_blob, now, existing[0]))
+        # Repeat capture of the same pattern — a reusable EXTERNAL skill would
+        # beat re-deriving this internally. Record a reactive hint_miss signal.
+        try:
+            from yalayut.discovery.demand import record as _record_demand
+            await _record_demand(
+                source_step_pattern=f"hint_miss:{name}",
+                intent_keywords=[w for w in title.split() if len(w) > 2][:12],
+                signal_type="hint_miss",
+                confidence=0.3,
+            )
+        except Exception as exc:  # noqa: BLE001 — capture must never crash
+            logger.debug("hint_miss demand signal skipped: %s", exc)
     else:
         await db.execute(
             "INSERT INTO yalayut_index "

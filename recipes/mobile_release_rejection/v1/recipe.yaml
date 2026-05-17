@@ -1,0 +1,31 @@
+name: mobile_release_rejection
+version: v1
+description: "App Store / Google Play rejection playbook: common rejection reasons with diagnosis + fix templates for Expo apps"
+requires:
+  tech_stack:
+    - "expo"
+    - "fastapi+sqlite+expo"
+    - "fastapi+postgres+expo"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - test_run
+templates:
+  rejection_response: templates/rejection_response.md.template
+  demo_account: templates/demo_account.json.template
+prompts:
+  expo: prompts/expo.md
+lessons_domain: mobile_release_rejection
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  APP_NAME: "MyApp"
+  BUNDLE_ID: "com.example.app"
+  SUPPORT_EMAIL: "support@example.com"
+  DEMO_USERNAME: "demo@example.com"
+  DEMO_PASSWORD: "DemoPass123!"
+entry_points:
+  playbook: spec.md
+  rejection_response: templates/rejection_response.md.template

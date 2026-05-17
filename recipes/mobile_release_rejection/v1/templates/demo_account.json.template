@@ -1,0 +1,23 @@
+{
+  "_comment": "Demo-account descriptor for App Store Connect 'App Review Information' / Google Play 'App access'. RECIPE_PARAM markers below document the substitutable knobs. NEVER ship these credentials inside the app binary.",
+  "_RECIPE_PARAM_APP_NAME": "RECIPE_PARAM:APP_NAME=MyApp",
+  "_RECIPE_PARAM_DEMO_USERNAME": "RECIPE_PARAM:DEMO_USERNAME=demo@example.com",
+  "_RECIPE_PARAM_DEMO_PASSWORD": "RECIPE_PARAM:DEMO_PASSWORD=DemoPass123!",
+  "app_name": "<<APP_NAME>>",
+  "demo_account": {
+    "username": "<<DEMO_USERNAME>>",
+    "password": "<<DEMO_PASSWORD>>",
+    "notes": "Stable review account. Seeded with representative data. Does not expire and is exempt from rate limiting. If the app uses SMS/OTP login, this account is configured for password fallback so the reviewer never needs a phone."
+  },
+  "where_to_paste": {
+    "app_store": "App Store Connect -> your app -> App Review Information -> Sign-in required -> Username / Password + Notes",
+    "google_play": "Play Console -> your app -> App content -> App access -> All or some functionality is restricted"
+  },
+  "seed_checklist": [
+    "Account exists and is verified",
+    "Representative sample data is present (the reviewer must be able to exercise core flows)",
+    "Account is excluded from rate limiting / lockout policies",
+    "Account never expires",
+    "If billing exists, the account is in a sandbox / test-purchase state"
+  ]
+}

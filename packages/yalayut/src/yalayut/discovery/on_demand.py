@@ -40,9 +40,33 @@ async def _untrusted_sources_for(intent_keywords: list[str]) -> list[dict]:
 
 async def _ingest_source_capped(source_row: dict, *,
                                 artifact_cap: int = ON_DEMAND_ARTIFACT_CAP) -> dict:
-    """Phase 1/3 ingest pipeline with a per-run artifact cap."""
-    from yalayut.discovery import fetch as yal_fetch
-    return await yal_fetch.ingest_all(source_row, artifact_cap=artifact_cap)
+    """Real per-source ingest pipeline with a per-run artifact cap.
+
+    Builds a SourceConfig from the source_row dict and runs the shared
+    ``_ingest_one_source`` helper, honoring ``artifact_cap`` as the
+    first-flood guard. Never raises — a missing adapter yields a zero-count
+    dict with an error string.
+    """
+    from yalayut.contracts import SourceConfig
+    from yalayut.discovery.cron import _ingest_one_source
+
+    cfg = SourceConfig(
+        source_id=source_row["source_id"],
+        source_type=source_row["source_type"],
+        endpoint=source_row.get("endpoint") or "",
+        auth_env=source_row.get("auth_env"),
+        trusted=bool(source_row.get("trusted", False)),
+        discovery_mode=source_row.get("discovery_mode", "on_demand"),
+        min_interval_s=source_row.get("min_interval_s"),
+    )
+    db = await get_db()
+    res = await _ingest_one_source(db, cfg, artifact_cap=artifact_cap)
+    return {
+        "ingested": res["ingested"],
+        "enabled": res["enabled"],
+        "quarantined": res["quarantined"],
+        "errors": res["errors"],
+    }
 
 
 async def on_demand_discovery(demand: dict) -> dict:

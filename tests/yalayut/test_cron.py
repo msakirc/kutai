@@ -167,6 +167,105 @@ async def test_cron_skips_invalid_manifest_and_records_error(
     assert (await cur.fetchone())["c"] == 0
 
 
+# ── Fix 1 regression: _ingest_source must run a REAL adapter pipeline ───────
+
+
+async def test_ingest_source_invokes_real_adapter_and_stores(
+    yalayut_db, monkeypatch, tmp_path
+):
+    """`_ingest_source(source_row)` must actually run the adapter ->
+    fetch -> synthesize -> vet -> classify -> store pipeline (not call a
+    non-existent fetch.ingest_all). Proven by registering a fake adapter in
+    `_ADAPTERS` and asserting a row lands in yalayut_index with correct
+    enabled/quarantined counts."""
+    import yalayut.discovery.cron as _cron_mod
+    from yalayut.contracts import ArtifactRef
+    from yalayut.discovery.sources import github_path
+
+    await seed_policy(yalayut_db)
+    await seed_owners(yalayut_db)
+    await seed_sources(yalayut_db)
+
+    reached = {"fetch": False}
+
+    class _FakeAdapter:
+        source_type = "fake_src"
+
+        async def discover(self, cfg):
+            return [ArtifactRef(
+                source_id=cfg.source_id, name="brainstorming",
+                fetch_url="https://raw/x", owner="obra",
+            )]
+
+        async def fetch(self, ref):
+            reached["fetch"] = True
+            d = tmp_path / ref.name
+            d.mkdir(exist_ok=True)
+            f = d / "SKILL.md"
+            f.write_bytes(_FIXTURE_BODY)
+            return f
+
+    async def fake_embed(text, is_query=False):
+        return [1.0] + [0.0] * 767
+
+    # Register the fake adapter as a real entry in the registry.
+    monkeypatch.setitem(_cron_mod._ADAPTERS, "fake_src", _FakeAdapter())
+    monkeypatch.setattr("yalayut.discovery.cron._embed", fake_embed)
+
+    # _ingest_source uses get_db() — route it to the in-memory test DB.
+    async def _fake_get_db():
+        return yalayut_db
+
+    monkeypatch.setattr(_cron_mod, "get_db", _fake_get_db)
+
+    source_row = {
+        "source_id": "github:obra/superpowers@/skills",
+        "source_type": "fake_src",
+        "endpoint": "https://example.com",
+        "auth_env": None,
+        "trusted": True,
+        "discovery_mode": "cron",
+        "min_interval_s": 0,
+    }
+    res = await _cron_mod._ingest_source(source_row)
+
+    assert reached["fetch"], "_ingest_source must reach the adapter fetch path"
+    assert res["ingested"] == 1, f"expected 1 ingested, got {res}"
+    # obra owner trust 0.9 + brainstorming -> T0 -> enabled
+    assert res["enabled"] == 1
+    assert res["quarantined"] == 0
+
+    cur = await yalayut_db.execute(
+        "SELECT name, enabled FROM yalayut_index "
+        "WHERE name_original='brainstorming'"
+    )
+    rows = await cur.fetchall()
+    assert rows, "_ingest_source must actually populate yalayut_index"
+    assert rows[0]["enabled"] == 1
+
+
+async def test_ingest_source_unknown_type_returns_error_never_raises(
+    yalayut_db, monkeypatch
+):
+    """A source_type with no adapter must yield a zero-count dict with an
+    error string — never raise."""
+    import yalayut.discovery.cron as _cron_mod
+
+    async def _fake_get_db():
+        return yalayut_db
+
+    monkeypatch.setattr(_cron_mod, "get_db", _fake_get_db)
+
+    res = await _cron_mod._ingest_source({
+        "source_id": "x", "source_type": "no_such_adapter",
+        "endpoint": "", "auth_env": None,
+    })
+    assert res["ingested"] == 0
+    assert res["enabled"] == 0
+    assert res["quarantined"] == 0
+    assert any("no adapter" in e for e in res["errors"])
+
+
 async def test_cron_honors_disabled_imports(yalayut_db, monkeypatch, tmp_path):
     await seed_policy(yalayut_db)
     await seed_owners(yalayut_db)

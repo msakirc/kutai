@@ -51,6 +51,126 @@ async def _is_disabled(
     return await cur.fetchone() is not None
 
 
+async def _ingest_one_source(
+    db: aiosqlite.Connection,
+    cfg: SourceConfig,
+    *,
+    artifact_cap: int | None = None,
+) -> dict:
+    """Run the full per-source ingest pipeline for ONE source.
+
+    discover -> fetch -> synthesize -> validate_manifest -> run_all ->
+    source/owner tier -> classify -> embed -> store.
+
+    This is the REAL per-source pipeline — extracted from run_cron_discovery
+    so that the Phase 4 ``daily_discovery``/``on_demand_discovery`` loops can
+    reuse it instead of calling a non-existent ``fetch.ingest_all``.
+
+    Returns ``{ingested, enabled, quarantined, skipped_disabled, errors}``.
+    ``ingested`` counts rows written to yalayut_index; ``enabled`` counts those
+    with tier in (0,1); ``quarantined`` counts tier in (2,3). Never raises —
+    adapter failures are isolated into ``errors``.
+
+    ``artifact_cap`` (if set) limits how many artifacts a single source run
+    will fetch+index — the on-demand first-flood guard.
+    """
+    result = {
+        "ingested": 0,
+        "enabled": 0,
+        "quarantined": 0,
+        "skipped_disabled": 0,
+        "errors": [],
+    }
+    adapter = _ADAPTERS.get(cfg.source_type)
+    if adapter is None:
+        result["errors"].append(f"no adapter for {cfg.source_type}")
+        return result
+
+    try:
+        refs = await adapter.discover(cfg)
+    except Exception as e:  # adapter network failure — isolate per source
+        result["errors"].append(
+            f"discover {cfg.source_id}: {type(e).__name__}: {e}"
+        )
+        return result
+
+    for ref in refs:
+        if artifact_cap is not None and result["ingested"] >= artifact_cap:
+            break
+        if await _is_disabled(db, ref.source_id, ref.name):
+            result["skipped_disabled"] += 1
+            continue
+        try:
+            body_path = await adapter.fetch(ref)
+            raw = body_path.read_bytes()
+            manifest, body = synthesize(ref, raw)
+            manifest_errs = validate_manifest(manifest)
+            if manifest_errs:
+                result["errors"].append(
+                    f"validate {ref.name}: " + "; ".join(manifest_errs)
+                )
+                continue
+            # H3 fix: write manifest.yaml next to SKILL.md so that
+            # _to_artifact can load intent_keywords/inputs_schema via
+            # _load_manifest_fields().  The YAML shape mirrors
+            # parse_manifest_yaml()'s expected keys (round-trip safe).
+            manifest_yaml_path = body_path.parent / "manifest.yaml"
+            manifest_dict = {
+                "name": manifest.name,
+                "name_original": manifest.name_original,
+                "version": manifest.version,
+                "artifact_type": manifest.artifact_type,
+                "kind": manifest.kind,
+                "source": manifest.source,
+                "owner": manifest.owner,
+                "license": manifest.license,
+                "mechanizable": manifest.mechanizable,
+                "model_hint": manifest.model_hint,
+                "applies_to": manifest.applies_to,
+                "intent_keywords": list(manifest.intent_keywords),
+                "inputs_schema": dict(manifest.inputs_schema),
+            }
+            manifest_yaml_path.write_text(
+                yaml.safe_dump(manifest_dict, allow_unicode=True),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            result["errors"].append(
+                f"fetch {ref.name}: {type(e).__name__}: {e}"
+            )
+            continue
+
+        check_maxes = await run_all(db, manifest, body_path)
+        src_max = await source_max_tier(db, manifest.source)
+        own_max = await owner_max_tier(db, manifest.owner)
+        tier, audit = classify(src_max, own_max, check_maxes)
+
+        emb = await _embed(
+            f"{manifest.name} {manifest.name_original} "
+            f"{' '.join(manifest.intent_keywords)} {body[:500]}",
+            is_query=False,
+        )
+        await store(
+            db, manifest, body, tier, audit, emb or [0.0] * 768,
+            manifest_path=str(body_path.parent / "manifest.yaml"),
+        )
+        result["ingested"] += 1
+        # store() sets enabled=1 for tier in (0,1), 0 for (2,3).
+        if tier in (0, 1):
+            result["enabled"] += 1
+        else:
+            result["quarantined"] += 1
+
+    await db.execute(
+        "UPDATE yalayut_sources SET "
+        "last_run_at = strftime('%Y-%m-%d %H:%M:%S','now') "
+        "WHERE source_id = ?",
+        (cfg.source_id,),
+    )
+    await db.commit()
+    return result
+
+
 async def run_cron_discovery(db: aiosqlite.Connection) -> dict:
     """Pull all trusted cron sources end-to-end. Returns a result summary
     dict (the mechanical-task body daily_discovery() returns)."""
@@ -68,88 +188,20 @@ async def run_cron_discovery(db: aiosqlite.Connection) -> dict:
     errors: list[str] = []
 
     for sr in source_rows:
-        adapter = _ADAPTERS.get(sr["source_type"])
-        if adapter is None:
-            errors.append(f"no adapter for {sr['source_type']}")
-            continue
         cfg = SourceConfig(
             source_id=sr["source_id"], source_type=sr["source_type"],
             endpoint=sr["endpoint"] or "", auth_env=sr["auth_env"],
             trusted=bool(sr["trusted"]), discovery_mode=sr["discovery_mode"],
             min_interval_s=sr["min_interval_s"],
         )
-        sources_run += 1
-        try:
-            refs = await adapter.discover(cfg)
-        except Exception as e:  # adapter network failure — isolate per source
-            errors.append(f"discover {cfg.source_id}: {type(e).__name__}: {e}")
+        if cfg.source_type not in _ADAPTERS:
+            errors.append(f"no adapter for {cfg.source_type}")
             continue
-
-        for ref in refs:
-            if await _is_disabled(db, ref.source_id, ref.name):
-                skipped_disabled += 1
-                continue
-            try:
-                body_path = await adapter.fetch(ref)
-                raw = body_path.read_bytes()
-                manifest, body = synthesize(ref, raw)
-                manifest_errs = validate_manifest(manifest)
-                if manifest_errs:
-                    errors.append(
-                        f"validate {ref.name}: " + "; ".join(manifest_errs)
-                    )
-                    continue
-                # H3 fix: write manifest.yaml next to SKILL.md so that
-                # _to_artifact can load intent_keywords/inputs_schema via
-                # _load_manifest_fields().  The YAML shape mirrors
-                # parse_manifest_yaml()'s expected keys (round-trip safe).
-                manifest_yaml_path = body_path.parent / "manifest.yaml"
-                manifest_dict = {
-                    "name": manifest.name,
-                    "name_original": manifest.name_original,
-                    "version": manifest.version,
-                    "artifact_type": manifest.artifact_type,
-                    "kind": manifest.kind,
-                    "source": manifest.source,
-                    "owner": manifest.owner,
-                    "license": manifest.license,
-                    "mechanizable": manifest.mechanizable,
-                    "model_hint": manifest.model_hint,
-                    "applies_to": manifest.applies_to,
-                    "intent_keywords": list(manifest.intent_keywords),
-                    "inputs_schema": dict(manifest.inputs_schema),
-                }
-                manifest_yaml_path.write_text(
-                    yaml.safe_dump(manifest_dict, allow_unicode=True),
-                    encoding="utf-8",
-                )
-            except Exception as e:
-                errors.append(f"fetch {ref.name}: {type(e).__name__}: {e}")
-                continue
-
-            check_maxes = await run_all(db, manifest, body_path)
-            src_max = await source_max_tier(db, manifest.source)
-            own_max = await owner_max_tier(db, manifest.owner)
-            tier, audit = classify(src_max, own_max, check_maxes)
-
-            emb = await _embed(
-                f"{manifest.name} {manifest.name_original} "
-                f"{' '.join(manifest.intent_keywords)} {body[:500]}",
-                is_query=False,
-            )
-            await store(
-                db, manifest, body, tier, audit, emb or [0.0] * 768,
-                manifest_path=str(body_path.parent / "manifest.yaml"),
-            )
-            artifacts_indexed += 1
-
-        await db.execute(
-            "UPDATE yalayut_sources SET "
-            "last_run_at = strftime('%Y-%m-%d %H:%M:%S','now') "
-            "WHERE source_id = ?",
-            (cfg.source_id,),
-        )
-        await db.commit()
+        sources_run += 1
+        res = await _ingest_one_source(db, cfg)
+        artifacts_indexed += res["ingested"]
+        skipped_disabled += res["skipped_disabled"]
+        errors.extend(res["errors"])
 
     return {
         "sources_run": sources_run,
@@ -191,13 +243,32 @@ async def _due_cron_sources() -> list[dict]:
 
 
 async def _ingest_source(source_row: dict) -> dict:
-    """Run the Phase 1/3 ingest pipeline for one source.
+    """Run the real per-source ingest pipeline for one source row.
 
-    Delegates to ``yalayut.discovery.fetch.ingest_all`` (Phase 1/3 entry
-    point). Returns ``{ingested, enabled, quarantined}``.
+    Builds a SourceConfig from the source_row dict, runs the shared
+    ``_ingest_one_source`` helper (discover -> fetch -> synthesize -> vet ->
+    classify -> embed -> store), and returns ``{ingested, enabled,
+    quarantined}``. Never raises — a missing adapter yields a zero-count
+    dict with an error string. The Phase 4 cron test monkeypatches this
+    function as the per-source seam.
     """
-    from yalayut.discovery import fetch as yal_fetch
-    return await yal_fetch.ingest_all(source_row)
+    cfg = SourceConfig(
+        source_id=source_row["source_id"],
+        source_type=source_row["source_type"],
+        endpoint=source_row.get("endpoint") or "",
+        auth_env=source_row.get("auth_env"),
+        trusted=bool(source_row.get("trusted", True)),
+        discovery_mode=source_row.get("discovery_mode", "cron"),
+        min_interval_s=source_row.get("min_interval_s"),
+    )
+    db = await get_db()
+    res = await _ingest_one_source(db, cfg)
+    return {
+        "ingested": res["ingested"],
+        "enabled": res["enabled"],
+        "quarantined": res["quarantined"],
+        "errors": res["errors"],
+    }
 
 
 async def _mark_ran(source_id: str) -> None:

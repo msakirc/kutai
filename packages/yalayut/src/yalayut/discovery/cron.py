@@ -17,6 +17,7 @@ from yalayut.contracts import SourceConfig
 from yalayut.discovery.sources.github_path import GithubPathAdapter
 from yalayut.discovery.synthesize import synthesize
 from yalayut.index import store
+from yalayut.manifest import validate_manifest
 from yalayut.tier_classifier import classify
 from yalayut.trust import owner_max_tier, source_max_tier
 from yalayut.vetting.auto_checks import run_all
@@ -86,6 +87,12 @@ async def run_cron_discovery(db: aiosqlite.Connection) -> dict:
                 body_path = await adapter.fetch(ref)
                 raw = body_path.read_bytes()
                 manifest, body = synthesize(ref, raw)
+                manifest_errs = validate_manifest(manifest)
+                if manifest_errs:
+                    errors.append(
+                        f"validate {ref.name}: " + "; ".join(manifest_errs)
+                    )
+                    continue
                 # H3 fix: write manifest.yaml next to SKILL.md so that
                 # _to_artifact can load intent_keywords/inputs_schema via
                 # _load_manifest_fields().  The YAML shape mirrors

@@ -1,7 +1,7 @@
 """daily_discovery / cron tests — must ACTUALLY fetch + index."""
 import pytest
 
-from yalayut.contracts import ArtifactRef
+from yalayut.contracts import ArtifactRef, Manifest
 from yalayut.discovery.cron import run_cron_discovery
 from yalayut.discovery.sources import github_path
 from yalayut.seed.seed_data import seed_owners, seed_sources
@@ -106,6 +106,65 @@ async def test_cron_writes_manifest_yaml(yalayut_db, monkeypatch, tmp_path):
     data = yaml.safe_load(manifest_yaml.read_text(encoding="utf-8"))
     assert "name" in data, "manifest.yaml must contain the artifact name"
     assert "intent_keywords" in data, "manifest.yaml must carry intent_keywords"
+
+
+async def test_cron_skips_invalid_manifest_and_records_error(
+    yalayut_db, monkeypatch, tmp_path
+):
+    """validate_manifest errors must be recorded in errors[] and artifact skipped."""
+    await seed_policy(yalayut_db)
+    await seed_owners(yalayut_db)
+    await seed_sources(yalayut_db)
+
+    skill_dir = tmp_path / "badskill"
+    skill_dir.mkdir()
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_bytes(_FIXTURE_BODY)
+
+    # Return a Manifest that fails validate_manifest (missing name + version)
+    bad_manifest = Manifest(
+        name="", name_original="badskill", version="",
+        artifact_type="bogus_type",
+    )
+
+    async def fake_discover(self, cfg):
+        if "superpowers" not in cfg.source_id:
+            return []
+        return [ArtifactRef(
+            source_id=cfg.source_id, name="badskill",
+            fetch_url="https://raw/x", owner="obra",
+        )]
+
+    async def fake_fetch(self, ref):
+        return skill_file
+
+    async def fake_embed(text, is_query=False):
+        return [1.0] + [0.0] * 767
+
+    import yalayut.discovery.cron as _cron_mod
+    monkeypatch.setattr(github_path.GithubPathAdapter, "discover", fake_discover)
+    monkeypatch.setattr(github_path.GithubPathAdapter, "fetch", fake_fetch)
+    monkeypatch.setattr("yalayut.discovery.cron._embed", fake_embed)
+    # Patch synthesize so it returns the bad manifest
+    monkeypatch.setattr(
+        _cron_mod, "synthesize", lambda ref, raw: (bad_manifest, "body text")
+    )
+
+    result = await run_cron_discovery(yalayut_db)
+
+    # Artifact must be skipped — not indexed
+    assert result["artifacts_indexed"] == 0, (
+        "invalid manifest must not be indexed"
+    )
+    # Error must be recorded in the errors list
+    assert any("validate" in e and "badskill" in e for e in result["errors"]), (
+        f"validate error must be in errors: {result['errors']}"
+    )
+    # DB must be empty for this artifact
+    cur = await yalayut_db.execute(
+        "SELECT COUNT(*) c FROM yalayut_index WHERE name_original='badskill'"
+    )
+    assert (await cur.fetchone())["c"] == 0
 
 
 async def test_cron_honors_disabled_imports(yalayut_db, monkeypatch, tmp_path):

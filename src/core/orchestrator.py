@@ -54,6 +54,10 @@ class Orchestrator:
         self.requested_exit_code: int | None = None
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
+        # Yalayut Phase 4 — periodic-check gates. 0.0 → first pump tick after
+        # boot fires both checks immediately, then they self-gate to 24h.
+        self._last_yalayut_discovery: float = 0.0
+        self._last_source_scout: float = 0.0
 
     def _drop_running_future(self, f: asyncio.Task) -> None:
         """done_callback: remove a completed dispatch task from the tracker.
@@ -62,6 +66,63 @@ class Orchestrator:
             self._running_futures.remove(f)
         except ValueError:
             pass
+
+    # ─── Yalayut Phase 4 periodic checks ─────────────────────────────────
+    #
+    # Mirror the _check_todo_reminders pattern: timestamp-gated, enqueue a
+    # plain dict via beckman.enqueue. The orchestrator imports ZERO from
+    # yalayut — the mechanical executor (action "yalayut_discovery" /
+    # "source_scout") owns the yalayut import. The cron_seed cadence rows
+    # are the restart-survivable backstop; these in-process checks give a
+    # finer cadence and fire promptly after boot.
+
+    _YALAYUT_DISCOVERY_INTERVAL_S: float = 86400.0   # 24h
+    _SOURCE_SCOUT_INTERVAL_S: float = 86400.0        # 24h
+
+    async def _check_yalayut_discovery(self) -> None:
+        """Enqueue a yalayut daily-discovery mechanical task when due."""
+        import time as _time
+        last = getattr(self, "_last_yalayut_discovery", 0.0)
+        now = _time.time()
+        if now - last < self._YALAYUT_DISCOVERY_INTERVAL_S:
+            return
+        self._last_yalayut_discovery = now
+        try:
+            import general_beckman
+            await general_beckman.enqueue(
+                {
+                    "agent_type": "mechanical",
+                    "title": "Yalayut daily discovery",
+                    "payload": {"action": "yalayut_discovery",
+                                "mode": "daily"},
+                },
+                lane="mechanical",
+            )
+            logger.info("enqueued yalayut daily discovery task")
+        except Exception as e:
+            logger.warning("yalayut discovery enqueue failed: %s", e)
+
+    async def _check_source_scout(self) -> None:
+        """Enqueue a yalayut source-scout mechanical task when due."""
+        import time as _time
+        last = getattr(self, "_last_source_scout", 0.0)
+        now = _time.time()
+        if now - last < self._SOURCE_SCOUT_INTERVAL_S:
+            return
+        self._last_source_scout = now
+        try:
+            import general_beckman
+            await general_beckman.enqueue(
+                {
+                    "agent_type": "mechanical",
+                    "title": "Yalayut source scout",
+                    "payload": {"action": "source_scout"},
+                },
+                lane="mechanical",
+            )
+            logger.info("enqueued yalayut source-scout task")
+        except Exception as e:
+            logger.warning("source-scout enqueue failed: %s", e)
 
     # ─── Dispatch ────────────────────────────────────────────────────────
 
@@ -487,6 +548,15 @@ class Orchestrator:
                 # never starts a server; failures are silenced so the pump
                 # is never disturbed.
                 await _check_mcp_idle_sweep()
+
+                # Yalayut Phase 4 — periodic discovery + source-scout checks.
+                # Both are timestamp-gated internally; calling every tick is
+                # cheap (a getattr + time comparison).
+                try:
+                    await self._check_yalayut_discovery()
+                    await self._check_source_scout()
+                except Exception as e:
+                    logger.debug("yalayut periodic check skipped: %s", e)
 
                 await asyncio.sleep(3)
             except asyncio.CancelledError:

@@ -363,6 +363,22 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 2592000,  # 30 days
         "payload": {"_executor": "investor_bullets"},
     },
+    # Yalayut Phase 4 — daily catalog discovery (trusted cron-mode sources).
+    # Backstop cadence: the orchestrator's in-memory _check_yalayut_discovery
+    # gate resets on restart; this scheduled_tasks row survives restarts.
+    {
+        "title": "yalayut_discovery",
+        "description": "Daily yalayut catalog discovery — pull trusted sources",
+        "interval_seconds": 86400,  # 24h
+        "payload": {"_executor": "yalayut_discovery", "mode": "daily"},
+    },
+    # Yalayut Phase 4 — source-scout candidate proposal (daily).
+    {
+        "title": "source_scout",
+        "description": "Daily yalayut source-scout — propose candidate sources",
+        "interval_seconds": 86400,  # 24h
+        "payload": {"_executor": "source_scout"},
+    },
 ]
 
 # Fast-path: once seeded in this process, skip DB round-trips on subsequent calls.

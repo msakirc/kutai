@@ -820,6 +820,22 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "shadow + micro-spacing info does not block."
         ),
     ),
+    # Yalayut Phase 4 — internal-hint auto-capture. Replaces the old
+    # src/memory/skills.py auto-capture. Auto-wired on every gradeable task
+    # via the "*" trigger; the executor itself no-ops on <2-iteration or
+    # failed tasks. Warning severity — a capture miss must never DLQ the
+    # source task.
+    "capture_hint": PostHookSpec(
+        kind="capture_hint",
+        verb="capture_hint",
+        default_severity="warning",
+        cost_band="cheap",
+        auto_wire_triggers=["*"],
+        description=(
+            "Yalayut P4 — capture a successful 2+-iteration task as an "
+            "internal_hint artifact in yalayut_index. Mechanical; advisory."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

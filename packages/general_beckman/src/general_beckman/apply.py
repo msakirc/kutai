@@ -1607,6 +1607,30 @@ def _posthook_agent_and_payload(
                 "baseline_dir": None,
             },
         })
+    if a.kind == "capture_hint":
+        # Yalayut Phase 4 — internal-hint auto-capture. Mechanical post-hook:
+        # mr_roboto's capture_hint executor calls yalayut.capture_hint with
+        # the source task + its outcome. Advisory — never fails the source.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "capture_hint",
+            "executor": "mechanical",
+            "payload": {
+                "action": "capture_hint",
+                "source_task": {
+                    "id": a.source_task_id,
+                    "title": source_ctx.get("title") or source.get("title", ""),
+                    "description": source_ctx.get("description")
+                    or source.get("description", ""),
+                    "agent_type": source.get("agent_type", ""),
+                },
+                "outcome": {
+                    "status": source.get("status", "completed"),
+                    "iterations": int(source_ctx.get("iterations") or 0),
+                    "result": source.get("result", ""),
+                },
+            },
+        })
     if a.kind == "integration_replay":
         # Z3 T5 — rerun suite against shuffled prior commits. mode from dial
         # (quick|standard|strict); commits + shuffle_seed default from mission_id.

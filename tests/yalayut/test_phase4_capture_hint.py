@@ -76,3 +76,26 @@ def test_capture_hint_skips_failed_task(loop):
         assert (await cur.fetchone())[0] == 0
         await cur.close()
     loop.run_until_complete(_run())
+
+
+def test_capture_hint_registered_in_post_hook_registry(loop):
+    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    assert "capture_hint" in POST_HOOK_REGISTRY
+    spec = POST_HOOK_REGISTRY["capture_hint"]
+    assert spec.verb == "capture_hint"
+    # advisory — capture failure must not DLQ the source task.
+    assert spec.default_severity == "warning"
+
+
+def test_capture_hint_routes_to_mechanical(loop):
+    from general_beckman.apply import _posthook_agent_and_payload
+    from general_beckman.apply import RequestPostHook  # dataclass
+
+    hook = RequestPostHook(source_task_id=55, kind="capture_hint", source_ctx={})
+    source = {"id": 55, "title": "the task", "agent_type": "coder"}
+    source_ctx = {"title": "the task",
+                  "description": "do the thing"}
+    agent_type, payload = _posthook_agent_and_payload(hook, source, source_ctx)
+    assert agent_type == "mechanical"
+    assert payload["payload"]["action"] == "capture_hint"
+    assert payload["payload"]["source_task"]["id"] == 55

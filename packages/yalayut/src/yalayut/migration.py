@@ -11,6 +11,8 @@ owner/source/disabled-import seed -> seed manifests -> skills copy. Idempotent.
 from __future__ import annotations
 
 import json
+import re
+import tempfile
 from pathlib import Path
 
 import aiosqlite
@@ -21,7 +23,13 @@ from yalayut.schema import ensure_yalayut_schema
 from yalayut.seed.seed_data import (
     seed_disabled_imports, seed_owners, seed_sources, load_seed_manifests,
 )
+from yalayut.tier_classifier import classify
+from yalayut.trust import owner_max_tier, source_max_tier
+from yalayut.vetting.auto_checks import run_all
 from yalayut.vetting.policy import seed_policy
+
+# Cookiecutter / GitHub CLI shorthand: gh:owner/repo → https://github.com/owner/repo
+_GH_SHORTHAND = re.compile(r"\bgh:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b")
 
 
 async def _embed(text: str, is_query: bool = False) -> list[float] | None:
@@ -111,9 +119,43 @@ async def install_seed_manifests(db: aiosqlite.Connection) -> int:
         )
         if computed_name:
             manifest.name = computed_name
-        # Curated seeds are T0 by definition (hand-authored + vetted offline).
-        tier = 0
-        audit: dict = {"source_max": 0, "check_maxes": {}}
+
+        # H2 fix: run the same vetting + tier-classification path that cron
+        # discovery uses, so each seed gets a real tier (not blanket 0).
+        #
+        # Seed manifests have no separate body file, but shell_recipe seeds
+        # carry invocation steps whose commands may reference external network
+        # endpoints (e.g. `gh:owner/repo` cookiecutter shorthand).  We
+        # synthesize a body text from those commands — expanding `gh:` to
+        # `https://github.com/` so the network_scope check fires — and write
+        # it to a temp file for run_all().  For seeds with no invocation the
+        # body is empty, which is correct (no extra checks to run).
+        invocation_cmds: list[str] = []
+        for step in (manifest.invocation.get("steps") or []):
+            cmd = step.get("cmd", "") if isinstance(step, dict) else ""
+            if cmd:
+                # Expand gh: shorthand → https://github.com/owner/repo
+                cmd = _GH_SHORTHAND.sub(
+                    lambda m: f"https://github.com/{m.group(1)}", cmd
+                )
+                invocation_cmds.append(cmd)
+        body_text = "\n".join(invocation_cmds)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as tf:
+            tf.write(body_text)
+            tmp_path = Path(tf.name)
+
+        try:
+            check_maxes = await run_all(db, manifest, tmp_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        src_max = await source_max_tier(db, manifest.source)
+        own_max = await owner_max_tier(db, manifest.owner)
+        tier, audit = classify(src_max, own_max, check_maxes)
+
         embed_text = (
             f"{manifest.name} {manifest.name_original} "
             f"{' '.join(manifest.intent_keywords)}"
@@ -129,7 +171,7 @@ async def install_seed_manifests(db: aiosqlite.Connection) -> int:
         already = await cur.fetchone()
         await store(
             db, manifest,
-            body="",       # seed manifests have no separate body file
+            body=body_text,
             tier=tier,
             audit=audit,
             embedding=emb or [0.0] * 768,

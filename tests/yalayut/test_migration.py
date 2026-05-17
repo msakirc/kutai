@@ -141,6 +141,39 @@ async def test_run_full_migration_seed_index_is_idempotent(
     assert count == 20, f"double-run must not duplicate seeds; got {count} rows"
 
 
+# ── H2 regression — seed vetting ──────────────────────────────────────────────
+
+async def test_cc_pypackage_seed_not_blanket_t0(yalayut_db, monkeypatch):
+    """H2: install_seed_manifests() must run real vetting + tier classification
+    for each seed instead of hardcoding tier=0.  The 'cc-pypackage' seed has
+    an external shell_recipe invocation that references a network endpoint
+    (gh: shorthand → https://github.com/...) so its vetting produces
+    network_scope=1 → check_max=1 → final_tier >= 1.
+
+    Before the fix tier is hardcoded to 0, so this asserts False.
+    """
+    async def fake_embed(text, is_query=True):
+        return [1.0] + [0.0] * 767
+    monkeypatch.setattr("yalayut.migration._embed", fake_embed)
+
+    await run_full_migration(yalayut_db)
+
+    cur = await yalayut_db.execute(
+        "SELECT vet_tier FROM yalayut_index "
+        "WHERE name = 'cc-pypackage' "
+        "AND source = 'github:audreyfeldroy/cookiecutter-pypackage'"
+    )
+    row = await cur.fetchone()
+    assert row is not None, (
+        "cc-pypackage must be present in yalayut_index after run_full_migration"
+    )
+    tier = row["vet_tier"]
+    assert tier >= 1, (
+        f"cc-pypackage must land at T1+ (real vetting detects external network "
+        f"endpoint in invocation), got vet_tier={tier}; blanket T0 is wrong"
+    )
+
+
 # ── M1 regression ──────────────────────────────────────────────────────────────
 
 async def test_seed_and_cron_agree_on_canonical_name(yalayut_db, monkeypatch):

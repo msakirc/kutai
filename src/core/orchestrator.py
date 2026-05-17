@@ -96,7 +96,7 @@ class Orchestrator:
                     "payload": {"action": "yalayut_discovery",
                                 "mode": "daily"},
                 },
-                lane="mechanical",
+                lane="oneshot",
             )
             logger.info("enqueued yalayut daily discovery task")
         except Exception as e:
@@ -118,7 +118,7 @@ class Orchestrator:
                     "title": "Yalayut source scout",
                     "payload": {"action": "source_scout"},
                 },
-                lane="mechanical",
+                lane="oneshot",
             )
             logger.info("enqueued yalayut source-scout task")
         except Exception as e:

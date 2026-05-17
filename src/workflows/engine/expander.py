@@ -148,8 +148,15 @@ def _auto_wire_posthooks(
                 to_prepend.append(spec.kind)
                 break
 
-    if to_prepend:
-        context["post_hooks"] = to_prepend + existing
+    if not to_prepend:
+        return
+    merged = to_prepend + existing
+    # grounding is the narration floor — it must lead so a step that never
+    # wrote a file fails fast before costlier checks run. A pre-existing
+    # grounding entry would otherwise be displaced by a newly-prepended kind.
+    if "grounding" in merged and merged[0] != "grounding":
+        merged = ["grounding"] + [k for k in merged if k != "grounding"]
+    context["post_hooks"] = merged
 
 
 def _apply_hint_from_targets(

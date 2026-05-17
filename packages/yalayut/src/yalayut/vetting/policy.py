@@ -1,11 +1,13 @@
 """DB-backed policy allowlists for the auto-checks.
 
 No static YAML — yalayut_policy is the single source of truth, seeded by
-seed_policy(). Phase 3 will add a policy-proposal API backed by
-yalayut_policy_proposals once the founder-approval flow is wired.
+seed_policy(). KutAI proposes additions via propose_policy() (rows in
+yalayut_policy_proposals); the founder-approval flow that consumes those
+proposals over Telegram is wired in Phase 3.
 """
 from __future__ import annotations
 
+import json
 import re
 
 import aiosqlite
@@ -78,4 +80,29 @@ async def get_injection_regexes(
         except re.error:
             continue
     return out
+
+
+async def propose_policy(
+    db: aiosqlite.Connection,
+    check_name: str,
+    key: str,
+    proposed_value: str,
+    evidence: dict | None = None,
+) -> int:
+    """Record a policy-addition proposal for founder review. Returns row id.
+
+    Phase 3 scaffold — intentionally kept though it has no caller yet. The
+    vetting path will call this to surface "this binary/host keeps getting
+    blocked, allowlist it?" proposals; the Telegram founder-approval flow
+    that drains yalayut_policy_proposals is the Phase 3 consumer. Not dead
+    code: a deliberate forward seam, do not strip on a dead-fragment sweep.
+    """
+    cur = await db.execute(
+        "INSERT INTO yalayut_policy_proposals "
+        "(check_name, key, proposed_value, evidence_json, state, proposed_at) "
+        "VALUES (?, ?, ?, ?, 'pending', strftime('%Y-%m-%d %H:%M:%S','now'))",
+        (check_name, key, proposed_value, json.dumps(evidence or {})),
+    )
+    await db.commit()
+    return cur.lastrowid
 

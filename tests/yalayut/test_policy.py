@@ -2,10 +2,21 @@
 import pytest
 
 from yalayut.vetting.policy import (
-    seed_policy, get_allowlist, get_injection_regexes,
+    seed_policy, get_allowlist, get_injection_regexes, propose_policy,
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_propose_policy_creates_pending_row(yalayut_db):
+    pid = await propose_policy(
+        yalayut_db, "shell_allowlist", "wasp", "allow",
+        evidence={"observed_in": ["cc-wasp"]},
+    )
+    cur = await yalayut_db.execute(
+        "SELECT state FROM yalayut_policy_proposals WHERE id=?", (pid,)
+    )
+    assert (await cur.fetchone())["state"] == "pending"
 
 
 async def test_seed_populates_shell_allowlist(yalayut_db):

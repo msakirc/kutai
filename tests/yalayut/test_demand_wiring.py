@@ -182,7 +182,7 @@ async def test_dlq_write_enqueues_yalayut_demand_task(db, monkeypatch):
     assert len(demand_tasks) == 1
     p = demand_tasks[0]["context"]["payload"]
     assert p["signal_type"] == "dlq"
-    assert p["source_step_pattern"] == "dlq:777"
+    assert p["source_step_pattern"] == "dlq:Convert HEIC images to PNG"
 
 
 @pytest.mark.asyncio
@@ -259,3 +259,23 @@ async def test_daily_executor_runs_demand_drain(db, monkeypatch):
     assert res["demand_drain"]["patterns_discovered"] == 2
     # Existing top-level keys preserved for backward compat.
     assert "sources_scanned" in res
+
+
+@pytest.mark.asyncio
+async def test_repeat_pattern_scan_ignores_below_min_types(db):
+    from yalayut.discovery.demand_drain import _scan_repeat_patterns
+
+    # Only 2 distinct signal types — below REPEAT_PATTERN_MIN_TYPES (3).
+    for st in ("step_entry_miss", "tool_call"):
+        await _demand.record(source_step_pattern="recur:only-two",
+                             intent_keywords=["x"], signal_type=st,
+                             confidence=0.3)
+    added = await _scan_repeat_patterns()
+    assert added == 0
+
+    dbc = await _get_db_for_test()
+    cur = await dbc.execute(
+        "SELECT COUNT(*) FROM yalayut_demand_signals "
+        "WHERE source_step_pattern = 'recur:only-two' "
+        "AND signal_type = 'repeat_pattern'")
+    assert (await cur.fetchone())[0] == 0

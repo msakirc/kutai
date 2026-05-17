@@ -566,7 +566,7 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
             mission_id=task.get("mission_id"),
             context=_mechanical_context(
                 "yalayut_demand",
-                source_step_pattern=f"dlq:{task['id']}",
+                source_step_pattern=f"dlq:{_title[:40]}",
                 intent_keywords=[w for w in _title.split() if len(w) > 2][:12],
                 signal_type="dlq",
                 confidence=0.3,

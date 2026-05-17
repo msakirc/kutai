@@ -11,6 +11,8 @@ orchestrator method, no new cron cadence row.
 """
 from __future__ import annotations
 
+import json
+
 from src.infra.db import get_db
 from src.infra.logging_config import get_logger
 from yalayut.discovery import demand as _demand
@@ -46,7 +48,6 @@ async def _scan_repeat_patterns() -> int:
                 "LIMIT 1", (pattern,))
             kw_row = await kw_cur.fetchone()
             await kw_cur.close()
-            import json
             try:
                 keywords = json.loads(kw_row[0]) if kw_row and kw_row[0] else []
             except (json.JSONDecodeError, TypeError):

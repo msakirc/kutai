@@ -17,7 +17,8 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     payload = task.get("payload") or {}
     pattern = payload.get("source_step_pattern") or ""
     if not pattern:
-        return {"ok": False, "reason": "yalayut_demand needs source_step_pattern"}
+        return {"ok": True, "recorded": False,
+                "reason": "yalayut_demand needs source_step_pattern"}
     import yalayut
     try:
         row_id = await yalayut.record_demand_signal(

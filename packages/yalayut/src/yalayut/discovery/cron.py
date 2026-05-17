@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import aiosqlite
 import yaml
+from datetime import timedelta
 
+from src.infra.db import get_db
+from src.infra.logging_config import get_logger
+from src.infra.times import utc_now, to_db, from_db
 from yalayut.contracts import SourceConfig
 from yalayut.discovery.sources.github_path import GithubPathAdapter
 from yalayut.discovery.synthesize import synthesize
@@ -21,6 +25,8 @@ from yalayut.manifest import validate_manifest
 from yalayut.tier_classifier import classify
 from yalayut.trust import owner_max_tier, source_max_tier
 from yalayut.vetting.auto_checks import run_all
+
+logger = get_logger("yalayut.cron")
 
 # adapter registry — source_type -> adapter instance. Phase 3 extends this.
 _ADAPTERS = {
@@ -151,3 +157,91 @@ async def run_cron_discovery(db: aiosqlite.Connection) -> dict:
         "skipped_disabled": skipped_disabled,
         "errors": errors,
     }
+
+
+# ── Phase 4: daily_discovery() — demand-aware cron loop ─────────────────────
+
+async def _due_cron_sources() -> list[dict]:
+    """Trusted, enabled, cron/both sources whose min_interval has elapsed."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT source_id, source_type, endpoint, auth_env, "
+        "       min_interval_s, last_run_at "
+        "FROM yalayut_sources "
+        "WHERE enabled = 1 AND trusted = 1 "
+        "  AND discovery_mode IN ('cron', 'both')",
+    )
+    rows = await cur.fetchall()
+    await cur.close()
+    now = utc_now()
+    due: list[dict] = []
+    for sid, stype, endpoint, auth_env, min_iv, last_run in rows:
+        if last_run and min_iv:
+            try:
+                last_dt = from_db(str(last_run))
+                if now - last_dt < timedelta(seconds=int(min_iv)):
+                    continue
+            except (ValueError, TypeError):
+                pass
+        due.append({
+            "source_id": sid, "source_type": stype, "endpoint": endpoint,
+            "auth_env": auth_env, "min_interval_s": min_iv,
+        })
+    return due
+
+
+async def _ingest_source(source_row: dict) -> dict:
+    """Run the Phase 1/3 ingest pipeline for one source.
+
+    Delegates to ``yalayut.discovery.fetch.ingest_all`` (Phase 1/3 entry
+    point). Returns ``{ingested, enabled, quarantined}``.
+    """
+    from yalayut.discovery import fetch as yal_fetch
+    return await yal_fetch.ingest_all(source_row)
+
+
+async def _mark_ran(source_id: str) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE yalayut_sources SET last_run_at = ? WHERE source_id = ?",
+        (to_db(utc_now()), source_id),
+    )
+    await db.commit()
+
+
+async def daily_discovery() -> dict:
+    """Pull all due trusted cron-mode sources. Returns a summary dict."""
+    due = await _due_cron_sources()
+    summary = {
+        "sources_scanned": 0,
+        "sources_skipped": 0,
+        "artifacts_ingested": 0,
+        "artifacts_enabled": 0,
+        "artifacts_quarantined": 0,
+        "errors": [],
+    }
+    # Count rows that exist but are not due as "skipped".
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM yalayut_sources "
+        "WHERE enabled = 1 AND trusted = 1 "
+        "  AND discovery_mode IN ('cron', 'both')")
+    total = (await cur.fetchone())[0]
+    await cur.close()
+    summary["sources_skipped"] = max(0, total - len(due))
+
+    for src in due:
+        try:
+            res = await _ingest_source(src)
+            summary["sources_scanned"] += 1
+            summary["artifacts_ingested"] += int(res.get("ingested", 0))
+            summary["artifacts_enabled"] += int(res.get("enabled", 0))
+            summary["artifacts_quarantined"] += int(res.get("quarantined", 0))
+            await _mark_ran(src["source_id"])
+        except Exception as e:  # noqa: BLE001 — one bad source must not abort
+            logger.warning("cron ingest failed for %s: %s",
+                            src["source_id"], e)
+            summary["errors"].append(f"{src['source_id']}: {e}")
+    logger.info("daily_discovery complete", **{
+        k: v for k, v in summary.items() if k != "errors"})
+    return summary

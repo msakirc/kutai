@@ -21,6 +21,26 @@ def _slug(name: str) -> str:
     return name.replace("-", "_")
 
 
+def _verbs(api: dict[str, Any]) -> list[dict[str, Any]]:
+    """Declared verbs, or a single synthetic ``get`` verb against the base URL.
+
+    The ``public_apis_md`` discovery adapter yields api manifests with only a
+    ``base_url`` — public-apis README rows carry no per-endpoint data. Without
+    a fallback such artifacts would expose zero callable tools. The synthetic
+    ``get`` verb makes the base URL reachable; richer manifests (cookiecutter-
+    seeded or hand-authored) keep their explicit ``verbs``.
+    """
+    declared = api.get("verbs") or []
+    if declared:
+        return declared
+    return [{
+        "verb": "get",
+        "endpoint": "",
+        "params_schema": {},
+        "description": api.get("description", ""),
+    }]
+
+
 class ApiPlugin:
     """AccessPlugin for api artifacts."""
 
@@ -45,7 +65,7 @@ class ApiPlugin:
             base_url = api.get("base_url", "")
             auth_type = api.get("auth_type", "none")
             auth_env = api.get("auth_env")
-            for verb in api.get("verbs") or []:
+            for verb in _verbs(api):
                 vname = verb.get("verb")
                 if not vname:
                     continue
@@ -84,9 +104,7 @@ class ApiPlugin:
         """Single-tool convenience execute (not on the hot path; tests/CLI)."""
         manifest = row.get("manifest") or {}
         api = manifest.get("api") or {}
-        verbs = api.get("verbs") or []
-        if not verbs:
-            return {"ok": False, "error": "api artifact declares no verbs"}
+        verbs = _verbs(api)
         tool_spec = {
             "tool_name": f"{_slug(row.get('name', 'api'))}__{verbs[0]['verb']}",
             "base_url": api.get("base_url", ""),

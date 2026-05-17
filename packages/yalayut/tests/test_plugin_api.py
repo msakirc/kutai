@@ -39,6 +39,20 @@ def test_to_application_builds_tool_payload():
     assert payload["tools"][0]["endpoint"] == "/simple/price"
 
 
+def test_to_application_synthesizes_get_verb_when_no_verbs():
+    """public_apis_md manifests carry only a base_url — no verbs. The plugin
+    must fall back to a single synthetic ``get`` verb so the API is callable."""
+    row = _api_row()
+    row["manifest"]["api"].pop("verbs")
+    row["manifest"]["api"]["description"] = "Crypto prices"
+    app = ApiPlugin().to_application(row, task_ctx={})
+    tools = app["payload"]["tools"]
+    assert len(tools) == 1
+    assert tools[0]["tool_name"] == "api_coingecko__get"
+    assert tools[0]["endpoint"] == ""
+    assert tools[0]["description"] == "Crypto prices"
+
+
 def test_to_application_empty_when_env_missing():
     plugin = ApiPlugin()
     app = plugin.to_application(_api_row(env_status="missing_X_API_KEY"),

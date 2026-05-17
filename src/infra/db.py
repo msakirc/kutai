@@ -4250,6 +4250,27 @@ async def init_db():
     except Exception as e:
         logger.debug(f"yalayut schema skipped: {e}")
 
+    # Yalayut seed data — owners / sources / disabled-imports / the ~20 seed
+    # manifests. run_full_migration() is fully idempotent (INSERT OR IGNORE +
+    # ON CONFLICT DO UPDATE), but install_seed_manifests() embeds every seed
+    # on each call, so we gate it on an empty yalayut_index: the expensive
+    # path runs once on a fresh deploy, every later boot is just one COUNT.
+    try:
+        cur = await db.execute("SELECT COUNT(*) FROM yalayut_index")
+        row = await cur.fetchone()
+        index_count = row[0] if row else 0
+        if index_count == 0:
+            from yalayut.migration import run_full_migration
+            result = await run_full_migration(db)
+            logger.info(
+                "yalayut seed loaded: %s seeds, %s skills, %s owners, "
+                "%s sources",
+                result.get("seeds_indexed"), result.get("skills_migrated"),
+                result.get("owners_seeded"), result.get("sources_seeded"),
+            )
+    except Exception as e:
+        logger.debug(f"yalayut seed-load skipped: {e}")
+
 async def _migrate_task_lifecycle(db) -> None:
     """One-time migration: sleeping/paused/rejected → unified model."""
     try:

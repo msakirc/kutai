@@ -183,11 +183,12 @@
       },
       {
         "group_id": "mobile_app_submission",
-        "description": "Run the App Store / Google Play submission chain only when the mission ships a native mobile app. Z5 T5 wired this onto the real submit chain: 14.8 (LLM: store metadata + privacy nutrition labels) followed by the mechanical siblings 14.8.screenshots (per-device/per-locale capture), 14.8.submit (fastlane pilot/supply binary upload — eas_submit fallback) and 14.8.review_status (vendor_call review-status poll). The old 14.10 wiring went dead when Z9 reused that id for arm_analytics_digest_cron.",
+        "description": "Run the App Store / Google Play submission chain only when the mission ships a native mobile app. Z5 T5 wired this onto the real submit chain: 14.8 (LLM: store metadata + privacy nutrition labels) followed by the mechanical siblings 14.8.gen_ci (generate the GitHub Actions CI workflow), 14.8.screenshots (per-device/per-locale capture), 14.8.submit (fastlane pilot/supply binary upload — eas_submit fallback) and 14.8.review_status (vendor_call review-status poll). The old 14.10 wiring went dead when Z9 reused that id for arm_analytics_digest_cron.",
         "condition_artifact": "platform_requirements",
         "condition_check": "platforms_include('ios') OR platforms_include('android')",
         "if_true": [
           "14.8",
+          "14.8.gen_ci",
           "14.8.screenshots",
           "14.8.submit",
           "14.8.review_status"
@@ -10840,6 +10841,41 @@
           ]
         }
       },
+      "post_hooks": [
+        "mobile_smoke"
+      ],
+      "context": {},
+      "reversibility": "full"
+    },
+    {
+      "id": "14.8.gen_ci",
+      "phase": "phase_14",
+      "name": "mobile_ci_workflow_generate",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "14.8"
+      ],
+      "skip_when": [
+        "no_mobile_app"
+      ],
+      "input_artifacts": [
+        "app_store_submission",
+        "tech_stack_decision"
+      ],
+      "output_artifacts": [
+        "mobile_ci_workflow"
+      ],
+      "produces": [
+        ".github/workflows/mobile.yml"
+      ],
+      "payload": {
+        "action": "gen_mobile_ci"
+      },
+      "instruction": "Z5 mechanical step (no LLM): generate the GitHub Actions mobile CI/CD workflow via the gen_mobile_ci verb. Writes `.github/workflows/mobile.yml` — a macOS-runner iOS job (expo prebuild + xcodebuild/Fastlane) and an ubuntu-runner Android job (expo prebuild + gradlew). This workflow is the one 14.8.submit triggers to run `fastlane pilot` / `fastlane supply`; without it the submit step has nothing to trigger. bundle_id is read from app_store_submission.bundle_id.",
+      "done_when": ".github/workflows/mobile.yml exists.",
       "context": {},
       "reversibility": "full"
     },
@@ -10852,7 +10888,7 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "14.8"
+        "14.8.gen_ci"
       ],
       "skip_when": [
         "no_mobile_app"

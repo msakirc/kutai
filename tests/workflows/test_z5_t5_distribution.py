@@ -71,22 +71,29 @@ def test_step_14_8_is_metadata_anchor():
 
 
 def test_submit_chain_siblings_present_and_mechanical():
-    """The three mechanical siblings exist with valid payload + depends_on."""
+    """The mechanical siblings exist with valid payload + depends_on."""
     d = _load_i2p()
     steps = {s["id"]: s for s in d["steps"]}
 
-    for sid in ("14.8.screenshots", "14.8.submit", "14.8.review_status"):
+    for sid in ("14.8.gen_ci", "14.8.screenshots", "14.8.submit",
+                "14.8.review_status"):
         assert sid in steps, f"missing sibling step {sid}"
         s = steps[sid]
         assert s["agent"] == "mechanical"
         assert s["executor"] == "mechanical"
         assert isinstance(s["payload"], dict) and s["payload"].get("action")
 
+    # gen_ci generates the GitHub Actions workflow 14.8.submit triggers.
+    gc = steps["14.8.gen_ci"]
+    assert gc["payload"]["action"] == "gen_mobile_ci"
+    assert gc["depends_on"] == ["14.8"]
+    assert ".github/workflows/mobile.yml" in gc["produces"]
+
     # screenshots reuses capture_screenshots in device mode.
     sc = steps["14.8.screenshots"]
     assert sc["payload"]["action"] == "capture_screenshots"
     assert sc["payload"]["capture_mode"] == "device"
-    assert sc["depends_on"] == ["14.8"]
+    assert sc["depends_on"] == ["14.8.gen_ci"]
 
     # submit ships the binary via fastlane — irreversible, needs creds.
     sub = steps["14.8.submit"]

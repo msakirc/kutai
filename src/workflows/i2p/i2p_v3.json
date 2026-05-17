@@ -183,10 +183,15 @@
       },
       {
         "group_id": "mobile_app_submission",
-        "description": "Skip app store submission if no native mobile apps. if_true is intentionally empty until Z5 T5 distribution adds the real submit step and repoints this (the old 14.10 wiring went dead when Z9 reused that id for arm_analytics_digest_cron).",
+        "description": "Run the App Store / Google Play submission chain only when the mission ships a native mobile app. Z5 T5 wired this onto the real submit chain: 14.8 (LLM: store metadata + privacy nutrition labels) followed by the mechanical siblings 14.8.screenshots (per-device/per-locale capture), 14.8.submit (fastlane pilot/supply binary upload — eas_submit fallback) and 14.8.review_status (vendor_call review-status poll). The old 14.10 wiring went dead when Z9 reused that id for arm_analytics_digest_cron.",
         "condition_artifact": "platform_requirements",
         "condition_check": "platforms_include('ios') OR platforms_include('android')",
-        "if_true": [],
+        "if_true": [
+          "14.8",
+          "14.8.screenshots",
+          "14.8.submit",
+          "14.8.review_status"
+        ],
         "if_false": []
       },
       {
@@ -10799,7 +10804,8 @@
       "real_tool_kind": "apple_appstore|google_play",
       "tools_hint": [
         "shell",
-        "write_file"
+        "write_file",
+        "read_file"
       ],
       "depends_on": [
         "14.3"
@@ -10809,24 +10815,127 @@
         "no_mobile_app"
       ],
       "input_artifacts": [
-        "platform_requirements"
+        "platform_requirements",
+        "product_charter",
+        "tech_stack_decision"
       ],
       "output_artifacts": [
         "app_store_submission"
       ],
-      "instruction": "Prepare and submit app store listing materials for iOS App Store and/or Google Play: title, subtitle, description, keywords, screenshots, privacy policy URL, data safety questionnaire. Trigger needs_clarification for developer account credentials.",
-      "done_when": "app_store_submission exists.",
+      "produces": [
+        "mission_{mission_id}/.store/store_metadata.json",
+        "mission_{mission_id}/.store/privacy_nutrition_labels.json"
+      ],
+      "instruction": "Z5 T5 — generate the App Store / Google Play submission package for the Expo mobile app. This is the metadata-authoring step; the mechanical siblings 14.8.screenshots / 14.8.submit / 14.8.review_status perform the side-effecting capture, upload and review-status poll.\n\nRead the mission's spec/charter artifacts (product_charter, platform_requirements, tech_stack_decision) and produce:\n\n1. STORE METADATA — write `mission_{mission_id}/.store/store_metadata.json` with one entry per target store. Per store: app title (<=30 chars iOS / <=30 Play), subtitle (iOS, <=30 chars), short description (Play, <=80 chars), full description (<=4000 chars), keywords (iOS, <=100 chars comma-joined), promotional text, category, support URL, marketing URL, privacy policy URL, age rating, locales (one block per locale to ship — at minimum the mission's primary locale), and the bundle id / package name.\n\n2. PRIVACY NUTRITION LABELS — write `mission_{mission_id}/.store/privacy_nutrition_labels.json`. For Apple: the App Privacy 'nutrition label' — for every data type collected, declare {data_type, linked_to_user, used_for_tracking, purposes[]}. For Google Play: the Data Safety form — {data_collected[], data_shared[], encryption_in_transit, deletion_request_supported}. Derive each entry from the actual features in platform_requirements / functional_requirements (auth, analytics, crash reporting, payments). Do NOT over-declare — only data the app genuinely collects.\n\nRETURN a JSON object directly in `result` (no envelope, no markdown):\n\n{\n  \"stores\": [\"apple_appstore\", \"google_play\"],\n  \"materials\": {\n    \"store_metadata_path\": \"mission_<id>/.store/store_metadata.json\",\n    \"privacy_labels_path\": \"mission_<id>/.store/privacy_nutrition_labels.json\"\n  },\n  \"bundle_id\": \"<reverse-DNS bundle id / package name>\",\n  \"locales\": [\"en-US\"],\n  \"screenshot_devices\": [\"iPhone 14\", \"Pixel 7\"],\n  \"submission_channel\": \"fastlane\",\n  \"fallback_channel\": \"eas_submit\",\n  \"notes\": \"<one paragraph: what was generated, anything deferred, any clarification raised>\"\n}\n\nSubmission flow (handled by the mechanical siblings, documented here for the founder): per-device/per-locale store screenshots are captured by 14.8.screenshots (capture_screenshots, capture_mode=device); the binary is shipped by 14.8.submit, which triggers the generated GitHub Actions workflow running `fastlane pilot` (TestFlight) / `fastlane supply` (Play internal) — `eas_submit` is the documented fallback; 14.8.review_status polls Apple / Google review state via vendor_call. Trigger needs_clarification only if the bundle id / package name is not derivable from the spec.",
+      "done_when": "app_store_submission exists with store_metadata.json and privacy_nutrition_labels.json written.",
       "artifact_schema": {
         "app_store_submission": {
           "type": "object",
           "required_fields": [
             "stores",
-            "materials"
+            "materials",
+            "bundle_id",
+            "screenshot_devices",
+            "submission_channel"
           ]
         }
       },
       "context": {},
+      "reversibility": "full"
+    },
+    {
+      "id": "14.8.screenshots",
+      "phase": "phase_14",
+      "name": "app_store_screenshots_capture",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "14.8"
+      ],
+      "skip_when": [
+        "no_mobile_app"
+      ],
+      "input_artifacts": [
+        "app_store_submission"
+      ],
+      "output_artifacts": [
+        "store_screenshots"
+      ],
+      "payload": {
+        "action": "capture_screenshots",
+        "capture_mode": "device"
+      },
+      "instruction": "Z5 T5 mechanical step (no LLM): capture per-device/per-locale App Store / Play store screenshots by reusing capture_screenshots with capture_mode='device' (Playwright device descriptors against the Expo Web export + adb screencap arm). Devices come from app_store_submission.screenshot_devices; locales from app_store_submission.locales.",
+      "done_when": "store_screenshots captured for each declared device and locale.",
+      "context": {},
+      "reversibility": "full"
+    },
+    {
+      "id": "14.8.submit",
+      "phase": "phase_14",
+      "name": "app_store_submit_binary",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "medium",
+      "needs_real_tools": true,
+      "real_tool_kind": "apple_appstore|google_play",
+      "tools_hint": [],
+      "depends_on": [
+        "14.8.screenshots"
+      ],
+      "skip_when": [
+        "no_mobile_app"
+      ],
+      "input_artifacts": [
+        "app_store_submission",
+        "store_screenshots"
+      ],
+      "output_artifacts": [
+        "app_store_submission_result"
+      ],
+      "payload": {
+        "action": "fastlane",
+        "lane": "pilot"
+      },
+      "instruction": "Z5 T5 mechanical step (no LLM): submit the mobile binary. Primary path — trigger the generated GitHub Actions workflow (gen_mobile_ci output `.github/workflows/mobile.yml`) running `fastlane pilot` (TestFlight) for iOS and `fastlane supply` (Play internal) for Android. Documented fallback — `eas_submit` when the GitHub Actions / Fastlane path is unavailable. This step is irreversible: a binary pushed to a TestFlight / Play internal track is ingested by the store immediately. Needs apple_appstore / google_play credentials — z6_admission emits a vendor_enroll founder-action if they are absent.",
+      "done_when": "the mobile binary is uploaded to the TestFlight / Play internal track.",
+      "context": {},
       "reversibility": "irreversible"
+    },
+    {
+      "id": "14.8.review_status",
+      "phase": "phase_14",
+      "name": "app_store_review_status_poll",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "needs_real_tools": true,
+      "real_tool_kind": "apple_appstore|google_play",
+      "tools_hint": [],
+      "depends_on": [
+        "14.8.submit"
+      ],
+      "skip_when": [
+        "no_mobile_app"
+      ],
+      "input_artifacts": [
+        "app_store_submission_result"
+      ],
+      "output_artifacts": [
+        "app_store_review_status"
+      ],
+      "payload": {
+        "action": "vendor_call",
+        "service": "apple_appstore",
+        "action_name": "list_review_states",
+        "params": {}
+      },
+      "instruction": "Z5 T5 mechanical step (no LLM): poll the App Store / Play review status via vendor_call against apple_appstore (list_review_states) / google_play (list_review_status). Surfaces the current review verdict to the founder; a rejection routes to the mobile_release_rejection recipe playbook.",
+      "done_when": "app_store_review_status reflects the current Apple / Google review verdict.",
+      "context": {},
+      "reversibility": "full"
     },
     {
       "id": "14.9",

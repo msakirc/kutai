@@ -53,156 +53,30 @@ async def query(task_ctx: dict, top_k: int = 12) -> list[Artifact]:
     return await _query(task_ctx, top_k=top_k)
 
 
+# ── Phase 4 — discovery + autonomy entry points ─────────────────────────
+
+
 async def daily_discovery() -> dict:
-    """Mechanical-executor body: pull every trusted cron source, fetch +
-    synthesize + tier-classify + index. Returns a summary dict for the task
-    list. This REALLY fetches — see discovery/cron.py."""
-    from src.infra.db import get_db
-    from yalayut.discovery.cron import run_cron_discovery
-    db = await get_db()
-    return await run_cron_discovery(db)
-
-
-async def source_scout_scan() -> dict:
-    """Mechanical-executor body: propose new candidate sources.
-
-    Phase 1 path: harvest cross-reference source ids that appear in already-
-    indexed artifacts' source strings but are NOT yet in yalayut_sources, and
-    record them as yalayut_source_candidates for founder review. This is a
-    real, self-testable body. The GitHub-trending / web-search scout inputs
-    (spec Lifecycle step 1) are Phase 4 — they register additional candidate
-    producers; the candidate-recording sink here is final.
-    """
-    from src.infra.db import get_db
-    db = await get_db()
-    cur = await db.execute(
-        "SELECT DISTINCT source FROM yalayut_index WHERE source != 'internal'"
-    )
-    indexed_sources = {r[0] for r in await cur.fetchall()}
-    cur = await db.execute("SELECT source_id FROM yalayut_sources")
-    known = {r[0] for r in await cur.fetchall()}
-    proposed = 0
-    for src in indexed_sources - known:
-        cur = await db.execute(
-            "INSERT OR IGNORE INTO yalayut_source_candidates "
-            "(candidate_source_id, source_type, state, proposed_at) "
-            "VALUES (?, 'github_path', 'pending', "
-            " strftime('%Y-%m-%d %H:%M:%S','now'))",
-            (src,),
-        )
-        proposed += cur.rowcount or 0
-    await db.commit()
-    return {"candidates_proposed": proposed}
+    """Mechanical-executor body: pull trusted cron-mode sources."""
+    from yalayut.discovery.cron import daily_discovery as _impl
+    return await _impl()
 
 
 async def on_demand_discovery(demand: dict) -> dict:
-    """Need-driven fetch for one DemandSignal.
+    """Need-driven fetch for one DemandSignal."""
+    from yalayut.discovery.on_demand import on_demand_discovery as _impl
+    return await _impl(demand)
 
-    Phase 1 path: a demand dict naming an already-configured source
-    (demand['source_id']) triggers an immediate cron-style pull of THAT
-    source — useful for founder-initiated /yalayut discover against a known
-    untrusted source. The demand-signal QUEUE machinery (confidence stacking,
-    dedupe, cooldown — spec Demand signals section) and untrusted-catalog
-    adapters are Phase 4; this body fully handles the known-source case and
-    records the signal. Not a stub.
-    """
-    from src.infra.db import get_db
-    from yalayut.contracts import SourceConfig
-    from yalayut.discovery.cron import _ADAPTERS, run_cron_discovery
-    db = await get_db()
-    # record the signal for telemetry / Phase 4 dedupe
-    await db.execute(
-        "INSERT INTO yalayut_demand_signals "
-        "(source_step_pattern, intent_keywords_json, signal_type, confidence, "
-        " fired_at, resulted_in_discovery) "
-        "VALUES (?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%S','now'), 0)",
-        (
-            demand.get("source_step_pattern", ""),
-            __import__("json").dumps(demand.get("intent_keywords", [])),
-            demand.get("signal_type", "founder"),
-            float(demand.get("confidence", 0.5)),
-        ),
-    )
-    await db.commit()
-    source_id = demand.get("source_id")
-    if not source_id:
-        return {"discovered": 0, "note": "no source_id; queued for Phase 4"}
-    cur = await db.execute(
-        "SELECT source_id, source_type, endpoint, auth_env, trusted "
-        "FROM yalayut_sources WHERE source_id = ?",
-        (source_id,),
-    )
-    row = await cur.fetchone()
-    if row is None or row["source_type"] not in _ADAPTERS:
-        return {"discovered": 0, "note": f"no adapter for {source_id}"}
-    # Capture prior state so we can restore it after the temporary cron run.
-    prior_cur = await db.execute(
-        "SELECT discovery_mode, trusted FROM yalayut_sources WHERE source_id=?",
-        (source_id,),
-    )
-    prior_row = await prior_cur.fetchone()
-    prior_mode = prior_row["discovery_mode"] if prior_row else None
-    prior_trusted = prior_row["trusted"] if prior_row else None
 
-    # temporarily treat as a cron-eligible run for this one source
-    await db.execute(
-        "UPDATE yalayut_sources SET discovery_mode='cron', trusted=1 "
-        "WHERE source_id=? AND discovery_mode='on_demand'",
-        (source_id,),
-    )
-    await db.commit()
-    try:
-        result = await run_cron_discovery(db)
-    finally:
-        # Restore original discovery_mode and trusted regardless of outcome.
-        if prior_mode is not None:
-            await db.execute(
-                "UPDATE yalayut_sources SET discovery_mode=?, trusted=? "
-                "WHERE source_id=?",
-                (prior_mode, prior_trusted, source_id),
-            )
-            await db.commit()
-    return {"discovered": result["artifacts_indexed"], "detail": result}
+async def source_scout_scan() -> dict:
+    """Mechanical-executor body: propose candidate sources."""
+    from yalayut.discovery.source_scout import source_scout_scan as _impl
+    return await _impl()
 
 
 async def capture_hint(task: dict, outcome: dict) -> None:
-    """Post-hook body: capture an internal_hint from a successful multi-
-    iteration task and index it (kind=internal_hint, T0, exposure=inject).
-
-    Mirrors the legacy skills.py auto-capture but writes straight to
-    yalayut_index so the new hint is queryable immediately. Real body.
-    """
-    if not outcome.get("succeeded"):
-        return
-    if outcome.get("iterations", 0) < 2:
-        return
-    from src.infra.db import get_db
-    from src.memory.embeddings import get_embedding
-    from yalayut.index import embedding_to_blob
-    name = f"hint-{task.get('id', 'x')}"
-    description = (task.get("title") or task.get("description") or "")[:500]
-    strategy = (outcome.get("strategy_summary") or "")[:500]
-    if not description:
-        return
-    embed_text = f"{description} {strategy}".strip()
-    emb = await get_embedding(embed_text, is_query=False)
-    db = await get_db()
-    await db.execute(
-        """
-        INSERT OR IGNORE INTO yalayut_index
-          (artifact_type, kind, source, owner, name, name_original, version,
-           manifest_path, body_excerpt, embedding, vet_tier, exposure_class,
-           applies_to, vet_state, mechanizable, env_status, enabled,
-           created_at, vetted_at)
-        VALUES
-          ('skill', 'internal_hint', 'internal', 'kutai', ?, ?, '1.0.0', NULL,
-           ?, ?, 0, 'inject', 'execution', 'captured', 0, 'ready', 1,
-           strftime('%Y-%m-%d %H:%M:%S','now'),
-           strftime('%Y-%m-%d %H:%M:%S','now'))
-        """,
-        (name, name, embed_text[:500],
-         embedding_to_blob(emb) if emb else None),
-    )
-    await db.commit()
+    """Post-hook body: internal_hint auto-capture."""
+    from yalayut.capture import capture_hint as _impl
+    return await _impl(task, outcome)
 
 

@@ -74,3 +74,60 @@ def synthesize(ref: ArtifactRef, raw_body: bytes) -> tuple[Manifest, str]:
         intent_keywords=keywords,
     )
     return manifest, body
+
+
+async def llm_synthesize(raw_text: str, source_meta: dict) -> dict:
+    """LLM-fallback manifest synthesis for unstructured sources
+    (awesome-list bullets, freeform README). Routes a Sonnet call through
+    ``beckman.enqueue`` — yalayut never imports LLMDispatcher; only Beckman
+    talks to it (KutAI "only Beckman calls the dispatcher" rule).
+
+    Returns a partial manifest dict: ``{intent_keywords, mechanizable,
+    kind, install_cmd, auth_env}``. On any failure returns a conservative
+    empty-ish manifest so the caller can still tier the artifact at T1/T2.
+    """
+    import json as _json
+
+    from src.infra.logging_config import get_logger as _gl
+    _log = _gl("yalayut.synthesize")
+
+    prompt = (
+        "You normalize a software-artifact description into a JSON manifest. "
+        "Return ONLY a JSON object with keys: intent_keywords (array of "
+        "lowercase strings), mechanizable (boolean), kind (one of "
+        "prompt_skill|shell_recipe|procedure|agent_config), install_cmd "
+        "(string or null), auth_env (string env-var name or null).\n\n"
+        f"Artifact name: {source_meta.get('name_original', '')}\n"
+        f"Description / README:\n{raw_text[:2000]}\n"
+    )
+    try:
+        import general_beckman
+        result = await general_beckman.enqueue(
+            {
+                "agent_type": "yalayut_synthesizer",
+                "context": {
+                    "llm_call": {
+                        "raw_dispatch": True,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "response_format": {"type": "json_object"},
+                        "model_hint": "sonnet",
+                    },
+                },
+                "kind": "overhead",
+            },
+            lane="overhead",
+            await_inline=True,
+        )
+        raw = result.get("result") if isinstance(result, dict) else result
+        parsed = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except Exception as e:  # noqa: BLE001 — synthesis must never crash cron
+        _log.warning("llm_synthesize failed, using empty manifest: %s", e)
+        parsed = {}
+
+    return {
+        "intent_keywords": list(parsed.get("intent_keywords") or []),
+        "mechanizable": bool(parsed.get("mechanizable", False)),
+        "kind": parsed.get("kind") or "prompt_skill",
+        "install_cmd": parsed.get("install_cmd"),
+        "auth_env": parsed.get("auth_env"),
+    }

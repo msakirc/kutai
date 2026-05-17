@@ -102,6 +102,28 @@ def build_step_description(
     return "".join(parts)
 
 
+def merge_fallback_steps(wf) -> list[dict]:
+    """Return ``wf.steps`` plus any conditional-group ``fallback_steps`` not
+    already present in the main steps list.
+
+    Fallback steps are defined *inside* a conditional group, not in the
+    workflow's top-level ``steps`` list. The runner only ever creates tasks
+    from that step pool, so a fallback-only step (e.g. ``competitor_deep_dive``'s
+    ``1.5_lite``) never gets a task — ``resolve_group`` can mark it included,
+    but there is nothing to un-skip. Merging them here makes a fallback step a
+    real registered task; ``resolve_group`` then skips whichever branch loses.
+    """
+    all_steps = list(wf.steps)
+    known: set = {s.get("id") for s in all_steps}
+    for cg in wf.conditional_groups:
+        for fb in cg.get("fallback_steps", []):
+            fid = fb.get("id")
+            if fid and fid not in known:
+                all_steps.append(fb)
+                known.add(fid)
+    return all_steps
+
+
 # ── WorkflowRunner ─────────────────────────────────────────────────────────
 
 
@@ -376,9 +398,13 @@ class WorkflowRunner:
                 mission_id, "existing_codebase_path", existing_codebase_path
             )
 
-        # 5. Filter steps based on context
+        # 5. Filter steps based on context. merge_fallback_steps() folds
+        # conditional-group fallback_steps into the pool so fallback-only
+        # steps actually get a task (see the helper's docstring).
         has_existing = existing_codebase_path is not None
-        filtered_steps = filter_steps_for_context(wf.steps, has_existing_codebase=has_existing)
+        filtered_steps = filter_steps_for_context(
+            merge_fallback_steps(wf), has_existing_codebase=has_existing
+        )
 
         # 5b. Evaluate skip_when conditions
         from .expander import filter_skipped_steps

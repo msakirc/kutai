@@ -147,19 +147,21 @@ def test_missing_target_platform_defaults_to_web_routing():
 
 
 def test_mobile_app_submission_group_not_dangling():
-    """The mobile_app_submission group's if_true must not point at the
-    dead 14.10 id (Z9 reused it). T1 sets it to [] until T5 repoints it."""
+    """The mobile_app_submission group's if_true must not point at the dead
+    14.10 id (Z9 reused it). T1 emptied it; T5 repointed it onto the real
+    14.8 submit chain. Every referenced id must resolve to a real step."""
     wf = load_workflow("i2p_v3")
     group = wf.get_conditional_group("mobile_app_submission")
     assert group is not None
-    assert group["if_true"] == [], (
-        "mobile_app_submission.if_true must be [] until Z5 T5 adds the "
-        "real submit step"
-    )
+    # T5 landed the submit chain — if_true is the 14.8 step group.
+    assert group["if_true"], "if_true must be populated after Z5 T5"
+    assert "14.10" not in group["if_true"], "must not point at the dead 14.10"
     step_ids = {s["id"] for s in wf.steps}
     fallback_ids = {fb["id"] for fb in group.get("fallback_steps", [])}
     for sid in group["if_true"] + group["if_false"]:
-        assert sid in step_ids or sid in fallback_ids
+        assert sid in step_ids or sid in fallback_ids, (
+            f"mobile_app_submission references unknown step {sid!r}"
+        )
 
 
 # ── 3. platform_requirements schema carries target_platform ────────────────

@@ -17,8 +17,33 @@ from yalayut.executor import run_recipe  # noqa: F401  (operational API)
 
 __all__ = [
     "query", "daily_discovery", "source_scout_scan", "on_demand_discovery",
-    "capture_hint", "run_recipe", "Artifact",
+    "capture_hint", "run_recipe", "dispatch_tool", "Artifact",
 ]
+
+
+async def dispatch_tool(
+    tool_name: str, args: dict, registry: dict
+) -> dict:
+    """Route a namespaced yalayut tool-call to its plugin executor.
+
+    ``registry`` is coulson's per-task tool registry: a dict mapping tool name
+    to the tool-spec produced by ``ApiPlugin.to_application`` /
+    ``McpPlugin.to_application_async``. Each spec carries ``_yalayut_kind``
+    ('api' | 'mcp'). Returns ``{"ok", "response", "error"}``.
+    """
+    spec = registry.get(tool_name)
+    if spec is None:
+        return {"ok": False, "response": None,
+                "error": f"unknown yalayut tool: {tool_name}"}
+    kind = spec.get("_yalayut_kind")
+    if kind == "api" or tool_name.startswith("api_"):
+        from yalayut.plugins.api import execute_api_tool
+        return await execute_api_tool(spec, args)
+    if kind == "mcp" or tool_name.startswith("mcp_"):
+        from yalayut.plugins.mcp import execute_mcp_tool
+        return await execute_mcp_tool(spec, args)
+    return {"ok": False, "response": None,
+            "error": f"tool {tool_name} has no yalayut kind"}
 
 
 async def query(task_ctx: dict, top_k: int = 12) -> list[Artifact]:

@@ -14,7 +14,7 @@ def loop():
     lp.close()
 
 
-def test_record_signal_inserts_row(loop):
+def test_record_signal_inserts_row(loop, clean_demand_signals):
     async def _run():
         await init_db()
         sig = demand.DemandSignal(
@@ -37,7 +37,7 @@ def test_record_signal_inserts_row(loop):
     loop.run_until_complete(_run())
 
 
-def test_confidence_stacks_across_signals(loop):
+def test_confidence_stacks_across_signals(loop, clean_demand_signals):
     async def _run():
         await init_db()
         pat = "rag-pipeline-setup"
@@ -52,7 +52,7 @@ def test_confidence_stacks_across_signals(loop):
     loop.run_until_complete(_run())
 
 
-def test_dedupe_within_cooldown(loop):
+def test_dedupe_within_cooldown(loop, clean_demand_signals):
     async def _run():
         await init_db()
         pat = "cooldown-pattern-xyz"
@@ -67,7 +67,7 @@ def test_dedupe_within_cooldown(loop):
     loop.run_until_complete(_run())
 
 
-def test_pending_signals_orders_by_stacked_confidence(loop):
+def test_pending_signals_orders_by_stacked_confidence(loop, clean_demand_signals):
     async def _run():
         await init_db()
         await demand.record_signal(demand.DemandSignal(

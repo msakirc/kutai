@@ -4212,6 +4212,13 @@ async def init_db():
 
     await db.commit()
 
+    # Yalayut tables (catalog, demand signals, sources, index, etc.)
+    try:
+        from yalayut.schema import ensure_yalayut_schema
+        await ensure_yalayut_schema(db)
+    except Exception as e:
+        logger.debug(f"yalayut schema skipped: {e}")
+
 async def _migrate_task_lifecycle(db) -> None:
     """One-time migration: sleeping/paused/rejected → unified model."""
     try:

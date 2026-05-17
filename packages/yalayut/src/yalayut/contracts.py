@@ -44,12 +44,26 @@ class Issue:
 
 @dataclass
 class ArtifactRef:
-    """A discovered-but-not-yet-fetched artifact."""
-    source_id: str
-    name: str
-    fetch_url: str
+    """A discovered-but-not-yet-fetched artifact.
+
+    Phase 1 fields (github_path adapter): source_id, name, fetch_url, owner,
+    raw_meta.
+    Phase 4 fields (new adapters): name_original, raw_url, native_format,
+    source, raw_description. Phase 4 adapters use keyword-only construction
+    and may leave phase-1 fields as their defaults.
+    """
+    source_id: str = ""
+    name: str = ""
+    fetch_url: str = ""
     owner: str | None = None
     raw_meta: dict[str, Any] = field(default_factory=dict)
+    # Phase 4 extended fields (new adapters: github_topic, awesome_list_md,
+    # web_markdown). Optional — Phase 1 adapters leave these as None.
+    name_original: str | None = None
+    raw_url: str | None = None
+    native_format: str | None = None
+    source: str | None = None
+    raw_description: str | None = None
 
 
 @dataclass
@@ -62,6 +76,7 @@ class SourceConfig:
     trusted: bool = False
     discovery_mode: str = "on_demand"
     min_interval_s: int | None = None
+    owner: str | None = None  # Phase 4: used by clawhub and other new adapters
 
 
 @dataclass

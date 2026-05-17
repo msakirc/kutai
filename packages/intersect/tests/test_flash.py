@@ -82,8 +82,14 @@ async def test_flash_attaches_inject_envelope(
 
 @pytest.mark.asyncio
 async def test_flash_routes_preempt_to_mechanical_lane(
-    intersect_db, sample_task, patch_yalayut, fake_artifact,
+    intersect_db, sample_task, patch_yalayut, fake_artifact, monkeypatch,
 ):
+    """Preempt routing to mechanical lane works when the gate is explicitly
+    enabled (monkeypatched to True). This keeps the routing code covered even
+    though the gate is off by default in Phase 2."""
+    import sys
+    flash_mod = sys.modules["intersect.flash"]
+    monkeypatch.setattr(flash_mod, "PHASE2_PREEMPT_ENABLED", True)
     patch_yalayut([fake_artifact(
         artifact_id=18, kind="shell_recipe", mechanizable=True, vet_tier=0,
         score=1.0, name="cc-pypackage",
@@ -97,6 +103,43 @@ async def test_flash_routes_preempt_to_mechanical_lane(
     assert payload["action"] == "yalayut_recipe"
     assert payload["recipe_id"] == 18
     assert "args" in payload
+
+
+@pytest.mark.asyncio
+async def test_flash_phase2_gate_downgrades_preempt_to_inject(
+    intersect_db, sample_task, patch_yalayut, fake_artifact,
+):
+    """Phase 2 regression: with PHASE2_PREEMPT_ENABLED=False (the default),
+    a T0 mechanizable shell_recipe artifact that would route to the mechanical
+    lane must instead appear as an 'inject' entry in task['skills'].
+
+    The yalayut_recipe executor does not exist until Phase 3 — routing to it
+    now causes a guaranteed task failure in mr_roboto.  The gate must be off
+    by default and the preempt routing code must NOT fire.
+
+    This test FAILS against the pre-fix code because the gate does not exist
+    and every qualifying artifact unconditionally routes to preempt.
+    """
+    patch_yalayut([fake_artifact(
+        artifact_id=18, kind="shell_recipe", mechanizable=True, vet_tier=0,
+        score=1.0, name="cc-pypackage",
+        inputs_schema={},  # non-parametric → would be fully bound
+    )])
+    out = await do_flash(sample_task)
+    # Gate is off — must NOT route to mechanical lane.
+    assert "runner" not in out or out.get("runner") != "mechanical", (
+        "PHASE2_PREEMPT_ENABLED is False; flash must not set runner=mechanical"
+    )
+    # Must appear in the skills envelope as inject instead.
+    skills = out["skills"]
+    assert len(skills) >= 1, (
+        "preempt downgraded to inject must appear in task['skills']"
+    )
+    inject_entries = [s for s in skills if s["exposure_class"] == "inject"]
+    assert inject_entries, (
+        f"expected at least one inject entry in skills; got {skills}"
+    )
+    assert inject_entries[0]["artifact_id"] == 18
 
 
 @pytest.mark.asyncio

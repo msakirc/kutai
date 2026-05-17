@@ -19,6 +19,16 @@ Never imports LLMDispatcher (Phase 2 has no LLM-bind).
 """
 from __future__ import annotations
 
+# Phase gate: the yalayut_recipe mechanical executor is Phase 3 scope.
+# Until it exists, preempt-classified artifacts are treated as inject so they
+# still surface their body in the agent's context instead of routing to a
+# mechanical lane that cannot handle them (guaranteed task failure in mr_roboto).
+#
+# Flip to True in Phase 3 once packages/mr_roboto gains the yalayut_recipe
+# executor.  ALL preempt routing code below stays intact — only this flag gates
+# whether the preempt path is taken.
+PHASE2_PREEMPT_ENABLED: bool = False
+
 import json
 
 from src.infra.logging_config import get_logger
@@ -168,6 +178,13 @@ async def flash(task: dict) -> dict:
             if klass == "preempt":
                 # preempt with unbound required fields downgrades to inject.
                 if not complete:
+                    klass = "inject"
+                elif not PHASE2_PREEMPT_ENABLED:
+                    # Phase gate: yalayut_recipe executor is Phase 3 scope.
+                    # Downgrade to inject so the artifact's body still surfaces
+                    # in the agent's context rather than routing to a mechanical
+                    # lane that cannot handle it (mr_roboto has no yalayut_recipe
+                    # action yet).  Flip PHASE2_PREEMPT_ENABLED in Phase 3.
                     klass = "inject"
                 else:
                     preempt_app = {

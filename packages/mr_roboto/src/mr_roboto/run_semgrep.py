@@ -12,17 +12,26 @@ semgrep ``INFO``    → info
 
 Missing semgrep
 ---------------
-If semgrep is not installed (FileNotFoundError or exit 127) the verb returns a
-soft-skipped verdict — ``ok=True``, ``skipped=True``, ``findings=[]`` — so the
-caller is not penalised.  This is intentional for v1: semgrep is a runtime
-tool, not a project dependency.  Promote to blocker once the CI image ships
-semgrep.
+semgrep has no native Windows binary.  When semgrep is absent this verb
+attempts a Docker fallback (``docker run semgrep/semgrep``) if Docker is
+available.  If Docker is also absent the verb returns a *platform-skip*
+verdict so callers can distinguish "gate did not run" from "gate ran and
+passed":
+
+    ``ok=True, skipped=True, skipped_platform=True``
+
+A platform-skip MUST be surfaced as a WARNING by downstream verdict handlers
+— it must never be silently counted as green.  On Linux/macOS where semgrep
+is merely absent (not installed but the OS supports it), the legacy
+``skipped_platform=False`` path is used so CI can still treat it as a soft
+miss rather than a hard warning.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +50,14 @@ _SEMGREP_SEVERITY_MAP = {
     "INFO": "info",
 }
 
+# Docker image used for the Windows fallback.
+_SEMGREP_DOCKER_IMAGE = "semgrep/semgrep:latest"
+
+
+def _is_windows() -> bool:
+    """True when running on Windows (semgrep has no native Win binary)."""
+    return sys.platform == "win32"
+
 
 def _locate_semgrep() -> str:
     """Return the semgrep executable path.  Raises FileNotFoundError if absent."""
@@ -49,6 +66,92 @@ def _locate_semgrep() -> str:
     if path is None:
         raise FileNotFoundError("semgrep not found on PATH")
     return path
+
+
+def _locate_docker() -> str | None:
+    """Return the docker executable path, or None if Docker is not installed."""
+    import shutil
+    return shutil.which("docker")
+
+
+async def _run_semgrep_via_docker(
+    rule_pack_path: str,
+    targets: list[str],
+    workspace_root: str,
+    mission_id: int | None,
+    timeout_s: float,
+) -> dict[str, Any] | None:
+    """Try to run semgrep inside a Docker container.
+
+    Returns a raw ``run_cmd`` result dict on success/failure, or ``None`` when
+    Docker is not available.  The caller is responsible for interpreting the
+    exit code.
+
+    The workspace is mounted read-only at ``/src`` inside the container.
+    Target paths are re-written to be relative to workspace_root so they map
+    correctly into ``/src``.
+    """
+    docker_exe = _locate_docker()
+    if docker_exe is None:
+        return None
+
+    # Re-map targets: convert absolute paths to relative, then prefix /src/.
+    remapped: list[str] = []
+    ws = Path(workspace_root).resolve()
+    for t in targets:
+        p = Path(t)
+        if p.is_absolute():
+            try:
+                rel = p.relative_to(ws)
+                remapped.append(f"/src/{rel.as_posix()}")
+            except ValueError:
+                remapped.append(t)  # outside workspace — pass as-is
+        else:
+            remapped.append(f"/src/{t}" if t != "." else "/src")
+
+    # Use POSIX path for Docker volume mount even on Windows.
+    ws_posix = ws.as_posix()
+
+    cmd = [
+        docker_exe, "run", "--rm",
+        "-v", f"{ws_posix}:/src:ro",
+        _SEMGREP_DOCKER_IMAGE,
+        "semgrep",
+        "--config", "/src/" + Path(rule_pack_path).name
+        if not rule_pack_path.startswith("/src")
+        else rule_pack_path,
+        "--json",
+        "--quiet",
+        *remapped,
+    ]
+
+    # Copy the rule pack into the workspace temporarily so Docker can see it.
+    # Rule packs ship inside the mr_roboto package, not inside workspace_root.
+    # We copy only when the rule pack lives outside the workspace.
+    rule_pack_p = Path(rule_pack_path).resolve()
+    _tmp_pack: Path | None = None
+    if not str(rule_pack_p).startswith(str(ws)):
+        import shutil as _shutil
+        _tmp_pack = ws / f"._semgrep_rule_pack_{rule_pack_p.name}"
+        _shutil.copy2(rule_pack_p, _tmp_pack)
+        # Update cmd to reference the copied pack inside /src.
+        pack_idx = cmd.index("--config") + 1
+        cmd[pack_idx] = f"/src/._semgrep_rule_pack_{rule_pack_p.name}"
+
+    try:
+        raw = await run_cmd(
+            mission_id=mission_id,
+            cmd=cmd,
+            cwd=None,
+            timeout_s=timeout_s + 60,  # Docker pull adds latency on first run.
+            require_exit_zero=False,
+            workspace_path=str(ws),
+        )
+    finally:
+        if _tmp_pack and _tmp_pack.exists():
+            _tmp_pack.unlink(missing_ok=True)
+
+    return raw
 
 
 async def run_semgrep(
@@ -87,8 +190,14 @@ async def run_semgrep(
         the run was not skipped AND no internal error occurred.
         False when an unexpected error prevented analysis.
     ``skipped``
-        True when semgrep is not installed.  Callers MUST treat this as a
-        soft pass (warning at most), never as a blocker.
+        True when semgrep is not available (not installed, or not runnable via
+        Docker).  When ``skipped_platform`` is also True the caller MUST log a
+        WARNING — the gate did not enforce anything.
+    ``skipped_platform``
+        True when the skip is caused by the host platform not supporting
+        semgrep natively (Windows) AND the Docker fallback was also
+        unavailable.  False on non-Windows systems where semgrep is simply not
+        installed (soft-miss, CI may treat as warning-only).
     ``findings``
         List of finding dicts: ``{rule_id, path, line, message, severity,
         semgrep_severity}``.  Empty when ``ok=True`` and no patterns matched.
@@ -108,15 +217,120 @@ async def run_semgrep(
         Human-readable error string when ``ok=False`` and not skipped.
     """
     effective_rule_pack = rule_pack_path or DEFAULT_RULE_PACK
+    on_windows = _is_windows()
 
-    # Soft-skip when semgrep is absent — never blocker on missing tool.
+    # Locate native semgrep binary.
+    semgrep_exe: str | None = None
     try:
         semgrep_exe = _locate_semgrep()
     except FileNotFoundError:
-        logger.warning("semgrep not installed — pattern_lint skipped")
+        pass
+
+    targets: list[str]
+    if not target_files:
+        targets = ["."]
+    else:
+        targets = list(target_files)
+
+    # ── Docker fallback when native semgrep is absent ──────────────────────
+    # Attempted unconditionally when semgrep is not on PATH.  On Windows this
+    # is the primary path; on Linux it is a best-effort fallback.
+    if semgrep_exe is None:
+        effective_workspace = workspace_path or "."
+        docker_raw = await _run_semgrep_via_docker(
+            rule_pack_path=effective_rule_pack,
+            targets=targets,
+            workspace_root=effective_workspace,
+            mission_id=mission_id,
+            timeout_s=timeout_s,
+        )
+        if docker_raw is not None:
+            # Docker was available — treat result the same as a native run.
+            logger.info(
+                "semgrep native absent; running via Docker fallback",
+                platform=sys.platform,
+            )
+            # Fall through to the standard result-parsing logic below by
+            # synthesising the variables that the native path would have set.
+            exit_code = int(docker_raw.get("exit", -1))
+            timed_out = bool(docker_raw.get("timed_out"))
+            spawn_error = docker_raw.get("error")
+            stdout = docker_raw.get("stdout_tail") or ""
+            stderr = docker_raw.get("stderr_tail") or ""
+
+            if exit_code == 127 or spawn_error:
+                # Docker itself not found or semgrep image missing.
+                pass  # fall through to platform-skip below
+            elif timed_out:
+                return {
+                    "ok": False,
+                    "skipped": False,
+                    "skipped_platform": False,
+                    "findings": [],
+                    "blocker_count": 0,
+                    "warning_count": 0,
+                    "exit": exit_code,
+                    "stdout_tail": stdout,
+                    "stderr_tail": stderr,
+                    "duration_s": docker_raw.get("duration_s", 0.0),
+                    "error": "semgrep (Docker) timed out",
+                }
+            elif exit_code in (0, 1):
+                # Successful Docker run — parse findings normally.
+                findings = _parse_findings(stdout)
+                blocker_count = sum(1 for f in findings if f["severity"] == "blocker")
+                warning_count = sum(1 for f in findings if f["severity"] == "warning")
+                return {
+                    "ok": True,
+                    "skipped": False,
+                    "skipped_platform": False,
+                    "findings": findings,
+                    "blocker_count": blocker_count,
+                    "warning_count": warning_count,
+                    "exit": exit_code,
+                    "stdout_tail": stdout,
+                    "stderr_tail": stderr,
+                    "duration_s": docker_raw.get("duration_s", 0.0),
+                    "error": None,
+                }
+            else:
+                logger.warning(
+                    "semgrep (Docker) exited with unexpected code",
+                    exit_code=exit_code, stderr=stderr[:300],
+                )
+                return {
+                    "ok": False,
+                    "skipped": False,
+                    "skipped_platform": False,
+                    "findings": [],
+                    "blocker_count": 0,
+                    "warning_count": 0,
+                    "exit": exit_code,
+                    "stdout_tail": stdout,
+                    "stderr_tail": stderr,
+                    "duration_s": docker_raw.get("duration_s", 0.0),
+                    "error": f"semgrep (Docker) exit {exit_code}: {stderr[:200]}",
+                }
+
+        # ── Platform-skip: semgrep absent AND Docker not available ──────────
+        # On Windows this is a blocker-severity omission — the gate did NOT
+        # run.  On non-Windows this is a softer "tool not installed" miss.
+        if on_windows:
+            logger.warning(
+                "semgrep not available on Windows (no native binary, Docker absent) "
+                "— gate DID NOT RUN; skipped_platform=True. "
+                "Install semgrep via WSL or ensure Docker is running.",
+                platform=sys.platform,
+            )
+        else:
+            logger.warning(
+                "semgrep not installed — pattern_lint skipped",
+                platform=sys.platform,
+            )
         return {
             "ok": True,
             "skipped": True,
+            "skipped_platform": on_windows,
             "findings": [],
             "blocker_count": 0,
             "warning_count": 0,
@@ -127,12 +341,7 @@ async def run_semgrep(
             "error": None,
         }
 
-    targets: list[str]
-    if not target_files:
-        targets = ["."]
-    else:
-        targets = list(target_files)
-
+    # ── Native semgrep run ─────────────────────────────────────────────────
     cmd = [
         semgrep_exe,
         "--config", effective_rule_pack,
@@ -165,6 +374,7 @@ async def run_semgrep(
         return {
             "ok": True,
             "skipped": True,
+            "skipped_platform": on_windows,
             "findings": [],
             "blocker_count": 0,
             "warning_count": 0,
@@ -179,6 +389,7 @@ async def run_semgrep(
         return {
             "ok": False,
             "skipped": False,
+            "skipped_platform": False,
             "findings": [],
             "blocker_count": 0,
             "warning_count": 0,
@@ -200,6 +411,7 @@ async def run_semgrep(
         return {
             "ok": False,
             "skipped": False,
+            "skipped_platform": False,
             "findings": [],
             "blocker_count": 0,
             "warning_count": 0,
@@ -210,7 +422,27 @@ async def run_semgrep(
             "error": f"semgrep exit {exit_code}: {stderr[:200]}",
         }
 
-    # Parse JSON output.
+    findings = _parse_findings(stdout)
+    blocker_count = sum(1 for f in findings if f["severity"] == "blocker")
+    warning_count = sum(1 for f in findings if f["severity"] == "warning")
+
+    return {
+        "ok": True,
+        "skipped": False,
+        "skipped_platform": False,
+        "findings": findings,
+        "blocker_count": blocker_count,
+        "warning_count": warning_count,
+        "exit": exit_code,
+        "stdout_tail": stdout,
+        "stderr_tail": stderr,
+        "duration_s": raw.get("duration_s", 0.0),
+        "error": None,
+    }
+
+
+def _parse_findings(stdout: str) -> list[dict]:
+    """Parse semgrep JSON stdout into a normalised findings list."""
     findings: list[dict] = []
     try:
         # semgrep --json writes to stdout.  stdout_tail may be truncated by
@@ -235,19 +467,4 @@ async def run_semgrep(
             "semgrep JSON parse failed — treating as empty findings",
             exc=str(exc), stdout_head=stdout[:200],
         )
-
-    blocker_count = sum(1 for f in findings if f["severity"] == "blocker")
-    warning_count = sum(1 for f in findings if f["severity"] == "warning")
-
-    return {
-        "ok": True,
-        "skipped": False,
-        "findings": findings,
-        "blocker_count": blocker_count,
-        "warning_count": warning_count,
-        "exit": exit_code,
-        "stdout_tail": stdout,
-        "stderr_tail": stderr,
-        "duration_s": raw.get("duration_s", 0.0),
-        "error": None,
-    }
+    return findings

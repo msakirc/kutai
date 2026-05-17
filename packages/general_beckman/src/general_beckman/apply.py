@@ -1008,6 +1008,32 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
         )
         return
 
+    if posthook_kind == "capture_hint":
+        # Yalayut Phase 4 — capture_hint is warning-only telemetry; a DLQ of
+        # the capture task itself must never cascade the source to failed.
+        # Soft-drop the pending kind and advance the source if none remain.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "capture_hint"
+        ]
+        new_pending = source_ctx["_pending_posthooks"]
+        if not new_pending:
+            await update_task(
+                source_id, status="completed",
+                context=_json.dumps(source_ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning("capture_hint DLQ soft-dropped (warning-only kind)",
+                       source_id=source_id, posthook_task_id=task["id"])
+        return
+
     if agent_type == "artifact_summarizer":
         artifact_name = ctx.get("artifact_name") or ""
         kind = f"summary:{artifact_name}"
@@ -2363,6 +2389,7 @@ async def _apply_semgrep_warning_verdict(
     raw = verdict.raw or {}
     findings = raw.get("findings") or []
     skipped = bool(raw.get("skipped"))
+    skipped_platform = bool(raw.get("skipped_platform"))
 
     if findings:
         ctx[findings_ctx_key] = findings[:50]
@@ -2377,10 +2404,19 @@ async def _apply_semgrep_warning_verdict(
             skipped=skipped,
         )
     elif skipped:
-        logger.debug(
-            f"{kind}: semgrep not installed, soft-skipped",
-            source_id=verdict.source_task_id,
-        )
+        if skipped_platform:
+            logger.warning(
+                f"{kind}: semgrep gate DID NOT RUN — platform skip "
+                f"(Windows, no Docker fallback). Gate is NOT enforced.",
+                source_id=verdict.source_task_id,
+                kind=kind,
+            )
+            ctx[f"_{kind}_platform_skip"] = True
+        else:
+            logger.warning(
+                f"{kind}: semgrep not installed — gate skipped",
+                source_id=verdict.source_task_id,
+            )
 
     new_pending = [k for k in pending if k != kind]
     ctx["_pending_posthooks"] = new_pending
@@ -2442,13 +2478,28 @@ async def _apply_semgrep_blocker_verdict(
     raw = verdict.raw or {}
     findings = raw.get("findings") or []
     skipped = bool(raw.get("skipped"))
+    skipped_platform = bool(raw.get("skipped_platform"))
 
-    # Soft-skip: semgrep not installed → advance as if passed.
+    # Soft-skip: semgrep not installed → advance, but surface platform skips
+    # as WARNING so reviewers know the gate did not enforce anything.
     if skipped:
-        logger.debug(
-            f"{kind}: semgrep not installed, soft-skipped (blocker severity)",
-            source_id=verdict.source_task_id,
-        )
+        if skipped_platform:
+            logger.warning(
+                f"{kind}: semgrep gate DID NOT RUN — platform skip "
+                f"(Windows, no Docker fallback). Gate is NOT enforced. "
+                f"Install semgrep via WSL or run Docker to enable this gate.",
+                source_id=verdict.source_task_id,
+                kind=kind,
+            )
+            # Stamp the platform-skip flag into context so mission audit logs
+            # and downstream consumers can distinguish a real pass from a skip.
+            ctx[f"_{kind}_platform_skip"] = True
+        else:
+            logger.warning(
+                f"{kind}: semgrep not installed — gate skipped "
+                f"(non-Windows; install semgrep to enable enforcement)",
+                source_id=verdict.source_task_id,
+            )
         new_pending = [k for k in pending if k != kind]
         ctx["_pending_posthooks"] = new_pending
         if not new_pending:
@@ -3887,6 +3938,39 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                                context=_json.dumps(ctx))
         else:
             await _update_task(a.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Yalayut Phase 4 — capture_hint posthook verdict.
+    # Warning severity: pure telemetry (replaces the old skills.py
+    # auto-capture). A capture miss must NEVER block or DLQ the source —
+    # always soft-drop the kind. The mechanical executor no-ops on
+    # <2-iteration / failed tasks and returns ok=True even on internal
+    # failure, so the verdict is effectively always passed. Without this
+    # branch the kind falls through to the "unknown kind" warning at the
+    # end of this function and the source is stranded in 'ungraded'
+    # forever (capture_hint auto-wires on every task via triggers=["*"]).
+    if a.kind == "capture_hint":
+        new_pending = [k for k in pending if k != "capture_hint"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, a.raw or {})
+            # capture_hint may be the last hook to resolve (after grade),
+            # so it owns the step-completion notification in that case.
+            try:
+                from general_beckman import _send_step_progress
+                fresh = await get_task(a.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", a.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(a.source_task_id, context=_json.dumps(ctx))
         return
 
     if a.kind == "grade" and a.passed:

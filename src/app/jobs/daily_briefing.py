@@ -27,6 +27,16 @@ logger = get_logger("app.jobs.daily_briefing")
 # product_id sentinel for daily briefings (not tied to a single mission)
 _DAILY_PRODUCT_ID = "__daily__"
 
+# _pending_founder_actions tuning:
+#   _ACTION_FETCH_LIMIT — DB fetch window: how many of the newest pending/
+#     in_progress founder_actions rows we examine. A deferred card resurfaces
+#     only if its row is within this newest-30 window; older deferred cards
+#     are intentionally not shown (keeps the briefing bounded).
+#   _ACTION_SECTION_CAP — per-section cap: the active and resurfaced lists are
+#     each truncated to this many items so the briefing stays scannable.
+_ACTION_FETCH_LIMIT = 30
+_ACTION_SECTION_CAP = 10
+
 
 async def _in_flight_missions() -> list[dict]:
     """Return non-terminal missions."""
@@ -60,7 +70,8 @@ async def _pending_founder_actions() -> tuple[list[dict], list[dict]]:
             "SELECT id, mission_id, kind, title, status, defer_until "
             "FROM founder_actions "
             "WHERE status IN ('pending', 'in_progress') "
-            "ORDER BY id DESC LIMIT 30"
+            "ORDER BY id DESC LIMIT ?",
+            (_ACTION_FETCH_LIMIT,),
         )
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, r)) for r in await cur.fetchall()]
@@ -69,6 +80,12 @@ async def _pending_founder_actions() -> tuple[list[dict], list[dict]]:
 
     import datetime as _dt
 
+    # UTC assumption: founder_actions.defer_until is written in naive-UTC
+    # '%Y-%m-%d %H:%M:%S' format by attention_budget.record_deferred (via
+    # next_review_window, which uses datetime.utcnow()) and the /attention
+    # defer Telegram command. Compare against utcnow() so reader and writer
+    # agree — using local time here would misfire the resurface window by
+    # the UTC offset.
     now = _dt.datetime.utcnow()
     active: list[dict] = []
     resurfaced: list[dict] = []
@@ -88,7 +105,8 @@ async def _pending_founder_actions() -> tuple[list[dict], list[dict]]:
                 continue
         active.append(r)
 
-    return active[:10], resurfaced[:10]
+    # Cap each section so the briefing stays scannable (see _ACTION_SECTION_CAP).
+    return active[:_ACTION_SECTION_CAP], resurfaced[:_ACTION_SECTION_CAP]
 
 
 async def _cost_burn_last_24h() -> float:

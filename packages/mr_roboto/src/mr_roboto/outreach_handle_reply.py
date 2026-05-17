@@ -150,6 +150,12 @@ async def run_outreach_handle_reply(
             "error": f"send_id {send_id} not found for product {product_id}",
         }
 
+    # Idempotency: capture whether this reply was already handled BEFORE we
+    # stamp replied_at below. A webhook retry re-delivering the same inbound
+    # reply must not enqueue a second follow-up draft. send_row[1] is
+    # replied_at — NULL means this is the first time we process this reply.
+    already_replied = send_row[1] is not None
+
     # Classify
     classification = await _classify_reply(reply_body)
 
@@ -201,8 +207,23 @@ async def run_outreach_handle_reply(
     # For positive_interest: enqueue a follow-up draft via the existing
     # outreach/draft verb so a personalized reply is actually produced —
     # previously this only set follow_up_needed=True and dropped the task.
+    #
+    # Dedup guard: only enqueue the follow-up on the FIRST processing of this
+    # reply (replied_at was NULL when we started). On a webhook retry the row
+    # already has replied_at stamped, so we skip the enqueue to avoid a
+    # duplicate follow-up draft task.
     if classification == "positive_interest":
         result["follow_up_needed"] = True
+
+        if already_replied:
+            logger.info(
+                "outreach_handle_reply: reply already handled — "
+                "skipping duplicate follow-up enqueue",
+                product_id=product_id,
+                send_id=send_id,
+            )
+            result["follow_up_task"] = {"status": "skipped_duplicate"}
+            return result
 
         # Recover the list_id for this send so the follow-up draft is
         # scoped to the same campaign list.

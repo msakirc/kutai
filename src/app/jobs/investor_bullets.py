@@ -420,20 +420,30 @@ async def _fetch_mention_counts(product_id: str) -> dict:
     A11 is not built yet → always degrade to empty dict (graceful).
     """
     # A11 table (mentions) may not exist or may have no rows yet.
+    from sqlite3 import OperationalError
+
     from src.infra.db import get_db
     db = await get_db()
     try:
+        # NOTE: the mentions table's timestamp column is `seen_at`
+        # (see db.py mentions CREATE TABLE) — NOT `detected_at`. Using the
+        # wrong name throws OperationalError and silently degrades to {}.
         cur = await db.execute(
             "SELECT COUNT(*) FROM mentions "
             "WHERE product_id = ? "
-            "AND detected_at >= strftime('%Y-%m-01', 'now')",
+            "AND seen_at >= strftime('%Y-%m-01', 'now')",
             (product_id,),
         )
         row = await cur.fetchone()
         count = int(row[0]) if row else 0
         return {"mention_count": {"current": float(count), "history": []}}
-    except Exception:
-        # Table absent → degrade silently
+    except OperationalError as exc:
+        # Table absent (A11 not built yet) or column drift → degrade, but
+        # log so a future schema mismatch is visible, not silent.
+        logger.warning(
+            "investor_bullets: mentions table unavailable",
+            error=str(exc),
+        )
         return {}
 
 

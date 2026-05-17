@@ -345,6 +345,11 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "roadmap_sync": "full",                # roadmap DB sync; reversible
     # credential_rotation_reminder emits an advisory founder_action only.
     "credential_rotation_reminder": "full",
+    # ---- Yalayut Phase 3 — recipe execution --------------------------------
+    # yalayut_recipe runs a vetted shell_recipe from the catalog. The recipe
+    # body may write files, scaffold directories, or run build tools; impact
+    # depends on the recipe. Conservative partial default (same as run_cmd).
+    "yalayut_recipe": "partial",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

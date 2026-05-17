@@ -1094,10 +1094,34 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"{profile.name} → {tool_name}"
                 )
             elif tool_name not in TOOL_REGISTRY:
-                tool_output = (
-                    f"❌ Unknown tool '{tool_name}'. "
-                    f"Available: {list(TOOL_REGISTRY.keys())}"
-                )
+                # yalayut-provided api/mcp tools route through the catalog
+                # dispatcher. Build a per-call registry from the task's
+                # skills envelope (exposure_class=="tool" entries with
+                # _yalayut_kind set by ApiPlugin / McpPlugin).
+                _yalayut_registry: dict = {}
+                for _sk in (task.get("skills") or []):
+                    if _sk.get("exposure_class") == "tool":
+                        _payload = _sk.get("payload") or {}
+                        _kind = _payload.get("kind")
+                        if _kind in ("api", "mcp"):
+                            for _ts in (_payload.get("tools") or []):
+                                _ts_copy = dict(_ts)
+                                _ts_copy["_yalayut_kind"] = _kind
+                                _yalayut_registry[_ts_copy.get("tool_name", "")] = _ts_copy
+                if tool_name in _yalayut_registry:
+                    import yalayut
+                    _yr = await yalayut.dispatch_tool(
+                        tool_name, tool_args, _yalayut_registry
+                    )
+                    tool_output = (
+                        _yr.get("response") or _yr.get("error")
+                        or "yalayut: no output"
+                    )
+                else:
+                    tool_output = (
+                        f"❌ Unknown tool '{tool_name}'. "
+                        f"Available: {list(TOOL_REGISTRY.keys())}"
+                    )
             else:
                 arg_schema = TOOL_SCHEMAS_BY_NAME.get(tool_name)
                 if arg_schema:

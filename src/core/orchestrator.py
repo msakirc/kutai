@@ -28,6 +28,23 @@ logger = get_logger("core.orchestrator")
 # behind a still-running budget.
 
 
+async def _check_mcp_idle_sweep() -> None:
+    """Periodically shut down idle MCP servers (lazy-start companion).
+
+    Runs on the same cadence as the other orchestrator _check_* jobs. Never
+    starts a server — only kills servers idle past their idle_timeout_s.
+    """
+    try:
+        from yalayut.mcp_manager import get_manager
+        killed = await get_manager().sweep_idle()
+        if killed:
+            from src.infra.logging_config import get_logger as _get_logger
+            _get_logger("orchestrator.mcp").info("mcp idle sweep", killed=killed)
+    except Exception:
+        # Sweep failures must never disturb the pump.
+        pass
+
+
 class Orchestrator:
     def __init__(self, shutdown_event=None):
         self.telegram = TelegramInterface(self)
@@ -464,6 +481,12 @@ class Orchestrator:
                             )
                     except Exception as _e:
                         logger.debug(f"z6 sweep skipped: {_e}")
+
+                # Yalayut Phase 3 — MCP idle sweep: kill servers idle past
+                # their idle_timeout_s. Runs every loop tick (cheap select);
+                # never starts a server; failures are silenced so the pump
+                # is never disturbed.
+                await _check_mcp_idle_sweep()
 
                 await asyncio.sleep(3)
             except asyncio.CancelledError:

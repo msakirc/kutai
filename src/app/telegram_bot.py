@@ -2031,6 +2031,8 @@ class TelegramInterface:
             CommandHandler("approve_sunset", self.cmd_approve_sunset)
         )
         self.app.add_handler(CommandHandler("ask", self.cmd_ask))
+        # Yalayut Phase 3 — catalog auth + MCP control commands
+        self.app.add_handler(CommandHandler("yalayut", self.cmd_yalayut))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_founder_action_callback,
             pattern=r"^fa_(done|inprogress|block)_\d+$",
@@ -12189,3 +12191,103 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "Available: `upload`, `status`, `verify`",
             parse_mode="Markdown",
         )
+
+    # ─── Yalayut Phase 3 — catalog auth + MCP control ────────────────────
+
+    async def cmd_yalayut(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Manage yalayut catalog auth secrets and running MCP servers.
+
+        Sub-commands:
+          /yalayut auth missing          — list artifacts blocked on missing auth
+          /yalayut auth set KEY=VALUE    — store an auth secret and re-vet
+          /yalayut mcp status            — show running MCP server processes
+          /yalayut mcp restart <id>      — restart an MCP server by artifact_id
+          /yalayut mcp kill <id>         — kill an MCP server by artifact_id
+        """
+        args = context.args or []
+        if not args:
+            await self._reply(
+                update,
+                "*Yalayut commands*\n\n"
+                "`/yalayut auth missing` — artifacts blocked on missing auth\n"
+                "`/yalayut auth set KEY=VALUE` — store secret + re-vet\n"
+                "`/yalayut mcp status` — running MCP servers\n"
+                "`/yalayut mcp restart <id>` — restart MCP server\n"
+                "`/yalayut mcp kill <id>` — kill MCP server",
+                parse_mode="Markdown",
+            )
+            return
+
+        sub = args[0].lower()
+        args = args[1:]  # remaining args after sub-command
+
+        if sub == "auth" and args[:1] == ["missing"]:
+            from yalayut import admin
+            rows = await admin.missing_auth()
+            if not rows:
+                await self._reply(update, "yalayut: no artifacts blocked on auth.")
+            else:
+                lines = ["*Artifacts blocked on missing auth*"]
+                for r in rows:
+                    lines.append(f"- `{r['name']}` needs `{r['missing_key']}`")
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+        elif sub == "auth" and args[:1] == ["set"] and len(args) >= 2:
+            # /yalayut auth set KEY=VALUE
+            kv = " ".join(args[1:])
+            if "=" not in kv:
+                await self._reply(update, "Usage: /yalayut auth set KEY=VALUE")
+            else:
+                key, value = kv.split("=", 1)
+                from yalayut import admin
+                res = await admin.set_secret(key.strip(), value.strip())
+                if res["ok"]:
+                    await self._reply(
+                        update,
+                        f"yalayut: stored `{key.strip()}` "
+                        f"and re-vetted dependent artifacts.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await self._reply(
+                        update,
+                        f"yalayut: failed — {res.get('error')}",
+                    )
+
+        elif sub == "mcp" and args[:1] == ["status"]:
+            from yalayut import admin
+            rows = await admin.mcp_status()
+            if not rows:
+                await self._reply(update, "yalayut: no MCP servers running.")
+            else:
+                lines = ["*Running MCP servers*"]
+                for r in rows:
+                    lines.append(
+                        f"- artifact `{r['artifact_id']}` pid {r['pid']} "
+                        f"health={r['health']} fails={r['fails']}"
+                    )
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+        elif sub == "mcp" and args[:1] == ["restart"] and len(args) >= 2:
+            from yalayut import admin
+            res = await admin.mcp_restart(int(args[1]))
+            await self._reply(
+                update,
+                f"yalayut: mcp restart artifact {args[1]} -> "
+                f"{res.get('health') or res.get('error')}",
+            )
+
+        elif sub == "mcp" and args[:1] == ["kill"] and len(args) >= 2:
+            from yalayut import admin
+            await admin.mcp_kill(int(args[1]))
+            await self._reply(update, f"yalayut: killed MCP artifact {args[1]}.")
+
+        else:
+            await self._reply(
+                update,
+                f"Unknown /yalayut subcommand: `{sub}`\n\n"
+                "Use `/yalayut` for help.",
+                parse_mode="Markdown",
+            )

@@ -17,8 +17,8 @@ from yalayut.executor import run_recipe  # noqa: F401  (operational API)
 
 __all__ = [
     "query", "daily_discovery", "source_scout_scan", "on_demand_discovery",
-    "capture_hint", "run_recipe", "dispatch_tool", "observe_and_propose",
-    "Artifact",
+    "capture_hint", "record_demand_signal", "run_recipe", "dispatch_tool",
+    "observe_and_propose", "Artifact",
 ]
 
 
@@ -86,5 +86,22 @@ async def capture_hint(task: dict, outcome: dict) -> None:
     """Post-hook body: internal_hint auto-capture."""
     from yalayut.capture import capture_hint as _impl
     return await _impl(task, outcome)
+
+
+async def record_demand_signal(
+    *,
+    source_step_pattern: str,
+    intent_keywords: list[str],
+    signal_type: str,
+    confidence: float = 0.3,
+) -> int:
+    """Public API — record one demand signal. Firing sites call this."""
+    from yalayut.discovery.demand import record as _impl
+    return await _impl(
+        source_step_pattern=source_step_pattern,
+        intent_keywords=intent_keywords,
+        signal_type=signal_type,
+        confidence=confidence,
+    )
 
 

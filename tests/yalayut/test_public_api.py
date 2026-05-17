@@ -16,24 +16,35 @@ def test_public_api_surface():
 async def test_source_scout_scan_proposes_unknown_sources(
     yalayut_db, monkeypatch
 ):
-    # an indexed artifact from a source NOT in yalayut_sources
-    await yalayut_db.execute(
-        "INSERT INTO yalayut_index "
-        "(artifact_type, kind, source, name, version, vet_tier, enabled) "
-        "VALUES ('skill','prompt_skill','github:new/repo@/x','a','1',0,1)"
-    )
-    await yalayut_db.commit()
+    # Phase 4: source_scout_scan() gathers candidates from four scanners.
+    # Monkeypatch the scanner functions so no real network calls are made,
+    # and monkeypatch source_scout.get_db so the module uses yalayut_db.
+    from yalayut.discovery import source_scout
+
+    async def _fake_github():
+        return [{"candidate_source_id": "github:new/repo",
+                 "source_type": "github_path",
+                 "endpoint": "https://github.com/new/repo",
+                 "metadata_json": "{}"}]
+
+    async def _empty():
+        return []
+
+    monkeypatch.setattr(source_scout, "_scan_github_trending", _fake_github)
+    monkeypatch.setattr(source_scout, "_scan_readme_crossrefs", _empty)
+    monkeypatch.setattr(source_scout, "_scan_demand_websearch", _empty)
+    monkeypatch.setattr(source_scout, "_scan_founder_urls", _empty)
 
     async def fake_get_db():
         return yalayut_db
-    monkeypatch.setattr("src.infra.db.get_db", fake_get_db)
+    monkeypatch.setattr(source_scout, "get_db", fake_get_db)
 
     result = await yalayut.source_scout_scan()
     assert result["candidates_proposed"] == 1
     cur = await yalayut_db.execute(
         "SELECT candidate_source_id FROM yalayut_source_candidates"
     )
-    assert (await cur.fetchone())["candidate_source_id"] == "github:new/repo@/x"
+    assert (await cur.fetchone())["candidate_source_id"] == "github:new/repo"
 
 
 async def test_run_recipe_unknown_id(yalayut_db, monkeypatch):

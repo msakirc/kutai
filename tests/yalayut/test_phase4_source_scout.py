@@ -13,9 +13,18 @@ def loop():
     lp.close()
 
 
+async def _clean_candidates():
+    """Wipe yalayut_source_candidates so daily-cap / dedup state doesn't
+    leak between tests on the shared singleton DB."""
+    db = await get_db()
+    await db.execute("DELETE FROM yalayut_source_candidates")
+    await db.commit()
+
+
 def test_source_scout_writes_candidates(loop, monkeypatch):
     async def _run():
         await init_db()
+        await _clean_candidates()
 
         async def _fake_github_trending():
             return [
@@ -49,6 +58,7 @@ def test_source_scout_writes_candidates(loop, monkeypatch):
 def test_source_scout_respects_daily_cap(loop, monkeypatch):
     async def _run():
         await init_db()
+        await _clean_candidates()
 
         async def _many():
             return [
@@ -76,6 +86,7 @@ def test_source_scout_respects_daily_cap(loop, monkeypatch):
 def test_source_scout_dedupes_existing(loop, monkeypatch):
     async def _run():
         await init_db()
+        await _clean_candidates()
         db = await get_db()
         await db.execute(
             "INSERT INTO yalayut_source_candidates "
@@ -84,7 +95,7 @@ def test_source_scout_dedupes_existing(loop, monkeypatch):
             "datetime('now'))")
         # Also already an approved source — must not be re-proposed.
         await db.execute(
-            "INSERT INTO yalayut_sources (source_id, source_type, endpoint, "
+            "INSERT OR IGNORE INTO yalayut_sources (source_id, source_type, endpoint, "
             "trusted, enabled, discovery_mode) "
             "VALUES ('github:known/repo', 'github_path', 'x', 1, 1, 'cron')")
         await db.commit()

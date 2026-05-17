@@ -11,11 +11,14 @@ Handler contract (posthook via beckman)
 
 Also exposed as:
   run_deliverability_check(product_id, list_id) -> dict
+  clear_pause(product_id, list_id) -> dict
 
 Status values returned:
   "ok"     — metrics within acceptable bounds
   "paused" — metrics exceeded threshold; founder_action emitted
   "skip"   — not enough data (< 10 sends)
+  "cleared" — pause row stamped with cleared_at (from clear_pause)
+  "not_paused" — no active pause found (from clear_pause)
 """
 from __future__ import annotations
 
@@ -56,7 +59,7 @@ async def _emit_founder_action(
             f"Issue: {issue}",
             "Review the recent outreach_sends rows for this product + list.",
             "Clean the list (remove bad emails, unengaged prospects).",
-            "Resume by clearing the warmup day counter or contacting your ESP.",
+            f"Resume sending with: /outreach resume {list_id}",
             "Threshold: bounce >5% or complaint >0.1% triggers this alert.",
         ]
         return await fa_create(
@@ -185,6 +188,43 @@ async def run_deliverability_check(
         "complaint_rate": complaint_rate,
         "total_sent": total_sent,
     }
+
+
+async def clear_pause(product_id: str, list_id: str) -> dict[str, str]:
+    """Stamp cleared_at on the active pause row for (product_id, list_id).
+
+    Called by the founder via ``/outreach resume <list_id>``.
+
+    Returns:
+      {"status": "cleared", "product_id": ..., "list_id": ...}
+      {"status": "not_paused", "product_id": ..., "list_id": ...}
+    """
+    from src.infra.db import get_db
+    from src.infra.times import db_now
+
+    db = await get_db()
+    cur = await db.execute(
+        "UPDATE outreach_pauses "
+        "SET cleared_at=? "
+        "WHERE product_id=? AND list_id=? AND cleared_at IS NULL",
+        (db_now(), product_id, list_id),
+    )
+    await db.commit()
+
+    if cur.rowcount > 0:
+        logger.info(
+            "outreach_deliverability_check: pause cleared",
+            product_id=product_id,
+            list_id=list_id,
+        )
+        return {"status": "cleared", "product_id": product_id, "list_id": list_id}
+
+    logger.info(
+        "outreach_deliverability_check: no active pause found",
+        product_id=product_id,
+        list_id=list_id,
+    )
+    return {"status": "not_paused", "product_id": product_id, "list_id": list_id}
 
 
 async def handle(task: dict, result: dict) -> dict:

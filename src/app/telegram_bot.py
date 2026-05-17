@@ -12057,12 +12057,14 @@ Or: {{"type": "task", "confidence": 0.8}}"""
           /outreach upload <list_id>   — upload a prospect list + request batch approval
           /outreach status [list_id]   — show warmup status + recent sends + bounce rate
           /outreach verify <domain>    — verify SPF/DKIM/DMARC for outreach domain
+          /outreach resume <list_id>   — clear a deliverability pause and resume sending
 
         Examples:
           /outreach upload prospects_q2
           /outreach status
           /outreach status prospects_q2
           /outreach verify outreach.example.com
+          /outreach resume prospects_q2
         """
         import os as _os
         chat_id = update.effective_chat.id
@@ -12086,7 +12088,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 "Usage:\n"
                 "  `/outreach upload <list_id>` — upload list + get approval card\n"
                 "  `/outreach status [list_id]` — show warmup + send metrics\n"
-                "  `/outreach verify <domain>` — check SPF/DKIM/DMARC\n\n"
+                "  `/outreach verify <domain>` — check SPF/DKIM/DMARC\n"
+                "  `/outreach resume <list_id>` — clear deliverability pause + resume sending\n\n"
                 f"Feature flag: {'ON' if enabled else 'OFF'} (OUTREACH_ENABLED)",
                 parse_mode="Markdown",
             )
@@ -12189,10 +12192,37 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 await self._reply(update, f"Error verifying domain: {exc}")
             return
 
+        if sub == "resume":
+            list_id = args[1] if len(args) > 1 else None
+            if not list_id:
+                await self._reply(update, "Usage: `/outreach resume <list_id>`", parse_mode="Markdown")
+                return
+            try:
+                from mr_roboto.outreach_deliverability_check import clear_pause
+                result = await clear_pause(product_id=product_id, list_id=list_id)
+                if result["status"] == "cleared":
+                    await self._reply(
+                        update,
+                        f"Campaign for list `{list_id}` has been resumed.\n"
+                        "The deliverability pause has been cleared — outreach/send will "
+                        "allow sends for this list again.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await self._reply(
+                        update,
+                        f"No active pause found for list `{list_id}`.\n"
+                        "The campaign is not currently paused.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as exc:
+                await self._reply(update, f"Error resuming campaign: {exc}")
+            return
+
         await self._reply(
             update,
             f"Unknown /outreach subcommand: {sub!r}\n\n"
-            "Available: `upload`, `status`, `verify`",
+            "Available: `upload`, `status`, `verify`, `resume`",
             parse_mode="Markdown",
         )
 

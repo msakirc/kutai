@@ -641,3 +641,119 @@ def test_deliverability_check_in_posthook_registry():
     spec = POST_HOOK_REGISTRY["outreach_deliverability_check"]
     assert spec.verb == "outreach_deliverability_check"
     assert spec.default_severity == "warning"
+
+
+# ── 14. clear_pause un-pauses a campaign (the un-pause path fix) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_clear_pause_unblocks_gate_2b(tmp_path, monkeypatch):
+    """Full round-trip: pause → Gate 2b blocks → clear_pause → Gate 2b allows.
+
+    This test directly exercises the defect: before the fix there was no
+    clear_pause function, so once outreach_pauses had an un-cleared row the
+    campaign was permanently locked out.
+    """
+    db_mod = await _setup_db(tmp_path, monkeypatch)
+    await _seed_product_config(db_mod)
+
+    product_id = "prod-outreach-1"
+    list_id = "list-pause-test"
+
+    # ── Step 1: Write an active pause row (simulates deliverability_check) ──
+    db = await db_mod.get_db()
+    await db.execute(
+        "INSERT INTO outreach_pauses (product_id, list_id, reason) "
+        "VALUES (?, ?, ?)",
+        (product_id, list_id, "bounce rate 12.0% exceeds 5% threshold"),
+    )
+    await db.commit()
+
+    # ── Step 2: Gate 2b must block while the pause row is un-cleared ────────
+    monkeypatch.setenv("OUTREACH_ENABLED", "1")
+
+    from mr_roboto.outreach_send import run_outreach_send
+
+    blocked = await run_outreach_send(
+        product_id=product_id,
+        list_id=list_id,
+        target_email="prospect@example.com",
+        template_id="tmpl-1",
+        subject="Hello",
+        body_md="Hi there",
+        postal_address="123 Main St",
+        unsubscribe_base_url="https://example.com/unsub",
+    )
+    assert blocked["status"] == "campaign_paused", (
+        f"Gate 2b must block while cleared_at IS NULL; got {blocked['status']!r}"
+    )
+
+    # ── Step 3: clear_pause stamps cleared_at ───────────────────────────────
+    from mr_roboto.outreach_deliverability_check import clear_pause
+
+    clear_result = await clear_pause(product_id=product_id, list_id=list_id)
+    assert clear_result["status"] == "cleared", (
+        f"clear_pause must return 'cleared' when an active row exists; got {clear_result!r}"
+    )
+
+    # Verify cleared_at is now set in the DB
+    cur = await db.execute(
+        "SELECT cleared_at FROM outreach_pauses "
+        "WHERE product_id=? AND list_id=?",
+        (product_id, list_id),
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    assert row[0] is not None, "cleared_at must be stamped after clear_pause"
+
+    # ── Step 4: Gate 2b must now allow sending (mock the actual email call) ─
+    with patch(
+        "src.integrations.email.service.send_email",
+        new=AsyncMock(return_value={"status": "sent", "message_id": "msg-resume-1"}),
+    ):
+        allowed = await run_outreach_send(
+            product_id=product_id,
+            list_id=list_id,
+            target_email="prospect@example.com",
+            template_id="tmpl-1",
+            subject="Hello",
+            body_md="Hi there",
+            postal_address="123 Main St",
+            unsubscribe_base_url="https://example.com/unsub",
+        )
+
+    assert allowed["status"] == "sent", (
+        f"After clear_pause, Gate 2b must let sends through; got {allowed['status']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_clear_pause_returns_not_paused_when_no_active_row(tmp_path, monkeypatch):
+    """clear_pause returns 'not_paused' when there is no un-cleared row."""
+    db_mod = await _setup_db(tmp_path, monkeypatch)
+
+    from mr_roboto.outreach_deliverability_check import clear_pause
+
+    result = await clear_pause(product_id="prod-no-pause", list_id="list-x")
+    assert result["status"] == "not_paused"
+
+
+@pytest.mark.asyncio
+async def test_clear_pause_idempotent_already_cleared(tmp_path, monkeypatch):
+    """clear_pause on an already-cleared row returns 'not_paused' (idempotent)."""
+    db_mod = await _setup_db(tmp_path, monkeypatch)
+
+    from src.infra.times import db_now
+
+    db = await db_mod.get_db()
+    await db.execute(
+        "INSERT INTO outreach_pauses (product_id, list_id, reason, cleared_at) "
+        "VALUES (?, ?, ?, ?)",
+        ("prod-already-cleared", "list-y", "old bounce issue", db_now()),
+    )
+    await db.commit()
+
+    from mr_roboto.outreach_deliverability_check import clear_pause
+
+    result = await clear_pause(product_id="prod-already-cleared", list_id="list-y")
+    assert result["status"] == "not_paused"

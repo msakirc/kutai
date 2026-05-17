@@ -234,3 +234,28 @@ async def test_run_demand_drain_triggers_discovery_above_threshold(db, monkeypat
     # Drained -> no longer pending.
     pending = await _demand.pending_signals(limit=50)
     assert all(p["source_step_pattern"] != "drain:slack-bot" for p in pending)
+
+
+@pytest.mark.asyncio
+async def test_daily_executor_runs_demand_drain(db, monkeypatch):
+    from mr_roboto.executors import yalayut_discovery as _exec
+
+    drained = {"called": False}
+
+    async def _fake_daily():
+        return {"sources_scanned": 0, "artifacts_ingested": 0, "errors": []}
+
+    async def _fake_drain():
+        drained["called"] = True
+        return {"patterns_discovered": 2, "repeat_patterns_added": 0,
+                "patterns_considered": 2, "errors": []}
+
+    monkeypatch.setattr("yalayut.daily_discovery", _fake_daily)
+    monkeypatch.setattr("yalayut.run_demand_drain", _fake_drain)
+
+    res = await _exec.run({"payload": {"mode": "daily"}})
+
+    assert drained["called"] is True
+    assert res["demand_drain"]["patterns_discovered"] == 2
+    # Existing top-level keys preserved for backward compat.
+    assert "sources_scanned" in res

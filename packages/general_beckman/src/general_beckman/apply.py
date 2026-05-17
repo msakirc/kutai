@@ -554,6 +554,25 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         ),
         depends_on=[],
     )
+    # Yalayut demand signal: a DLQ'd task is unmet demand -- its intent could
+    # not be satisfied. Record it (reactive `dlq` signal) WITHOUT importing
+    # yalayut into this core-loop file; route through a mechanical task.
+    _title = (task.get("title") or "").strip()
+    if _title:
+        await add_task(
+            title=f"Demand signal: DLQ #{task['id']}",
+            description="",
+            agent_type="mechanical",
+            mission_id=task.get("mission_id"),
+            context=_mechanical_context(
+                "yalayut_demand",
+                source_step_pattern=f"dlq:{task['id']}",
+                intent_keywords=[w for w in _title.split() if len(w) > 2][:12],
+                signal_type="dlq",
+                confidence=0.3,
+            ),
+            depends_on=[],
+        )
 
 
 

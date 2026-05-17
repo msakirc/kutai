@@ -125,3 +125,61 @@ async def test_capture_repeat_fires_hint_miss(db):
     rows = await cur.fetchall()
     assert len(rows) == 1
     assert rows[0][0].startswith("hint_miss:internal-")
+
+
+@pytest.mark.asyncio
+async def test_yalayut_demand_executor_records_signal(db):
+    from mr_roboto.executors.yalayut_demand import run
+
+    task = {"payload": {
+        "action": "yalayut_demand",
+        "source_step_pattern": "dlq:task-555",
+        "intent_keywords": ["migrate", "schema"],
+        "signal_type": "dlq",
+        "confidence": 0.3,
+    }}
+    res = await run(task)
+    assert res["ok"] is True
+
+    dbc = await _get_db_for_test()
+    cur = await dbc.execute(
+        "SELECT signal_type FROM yalayut_demand_signals "
+        "WHERE source_step_pattern = ?", ("dlq:task-555",))
+    rows = await cur.fetchall()
+    assert len(rows) == 1 and rows[0][0] == "dlq"
+
+
+@pytest.mark.asyncio
+async def test_dlq_write_enqueues_yalayut_demand_task(db, monkeypatch):
+    from general_beckman import apply as _apply
+
+    enqueued = []
+
+    async def _fake_add_task(**kwargs):
+        enqueued.append(kwargs)
+        return 1
+
+    async def _fake_update_task(*a, **k):
+        return None
+
+    async def _fake_quarantine(**k):
+        return None
+
+    monkeypatch.setattr("src.infra.db.add_task", _fake_add_task)
+    monkeypatch.setattr("src.infra.db.update_task", _fake_update_task)
+    monkeypatch.setattr("src.infra.dead_letter.quarantine_task", _fake_quarantine)
+
+    task = {"id": 777, "title": "Convert HEIC images to PNG",
+            "agent_type": "executor", "mission_id": None}
+    await _apply._dlq_write(task, error="all attempts failed",
+                            category="exhausted", attempts=5)
+
+    demand_tasks = [
+        e for e in enqueued
+        if (e.get("context") or {}).get("payload", {}).get("action")
+        == "yalayut_demand"
+    ]
+    assert len(demand_tasks) == 1
+    p = demand_tasks[0]["context"]["payload"]
+    assert p["signal_type"] == "dlq"
+    assert p["source_step_pattern"] == "dlq:777"

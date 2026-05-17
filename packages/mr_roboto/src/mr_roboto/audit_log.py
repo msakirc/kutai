@@ -54,7 +54,6 @@ EXTERNAL_PUBLISH_VERBS: frozenset[str] = frozenset({
     "todo_reminder",
     "clarify",
     "price_watch_check",
-    "escalate_to_founder",
     "mission_deliverable_bundle",
     "stripe_revenue_digest",
     # ---- founder_action surfaced to Telegram (user sees the card) ------
@@ -71,8 +70,14 @@ EXTERNAL_PUBLISH_VERBS: frozenset[str] = frozenset({
     "email/send_via_provider",
     # ---- other irreversible external-facing sends ----------------------
     "stripe_provision_products",
-    "rotate_failed_key",
-    "rollback_to_last_green",
+    # NOTE: escalate_to_founder IS a real founder-facing send, but it is
+    # invoked as a direct module call (from mr_roboto.executors.
+    # escalate_to_founder import run) — it never flows through
+    # mr_roboto.run()/_run_dispatch, so log_publish_action's post-dispatch
+    # hook never fires for it. It is therefore NOT in this set (it was never
+    # audited via this path). escalate_to_founder/rotate_failed_key/
+    # rollback_to_last_green are not dispatcher verbs. TODO: audit
+    # escalate_to_founder separately at its direct call site.
     # ---- irreversible publish: content delivered to an external party --
     # init_mission_github_repo: creates a public GitHub repo — visible to
     #   the world.
@@ -99,7 +104,6 @@ _CHANNEL_BY_VERB: dict[str, str] = {
     "todo_reminder": "telegram",
     "clarify": "telegram",
     "price_watch_check": "telegram",
-    "escalate_to_founder": "telegram",
     "mission_deliverable_bundle": "telegram",
     "stripe_revenue_digest": "telegram",
     "incident_update_review": "telegram",
@@ -112,8 +116,6 @@ _CHANNEL_BY_VERB: dict[str, str] = {
     "outreach/send": "email",
     "email/send_via_provider": "email",
     "stripe_provision_products": "vendor",
-    "rotate_failed_key": "telegram",
-    "rollback_to_last_green": "telegram",
     "init_mission_github_repo": "github",
     "emit_preview_url": "public",
     "demo/distribute": "youtube",
@@ -155,6 +157,7 @@ async def log_external_send(
     vendor_call_id: int | None = None,
     product_id: int | None = None,
     reversibility: str = "irreversible",
+    task_id: int | None = None,
 ) -> int:
     """Write one row to ``external_comms_log``.
 
@@ -183,6 +186,12 @@ async def log_external_send(
     reversibility:
         One of "full" / "partial" / "irreversible". Defaults to "irreversible"
         since external sends are nearly always irreversible.
+    task_id:
+        The dispatching ``tasks.id`` that produced this send. This is the
+        correlation key used by :func:`pending_audit_gaps` to match a logged
+        send back to its ``action_confirmations`` row (which also carries
+        ``task_id``). A confirmation-gated publish whose ``external_comms_log``
+        row has the same ``task_id`` is considered audited.
     """
     from src.infra.db import get_db
     db = await get_db()
@@ -203,8 +212,8 @@ async def log_external_send(
         "INSERT INTO external_comms_log "
         "(product_id, sent_at, channel, recipient, recipient_count, "
         " content_hash, content_md, source_mission_id, source_action_id, "
-        " vendor_call_id, reversibility) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " vendor_call_id, reversibility, task_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             effective_product_id,
             sent_at,
@@ -217,6 +226,7 @@ async def log_external_send(
             source_action_id,
             vendor_call_id,
             reversibility,
+            task_id,
         ),
     )
     await db.commit()
@@ -307,12 +317,23 @@ async def pending_audit_gaps(window_minutes: int = 5) -> list[dict[str, Any]]:
     - was requested more than ``window_minutes`` ago (so a freshly-issued
       confirmation still mid-flight is not flagged),
     - and has NO matching ``external_comms_log`` row joined on
-      ``external_comms_log.vendor_call_id = action_confirmations.id``.
+      ``external_comms_log.task_id = action_confirmations.task_id``.
 
     Such a row means a publish/send/upload was confirmed but produced no
     immutable audit record — a compliance + post-incident-review hole. Used
     by the hourly ``audit_completeness_check`` cron to escalate one
     founder_action per gap.
+
+    Correlation key
+    ---------------
+    Both ``action_confirmations`` and ``external_comms_log`` carry the
+    dispatching ``tasks.id``: the confirmation gate stores it as
+    ``action_confirmations.task_id`` and ``log_publish_action`` threads the
+    same id into ``external_comms_log.task_id``. A confirmation-gated publish
+    therefore has a logged send iff an ``external_comms_log`` row shares its
+    ``task_id``. (The old join on ``vendor_call_id`` never matched — the
+    production publish path never had the confirmation id to pass, so every
+    irreversible confirmation was falsely flagged as a gap every hour.)
 
     The ``action_confirmations`` table (see ``src/infra/db.py``) has columns
     ``id, task_id, verb, reversibility, payload_summary, requested_at,
@@ -326,7 +347,10 @@ async def pending_audit_gaps(window_minutes: int = 5) -> list[dict[str, Any]]:
     # action_confirmations holds external-publish confirmation requests.
     # mission_id is NOT on action_confirmations — derive it via tasks.id.
     # A row with reversibility != 'full', requested > window_minutes ago, and
-    # no matching external_comms_log row (joined on vendor_call_id) is a gap.
+    # no matching external_comms_log row (joined on task_id) is a gap.
+    # task_id is the correlation key both tables share; a NULL task_id on the
+    # confirmation cannot be correlated, so it is excluded from the gap scan
+    # rather than reported as a perpetual false positive.
     gap_sql = f"""
         SELECT ac.id           AS vendor_call_id,
                ac.verb         AS verb,
@@ -339,9 +363,10 @@ async def pending_audit_gaps(window_minutes: int = 5) -> list[dict[str, Any]]:
         WHERE ac.reversibility != 'full'
           AND ac.requested_at IS NOT NULL
           AND ac.requested_at <= datetime('now', '-{window_minutes} minutes')
+          AND ac.task_id IS NOT NULL
           AND NOT EXISTS (
               SELECT 1 FROM external_comms_log ecl
-              WHERE ecl.vendor_call_id = ac.id
+              WHERE ecl.task_id = ac.task_id
           )
         ORDER BY ac.requested_at DESC
         LIMIT 50
@@ -477,6 +502,10 @@ async def log_publish_action(verb: str, action_obj: Any, task: dict) -> int | No
         or inner.get("recipient")
     )
 
+    # The dispatching task id is the correlation key that pending_audit_gaps
+    # uses to match this logged send back to its action_confirmations row
+    # (action_confirmations.task_id == tasks.id). Always thread it through.
+    task_id = task.get("id")
     try:
         return await log_external_send(
             channel=channel,
@@ -488,6 +517,9 @@ async def log_publish_action(verb: str, action_obj: Any, task: dict) -> int | No
                 payload.get("product_id") or ""
             ).isdigit() else None,
             reversibility="irreversible",
+            task_id=int(task_id) if isinstance(task_id, int) or (
+                isinstance(task_id, str) and task_id.isdigit()
+            ) else None,
         )
     except Exception as e:
         logger.warning(

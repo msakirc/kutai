@@ -254,11 +254,79 @@ async def test_pending_audit_gaps_finds_gap(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pending_audit_gaps_no_gap_when_logged(tmp_path, monkeypatch):
-    """A confirmation with a matching external_comms_log row is not a gap."""
+    """A confirmation IS closed by a REAL publish-path send.
+
+    Exercises the production path: log_publish_action() — the only production
+    caller of log_external_send — threads the dispatching task_id into
+    external_comms_log. pending_audit_gaps correlates that task_id with
+    action_confirmations.task_id. NO hand-passed vendor_call_id; the real
+    dispatch path never supplies one.
+
+    Two confirmations on the same mission:
+      - task 5002: a real publish-path send is logged for its task_id → no gap
+      - task 5003: nothing logged                                    → gap
+    """
     db = await _setup_db(tmp_path, monkeypatch)
     await db.execute(
         "INSERT INTO tasks (id, mission_id, title) VALUES (?, ?, ?)",
-        (5002, 1, "publish task"),
+        (5002, 1, "publish task logged"),
+    )
+    await db.execute(
+        "INSERT INTO tasks (id, mission_id, title) VALUES (?, ?, ?)",
+        (5003, 1, "publish task not logged"),
+    )
+    import datetime as _dt
+    old_ts = (_dt.datetime.utcnow() - _dt.timedelta(minutes=10)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    await db.executemany(
+        "INSERT INTO action_confirmations "
+        "(id, task_id, verb, reversibility, requested_at, verdict) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (9002, 5002, "notify_user", "partial", old_ts, "approved"),
+            (9003, 5003, "notify_user", "partial", old_ts, "approved"),
+        ],
+    )
+    await db.commit()
+
+    # Log the send for task 5002 via the REAL production path:
+    # log_publish_action() (called by mr_roboto.run() after dispatch). It
+    # threads task["id"] into external_comms_log.task_id — the correlation key.
+    from mr_roboto.audit_log import log_publish_action, pending_audit_gaps
+    from mr_roboto.actions import Action
+
+    action = Action(status="completed", result={"sent": True})
+    task = {
+        "id": 5002,
+        "mission_id": 1,
+        "payload": {"action": "notify_user", "message": "done",
+                    "recipient": "@founder"},
+    }
+    log_id = await log_publish_action("notify_user", action, task)
+    assert isinstance(log_id, int) and log_id > 0
+
+    gaps = await pending_audit_gaps(window_minutes=5)
+    gap_ids = [g["vendor_call_id"] for g in gaps]
+    # task 5002 was logged via the real path → confirmation 9002 is NOT a gap.
+    assert 9002 not in gap_ids
+    # task 5003 has no logged send → confirmation 9003 IS still a gap. This
+    # proves the correlation discriminates (not a blanket pass).
+    assert 9003 in gap_ids
+
+
+@pytest.mark.asyncio
+async def test_pending_audit_gaps_regresses_if_task_id_not_threaded(
+    tmp_path, monkeypatch
+):
+    """Guard: the gap-close depends on the task_id correlation key. A send
+    logged WITHOUT a task_id (the pre-fix behaviour, or the key removed) does
+    NOT correlate to the confirmation → the gap must reappear. This test FAILS
+    if log_external_send/pending_audit_gaps stop using task_id."""
+    db = await _setup_db(tmp_path, monkeypatch)
+    await db.execute(
+        "INSERT INTO tasks (id, mission_id, title) VALUES (?, ?, ?)",
+        (5004, 1, "publish task"),
     )
     import datetime as _dt
     old_ts = (_dt.datetime.utcnow() - _dt.timedelta(minutes=10)).strftime(
@@ -268,18 +336,19 @@ async def test_pending_audit_gaps_no_gap_when_logged(tmp_path, monkeypatch):
         "INSERT INTO action_confirmations "
         "(id, task_id, verb, reversibility, requested_at, verdict) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (9002, 5002, "notify_user", "partial", old_ts, "approved"),
+        (9004, 5004, "notify_user", "partial", old_ts, "approved"),
     )
     await db.commit()
 
-    # Now log the send with vendor_call_id=9002 — closes the gap.
+    # A send logged WITHOUT task_id does NOT correlate to the confirmation.
     from mr_roboto.audit_log import log_external_send, pending_audit_gaps
     await log_external_send(
-        channel="telegram", content="done", vendor_call_id=9002
+        channel="telegram", content="done", source_mission_id=1,
+        # task_id deliberately omitted — simulates the correlation key removed.
     )
     gaps = await pending_audit_gaps(window_minutes=5)
     gap_ids = [g["vendor_call_id"] for g in gaps]
-    assert 9002 not in gap_ids
+    assert 9004 in gap_ids, "without task_id the send must not close the gap"
 
 
 # ── audit_completeness_check dispatcher test ──────────────────────────────────
@@ -356,13 +425,25 @@ def test_external_publish_verbs_includes_key_verbs():
     # Telegram / founder-facing sends
     assert "notify_user" in EXTERNAL_PUBLISH_VERBS
     assert "clarify" in EXTERNAL_PUBLISH_VERBS
-    assert "escalate_to_founder" in EXTERNAL_PUBLISH_VERBS
     # Public publish + real email
     assert "changelog/publish" in EXTERNAL_PUBLISH_VERBS
     assert "incident/publish_status" in EXTERNAL_PUBLISH_VERBS
     assert "publish_synchronized" in EXTERNAL_PUBLISH_VERBS
     assert "outreach/send" in EXTERNAL_PUBLISH_VERBS
     assert "email/send_via_provider" in EXTERNAL_PUBLISH_VERBS
+
+
+def test_non_dispatcher_verbs_excluded():
+    """escalate_to_founder / rotate_failed_key / rollback_to_last_green are
+    NOT mr_roboto dispatcher verbs — they never flow through run()/_run_dispatch
+    so log_publish_action's post-dispatch hook never fires for them. They must
+    not be in the set (escalate_to_founder is a real founder send but is
+    invoked as a direct module call — audited separately, not via this hook)."""
+    from mr_roboto.audit_log import EXTERNAL_PUBLISH_VERBS, _CHANNEL_BY_VERB
+    for verb in ("escalate_to_founder", "rotate_failed_key",
+                 "rollback_to_last_green"):
+        assert verb not in EXTERNAL_PUBLISH_VERBS, f"{verb} is not a dispatcher verb"
+        assert verb not in _CHANNEL_BY_VERB, f"{verb} stale channel entry"
 
 
 def test_external_publish_verbs_excludes_readonly():

@@ -3962,6 +3962,37 @@ async def init_db():
         ),
     )
 
+    # ── Z7 B9 fix: external_comms_log.task_id correlation key ─────────────
+    # external_comms_log.vendor_call_id (action_confirmations.id) is never
+    # populated by the production publish path (log_publish_action does not
+    # have the confirmation id), so pending_audit_gaps' NOT EXISTS join on
+    # vendor_call_id never matched and flagged EVERY irreversible confirmation
+    # as an un-logged gap. The dispatching task_id IS available at every
+    # publish-log call site AND on action_confirmations.task_id, so it is the
+    # honest correlation key. log_publish_action now threads task_id into
+    # external_comms_log, and pending_audit_gaps correlates on
+    # (task_id, verb).
+    await apply_migration(
+        version="2026-05-17-z7-external-comms-log-task-id",
+        sql=(
+            "ALTER TABLE external_comms_log "
+            "ADD COLUMN task_id INTEGER;\n"   # FK tasks.id (app-level)
+            "CREATE INDEX IF NOT EXISTS idx_external_comms_log_task "
+            "ON external_comms_log(task_id);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_external_comms_log_task;\n"
+            "ALTER TABLE external_comms_log DROP COLUMN task_id;\n"
+        ),
+        description=(
+            "Z7 fix-pass B9: external_comms_log.task_id — the dispatching "
+            "task that produced the send. Real correlation key for "
+            "pending_audit_gaps (action_confirmations.task_id = "
+            "external_comms_log.task_id + verb match); vendor_call_id was "
+            "never populated in production so the old join always missed."
+        ),
+    )
+
     # Legacy 'Todo Reminder' (id=9999) and 'Price Watch Check' (id=9998) seeds
     # were removed — beckman cron_seed.INTERNAL_CADENCES now owns these via
     # mr_roboto mechanical executors. Clean up any stale rows from earlier runs.

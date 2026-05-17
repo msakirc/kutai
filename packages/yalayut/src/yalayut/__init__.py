@@ -13,6 +13,7 @@ are functional, never empty stubs.
 from __future__ import annotations
 
 from yalayut.contracts import Artifact
+from yalayut.executor import run_recipe  # noqa: F401  (operational API)
 
 __all__ = [
     "query", "daily_discovery", "source_scout_scan", "on_demand_discovery",
@@ -180,25 +181,3 @@ async def capture_hint(task: dict, outcome: dict) -> None:
     await db.commit()
 
 
-async def run_recipe(recipe_id: str, args: dict) -> dict:
-    """mr_roboto preempt-executor body: run a mechanizable shell_recipe.
-
-    recipe_id is the yalayut_index id (as str). Loads the IndexRow, hands it
-    to SkillPlugin.execute with the bound args. Real body — exercised in
-    Phase 1 by calling run_recipe directly against a seed shell_recipe.
-    The intersect DECIDING to call this (preempt routing) is Phase 3.
-    """
-    from src.infra.db import get_db
-    from yalayut.contracts import TaskContext
-    from yalayut.index import get as index_get
-    from yalayut.plugins.skill import SkillPlugin
-    db = await get_db()
-    row = await index_get(db, int(recipe_id))
-    if row is None:
-        return {"ok": False, "detail": f"no artifact id={recipe_id}"}
-    plugin = SkillPlugin()
-    result = plugin.execute(row, TaskContext(), args)
-    return {
-        "ok": result.ok, "detail": result.detail,
-        "artifacts": result.artifacts, "data": result.data,
-    }

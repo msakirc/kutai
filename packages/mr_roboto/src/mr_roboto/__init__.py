@@ -310,7 +310,11 @@ async def run(task: dict) -> Action:
     skeleton timeout fires — T2B will replace polling with the Telegram
     reactor).
     """
-    payload = task.get("payload") or {}
+    # payload can arrive as task["payload"] (orchestrator copy) or as
+    # task["context"]["payload"] (raw expander shape before the copy step).
+    payload = (task.get("payload")
+               or (task.get("context") or {}).get("payload")
+               or {})
     verb = payload.get("action") or ""
     override = payload.get("reversibility_override")
     # Z5 T3b — `fastlane` reversibility depends on the lane: build/match are
@@ -510,7 +514,9 @@ async def _legacy_pre_critic_gate(mission_id) -> bool:
 
 
 async def _run_dispatch(task: dict) -> Action:
-    payload = task.get("payload") or {}
+    payload = (task.get("payload")
+               or (task.get("context") or {}).get("payload")
+               or {})
     action = payload.get("action")
 
     if action == "workspace_snapshot":
@@ -1933,6 +1939,21 @@ async def _run_dispatch(task: dict) -> Action:
         from mr_roboto.cloud_refresh import run as cloud_refresh_run
         try:
             res = await cloud_refresh_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "yalayut_recipe":
+        # Phase 3 — preempt lane: run a yalayut shell_recipe mechanically.
+        from mr_roboto.executors.yalayut_recipe import run as _yalayut_recipe
+        try:
+            res = await _yalayut_recipe(task)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"yalayut_recipe: {res.get('reason') or 'recipe failed'}",
+                    result=res,
+                )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

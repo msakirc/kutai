@@ -104,7 +104,8 @@ async def test_oncall_action_blocks_when_cooldown_exhausted(tmp_path, monkeypatc
 
     for _ in range(2):
         res = await run(_make_task(1, "rollback_to_last_green"))
-        assert res["status"] == "ok"
+        # stub verbs return not_implemented (honest failure, not ok)
+        assert res["status"] == "not_implemented"
     res = await run(_make_task(1, "rollback_to_last_green"))
     assert res["status"] == "blocked_by_cooldown"
     assert res["verb"] == "rollback_to_last_green"
@@ -121,12 +122,17 @@ async def test_oncall_action_refuses_non_whitelisted(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_oncall_action_records_after_success(tmp_path, monkeypatch):
+async def test_oncall_action_records_after_invocation(tmp_path, monkeypatch):
+    """Cooldown counter increments even for not_implemented stubs — the verb
+    was attempted (whitelist + cooldown passed); the cooldown must still fire."""
     db_mod = await _setup(tmp_path, monkeypatch)
     from mr_roboto.executors.oncall_action import run
 
     res = await run(_make_task(7, "restart_service", {"svc": "api"}))
-    assert res["status"] == "ok"
+    # stub verbs return not_implemented, not ok
+    assert res["status"] == "not_implemented"
+    assert res["verb"] == "restart_service"
+    assert "not implemented" in res["error"]
     conn = await db_mod.get_db()
     async with conn.execute(
         "SELECT COUNT(*) FROM action_cooldowns "
@@ -183,6 +189,8 @@ async def test_oncall_action_routes_through_mr_roboto_dispatch(tmp_path, monkeyp
         },
     }
     action = await mr_roboto.run(task)
-    assert action.status == "completed"
-    assert action.result["status"] == "ok"
+    # not_implemented stubs propagate as failed so the workflow engine
+    # and on-call agent see a genuine failure and escalate.
+    assert action.status == "failed"
+    assert action.result["status"] == "not_implemented"
     assert action.result["verb"] == "scale_up"

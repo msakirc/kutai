@@ -186,6 +186,9 @@ class TestOpsDispatchPreserved:
 
     @pytest.mark.asyncio
     async def test_known_ops_verb_dispatches(self):
+        """A whitelisted ops verb must route through (not be refused/blocked).
+        Stub verbs honestly return not_implemented — the important thing is
+        that it reached the handler, not that it succeeded."""
         from mr_roboto.executors.oncall_action import run as oca_run
 
         with patch("mr_roboto.executors.oncall_action.check", new=AsyncMock(return_value=True)):
@@ -194,7 +197,8 @@ class TestOpsDispatchPreserved:
                     "mission_id": 1,
                     "payload": {"verb": "restart_service", "params": {"service": "api"}},
                 })
-        assert result["status"] == "ok"
+        # stub verbs return not_implemented (honest failure — needs vendor wiring)
+        assert result["status"] == "not_implemented"
         assert result["verb"] == "restart_service"
 
     @pytest.mark.asyncio

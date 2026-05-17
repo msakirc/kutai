@@ -58,13 +58,19 @@ def _bootstrap_ops_handlers() -> None:
 # ---------------------------------------------------------------------------
 
 async def _stub_handler(verb: str, params: dict, mission_id: int) -> dict:
-    logger.info(
-        "oncall verb stub fired (no vendor adapter wired yet)",
+    msg = f"{verb} not implemented — needs vendor cloud API wiring"
+    logger.warning(
+        "oncall verb not implemented — escalate to founder",
         verb=verb,
         params=params,
         mission_id=mission_id,
     )
-    return {"status": "ok", "verb": verb, "params": params, "stub": True}
+    return {
+        "status": "not_implemented",
+        "verb": verb,
+        "error": msg,
+        "stub": True,
+    }
 
 
 async def _escalate_handler(verb: str, params: dict, mission_id: int) -> dict:

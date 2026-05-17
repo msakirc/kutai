@@ -3167,6 +3167,10 @@ async def _run_dispatch(task: dict) -> Action:
             # Cooldown blocks and whitelist refusals are completed actions
             # from the dispatcher's view — they carry their own status field
             # for downstream interpretation (the agent must re-evaluate).
+            # not_implemented verbs are propagated as failed so the workflow
+            # engine and on-call agent see a genuine failure and escalate.
+            if res.get("status") == "not_implemented":
+                return Action(status="failed", error=res.get("error", "not_implemented"), result=res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

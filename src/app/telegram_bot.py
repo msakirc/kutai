@@ -12377,7 +12377,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                                          f"founder:{intent[:40]}",
                                      "intent_keywords": intent.split(),
                                      "stacked_confidence": 0.8}}},
-                    lane="mechanical")
+                    lane="oneshot")
                 await self._reply(update,
                                   f"Discovery queued for: {intent}")
                 return

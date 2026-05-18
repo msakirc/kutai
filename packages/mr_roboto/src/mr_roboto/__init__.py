@@ -4754,4 +4754,9 @@ async def _run_dispatch(task: dict) -> Action:
         res = await _capture_run(task)
         return Action(status="completed", result=res)
 
+    if action == "yalayut_demand":
+        from mr_roboto.executors.yalayut_demand import run as _yal_demand_run
+        res = await _yal_demand_run(task)
+        return Action(status="completed", result=res)
+
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

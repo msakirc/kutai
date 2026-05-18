@@ -116,6 +116,31 @@ def _slot_key(artifact) -> str:
     return f"id:{getattr(artifact, 'artifact_id', None)}"  # unique → no collision
 
 
+async def _fire_miss_signal(task: dict, ctx: dict) -> None:
+    """Record a proactive demand miss when the catalog returns nothing.
+
+    ``planning_miss`` when the step declared a ``recipe_hint`` (the planner
+    expected catalog help and got none); ``step_entry_miss`` otherwise.
+    Best-effort — a signal failure must never disturb dispatch.
+    """
+    try:
+        import yalayut
+        title = (task.get("title") or "").strip()
+        if not title:
+            return
+        sig_type = "planning_miss" if ctx.get("recipe_hint") else "step_entry_miss"
+        keywords = [w for w in (title + " "
+                    + (task.get("description") or "")).split() if len(w) > 2]
+        await yalayut.record_demand_signal(
+            source_step_pattern=f"{sig_type}:{title[:40]}",
+            intent_keywords=keywords[:12],
+            signal_type=sig_type,
+            confidence=0.3,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("demand miss signal skipped: %s", exc)
+
+
 async def flash(task: dict) -> dict:
     """Match skills, attach the task['skills'] envelope, route preempt.
 
@@ -133,6 +158,7 @@ async def flash(task: dict) -> dict:
         task_ctx = _build_task_ctx(task, ctx)
         candidates = await yalayut.query(task)
         if not candidates:
+            await _fire_miss_signal(task, ctx)
             return task
 
         recipe_hint = ctx.get("recipe_hint")

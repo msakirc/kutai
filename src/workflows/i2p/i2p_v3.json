@@ -11943,6 +11943,9 @@
           ]
         }
       },
+      "post_hooks": [
+        "briefing_compose"
+      ],
       "context": {},
       "reversibility": "full"
     },

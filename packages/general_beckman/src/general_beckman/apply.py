@@ -488,6 +488,7 @@ async def _maybe_emit_lesson_from_posthook_fail(
             severity="blocker",
             source_kind="posthook_fail",
             source_ref={
+                "mission_id": source.get("mission_id"),
                 "source_task_id": source.get("id"),
                 "kind": kind,
                 "attempts": attempts,

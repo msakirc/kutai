@@ -250,7 +250,7 @@ async def emit_lessons_from_dlq_patterns() -> int:
                 fix=fix,
                 severity="warning",
                 source_kind="dlq_pattern",
-                source_ref={"dlq_ids": dlq_ids[:20]},
+                source_ref={"mission_id": mission_id, "dlq_ids": dlq_ids[:20]},
             )
             emitted += 1
         except Exception as exc:

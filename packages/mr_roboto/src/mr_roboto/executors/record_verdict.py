@@ -160,6 +160,7 @@ async def _mirror_to_lessons(
             severity=severity,
             source_kind="hypothesis_verdict",
             source_ref={
+                "mission_id": mission_id,
                 "feature": feature,
                 "metric": metric,
                 "verdict": verdict,

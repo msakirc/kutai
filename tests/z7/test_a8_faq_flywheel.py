@@ -221,6 +221,14 @@ async def test_faq_regen_approve_appends_to_faq_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr("src.app.jobs.faq_regen.FAQ_ARTIFACTS_DIR", str(artifacts_dir))
 
+    from src.infra.db import get_db
+    _db = await get_db()
+    _c = await _db.execute(
+        "INSERT INTO missions (title, status, created_at) "
+        "VALUES ('m', 'active', datetime('now'))")
+    await _db.commit()
+    _mid = _c.lastrowid
+
     entry = {
         "question": "How do I reset my password?",
         "answer": "Go to Settings > Security > Reset.",
@@ -663,3 +671,123 @@ async def test_support_docs_en_round_trip(tmp_path, monkeypatch):
     assert "password" in results[0]["text"].lower() or "reset" in results[0]["text"].lower(), (
         f"Unexpected round-trip text: {results[0]['text']!r}"
     )
+
+
+# ── #2 wiring sweep — founder-action approval routes into _apply_faq_approval ──
+
+
+class _FakeMsg:
+    def __init__(self):
+        self.replies = []
+
+        class _Chat:
+            id = 4242
+        self.chat = _Chat()
+
+    async def reply_text(self, text, **kw):
+        self.replies.append(text)
+        return self
+
+
+class _FakeUpdate:
+    def __init__(self):
+        self.message = _FakeMsg()
+
+    @property
+    def effective_chat(self):
+        return self.message.chat
+
+
+class _FakeCtx:
+    def __init__(self, args=None):
+        self.args = args or []
+
+
+def _make_tg():
+    from src.app.telegram_bot import TelegramInterface
+    tg = TelegramInterface.__new__(TelegramInterface)
+    tg._kb_state = {}
+    return tg
+
+
+@pytest.mark.asyncio
+async def test_action_done_routes_faq_card_into_support_docs(init_db, tmp_path, monkeypatch):
+    """Resolving a _faq_approval_pending founder_action via /action_done must
+    append the drafted FAQ entry to the support docs — the only writer of the
+    support_docs_* collections previously had zero callers."""
+    from src.util.lang import lang_artifact_path
+    import src.founder_actions as fa
+
+    artifacts_dir = tmp_path / "faq_artifacts"
+    artifacts_dir.mkdir()
+    monkeypatch.setattr("src.app.jobs.faq_regen.FAQ_ARTIFACTS_DIR", str(artifacts_dir))
+
+    from src.infra.db import get_db
+    _db = await get_db()
+    _c = await _db.execute(
+        "INSERT INTO missions (title, status, created_at) "
+        "VALUES ('m', 'active', datetime('now'))")
+    await _db.commit()
+    _mid = _c.lastrowid
+
+    entry = {
+        "question": "How do I export my data?",
+        "answer": "Settings > Data > Export.",
+        "lang": "en",
+    }
+    action = await fa.create(
+        mission_id=_mid,
+        kind="generic",
+        title="Approve FAQ entry [en]",
+        why="clustered tickets",
+        instructions=["review"],
+        expected_output_kind="ack_only",
+        expected_output_schema={"faq_entry": entry, "_faq_approval_pending": True},
+    )
+
+    tg = _make_tg()
+    update = _FakeUpdate()
+    await tg.cmd_action_done(update, _FakeCtx(args=[str(action.id)]))
+
+    faq_path = artifacts_dir / lang_artifact_path("faq", "en")
+    assert faq_path.exists(), "FAQ approval did not write the support-docs file"
+    assert "How do I export my data?" in faq_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_action_done_faq_reject_does_not_index(init_db, tmp_path, monkeypatch):
+    """A reject payload discards the draft — nothing is indexed."""
+    from src.util.lang import lang_artifact_path
+    import src.founder_actions as fa
+
+    artifacts_dir = tmp_path / "faq_artifacts_rej"
+    artifacts_dir.mkdir()
+    monkeypatch.setattr("src.app.jobs.faq_regen.FAQ_ARTIFACTS_DIR", str(artifacts_dir))
+
+    from src.infra.db import get_db
+    _db = await get_db()
+    _c = await _db.execute(
+        "INSERT INTO missions (title, status, created_at) "
+        "VALUES ('m', 'active', datetime('now'))")
+    await _db.commit()
+    _mid = _c.lastrowid
+
+    action = await fa.create(
+        mission_id=_mid,
+        kind="generic",
+        title="Approve FAQ entry [en]",
+        why="clustered tickets",
+        instructions=["review"],
+        expected_output_kind="ack_only",
+        expected_output_schema={
+            "faq_entry": {"question": "Q?", "answer": "A.", "lang": "en"},
+            "_faq_approval_pending": True,
+        },
+    )
+
+    tg = _make_tg()
+    update = _FakeUpdate()
+    await tg.cmd_action_done(update, _FakeCtx(args=[str(action.id), '{"reject": true}']))
+
+    faq_path = artifacts_dir / lang_artifact_path("faq", "en")
+    assert not faq_path.exists(), "rejected FAQ draft must not be indexed"

@@ -10301,10 +10301,37 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except ValueError as e:
             await self._reply(update, f"❌ {e}")
             return
+        # Z7 FAQ flywheel (#2): a resolved _faq_approval_pending card routes
+        # its drafted FAQ entry into the support-docs collections. Without
+        # this hook the only writer of those collections had zero callers,
+        # so support_docs_* stayed permanently empty.
+        extra = await self._apply_faq_approval_if_pending(action, payload)
         await self._reply(
             update,
-            f"✅ founder_action #{action.id} marked done.",
+            f"✅ founder_action #{action.id} marked done.{extra}",
         )
+
+    async def _apply_faq_approval_if_pending(self, action, payload) -> str:
+        """If `action` is a FAQ-approval card, route its entry into the
+        support-docs collections. Returns a status suffix for the reply."""
+        schema = getattr(action, "expected_output_schema", None) or {}
+        if not schema.get("_faq_approval_pending"):
+            return ""
+        # An explicit reject in the payload discards the draft.
+        if isinstance(payload, dict) and (
+            payload.get("reject") or payload.get("approved") is False
+        ):
+            return "\nFAQ draft rejected — not indexed."
+        entry = schema.get("faq_entry")
+        if not isinstance(entry, dict) or not entry.get("question"):
+            return "\n⚠️ FAQ card had no usable entry — nothing indexed."
+        try:
+            from src.app.jobs.faq_regen import _apply_faq_approval
+            await _apply_faq_approval(entry)
+            return "\nFAQ entry appended to support docs + re-indexed."
+        except Exception as e:
+            logger.warning(f"faq approval apply failed: {e}")
+            return f"\n⚠️ FAQ apply failed: {e}"
 
     async def cmd_ops_log(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE,

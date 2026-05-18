@@ -1,0 +1,24 @@
+name: cc-django
+name_original: cookiecutter-django
+version: 1.0.0
+artifact_type: skill
+kind: shell_recipe
+source: github:cookiecutter/cookiecutter-django
+owner: cookiecutter
+license: BSD-3-Clause
+mechanizable: true
+applies_to: execution
+intent_keywords: [django, web-app, fullstack, celery, docker, postgresql]
+inputs_schema:
+  project_name:
+    type: string
+    bind_from: [task.payload.project_name, task.title]
+  use_celery:
+    type: bool
+    bind_from: [task.payload.use_celery]
+    default: false
+invocation:
+  steps:
+    - cmd: "uvx cookiecutter --no-input gh:cookiecutter/cookiecutter-django project_name={project_name}"
+artifacts: [manage.py, config/settings/base.py]
+disabled_imports_check: true

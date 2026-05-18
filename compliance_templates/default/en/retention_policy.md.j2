@@ -1,0 +1,64 @@
+# Data Retention Policy — template (review with counsel before publishing)
+
+_Generated: {{ generated_at }}_
+_Controller: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Controller contact: {{ controller_contact | default('[NOT SPECIFIED]') }}_
+_Jurisdiction: {{ jurisdiction | default('default') }}_
+
+## 1. Purpose
+
+This policy describes how long {{ project_name | default('the Service') }}
+retains Personal Data and the rationale for each retention period.
+
+## 2. Categories and retention periods
+
+{% if data_categories %}
+| Category | Retention | Rationale |
+|---|---|---|
+{% for cat in data_categories -%}
+| {{ cat }} | {{ retention_period | default('[LEGAL REVIEW REQUIRED]') }} | _to be filled in_ |
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list categories of Personal Data and per-category retention periods.
+{% endif %}
+
+## 3. Default retention
+
+Where no category-specific period is defined, data is retained for
+**{{ retention_period | default('[LEGAL REVIEW REQUIRED]') }}** from
+collection or last use, whichever is later.
+
+## 4. Lawful basis for retention
+
+{% if lawful_basis %}
+{% for b in lawful_basis -%}
+- {{ b }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — lawful basis depends on jurisdiction (consent, contract, legal obligation, legitimate interest).
+{% endif %}
+
+## 5. Deletion procedures
+
+- Soft-delete on user request or account closure, hard-delete after
+  the period above.
+- Backups containing Personal Data are rotated such that user data is
+  fully removed from backup media within the retention period plus
+  backup-rotation interval.
+- Anonymised aggregates may be retained for analytics indefinitely.
+
+## 6. Exceptions
+
+Data subject to a legal hold, regulatory obligation, or active
+investigation is retained until the obligation is discharged.
+[LEGAL REVIEW REQUIRED] — list applicable retention obligations
+(tax, AML/KYC, employment, etc.).
+
+## 7. Review cadence
+
+This policy is reviewed at least annually and whenever data categories
+change.
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before publishing._

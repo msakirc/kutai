@@ -8,6 +8,9 @@ Guards fire *inside* a single outer iteration (sub-iteration guards):
   - search_required: task needs web search but agent answered without it
   - grounding: agent answered without writing files it declared in
                 workflow ``produces``
+  - self_critique: agent's own one-shot review of its diff (after grounding,
+                   before format guard); uses a SEPARATE pass budget so it
+                   does NOT consume MAX_SUB_CORRECTIONS slots
 
 Public API
 ----------
@@ -17,7 +20,7 @@ MAX_FORMAT_CORRECTIONS — budget for JSON format corrections within one iter
 DATA_FETCH_TOOLS  — frozenset of tools that satisfy the data-fetch requirement
 is_action_task(task)   — heuristic: does the task need real tool execution?
 get_search_depth(task) — extract classification.search_depth from task.context
-check_sub_iter_guards(...)  — run all four guards, return first match or None
+check_sub_iter_guards(...)  — run all five guards, return first match or None
 check_grounding_sub_iter(...) — declarative produces vs tool_calls check
 """
 from __future__ import annotations
@@ -155,11 +158,17 @@ def check_sub_iter_guards(
     search_depth: str,
     suppress_guards: bool,
     tool_calls: list[dict] | None = None,
+    self_critique_passes: int = 0,
 ) -> GuardCorrection | None:
     """Check Category-A guards that should not burn an outer iteration.
 
     ``profile`` is duck-typed: needs ``.name``, ``.allowed_tools``,
     ``.can_create_subtasks``, and ``._suppress_clarification``.
+
+    ``self_critique_passes`` tracks how many self-critique sub-iterations
+    have already fired for this task.  It uses a SEPARATE budget from
+    ``MAX_SUB_CORRECTIONS`` — the caller increments it independently when
+    a ``self_critique`` GuardCorrection is consumed.
 
     Returns a ``GuardCorrection`` if a guard fires, or ``None`` if all pass.
     """
@@ -246,6 +255,20 @@ def check_sub_iter_guards(
         )
         if grounding_correction is not None:
             return grounding_correction
+
+    # 2c. Self-critique guard (fires AFTER grounding, BEFORE search/format).
+    # Uses its own dedicated pass counter — does NOT consume MAX_SUB_CORRECTIONS.
+    # Opt-out roles bypass entirely via SELF_CRITIQUE_OPT_OUT_AGENT_TYPES.
+    from .self_critique import check_self_critique_sub_iter  # lazy import avoids circular
+    sc_correction = check_self_critique_sub_iter(
+        parsed=parsed,
+        task=task,
+        agent_type=profile.name,
+        self_critique_passes=self_critique_passes,
+        tool_calls=tool_calls,
+    )
+    if sc_correction is not None:
+        return sc_correction
 
     # 3. Search-required guard
     _WEB_TOOLS = {"web_search", "smart_search", "api_call", "http_request"}

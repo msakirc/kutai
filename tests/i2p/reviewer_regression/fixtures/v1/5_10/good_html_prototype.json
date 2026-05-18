@@ -1,0 +1,16 @@
+{
+  "step_id": "5.10",
+  "step_name": "design_review",
+  "schema_version": "1",
+  "kind": "html_prototype",
+  "description": "Z1 Tier 3 (C9+A11) — paraflow-shape mobile HTML using only design_tokens colors and placeholder images with descriptive alt.",
+  "design_tokens": {
+    "_schema_version": "1",
+    "color": {
+      "primary": {"base": "#1B4D3E"},
+      "background": {"app": "#FAF9F7"},
+      "text": {"primary": "#1A1A1A"}
+    }
+  },
+  "html_text": "<!DOCTYPE html>\n<html><head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<script src=\"https://cdn.tailwindcss.com\"></script>\n<script src=\"https://cdn.jsdelivr.net/npm/iconify-icon@2/dist/iconify-icon.min.js\"></script>\n</head>\n<body class=\"w-[390px] min-h-[844px]\" style=\"background-color: #FAF9F7\">\n<header class=\"flex items-center h-14 px-4\" style=\"background-color: #1B4D3E\">\n<iconify-icon icon=\"lucide:home\" class=\"text-xl\" style=\"color: #FAF9F7\"></iconify-icon>\n<span class=\"ml-3 font-bold\" style=\"color: #FAF9F7\">Home</span>\n</header>\n<main class=\"p-4\" style=\"color: #1A1A1A\">\n<img src=\"https://placehold.co/358x180/FAF9F7/1A1A1A?text=Hero+Image+placeholder\" alt=\"Hero banner showing trending businesses with photos and star ratings.\" class=\"w-full rounded-lg\">\n</main>\n</body></html>"
+}

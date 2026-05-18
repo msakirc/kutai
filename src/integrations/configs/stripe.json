@@ -1,0 +1,65 @@
+{
+  "service_name": "stripe",
+  "base_url": "https://api.stripe.com",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "secret_key",
+  "webhook_secret": "${STRIPE_WEBHOOK_SECRET}",
+  "actions": {
+    "list_products": {
+      "method": "GET",
+      "path": "/v1/products",
+      "required_params": []
+    },
+    "create_product": {
+      "method": "POST",
+      "path": "/v1/products",
+      "required_params": ["name"]
+    },
+    "create_price": {
+      "method": "POST",
+      "path": "/v1/prices",
+      "required_params": ["unit_amount", "currency", "product"]
+    },
+    "create_checkout_session": {
+      "method": "POST",
+      "path": "/v1/checkout/sessions",
+      "required_params": ["mode", "success_url"]
+    },
+    "list_subscriptions": {
+      "method": "GET",
+      "path": "/v1/subscriptions",
+      "required_params": []
+    },
+    "retrieve_balance": {
+      "method": "GET",
+      "path": "/v1/balance",
+      "required_params": []
+    },
+    "create_customer": {
+      "method": "POST",
+      "path": "/v1/customers",
+      "required_params": []
+    },
+    "cancel_subscription": {
+      "method": "DELETE",
+      "path": "/v1/subscriptions/{subscription_id}",
+      "required_params": ["subscription_id"]
+    },
+    "confirm_test_payment": {
+      "method": "POST",
+      "path": "/v1/payment_intents",
+      "required_params": ["customer"]
+    },
+    "list_disputes": {
+      "method": "GET",
+      "path": "/v1/disputes",
+      "required_params": []
+    },
+    "list_tax_transactions": {
+      "method": "GET",
+      "path": "/v1/tax/transactions",
+      "required_params": []
+    }
+  }
+}

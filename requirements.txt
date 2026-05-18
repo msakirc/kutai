@@ -89,6 +89,7 @@ curl_cffi>=0.7.0
 telegram~=0.0.1
 sentence-transformers>=2.2.0
 chromadb>=0.4.0
+langdetect==1.0.9
 
 # External packages (own repos)
 yazbunu @ git+https://github.com/msakirc/yazbunu.git
@@ -108,3 +109,6 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 
 # Test dependencies
 pytest-aiohttp>=1.0.0
+
+semgrep==1.96.0  # Linux/Mac only; Windows hits soft-skip path
+Pillow>=10.0.0  # Z4 visual-review: WebP thumbnail compression for Telegram album

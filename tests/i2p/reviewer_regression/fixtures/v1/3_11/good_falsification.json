@@ -1,0 +1,47 @@
+{
+  "step_id": "3.11",
+  "step_name": "requirements_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "requirements_spec_summary": {
+      "_schema_version": "1",
+      "functional_count": 12,
+      "non_functional_count": 6,
+      "every_requirement_has_acceptance_criteria": true,
+      "no_orphans": true,
+      "every_item_has_falsification_triple": true
+    },
+    "prd_final_summary": {
+      "_schema_version": "1",
+      "named_competitors_section": true,
+      "differentiation_clear": true
+    },
+    "non_goals": {
+      "_schema_version": "1",
+      "items": [
+        "No real-time multiplayer.",
+        "No mobile-app version.",
+        "No vendor onboarding workflow this iteration."
+      ]
+    },
+    "functional_requirements_falsification_result": {
+      "_schema_version": "1",
+      "ok": true,
+      "checked": 12,
+      "missing": [],
+      "critical_underspecified": []
+    },
+    "business_rules_falsification_result": {
+      "_schema_version": "1",
+      "ok": true,
+      "checked": 4,
+      "missing": [],
+      "critical_underspecified": []
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "pass",
+    "issues": []
+  }
+}

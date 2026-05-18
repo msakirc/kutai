@@ -1,0 +1,13 @@
+# Visual review thresholds — read by mr_roboto.visual_review
+#
+# color_delta_e: CIEDE2000 color difference threshold. Values above this are
+#   treated as "blocker" severity. 4.0 is the standard "just noticeable
+#   difference" (JND) for trained observers; brand color accuracy requires
+#   values at or below this.
+color_delta_e: 4
+
+# layout_shift_px: pixel distance threshold for element/layout shift findings.
+#   Any shift greater than this (strict >) is treated as "blocker". 2px is a
+#   sub-pixel tolerance that catches real regressions while ignoring rendering
+#   engine sub-pixel rounding.
+layout_shift_px: 2

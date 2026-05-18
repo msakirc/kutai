@@ -58,4 +58,15 @@ class ProductResearcherAgent(BaseAgent):
             "3. If few results: supplement with `web_search`.\n"
             "4. Return all findings — the formatted_text from shopping_search "
             "plus any additional review or web search findings.\n"
+            "\n"
+            "## final_answer format\n"
+            "```json\n"
+            "{\n"
+            '  "action": "final_answer",\n'
+            '  "result": "## Search Results\\n\\n[formatted_text from shopping_search]'
+            "\\n\\n## Reviews\\n[review summaries per product]\\n\\n"
+            '## Web Findings\\n[supplemental web search results if any]",\n'
+            '  "memories": {}\n'
+            "}\n"
+            "```\n"
         )

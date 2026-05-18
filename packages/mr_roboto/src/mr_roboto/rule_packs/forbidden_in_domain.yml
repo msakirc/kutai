@@ -1,0 +1,76 @@
+# forbidden_in_domain.yml — Domain-layer purity guardrail rule pack
+#
+# Forbids framework and I/O library imports inside the domain layer.
+#
+# Enforcement model
+# -----------------
+# These rules are LAYER-AWARE — they should only run against files whose
+# inspect_layer() result is "domain".  Use run_semgrep_layer_filtered()
+# (in packages/mr_roboto/src/mr_roboto/run_semgrep_layer_filtered.py) as
+# the entry point; it pre-filters target_files by layer before calling
+# run_semgrep with this pack.
+#
+# Opt-in via step context:
+#   context.layer_rule_pack: "forbidden_in_domain.yml"
+#
+# Severity: ERROR → blocker in beckman.  Domain violations are hard failures.
+#
+# Covered imports
+# ---------------
+# fastapi, flask, django, sqlalchemy, requests
+
+rules:
+  - id: fastapi-import-in-domain
+    patterns:
+      - pattern: "from fastapi import ..."
+      - pattern: "import fastapi"
+    message: >
+      FastAPI import detected in a domain-layer file. The domain must remain
+      framework-free. Move framework-specific code to an adapter or infra layer.
+      See the layer architecture rules.
+    languages: [python]
+    severity: ERROR
+
+  - id: flask-import-in-domain
+    patterns:
+      - pattern: "from flask import ..."
+      - pattern: "import flask"
+    message: >
+      Flask import detected in a domain-layer file. The domain must remain
+      framework-free. Move framework-specific code to an adapter or infra layer.
+    languages: [python]
+    severity: ERROR
+
+  - id: django-import-in-domain
+    patterns:
+      - pattern: "from django import ..."
+      - pattern: "import django"
+      - pattern: "from django.$MODULE import ..."
+    message: >
+      Django import detected in a domain-layer file. The domain must remain
+      framework-free. Move ORM models and views to an infra/adapter layer.
+    languages: [python]
+    severity: ERROR
+
+  - id: sqlalchemy-import-in-domain
+    patterns:
+      - pattern: "from sqlalchemy import ..."
+      - pattern: "import sqlalchemy"
+      - pattern: "from sqlalchemy.$MODULE import ..."
+    message: >
+      SQLAlchemy import detected in a domain-layer file. The domain must not
+      depend on persistence frameworks. Define plain Python types in the domain;
+      put ORM mappings in the infra layer.
+    languages: [python]
+    severity: ERROR
+
+  - id: requests-import-in-domain
+    patterns:
+      - pattern: "import requests"
+      - pattern: "from requests import ..."
+    message: >
+      requests import detected in a domain-layer file. The domain must not
+      perform I/O. Move HTTP calls to an adapter or infra layer and inject
+      results via a port/interface.
+    languages: [python]
+    severity: ERROR

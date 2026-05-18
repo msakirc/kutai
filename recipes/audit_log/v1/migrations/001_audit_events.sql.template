@@ -1,0 +1,20 @@
+-- Audit-log recipe v1 — append-only event ledger.
+-- RECIPE_PARAM:TABLE_NAME=audit_events
+-- RECIPE_PARAM:PK_TYPE=INTEGER PRIMARY KEY AUTOINCREMENT
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id INTEGER,
+    action      TEXT    NOT NULL,
+    resource_type TEXT  NOT NULL,
+    resource_id TEXT    NOT NULL,
+    payload     TEXT    NOT NULL DEFAULT '{}',
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_resource
+    ON audit_events(resource_type, resource_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor
+    ON audit_events(actor_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created
+    ON audit_events(created_at DESC);

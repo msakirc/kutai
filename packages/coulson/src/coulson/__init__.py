@@ -71,6 +71,19 @@ async def execute(profile, task: dict, progress_callback: Callable | None = None
     if _task_ctx.get("is_workflow_step"):
         await _refresh_workflow_step_config(task, _task_ctx)
 
+    # ── Z6 T7C — detect needs_real_tools and short-circuit-or-inject ──
+    # If the task is flagged ``needs_real_tools`` we re-check admission
+    # before paying for an LLM call:
+    #   • Missing adapter/creds → emit a founder_action via z6_admission
+    #     and return ``status='blocked_on_founder_action'`` without ever
+    #     entering react/single_shot. Closes G9 (LLM agents fabricating
+    #     vendor responses).
+    #   • Prereqs satisfied → inject a system-prompt warning block so
+    #     the LLM uses ``vendor_call`` instead of hallucinating.
+    _bail = await _maybe_detect_and_bail(task, _task_ctx)
+    if _bail is not None:
+        return _bail
+
     try:
         # ── execution pattern routing ──
         if profile.execution_pattern == "single_shot":
@@ -105,6 +118,98 @@ async def execute(profile, task: dict, progress_callback: Callable | None = None
 # ────────────────────────────────────────────────────────────────────────────
 # Setup helpers
 # ────────────────────────────────────────────────────────────────────────────
+
+
+async def _maybe_detect_and_bail(task: dict, task_ctx: dict) -> dict | None:
+    """Z6 T7C — gate the LLM call when a task touches the real world.
+
+    Returns ``None`` to proceed with the normal execution path. Returns a
+    completed result dict (``status='blocked_on_founder_action'``) when
+    the gate decides to short-circuit instead of calling the LLM. The
+    task ctx is mutated in place to (a) inject the warning prompt block
+    on the pass-through path and (b) flip the task status on the bail
+    path.
+    """
+    # Hoisted column wins; fall back to ctx for older tasks where the
+    # expander has not yet rewritten task rows.
+    needs = task.get("needs_real_tools")
+    if needs is None:
+        needs = task_ctx.get("needs_real_tools")
+    try:
+        needs_bool = bool(int(needs)) if needs is not None else False
+    except (TypeError, ValueError):
+        needs_bool = bool(needs)
+    if not needs_bool:
+        return None
+
+    mission_id = task.get("mission_id")
+    if mission_id is None:
+        return None
+
+    # Re-use the existing admission logic so emit + de-dup behaviour
+    # stays consistent with beckman's pre-dispatch gate.
+    try:
+        from general_beckman.z6_admission import check_z6_admission
+        result = await check_z6_admission(task, int(mission_id))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"[Task #{task.get('id','?')}] z6 detect-and-bail: admission "
+            f"check raised {e!r} — proceeding without injection"
+        )
+        return None
+
+    if not result.admit:
+        # Short-circuit. Tell beckman to park the task.
+        try:
+            from src.infra.db import update_task
+            await update_task(
+                int(task["id"]),
+                status="blocked_on_founder_action",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                f"[Task #{task.get('id','?')}] update_task on bail "
+                f"skipped: {e}"
+            )
+        logger.info(
+            f"[Task #{task.get('id','?')}] Z6 T7C: short-circuit "
+            f"({result.reason}); founder_actions emitted="
+            f"{result.founder_actions_emitted}"
+        )
+        return {
+            "status": "blocked_on_founder_action",
+            "result": (
+                f"Task short-circuited — needs real-world side effects "
+                f"({result.reason}). Founder action emitted: "
+                f"{result.founder_actions_emitted}"
+            ),
+            "reason": result.reason,
+            "founder_actions_emitted": result.founder_actions_emitted,
+            "used_model": None,
+            "iterations": 0,
+            "cost": 0.0,
+        }
+
+    # Prereqs satisfied — inject the warning block into the task's
+    # description so the LLM sees it inline (the prompt builder reads
+    # task["description"]). Cheap, leaves the profile system prompt
+    # untouched.
+    from .system_prompt_blocks import (
+        REAL_WORLD_BLOCK_MARKER,
+        real_world_side_effects_warning,
+    )
+    reversibility = (
+        task.get("reversibility") or task_ctx.get("reversibility")
+    )
+    desc = task.get("description") or ""
+    if REAL_WORLD_BLOCK_MARKER not in desc:
+        block = real_world_side_effects_warning(reversibility)
+        task["description"] = f"{block}\n\n{desc}"
+        logger.info(
+            f"[Task #{task.get('id','?')}] Z6 T7C: real-world warning "
+            f"block injected (reversibility={reversibility})"
+        )
+    return None
 
 
 async def _load_db_prompt_override(profile) -> None:

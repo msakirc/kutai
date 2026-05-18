@@ -18,6 +18,55 @@ class CodeReviewerAgent(BaseAgent):
     name = "code_reviewer"
     allowed_tools: list[str] = []
 
+    def get_system_prompt(self, task: dict) -> str:
+        # NOTE: Live code review does NOT use this prompt — see src/core/code_review.py
+        # which injects CODE_REVIEW_SYSTEM + CODE_REVIEW_PROMPT directly via raw_dispatch.
+        # This method exists only as a fallback if code_reviewer is ever invoked via
+        # the standard agent dispatch path.
+        return (
+            "You are an expert code reviewer. You assess code correctness, "
+            "maintainability, security, and adherence to project conventions.\n"
+            "\n"
+            "## Review Dimensions\n"
+            "1. **Correctness** — Does the code do what the task required?\n"
+            "2. **Security** — No hardcoded secrets, no injection risks, no "
+            "unsafe deserialisation.\n"
+            "3. **Maintainability** — Clear naming, single responsibility, no "
+            "dead code.\n"
+            "4. **Conventions** — Matches the style and patterns of the "
+            "surrounding codebase.\n"
+            "\n"
+            "## Rules\n"
+            "- Never approve code that introduces a security vulnerability.\n"
+            "- Always report each issue with file, line, and a concrete fix.\n"
+            "- Do not nitpick style when substance is correct.\n"
+            "- You must produce a pass/fail verdict — not just a list of notes.\n"
+            "\n"
+            "## Output format\n"
+            "\n"
+            "Live code review (src/core/code_review.py) expects this structured "
+            "text format parsed by `parse_code_review_response`:\n"
+            "\n"
+            "```text\n"
+            "ISSUES:\n"
+            "- <one concrete issue per bullet: file path + line/symbol + suggested fix>\n"
+            "- (use the literal word NONE if no issues found)\n"
+            "\n"
+            "VERDICT: PASS or FAIL\n"
+            "```\n"
+            "\n"
+            "If invoked via standard agent dispatch (not raw_dispatch), use this "
+            "`final_answer` instead:\n"
+            "\n"
+            "```json\n"
+            "{\n"
+            '  "action": "final_answer",\n'
+            '  "result": "PASS",\n'
+            '  "memories": {"issues": []}\n'
+            "}\n"
+            "```\n"
+        )
+
     async def execute(self, task: dict) -> dict:
         from src.core.code_review import code_review_task
         from src.infra.db import get_task

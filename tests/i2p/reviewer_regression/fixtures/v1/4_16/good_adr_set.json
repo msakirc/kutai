@@ -1,0 +1,101 @@
+{
+  "step_id": "4.16",
+  "step_name": "architecture_review",
+  "schema_version": "1",
+  "comment": "Concrete ADR set with all universal-shape fields populated + cost-curve on stack ADRs. Used by tests/i2p/test_adr_shape.py to lock the shape contract.",
+  "adrs": [
+    {
+      "_schema_version": "1",
+      "adr_id": "ADR-2026-05-10-001",
+      "title": "Use NextJS for the frontend",
+      "status": "accepted",
+      "context": "Solo founder, 2-week prototype window, marketing landing pages need SEO.",
+      "decision": "OPT-A NextJS App Router with React Server Components.",
+      "consequences": "Mature ecosystem; Vercel hosting tightly integrated; lock-in to React.",
+      "options_considered": [
+        {
+          "id": "OPT-A",
+          "name": "NextJS",
+          "rationale_for": "Familiar; SSR built-in; ecosystem.",
+          "rationale_against": "Vendor pull toward Vercel hosting.",
+          "tech_maturity_score": 9,
+          "novelty_benefit": "low",
+          "reversal_cost": "high"
+        },
+        {
+          "id": "OPT-B",
+          "name": "Vite + React",
+          "rationale_for": "Faster dev loop; no SSR coupling.",
+          "rationale_against": "No SSR built-in; SEO needs custom plumbing.",
+          "tech_maturity_score": 8,
+          "novelty_benefit": "medium",
+          "reversal_cost": "high"
+        }
+      ],
+      "chosen_option_id": "OPT-A",
+      "falsification_signal": "If marketing pivots to API-first GTM (no landing pages), revisit within 30 days.",
+      "reversal_cost": "high",
+      "supersedes_adr_id": null
+    },
+    {
+      "_schema_version": "1",
+      "adr_id": "ADR-2026-05-10-002",
+      "title": "Use PostgreSQL with TimescaleDB",
+      "status": "accepted",
+      "context": "Need to store hourly price snapshots for ~50k SKUs; 36-month retention.",
+      "decision": "OPT-B Postgres + TimescaleDB self-hosted on TR-region VPS.",
+      "consequences": "Continuous aggregates make 30-day chart sub-100ms; self-host = solo-founder ops burden.",
+      "options_considered": [
+        {
+          "id": "OPT-A",
+          "name": "PostgreSQL plain",
+          "rationale_for": "Familiar; free Supabase tier.",
+          "rationale_against": "Index bloat at 1B+ rows; manual partitioning.",
+          "tech_maturity_score": 9,
+          "novelty_benefit": "low",
+          "reversal_cost": "low",
+          "monthly_cost_curve": {
+            "at_mvp": "$0",
+            "at_1k_users": "$25",
+            "at_100k_users": "$400"
+          }
+        },
+        {
+          "id": "OPT-B",
+          "name": "PostgreSQL + TimescaleDB",
+          "rationale_for": "Auto-partitioning; continuous aggregates.",
+          "rationale_against": "Supabase doesn't support TimescaleDB on free tier.",
+          "tech_maturity_score": 8,
+          "novelty_benefit": "medium",
+          "reversal_cost": "medium",
+          "monthly_cost_curve": {
+            "at_mvp": "$20",
+            "at_1k_users": "$40",
+            "at_100k_users": "$180"
+          }
+        },
+        {
+          "id": "OPT-C",
+          "name": "ClickHouse Cloud",
+          "rationale_for": "Best-in-class for time-series scans.",
+          "rationale_against": "$50/mo minimum exceeds budget.",
+          "tech_maturity_score": 8,
+          "novelty_benefit": "high",
+          "reversal_cost": "high",
+          "monthly_cost_curve": {
+            "at_mvp": "$50",
+            "at_1k_users": "$120",
+            "at_100k_users": "$1500"
+          }
+        }
+      ],
+      "chosen_option_id": "OPT-B",
+      "cost_at_target_users_usd": 40,
+      "cost_mitigation_plan": null,
+      "falsification_signal": "Active SKU > 200 by week 4 OR 30-day chart query p95 > 800ms.",
+      "reversal_cost": "medium",
+      "supersedes_adr_id": null
+    }
+  ],
+  "register_md": "# ADR Register\n\n- ADR-2026-05-10-001 — Use NextJS for the frontend — status:accepted\n- ADR-2026-05-10-002 — Use PostgreSQL with TimescaleDB — status:accepted\n"
+}

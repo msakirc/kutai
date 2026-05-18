@@ -1,0 +1,41 @@
+name: mobile_offline_sync
+version: v1
+kind: mobile_offline_sync
+description: "Offline-first sync layer for Expo — queue mutations while offline in an expo-sqlite store and replay them on reconnect, with @tanstack/react-query caching and expo-network connectivity detection."
+requires:
+  tech_stack:
+    - "fastapi+sqlite+expo"
+    - "fastapi+postgres+expo"
+    - "expo"
+features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - test_run
+  - pattern_lint
+templates:
+  mutation_queue: mutation_queue.template.ts
+  sync_engine: sync_engine.template.ts
+  query_client: query_client.template.ts
+  tests: tests/
+prompts:
+  expo: prompts/expo.md
+lessons_domain: mobile_offline_sync
+dependencies:
+  backend:
+    - fastapi
+  frontend:
+    - expo-sqlite
+    - expo-network
+    - "@tanstack/react-query"
+param_defaults:
+  QUEUE_TABLE: "mutation_queue"
+  DB_NAME: "app.db"
+  MAX_REPLAY_ATTEMPTS: "5"
+  SYNC_BATCH_SIZE: "25"
+  STALE_TIME_MS: "30000"
+entry_points:
+  mutation_queue: mutation_queue.template.ts
+  sync_engine: sync_engine.template.ts
+  query_client: query_client.template.ts
+  smoke_tests: tests/sync_smoke.template.ts

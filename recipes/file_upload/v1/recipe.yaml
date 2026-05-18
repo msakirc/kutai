@@ -1,0 +1,39 @@
+name: file_upload
+version: v1
+description: "Multipart upload + S3-compat or local storage + file metadata"
+requires:
+  tech_stack:
+    - "fastapi+postgres+nextjs"
+    - "fastapi+sqlite+nextjs"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - migration_apply
+  - test_run
+  - pattern_lint
+templates:
+  backend: backend.template.py
+  migrations: migrations/
+  tests: tests/
+prompts:
+  fastapi: prompts/fastapi.md
+lessons_domain: file_upload
+dependencies:
+  backend:
+    - fastapi
+    - aiosqlite
+    - boto3
+    - aiofiles
+    - python-multipart
+  frontend: []
+param_defaults:
+  STORAGE_BACKEND: "local"
+  UPLOAD_DIR: "./uploads"
+  MAX_FILE_BYTES: "10485760"
+  ALLOWED_MIME_TYPES: "image/png,image/jpeg,application/pdf"
+  S3_BUCKET_ENV: "UPLOAD_S3_BUCKET"
+entry_points:
+  backend_routes: backend.template.py
+  migration: migrations/001_files.sql.template
+  smoke_tests: tests/backend_smoke.template.py

@@ -89,6 +89,52 @@ from .codebase_index import (
 # Optional / pre-existing tools — degrade gracefully if absent
 _optional_tools: dict[str, dict[str, Any]] = {}
 
+# Z1 Tier 6B (P5) — web-grounded prior-art search.
+try:
+    from .prior_art import find_prior_art_tool
+
+    _optional_tools["find_prior_art"] = {
+        "function": find_prior_art_tool,
+        "description": (
+            "Search the web for prior art (Z1 P5). Surfaces failed/dormant "
+            "solutions, adjacent failures, and key lessons from HN, "
+            "Wikipedia, Wayback Machine, and Product Hunt. "
+            "Args: idea_summary (str), domain_keywords (str — comma-separated "
+            "keywords), k (int, default 10), ambition_tier (str: "
+            "private_beta|public_launch|revenue_product, default 'private_beta')"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "find_prior_art", '
+            '"args": {"idea_summary": "Turkish reseller arbitrage tool", '
+            '"domain_keywords": "trendyol,price tracker,reseller", '
+            '"ambition_tier": "private_beta"}}'
+        ),
+    }
+except Exception:  # pragma: no cover — never block startup
+    pass
+
+# Z1 Tier 5A (P6) — compliance template renderer (Jinja2-backed).
+try:
+    from .compliance_templates import compliance_template_render
+
+    _optional_tools["compliance_template_render"] = {
+        "function": compliance_template_render,
+        "description": (
+            "Render a compliance template (Z1 P6). "
+            "Args: fingerprint (dict), doc_type (str: privacy_policy|tos|"
+            "dpa|cookie_banner|retention_policy|age_gate|"
+            "accessibility_statement|data_processing_record), "
+            "lang (str, default 'en')"
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "compliance_template_render", '
+            '"args": {"fingerprint": {"jurisdictions": ["EU"], '
+            '"data_categories_coarse": ["pii"]}, "doc_type": "privacy_policy"}}'
+        ),
+    }
+except Exception:  # pragma: no cover — never block startup
+    pass
+
 try:
     from .web_search import web_search
 
@@ -284,6 +330,28 @@ try:
     }
 except Exception as e:
     logger.debug(f"service_call tool not available — {type(e).__name__}: {e}")
+
+# Z6 T3B — vendor_call tool (per-agent allowlist + cost cap).
+try:
+    from .vendor_call import vendor_call_tool
+
+    _optional_tools["vendor_call"] = {
+        "function": vendor_call_tool,
+        "description": (
+            "Call a vendor API through the IntegrationRegistry (Z6 T3B). "
+            "Subject to per-agent allowlist and MAX_TOOL_CALL_COST_USD cap. "
+            "Args: service (str), action (str), params (dict|JSON string), "
+            "cost_estimate_usd (float, optional), mission_id (int, optional), "
+            "task_id (int, optional), agent (str — injected by runtime)."
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "vendor_call", '
+            '"args": {"service": "stripe", "action": "list_products", '
+            '"params": {}}}'
+        ),
+    }
+except Exception as e:
+    logger.debug(f"vendor_call tool not available — {type(e).__name__}: {e}")
 
 # Deployment tool (Gap 6)
 try:
@@ -921,10 +989,38 @@ try:
 except Exception as e:
     logger.debug("MCP stub registration failed: %s", e)
 
+# Z3 T4C — layer-aware tooling
+from .inspect_layer import inspect_layer  # noqa: E402
+
+# Z9 T2D — growth anti-pattern detectors
+from .growth_anti_patterns import growth_anti_patterns  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 TOOL_REGISTRY: dict[str, dict[str, Any]] = {
+    "inspect_layer": {
+        "function": inspect_layer,
+        "description": (
+            "Return architectural layer for a path. "
+            "Result: one of domain | adapter | infra | test | ui | unknown. "
+            "Resolution: spec override (.spec/layer_map.json) > heuristic table. "
+            "Args: path (str), workspace_path (str, optional)."
+        ),
+        "example": '{"action": "tool_call", "tool": "inspect_layer", "args": {"path": "src/domain/user.py"}}',
+    },
+    "growth_anti_patterns": {
+        "function": growth_anti_patterns,
+        "description": (
+            "Run the three growth anti-pattern detectors over a digest_input "
+            "bundle: vanity metric (absolute-count north-star), engagement "
+            "vampire (high events + flat/declining retention), insufficient-N "
+            "(experiment < 100 daily-active samples). "
+            "Args: digest_input (str — the digest_input dict as a JSON object "
+            "string)."
+        ),
+        "example": '{"action": "tool_call", "tool": "growth_anti_patterns", "args": {"digest_input": "{...}"}}',
+    },
     # ── Shell ──────────────────────────────────────────────────────────────
     "shell": {
         "function": run_shell,

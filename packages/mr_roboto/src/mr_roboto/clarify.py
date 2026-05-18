@@ -64,6 +64,48 @@ async def clarify(task: dict) -> dict:
     payload = task.get("payload") or {}
     kind = payload.get("kind")
 
+    # Z1 Tier 5A (A5) — founder attention budget gate.
+    # When the mission has a budget set AND remaining < reserve_minutes
+    # (default 5), defer this clarify to deferred_questions.md instead of
+    # firing on Telegram. Budget is unset by default, so existing missions
+    # are unaffected.
+    if not bool(payload.get("attention_skip", False)):
+        try:
+            mission_id = task.get("mission_id")
+            if mission_id is not None:
+                from mr_roboto.attention_check import (
+                    attention_check, write_deferred_question,
+                )
+                reserve = int(payload.get("attention_reserve_minutes", 5))
+                check = await attention_check(
+                    mission_id=int(mission_id),
+                    reserve_minutes=reserve,
+                )
+                if not check.get("ok"):
+                    qtxt = (
+                        payload.get("question")
+                        or payload.get("kind")
+                        or task.get("title")
+                        or ""
+                    )
+                    step_id = (task.get("context") or {}).get(
+                        "workflow_step_id", str(task.get("id"))
+                    )
+                    deferred = await write_deferred_question(
+                        mission_id=int(mission_id),
+                        step_id=str(step_id),
+                        question_text=str(qtxt),
+                    )
+                    return {
+                        "status": "deferred",
+                        "reason": "attention_budget_exhausted",
+                        "remaining": check.get("remaining"),
+                        "deferred_path": deferred.get("path"),
+                    }
+        except Exception as exc:
+            # Never block clarify on a budget-check error — log and proceed.
+            logger.warning("clarify: attention_check failed: %s", exc)
+
     if kind == "variant_choice":
         payload_from = payload.get("payload_from", "gate_result")
         # Load the source artifact (gate_result) from the store. Task
@@ -75,7 +117,7 @@ async def clarify(task: dict) -> dict:
         if mission_id is not None:
             # Primary: ArtifactStore (cache-first, blackboard fallback).
             try:
-                from src.workflows.engine.artifacts import get_artifact_store
+                from src.workflows.engine.hooks import get_artifact_store
                 import json as _json
                 store = get_artifact_store()
                 raw = await store.retrieve(mission_id, payload_from)
@@ -169,6 +211,105 @@ async def clarify(task: dict) -> dict:
             "kind": "variant_choice",
             "prompt": f"{base_label} için hangi model?" if base_label else "Hangi model?",
             "keyboard_sent": sent,
+        }
+
+    # Artifact-confirm shape: inline the file content + send inline
+    # keyboard with OK / Regenerate / Edit buttons. Founder never has
+    # to open the file. Triggered by `attach_file_paths` in payload.
+    attach_paths = payload.get("attach_file_paths") or []
+    if attach_paths:
+        from src.tools.workspace import WORKSPACE_DIR
+        import os.path as _osp
+        mission_id_v = task.get("mission_id")
+        # Resolve chat_id (mirror variant_choice fallback chain).
+        chat_id = None
+        if mission_id_v is not None:
+            try:
+                from src.collaboration.blackboard import read_blackboard
+                arts = await read_blackboard(int(mission_id_v), "artifacts")
+                if isinstance(arts, dict):
+                    chat_id = arts.get("chat_id")
+            except Exception as exc:
+                logger.debug("clarify(attach) chat_id (blackboard) lookup failed: %s", exc)
+        if chat_id is None:
+            chat_id = task.get("chat_id")
+        if chat_id is None and mission_id_v is not None:
+            try:
+                from src.infra.db import get_db as _get_db
+                import json as _json2
+                _db = await _get_db()
+                _cur = await _db.execute(
+                    "SELECT context FROM missions WHERE id = ?", (mission_id_v,),
+                )
+                _row = await _cur.fetchone()
+                await _cur.close()
+                if _row and _row[0]:
+                    _mctx = _json2.loads(_row[0])
+                    if isinstance(_mctx, str):
+                        _mctx = _json2.loads(_mctx)
+                    chat_id = (_mctx or {}).get("chat_id")
+            except Exception as exc:
+                logger.debug("clarify(attach) chat_id (missions) lookup failed: %s", exc)
+
+        contents: list[tuple[str, str]] = []
+        for rel in attach_paths:
+            if not isinstance(rel, str) or not rel.strip():
+                continue
+            abs_p = rel if _osp.isabs(rel) else _osp.join(WORKSPACE_DIR, rel)
+            try:
+                with open(abs_p, encoding="utf-8") as fh:
+                    contents.append((rel, fh.read()))
+            except OSError as exc:
+                logger.warning("clarify(attach): read failed for %s: %s", abs_p, exc)
+                contents.append((rel, f"(could not read file: {exc})"))
+
+        question_text = payload.get("question") or "Confirm the draft below."
+        kind_tag = str(payload.get("kind") or "artifact_confirm")
+        regen_step = payload.get("regenerate_step_id") or ""
+        source_id = task.get("parent_task_id") or task["id"]
+
+        sent = False
+        if chat_id is not None:
+            try:
+                tg = get_telegram()
+                if tg is not None:
+                    await tg.send_artifact_confirm_keyboard(
+                        chat_id=int(chat_id),
+                        mission_id=int(mission_id_v) if mission_id_v else 0,
+                        task_id=int(source_id),
+                        kind=kind_tag,
+                        question=str(question_text),
+                        files=contents,
+                        regenerate_step_id=str(regen_step),
+                    )
+                    sent = True
+            except Exception as exc:
+                logger.exception("clarify(attach): send_artifact_confirm_keyboard failed: %s", exc)
+        if sent:
+            await update_task(int(source_id), status="waiting_human")
+            return {
+                "status": "needs_clarification",
+                "kind": kind_tag,
+                "attach_file_paths": attach_paths,
+                "keyboard_sent": True,
+                "prompt": question_text,
+            }
+        # Keyboard could NOT be sent (no chat_id, Telegram down). A human
+        # confirmation gate that can't reach the human must NOT silently
+        # complete — that skips founder approval entirely. Fail so the
+        # mission halts at the gate; the founder fixes the chat wiring
+        # and retries from DLQ. Production 2026-05-15 mission 70: a
+        # missing chat_id let 0.0z.confirm complete and the mission ran
+        # to phase 1 with no founder approval.
+        return {
+            "status": "failed",
+            "kind": kind_tag,
+            "error": (
+                "clarify gate could not reach the founder "
+                f"(chat_id unresolved for mission {mission_id_v}); "
+                "human approval gate cannot be skipped"
+            ),
+            "keyboard_sent": False,
         }
 
     # Default: plain question clarify

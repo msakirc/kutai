@@ -1,0 +1,11 @@
+name: superpowers-subagent-driven-development
+name_original: subagent-driven-development
+version: 1.0.0
+artifact_type: skill
+kind: prompt_skill
+source: github:obra/superpowers@/skills
+owner: obra
+license: MIT
+mechanizable: false
+applies_to: execution
+intent_keywords: [subagent, parallel-agents, dispatch, delegation]

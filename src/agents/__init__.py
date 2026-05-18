@@ -21,6 +21,12 @@ from .shopping_clarifier import ShoppingClarifierAgent
 from .grader import GraderAgent
 from .code_reviewer import CodeReviewerAgent
 from .artifact_summarizer import ArtifactSummarizerAgent
+from .integration_reviewer import IntegrationReviewerAgent
+from .adr_drift_judge import AdrDriftJudgeAgent
+from .oncall_agent import OncallAgent
+from .support_tier1 import SupportTier1Agent
+from .growth_digest_synthesizer import GrowthDigestSynthesizerAgent
+from .signal_classifier import SignalClassifierAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -44,6 +50,12 @@ AGENT_REGISTRY = {
     "grader": GraderAgent(),
     "code_reviewer": CodeReviewerAgent(),
     "artifact_summarizer": ArtifactSummarizerAgent(),
+    "integration_reviewer": IntegrationReviewerAgent(),
+    "adr_drift_judge": AdrDriftJudgeAgent(),
+    "oncall_agent": OncallAgent(),
+    "support_tier1": SupportTier1Agent(),
+    "growth_digest_synthesizer": GrowthDigestSynthesizerAgent(),
+    "signal_classifier": SignalClassifierAgent(),
 }
 
 

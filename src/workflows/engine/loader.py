@@ -64,6 +64,13 @@ class WorkflowDefinition:
         """Return a phase dict by its id, or None."""
         return self._phase_index.get(phase_id)
 
+    def all_step_ids(self) -> list[str]:
+        """Return every step id declared in this workflow."""
+        steps = self._step_index
+        if isinstance(steps, dict):
+            return list(steps.keys())
+        return [s.get("id") for s in self.steps if isinstance(s, dict) and s.get("id")]
+
 
 def _resolve_workflow_path(workflow_name: str) -> Path:
     """Resolve *workflow_name* to a JSON file path.

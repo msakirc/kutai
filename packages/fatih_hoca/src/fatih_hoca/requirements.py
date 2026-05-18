@@ -106,6 +106,12 @@ class ModelRequirements:
     # ── Agent context ──
     agent_type: str = ""
 
+    # ── Z10 T2A D7 — mission-level quality dial ──
+    # quick / balanced / thorough (default balanced). Mirrored from
+    # missions.quality_mode in requirements_builder; ranking.py applies
+    # the speed/benchmark weight delta.
+    quality_mode: str = "balanced"
+
     @property
     def effective_task(self) -> str:
         if self.task and self.task in TASK_PROFILES:

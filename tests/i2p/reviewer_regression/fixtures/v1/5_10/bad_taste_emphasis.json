@@ -1,0 +1,11 @@
+{
+  "_schema_version": "1",
+  "mission_id": 101,
+  "primary_content_type": "other",
+  "primary_content_type_rationale": "Charter is ambiguous.",
+  "secondary_emphasis": [],
+  "tone_keywords": ["minimal"],
+  "tone_rationale": "Generic.",
+  "key_visual_priorities": ["readability"],
+  "anti_emphasis": []
+}

@@ -3,6 +3,7 @@
   "base_url": "https://api.github.com",
   "auth_type": "bearer",
   "auth_header": "Authorization",
+  "webhook_secret": "${GITHUB_WEBHOOK_SECRET}",
   "actions": {
     "list_repos": {
       "method": "GET",

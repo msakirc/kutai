@@ -1,0 +1,29 @@
+{
+  "service_name": "supabase",
+  "base_url": "https://api.supabase.com/v1",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "service_role_key",
+  "actions": {
+    "list_projects": {
+      "method": "GET",
+      "path": "/projects",
+      "required_params": []
+    },
+    "run_migration": {
+      "method": "POST",
+      "path": "/projects/{ref}/database/query",
+      "required_params": ["ref", "query"]
+    },
+    "list_buckets": {
+      "method": "GET",
+      "path": "/projects/{ref}/storage/buckets",
+      "required_params": ["ref"]
+    },
+    "create_signed_url": {
+      "method": "POST",
+      "path": "/projects/{ref}/storage/buckets/{bucket}/objects/sign",
+      "required_params": ["ref", "bucket", "path"]
+    }
+  }
+}

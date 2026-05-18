@@ -1,0 +1,50 @@
+# Cookie Banner Copy (template — review with counsel before publishing)
+
+_Generated: {{ generated_at }}_
+_Project: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Jurisdiction: {{ jurisdiction | default('default') }}_
+
+## Banner Headline
+
+We use cookies to make {{ project_name | default('this service') }} work and to understand how it is used.
+
+## Body Copy
+
+Essential cookies keep the site functioning (sign-in, security, basic preferences).
+Optional cookies help us measure usage and improve the product.
+
+You can accept all, reject non-essential, or open preferences to choose by category.
+
+## Buttons
+
+- **Accept all**
+- **Reject non-essential**
+- **Preferences**
+
+## Categories (toggle list)
+
+- **Essential** — always on. Required for the site to function.
+- **Analytics** — usage metrics. Off by default.
+- **Marketing** — advertising and re-targeting. Off by default. [LEGAL REVIEW REQUIRED] — only render if marketing cookies are actually set.
+- **Functional** — saved preferences, language, theme. Off by default.
+
+## Lawful basis
+
+{% if lawful_basis %}
+{% for b in lawful_basis -%}
+- {{ b }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — lawful basis varies by jurisdiction (consent in EU; opt-out in California; mixed elsewhere).
+{% endif %}
+
+## Withdrawing consent
+
+Users can change cookie preferences at any time from the site footer
+("Cookie preferences") or by clearing cookies in their browser.
+
+---
+
+_This is a starter draft, not legal advice. Have counsel review the
+final wording, especially the lawful-basis line and the Marketing
+category, before publishing._

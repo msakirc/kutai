@@ -1,0 +1,43 @@
+<!-- RECIPE_PARAM:APP_NAME=MyApp -->
+<!-- RECIPE_PARAM:BUNDLE_ID=com.example.app -->
+<!-- RECIPE_PARAM:SUPPORT_EMAIL=support@example.com -->
+# Reviewer response — <<APP_NAME>> (<<BUNDLE_ID>>)
+
+> Draft for the App Store Connect Resolution Center / Google Play
+> reviewer reply. Fill the bracketed fields, have the founder approve the
+> tone, then send. Do not resubmit the binary until this response is sent
+> for metadata / positioning rejections.
+
+## Rejection summary
+
+- **Store:** [App Store | Google Play]
+- **Guideline / policy cited:** [e.g. Guideline 4.3(a) — Design: Spam]
+- **Submission id / version:** [...]
+- **Date received:** [...]
+
+## What the reviewer reported
+
+[Paste the verbatim rejection text from the review notice.]
+
+## Diagnosis
+
+[Which of the 8 playbook reasons this maps to, and why. Be specific —
+cite the SDK, screen, permission, or metadata field involved.]
+
+## What we changed
+
+[Concrete, verifiable list of changes. Examples:
+ - Regenerated the App Privacy nutrition label to match the analytics SDK.
+ - Fixed the release-build crash on the onboarding screen (missing R8
+   keep rule); added a Maestro smoke step covering the flow.
+ - Provisioned a demo account; credentials are in App Review Information.
+ - Replaced IPv4 literals with hostnames; backend confirmed dual-stack.]
+
+## Re-review request
+
+We have addressed every point raised above in build [version / build
+number]. The demo account, if applicable, is in the App Review
+Information section. Please re-review at your earliest convenience — we
+are happy to provide a screen recording or additional detail.
+
+Contact for review questions: <<SUPPORT_EMAIL>>

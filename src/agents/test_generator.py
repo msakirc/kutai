@@ -17,6 +17,7 @@ class TestGeneratorAgent(BaseAgent):
     # tests, (4) run them, (5-6) fix failures.  Needs more than reviewer
     # because test generation involves write-run-fix cycles.
     max_iterations = 6
+    enable_self_reflection = True
 
     allowed_tools = [
         "file_tree",

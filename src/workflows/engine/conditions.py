@@ -28,6 +28,7 @@ def evaluate_condition(condition_check: str, artifact_value: str) -> bool:
         field != 'value'
         field == true | false
         field == 'value'
+        field in ('a', 'b', ...)
         platforms_include('value')
         expr OR expr
 
@@ -70,6 +71,19 @@ def evaluate_condition(condition_check: str, artifact_value: str) -> bool:
             value = m.group(1)
             platforms = data.get("platforms", []) if isinstance(data, dict) else []
             return value in platforms
+
+        # --- field in ('a', 'b', ...) ---
+        m = re.match(r"(\w+)\s+in\s+\(([^)]*)\)", condition_check)
+        if m:
+            field, raw_values = m.group(1), m.group(2)
+            allowed = {
+                v.strip().strip("'\"")
+                for v in raw_values.split(",")
+                if v.strip()
+            }
+            if isinstance(data, dict):
+                return data.get(field) in allowed
+            return False
 
         # --- field != 'value' ---
         m = re.match(r"(\w+)\s*!=\s*'([^']+)'", condition_check)

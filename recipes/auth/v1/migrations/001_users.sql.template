@@ -1,0 +1,86 @@
+-- Auth recipe v1 — database migration
+-- Template: 001_users.sql.template
+--
+-- Portable subset: works for both SQLite and PostgreSQL.
+-- Choice rationale:
+--   - INTEGER PRIMARY KEY AUTOINCREMENT (SQLite) == SERIAL PRIMARY KEY (Postgres) in behaviour.
+--     The template uses the SQLite spelling; if targeting Postgres, replace with
+--     `id BIGSERIAL PRIMARY KEY` during instantiation (RECIPE_PARAM:PK_TYPE).
+--   - BOOLEAN is stored as INTEGER (0/1) in SQLite; Postgres accepts BOOLEAN natively.
+--     Both read fine with Python drivers so no compatibility issue.
+--   - datetime('now') in CHECK expressions uses SQLite syntax; Postgres uses NOW().
+--     The CHECK on expires_at is informational only — remove for Postgres if it causes issues.
+--   - TEXT for token hashes: 64 chars for SHA-256 hex digest.
+--   - All timestamps are stored in UTC as TEXT (ISO 8601 without timezone offset).
+--     This works in both engines with proper driver configuration.
+--
+-- RECIPE_PARAM:PK_TYPE=INTEGER PRIMARY KEY AUTOINCREMENT
+
+-- ---------------------------------------------------------------------------
+-- users
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- RECIPE_PARAM:PK_TYPE=INTEGER PRIMARY KEY AUTOINCREMENT
+    email           TEXT    NOT NULL UNIQUE,
+    password_hash   TEXT    NOT NULL,
+    email_verified  INTEGER NOT NULL DEFAULT 0,  -- 0=false, 1=true
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+
+-- ---------------------------------------------------------------------------
+-- password_reset_tokens
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT    NOT NULL UNIQUE,  -- SHA-256 hex of the raw token
+    expires_at  TEXT    NOT NULL,
+    used        INTEGER NOT NULL DEFAULT 0,   -- 0=unused, 1=consumed
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_prt_user_id     ON password_reset_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_prt_token_hash  ON password_reset_tokens (token_hash);
+-- NOTE: alembic autogenerate may miss idx_prt_token_hash — verify migration after generate
+
+-- ---------------------------------------------------------------------------
+-- email_verify_tokens
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS email_verify_tokens (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT    NOT NULL UNIQUE,  -- SHA-256 hex of the raw token
+    expires_at  TEXT    NOT NULL,
+    used        INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_evt_user_id     ON email_verify_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_evt_token_hash  ON email_verify_tokens (token_hash);
+
+-- ---------------------------------------------------------------------------
+-- auth_sessions  (refresh token ledger)
+-- ---------------------------------------------------------------------------
+-- One row per active browser/device session.
+-- refresh_token_hash: SHA-256 hex of the raw JWT refresh token string.
+-- revoked_at: NULL = active; set to revocation timestamp on logout/admin-revoke.
+-- Expired and revoked rows are safe to GC:
+--   DELETE FROM auth_sessions
+--   WHERE expires_at < strftime('%Y-%m-%d %H:%M:%S', 'now')
+--      OR revoked_at IS NOT NULL;
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    refresh_token_hash  TEXT    NOT NULL UNIQUE,
+    created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+    expires_at          TEXT    NOT NULL,
+    revoked_at          TEXT    DEFAULT NULL   -- NULL = active session
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id    ON auth_sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON auth_sessions (refresh_token_hash);

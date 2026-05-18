@@ -56,8 +56,9 @@ from .guards import (
     MAX_FORMAT_CORRECTIONS, MAX_SUB_CORRECTIONS,
     check_sub_iter_guards, get_search_depth,
 )
+from .grounding import extract_written_paths, unmatched_produces
 from .parsing import parse_action, parse_function_call, unwrap_final_answer
-from .reflection import self_reflect
+from .reflection import self_reflect, build_reflection_prompt
 from .tools import (
     CACHEABLE_READ_TOOLS, SIDE_EFFECT_TOOLS,
     TOOL_FAILURE_ESCALATION_THRESHOLD, TOOL_SCHEMAS_BY_NAME,
@@ -140,6 +141,23 @@ def _record_tool_call(
         "args": _truncate_args(args),
         "ok": _tool_output_ok(output),
     })
+
+
+async def _fire_tool_call_signal(tool_name: str, *, task_id: int | None = None) -> None:
+    """Record a ``tool_call`` demand signal — an agent requested a tool with
+    no backing skill/tool in any registry. Best-effort: a signal failure must
+    never affect the agent loop."""
+    try:
+        import yalayut
+        await yalayut.record_demand_signal(
+            source_step_pattern=f"tool_call:{tool_name}",
+            intent_keywords=[tool_name],
+            signal_type="tool_call",
+            confidence=0.3,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tool_call demand signal skipped (task %s): %s",
+                     task_id, exc)
 
 
 async def run(profile, task: dict, progress_callback: Callable | None = None) -> dict:
@@ -293,10 +311,37 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             f"{profile.max_iterations} → {effective_max_iterations}"
         )
 
+    # Z10 T2A D7 — quality_mode dial. quick caps retries at 1
+    # (effective_max_iterations = 1), thorough lifts it to 5.
+    # Mission-level setting; balanced (default) leaves machinery alone.
+    if mission_id is not None:
+        try:
+            from src.infra.db import get_mission_quality_mode
+            from src.infra.cost_wiring import quality_mode_profile
+            _qmode = await get_mission_quality_mode(int(mission_id))
+            _qprof = quality_mode_profile(_qmode)
+            _qmax = _qprof.get("max_retries")
+            if _qmax is not None:
+                _before = effective_max_iterations
+                effective_max_iterations = max(1, int(_qmax))
+                if _before != effective_max_iterations:
+                    logger.info(
+                        f"[Task #{task_id}] quality_mode={_qmode} "
+                        f"max_iterations {_before} → {effective_max_iterations}"
+                    )
+        except Exception as _qe:
+            logger.debug(
+                f"[Task #{task_id}] quality_mode lookup skipped: {_qe}"
+            )
+
     # Exhaustion tracking counters
     guard_burns = 0
     useful_iterations = 0
     empty_response_count = 0
+
+    # Self-critique sub-iteration counter.  Uses its own budget separate
+    # from MAX_SUB_CORRECTIONS so critique passes don't burn correction slots.
+    self_critique_passes = 0
 
     # Per-iter transport-failure accumulator. Phase C.2b: coulson owns the
     # failures list, passes to ``fatih_hoca.select`` on retry so failure-
@@ -712,6 +757,61 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             except ValueError as exc:
                 logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
 
+            # ── AUTO-PERSIST RECOVERY ──
+            # When agent emits final_answer with substantive markdown in
+            # `result` but never called write_file for the declared
+            # `produces`, write the result to disk instead of looping the
+            # grounding guard. Cloud LLMs frequently dump the artifact
+            # inline despite the _FILE_WRITE_PROMPT; punishing the agent
+            # wastes retries when the content is already correct.
+            # Production 2026-05-14 mission 69 step 0.1 product_charter:
+            # full charter dumped in result, grounding DLQ'd.
+            try:
+                _ap_action = parsed.get("action", "final_answer") if isinstance(parsed, dict) else "final_answer"
+                if _ap_action == "final_answer" and isinstance(_task_ctx, dict):
+                    _ap_produces = _task_ctx.get("produces") or []
+                    if isinstance(_ap_produces, list) and _ap_produces:
+                        _ap_written = extract_written_paths(tool_calls)
+                        _ap_missing = unmatched_produces(_ap_produces, _ap_written)
+                        # Auto-persist only when ALL produces are missing
+                        # (no partial write) and the result is substantive
+                        # markdown. Single-file produces only — multi-file
+                        # asks for distinct content per file.
+                        if (
+                            _ap_missing == _ap_produces
+                            and len(_ap_produces) == 1
+                            and isinstance(_ap_produces[0], str)
+                            and _ap_produces[0].endswith(".md")
+                        ):
+                            _ap_result = parsed.get("result", content)
+                            if not isinstance(_ap_result, str):
+                                _ap_result = ""
+                            if _ap_result and len(_ap_result.strip()) >= 500:
+                                from src.tools.workspace import WORKSPACE_DIR as _ap_ws
+                                import os as _ap_os, os.path as _ap_op
+                                _ap_rel = _ap_produces[0]
+                                _ap_abs = _ap_rel if _ap_op.isabs(_ap_rel) else _ap_op.join(_ap_ws, _ap_rel)
+                                try:
+                                    _ap_os.makedirs(_ap_op.dirname(_ap_abs), exist_ok=True)
+                                    with open(_ap_abs, "w", encoding="utf-8") as _ap_fh:
+                                        _ap_fh.write(_ap_result)
+                                    tool_calls.append({
+                                        "name": "write_file",
+                                        "args": {"path": _ap_rel, "content_len": len(_ap_result)},
+                                        "ok": True,
+                                        "auto_persist": True,
+                                    })
+                                    logger.info(
+                                        f"[Task #{task_id}] auto-persisted final_answer.result "
+                                        f"to {_ap_rel} ({len(_ap_result)} chars)"
+                                    )
+                                except OSError as _ap_exc:
+                                    logger.warning(
+                                        f"[Task #{task_id}] auto-persist failed for {_ap_rel}: {_ap_exc}"
+                                    )
+            except Exception as _ap_top_exc:
+                logger.debug(f"[Task #{task_id}] auto-persist skipped: {_ap_top_exc}")
+
             # ── SUB-ITERATION GUARD CHECK ──
             correction = check_sub_iter_guards(
                 profile=profile,
@@ -723,14 +823,32 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 search_depth=_search_depth,
                 suppress_guards=_suppress_guards,
                 tool_calls=tool_calls,
+                self_critique_passes=self_critique_passes,
             )
             if correction and sub_corrections < MAX_SUB_CORRECTIONS:
                 guard_burns += 1
+                # Self-critique uses its own counter — increment separately
+                # so the critique pass does NOT consume a MAX_SUB_CORRECTIONS slot.
+                if correction.guard_name == "self_critique":
+                    self_critique_passes += 1
+                    logger.warning(
+                        f"[Task #{task_id}] [self_critique] "
+                        f"pass {self_critique_passes} (own budget, not consuming sub_corrections)"
+                    )
+                    await safe_log_conversation_p(profile,
+                        task_id, "system",
+                        "[self_critique] sub-iteration",
+                        None, 0,
+                    )
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": correction.message})
+                    # Do NOT increment sub_corrections — critique has its own budget
+                    continue  # inner loop — re-prompt LLM
                 logger.warning(
                     f"[Task #{task_id}] [{correction.guard_name}] "
                     f"sub-correction {sub_corrections + 1}/{MAX_SUB_CORRECTIONS}"
                 )
-                await safe_log_conversation_p(profile, 
+                await safe_log_conversation_p(profile,
                     task_id, "system",
                     f"[{correction.guard_name}] sub-correction",
                     None, 0,
@@ -866,8 +984,19 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             # Self-reflection
             if profile.enable_self_reflection:
                 try:
+                    # Z2 T4C Item-6 followup — thread tech_stack from task ctx
+                    # into reflection so STACK_BLOCKS fragments load.
+                    _stack = str(
+                        _task_ctx.get("tech_stack_detected")
+                        or _task_ctx.get("inject_lessons_stack")
+                        or _task_ctx.get("tech_stack")
+                        or ""
+                    ) or None
                     reflection = await self_reflect(
                         task, result, reqs, used_model,
+                        checklist=build_reflection_prompt(
+                            profile.name, iteration, stack=_stack,
+                        ),
                     )
                     if reflection and reflection.get("verdict") == "fix":
                         corrected = reflection.get("corrected_result")
@@ -876,21 +1005,40 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 except Exception as exc:
                     logger.debug(f"Self-reflection error: {exc}")
 
-            # Confidence gating
+            # Confidence gating (Z10 T1A — gate now actually enforces)
             confidence = parsed.get("confidence")
             if (
                 profile.min_confidence > 0
                 and isinstance(confidence, (int, float))
                 and confidence < profile.min_confidence
             ):
-                return {
-                    "status":      "needs_review",
-                    "result":      result,
-                    "review_note": f"Agent confidence: {confidence}/5",
-                    "model":       used_model,
-                    "cost":        total_cost,
-                    "difficulty":  reqs.difficulty,
-                }
+                gate_mode = getattr(profile, "confidence_gate", "fail_closed")
+                if gate_mode == "warn":
+                    logger.warning(
+                        "confidence_gate_warn",
+                        agent=getattr(profile, "name", "unknown"),
+                        task_id=task.get("id"),
+                        confidence=confidence,
+                        min_confidence=profile.min_confidence,
+                    )
+                else:
+                    # "fail_closed" → escalate. Beckman's result_router maps
+                    # status="needs_review" to RequestReview (reviewer task).
+                    logger.info(
+                        "confidence_gate_block",
+                        agent=getattr(profile, "name", "unknown"),
+                        task_id=task.get("id"),
+                        confidence=confidence,
+                        min_confidence=profile.min_confidence,
+                    )
+                    return {
+                        "status":      "needs_review",
+                        "result":      result,
+                        "review_note": f"Agent confidence: {confidence}/5",
+                        "model":       used_model,
+                        "cost":        total_cost,
+                        "difficulty":  reqs.difficulty,
+                    }
 
             return {
                 "status":           "completed",
@@ -963,10 +1111,35 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"{profile.name} → {tool_name}"
                 )
             elif tool_name not in TOOL_REGISTRY:
-                tool_output = (
-                    f"❌ Unknown tool '{tool_name}'. "
-                    f"Available: {list(TOOL_REGISTRY.keys())}"
-                )
+                # yalayut-provided api/mcp tools route through the catalog
+                # dispatcher. Build a per-call registry from the task's
+                # skills envelope (exposure_class=="tool" entries with
+                # _yalayut_kind set by ApiPlugin / McpPlugin).
+                _yalayut_registry: dict = {}
+                for _sk in (task.get("skills") or []):
+                    if _sk.get("exposure_class") == "tool":
+                        _payload = _sk.get("payload") or {}
+                        _kind = _payload.get("kind")
+                        if _kind in ("api", "mcp"):
+                            for _ts in (_payload.get("tools") or []):
+                                _ts_copy = dict(_ts)
+                                _ts_copy["_yalayut_kind"] = _kind
+                                _yalayut_registry[_ts_copy.get("tool_name", "")] = _ts_copy
+                if tool_name in _yalayut_registry:
+                    import yalayut
+                    _yr = await yalayut.dispatch_tool(
+                        tool_name, tool_args, _yalayut_registry
+                    )
+                    tool_output = (
+                        _yr.get("response") or _yr.get("error")
+                        or "yalayut: no output"
+                    )
+                else:
+                    await _fire_tool_call_signal(tool_name, task_id=task_id)
+                    tool_output = (
+                        f"❌ Unknown tool '{tool_name}'. "
+                        f"Available: {list(TOOL_REGISTRY.keys())}"
+                    )
             else:
                 arg_schema = TOOL_SCHEMAS_BY_NAME.get(tool_name)
                 if arg_schema:
@@ -1159,11 +1332,28 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     f"Iteration {iteration + 2}/{effective_max_iterations}."
                 )
             else:
-                recovery_guidance = (
-                    f"## Tool Result (`{tool_name}`):\n\n"
-                    f"```\n{tool_output}\n```\n\n"
-                    f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
+                _produces = _task_ctx.get("produces") if isinstance(_task_ctx, dict) else None
+                _produces_done = (
+                    isinstance(_produces, list)
+                    and _produces
+                    and not unmatched_produces(_produces, extract_written_paths(tool_calls))
                 )
+                if _produces_done:
+                    recovery_guidance = (
+                        f"## Tool Result (`{tool_name}`):\n\n"
+                        f"```\n{tool_output}\n```\n\n"
+                        "All declared `produces` paths for this step are now "
+                        "written to disk. STOP calling tools. Emit "
+                        '`{"action": "final_answer", "result": "..."}` on the '
+                        "NEXT response — a short summary referencing the "
+                        "produced path. Do not re-write, re-read, or refine."
+                    )
+                else:
+                    recovery_guidance = (
+                        f"## Tool Result (`{tool_name}`):\n\n"
+                        f"```\n{tool_output}\n```\n\n"
+                        f"{'LAST ITERATION — you MUST respond with final_answer now. Do NOT call any more tools.' if iteration + 2 >= effective_max_iterations else 'Continue working.'} Iteration {iteration + 2}/{effective_max_iterations}."
+                    )
 
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": recovery_guidance})
@@ -1343,11 +1533,26 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 useful_iterations += 1
 
             is_next_last = (iteration + 2 >= effective_max_iterations)
-            combined = "\n\n".join(result_parts)
-            combined += (
-                f"\n\n{'LAST ITERATION — you MUST respond with final_answer now.' if is_next_last else 'Continue working.'}"
-                f" Iteration {iteration + 2}/{effective_max_iterations}."
+            _produces = _task_ctx.get("produces") if isinstance(_task_ctx, dict) else None
+            _produces_done = (
+                isinstance(_produces, list)
+                and _produces
+                and not unmatched_produces(_produces, extract_written_paths(tool_calls))
             )
+            combined = "\n\n".join(result_parts)
+            if _produces_done:
+                combined += (
+                    "\n\nAll declared `produces` paths for this step are now "
+                    "written to disk. STOP calling tools. Emit "
+                    '`{"action": "final_answer", "result": "..."}` on the '
+                    "NEXT response — a short summary referencing the produced "
+                    "path. Do not re-write, re-read, or refine."
+                )
+            else:
+                combined += (
+                    f"\n\n{'LAST ITERATION — you MUST respond with final_answer now.' if is_next_last else 'Continue working.'}"
+                    f" Iteration {iteration + 2}/{effective_max_iterations}."
+                )
 
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": combined})

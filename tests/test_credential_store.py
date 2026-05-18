@@ -63,6 +63,10 @@ class _CredDBTestBase(unittest.TestCase):
         cs_mod._fernet = None
         cs_mod._MASTER_KEY = None
 
+        # T2E: vault no longer falls back silently — give the DB tests a key.
+        self._orig_key = os.environ.get("KUTAY_MASTER_KEY")
+        os.environ["KUTAY_MASTER_KEY"] = "shared-credential-test-key"
+
         run_async(db_mod.init_db())
 
     def tearDown(self):
@@ -74,6 +78,10 @@ class _CredDBTestBase(unittest.TestCase):
         # Reset fernet singleton
         self.cs_mod._fernet = None
         self.cs_mod._MASTER_KEY = None
+        if self._orig_key is None:
+            os.environ.pop("KUTAY_MASTER_KEY", None)
+        else:
+            os.environ["KUTAY_MASTER_KEY"] = self._orig_key
 
         try:
             os.unlink(self.db_path)
@@ -133,39 +141,54 @@ class TestEncryptDecryptRoundtrip(unittest.TestCase):
 
 
 class TestCredentialStoreFallback(unittest.TestCase):
-    """Test fallback when KUTAY_MASTER_KEY is not set."""
+    """Test fallback when KUTAY_MASTER_KEY is not set.
+
+    Post-T2E: fallback is opt-in via ``KUTAY_DEV_ALLOW_INSECURE_VAULT=1``.
+    """
 
     def setUp(self):
         import src.security.credential_store as cs_mod
         self.cs_mod = cs_mod
-        cs_mod._fernet = None
-        cs_mod._MASTER_KEY = None
+        if hasattr(cs_mod, "_reset_key_state"):
+            cs_mod._reset_key_state()
+        else:
+            cs_mod._fernet = None
+            cs_mod._MASTER_KEY = None
         self._orig_key = os.environ.get("KUTAY_MASTER_KEY")
+        self._orig_dev = os.environ.get("KUTAY_DEV_ALLOW_INSECURE_VAULT")
         # Remove master key to test fallback
         os.environ.pop("KUTAY_MASTER_KEY", None)
+        os.environ.pop("KUTAY_DEV_ALLOW_INSECURE_VAULT", None)
 
     def tearDown(self):
-        self.cs_mod._fernet = None
-        self.cs_mod._MASTER_KEY = None
+        if hasattr(self.cs_mod, "_reset_key_state"):
+            self.cs_mod._reset_key_state()
+        else:
+            self.cs_mod._fernet = None
+            self.cs_mod._MASTER_KEY = None
         if self._orig_key is not None:
             os.environ["KUTAY_MASTER_KEY"] = self._orig_key
+        if self._orig_dev is None:
+            os.environ.pop("KUTAY_DEV_ALLOW_INSECURE_VAULT", None)
+        else:
+            os.environ["KUTAY_DEV_ALLOW_INSECURE_VAULT"] = self._orig_dev
 
-    def test_fallback_still_works(self):
-        """Without master key, encrypt/decrypt should still work (with warning)."""
+    def test_fallback_with_opt_in_works(self):
+        """With KUTAY_DEV_ALLOW_INSECURE_VAULT=1, base64 fallback works."""
         import warnings
+        os.environ["KUTAY_DEV_ALLOW_INSECURE_VAULT"] = "1"
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             original = '{"token": "test123"}'
             encrypted = self.cs_mod._encrypt(original)
             decrypted = self.cs_mod._decrypt(encrypted)
             self.assertEqual(decrypted, original)
-
-            # Check that a warning was issued (cryptography may or may not be present)
-            # If cryptography is installed, we expect a fallback warning
+            # Warning emitted on every call now (host+pid in message).
             if self.cs_mod._HAS_CRYPTOGRAPHY:
                 self.assertTrue(
-                    any("KUTAY_MASTER_KEY" in str(warning.message) for warning in w),
-                    "Expected a warning about missing KUTAY_MASTER_KEY"
+                    any("insecure base64 fallback" in str(warning.message)
+                        for warning in w),
+                    "Expected per-call insecure-fallback warning",
                 )
 
 

@@ -1,0 +1,24 @@
+// mobile_persistence v1 — Drizzle migrations bundle (expo-sqlite).
+//
+// This module is what `client.ts` imports and feeds to the Expo migrator:
+//   import migrationsBundle from "../migrations/migrations";
+//   await migrate(db, migrationsBundle);
+//
+// drizzle-kit (driver: "expo") REGENERATES this file on every
+// `npx drizzle-kit generate`. It is committed because the Metro bundler
+// cannot read raw `.sql` files at runtime — the SQL must be inlined into a
+// JS module. Do not hand-edit beyond the v1 baseline below; let drizzle-kit
+// own it once you start generating.
+//
+// The shape below matches what `drizzle-orm/expo-sqlite/migrator` expects:
+// a `journal` (ordered migration index) plus a `migrations` map keyed by tag.
+
+import journal from "./meta/_journal.json";
+import m0000 from "./0000_initial.sql";
+
+export default {
+  journal,
+  migrations: {
+    m0000,
+  },
+};

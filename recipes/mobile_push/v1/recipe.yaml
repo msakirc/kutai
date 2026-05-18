@@ -1,0 +1,42 @@
+name: mobile_push
+version: v1
+kind: mobile_push
+description: "Expo hosted push notifications — expo-notifications permission flow, push-token registration, and a FastAPI backend send stub against the Expo push API."
+requires:
+  tech_stack:
+    - "fastapi+sqlite+expo"
+    - "fastapi+postgres+expo"
+    - "expo"
+features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - test_run
+  - pattern_lint
+templates:
+  client: client.template.ts
+  backend: backend.template.py
+  smoke_flow: flows/push_smoke.flow.yaml
+  tests: tests/
+prompts:
+  expo: prompts/expo.md
+lessons_domain: mobile_push
+dependencies:
+  backend:
+    - fastapi
+    - httpx
+  frontend:
+    - expo-notifications
+    - expo-device
+    - expo-constants
+param_defaults:
+  EXPO_PUSH_API: "https://exp.host/--/api/v2/push/send"
+  ANDROID_CHANNEL_ID: "default"
+  NOTIFICATION_PERMISSION_RATIONALE: "Enable notifications to get order and activity updates."
+  PUSH_TOKEN_ENDPOINT: "/push/register"
+  APP_NAME: "MyApp"
+entry_points:
+  client_shim: client.template.ts
+  backend_send: backend.template.py
+  smoke_flow: flows/push_smoke.flow.yaml
+  smoke_tests: tests/backend_smoke.template.py

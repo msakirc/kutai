@@ -374,45 +374,48 @@ async def add_skill(
 # ─── Injection ───────────────────────────────────────────────────────────────
 
 
-async def find_relevant_skills(task_text: str, limit: int = 5) -> list[dict]:
-    """Find skills matching task via vector search, ranked by similarity + success rate.
+async def find_relevant_skills(
+    task_text: str, limit: int = 5, task: dict | None = None,
+) -> list[dict]:
+    """Thin shim over the yalayut Phase 2 envelope.
 
-    Workflow tasks ([X.Y] step ids) bypass this path entirely — coulson's
-    context build routes them to ``workflow_exemplars.lookup_exemplars``
-    instead. This function only runs for free-text / non-workflow tasks
-    against the seed catalogue.
+    Yalayut Phase 2 moved skill *matching* into the ``intersect``
+    component (orchestrator pump calls ``intersect.flash`` once per task
+    and attaches ``task["skills"]``). This function is kept only as a
+    back-compat shim for callers that have not migrated to reading the
+    envelope directly.
+
+    When ``task`` carries a ``skills`` envelope, the inject/execution
+    slice is returned mapped to the legacy skill-dict shape so
+    ``format_skills_for_prompt`` still renders it byte-identically. With
+    no envelope (or no task), returns [] — the old vector-search path is
+    retired; coulson now drives matching through intersect.
+
+    Deleted once coulson fully owns envelope rendering.
     """
-    try:
-        vector_matches = await _vector_search_skills(task_text, top_k=limit * 2)
-        if not vector_matches:
-            return []
-
-        results = []
-        seen = set()
-        for vm in vector_matches:
-            skill_name = vm["skill_name"]
-            if skill_name in seen:
-                continue
-            seen.add(skill_name)
-
-            skill = await get_skill_by_name(skill_name)
-            if not skill:
-                continue
-
-            similarity = vm["similarity"]
-            rate = _injection_success_rate(skill)
-            match_score = similarity * 0.5 + rate * 0.5
-
-            skill["_match_score"] = match_score
-            skill["_similarity"] = similarity
-            results.append(skill)
-
-        results.sort(key=lambda s: s["_match_score"], reverse=True)
-        return results[:limit]
-
-    except Exception as exc:
-        logger.warning("find_relevant_skills failed: %s", exc)
+    if not task:
         return []
+    envelope = task.get("skills") or []
+    if not envelope:
+        return []
+    out: list[dict] = []
+    for app in envelope:
+        if app.get("exposure_class") != "inject":
+            continue
+        if app.get("applies_to") != "execution":
+            continue
+        payload = app.get("payload") or {}
+        out.append({
+            "name": app.get("name", "unknown"),
+            "description": (payload.get("body") or "").strip(),
+            "injection_count": 0,
+            "injection_success": 0,
+            "strategies": [],
+            "_match_score": float(app.get("confidence", 0.0) or 0.0),
+            "_similarity": float(app.get("confidence", 0.0) or 0.0),
+        })
+    out.sort(key=lambda s: s["_match_score"], reverse=True)
+    return out[:limit]
 
 
 def select_injection_depth(

@@ -1,0 +1,48 @@
+{
+  "step_id": "3.11",
+  "step_name": "requirements_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "requirements_spec_summary": {
+      "_schema_version": "1",
+      "functional_count": 14,
+      "non_functional_count": 6,
+      "every_requirement_has_acceptance_criteria": true,
+      "no_orphans": true,
+      "every_item_has_falsification_triple": false
+    },
+    "prd_final_summary": {
+      "_schema_version": "1",
+      "named_competitors_section": true,
+      "differentiation_clear": true
+    },
+    "non_goals": {
+      "_schema_version": "1",
+      "items": ["No mobile-app version."]
+    },
+    "functional_requirements_falsification_result": {
+      "_schema_version": "1",
+      "ok": false,
+      "checked": 14,
+      "missing": [
+        {"artifact": "functional_requirements", "item_id": "FR-007",
+         "missing_fields": ["risk_if_wrong"]},
+        {"artifact": "functional_requirements", "item_id": "FR-011",
+         "missing_fields": ["validation_method", "falsification_signal"]}
+      ],
+      "critical_underspecified": [
+        {"artifact": "functional_requirements", "item_id": "FR-003",
+         "validation_method": "users will tell us"}
+      ]
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "fail",
+    "issues": [
+      "FR-007 missing risk_if_wrong (Z1 P4)",
+      "FR-011 missing validation_method and falsification_signal (Z1 P4)",
+      "FR-003 risk_if_wrong=critical but validation_method is vague: 'users will tell us'"
+    ]
+  }
+}

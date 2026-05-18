@@ -1,0 +1,31 @@
+name: monitoring_kit_nextjs
+version: v1
+kind: monitoring_kit
+description: "Free-first observability kit for Next.js: /api/health route handler, env-gated Sentry browser+server error tracking, structured logging helper. No paid APM required — pairs with a free external uptime monitor."
+requires:
+  tech_stack:
+    - "nextjs"
+    - "react"
+    - "fastapi+sqlite+nextjs"
+    - "fastapi+postgres+nextjs"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  health: health.template.ts
+  observability: observability.template.ts
+  notes: notes.md
+prompts: {}
+lessons_domain: monitoring_kit
+dependencies:
+  backend: []
+  frontend:
+    - "@sentry/nextjs"
+param_defaults:
+  SENTRY_DSN_ENV: "NEXT_PUBLIC_SENTRY_DSN"
+  ENVIRONMENT_ENV: "NEXT_PUBLIC_APP_ENV"
+  HEALTH_ROUTE: "app/api/health/route.ts"
+entry_points:
+  health: health.template.ts
+  observability: observability.template.ts
+  notes: notes.md

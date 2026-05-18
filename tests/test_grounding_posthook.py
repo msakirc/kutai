@@ -17,7 +17,7 @@ import pytest
 
 # ── mr_roboto.check_grounding verb ──────────────────────────────────────────
 
-class TestMr. RobotoCheckGroundingVerb:
+class TestMrRobotoCheckGroundingVerb:
     def test_pass_when_writes_match_produces(self):
         from mr_roboto.check_grounding import check_grounding
         res = check_grounding(
@@ -80,7 +80,7 @@ class TestMr. RobotoCheckGroundingVerb:
 
 # ── mr_roboto.run dispatcher ────────────────────────────────────────────────
 
-class TestMr. RobotoRunDispatch:
+class TestMrRobotoRunDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_check_grounding_pass(self):
         from mr_roboto import run
@@ -199,15 +199,20 @@ class TestExpanderAutoWire:
         return json.loads(raw) if isinstance(raw, str) else raw or {}
 
     def test_grounding_prepended_when_produces_declared(self):
+        # `x.py` also triggers the Z2 imports_check guardrail; grounding
+        # still leads as the narration floor.
         step = self._step(produces=["x.py"], post_hooks=["verify_artifacts"])
         ctx = self._ctx(step)
-        assert ctx["post_hooks"] == ["grounding", "verify_artifacts"]
+        assert ctx["post_hooks"][0] == "grounding"
+        assert ctx["post_hooks"][-1] == "verify_artifacts"
+        assert "imports_check" in ctx["post_hooks"]
 
     def test_grounding_prepended_with_no_explicit_post_hooks(self):
         """produces alone is enough — even without explicit post_hooks."""
         step = self._step(produces=["x.py"])
         ctx = self._ctx(step)
-        assert ctx["post_hooks"] == ["grounding"]
+        assert ctx["post_hooks"][0] == "grounding"
+        assert "imports_check" in ctx["post_hooks"]
 
     def test_grounding_idempotent_when_already_listed(self):
         step = self._step(

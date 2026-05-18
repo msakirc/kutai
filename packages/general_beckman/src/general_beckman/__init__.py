@@ -34,7 +34,7 @@ async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: flo
 
     db = await get_db()
     cur = await db.execute(
-        "SELECT message_thread_id, context FROM missions WHERE id = ?",
+        "SELECT telegram_thread_id, context FROM missions WHERE id = ?",
         (mission_id,),
     )
     row = await cur.fetchone()
@@ -259,23 +259,50 @@ async def _ceiling_ok(task: dict, log) -> bool:
         return True  # Fail-open: don't block admission on unexpected errors.
 
 
-async def next_task():
+async def next_task(lane: str | None = None):
     """Admission loop: pick one ready task whose pool pressure clears its urgency threshold.
 
     Called by orchestrator on its pump cycle. Iterates top-K ready tasks
-    by urgency; for each, asks Fatih Hoca for a Pick, then gates on
+    by urgency *within the given admission lane*; for each, asks Fatih
+    Hoca for a Pick, then gates on
     ``snapshot.pressure_for(pick.model) >= threshold(urgency)``. First
     candidate to clear is claimed, tagged with ``preselected_pick``, and
     returned. Non-admitted candidates remain in the queue untouched.
+
+    Z8 T1B: ``lane`` (default ``LANE_ONESHOT``) selects between the
+    historical oneshot pool and the ongoing-mission pool. A lane-local
+    in-flight cap short-circuits the scan when reached so a lane can't
+    drown the other.
     """
     import os
     from general_beckman import queue as _queue
     from general_beckman.admission import compute_urgency
     from general_beckman.cron import fire_due
+    from general_beckman.lanes import (
+        LANE_ONESHOT, cap_for, count_in_flight,
+    )
+
+    if lane is None:
+        lane = LANE_ONESHOT
 
     top_k = int(os.environ.get("BECKMAN_TOP_K", "5"))
 
     await fire_due()
+
+    # Lane cap: reject early so the snapshot/Hoca scan is skipped when
+    # the lane is already saturated. Uses the shared db connection.
+    try:
+        from src.infra.db import get_db as _get_db
+        _conn = await _get_db()
+        _cap = await cap_for(lane)
+        _inflight = await count_in_flight(_conn, lane)
+        if _inflight >= _cap:
+            return None
+    except Exception:
+        # If the lane column hasn't migrated yet (pre-T1B DB), fall through
+        # — the lane filter on pick_ready_top_k will still work and the
+        # caller can keep dispatching from oneshot.
+        pass
 
     # One fresh snapshot per tick. Admission gates on snapshot.pressure_for(pick.model);
     # the in-flight list in the snapshot — pushed by the dispatcher — is the
@@ -359,7 +386,7 @@ async def next_task():
         except Exception as e:
             _log.debug(f"cloud state overlay failed: {e}")
 
-    candidates = await _queue.pick_ready_top_k(k=top_k)
+    candidates = await _queue.pick_ready_top_k(k=top_k, lane=lane)
 
     # Skip the entire scan if state hasn't changed since last tick and last
     # tick admitted nothing — result is deterministic. Mechanical tasks are
@@ -410,6 +437,41 @@ async def next_task():
 
         agent_type = task.get("agent_type") or ""
         difficulty = task.get("difficulty", 5)
+
+        # ── Z6 T1C: real-world bridge admission gate ─────────────────────
+        # If the task is flagged needs_real_tools, check that its vendor
+        # adapter, credentials, and (for irreversible+cost) founder cost
+        # ack are all in place. Missing prereqs emit founder_action rows
+        # and park the task in 'blocked_on_founder_action'. T1E's
+        # unblock_mission_if_clear flips it back to pending when the
+        # founder resolves the action(s).
+        try:
+            from general_beckman.z6_admission import check_z6_admission
+            _mid = task.get("mission_id")
+            if _mid is not None:
+                _z6 = await check_z6_admission(task, int(_mid))
+                if not _z6.admit:
+                    try:
+                        from src.infra.db import update_task as _ut
+                        await _ut(
+                            int(task["id"]),
+                            status="blocked_on_founder_action",
+                        )
+                    except Exception as _e:
+                        _log.warning(
+                            f"z6 admission: failed to park task "
+                            f"#{task['id']}: {_e}"
+                        )
+                    _log.info(
+                        f"z6 admission: task #{task['id']} BLOCKED "
+                        f"({_z6.reason}); "
+                        f"emitted={_z6.founder_actions_emitted}"
+                    )
+                    continue
+        except Exception as _e:
+            _log.debug(
+                f"z6 admission skipped #{task.get('id')}: {_e}"
+            )
 
         # Mechanical tasks have no LLM, no Hoca pick, no pressure gate.
         # Per design: mechanical is unbounded — local-only backpressure
@@ -546,6 +608,18 @@ async def next_task():
         task["preselected_pick"] = pick
         task["status"] = "processing"
 
+        # Z10 T2A: stamp estimated_cost_usd on the task. Pulls historical
+        # avg cost for (model, agent_type) or falls back to per-kind
+        # defaults. Best-effort — never blocks admission.
+        try:
+            from src.infra.db import estimate_task_cost, set_task_estimated_cost
+            _kind = task.get("agent_type")
+            _model_id = pick.model.name if pick and getattr(pick, "model", None) else None
+            _est = await estimate_task_cost(_model_id, _kind)
+            await set_task_estimated_cost(int(task["id"]), float(_est))
+        except Exception as _e:
+            _log.debug(f"admission: estimate_task_cost skipped #{task['id']}: {_e}")
+
         # Write selected_model into the in-memory context so the orchestrator
         # can forward it to dispatcher.dispatch() without a DB round-trip.
         # dispatcher.dispatch() reads it back as preselected_pick → skip re-select.
@@ -640,6 +714,14 @@ async def on_task_finished(task_id, result: dict = None) -> None:
         log.warning("on_task_finished: missing task", task_id=task_id)
         return
     task_ctx = parse_context(task)
+
+    # Z10 T2A: stamp actual_cost_usd from accumulated model_call_tokens.
+    # Run before route_result so downstream readers see the final number.
+    try:
+        from src.infra.db import finalize_task_actual_cost
+        await finalize_task_actual_cost(task_id)
+    except Exception as _e:
+        log.debug("finalize_task_actual_cost skipped", task_id=task_id, error=str(_e))
 
     # ── Z0: spent_usd accumulation + threshold notifies ───────────────────
     # Production path: cost comes from result dict.
@@ -752,17 +834,19 @@ async def on_task_finished(task_id, result: dict = None) -> None:
             await post_execute_workflow_step(task, result)
     except Exception as e:
         log.warning("post_execute_workflow_step raised", task_id=task_id, error=str(e))
-    actions = route_result(task, result)
-    if actions is None:
-        return
-    if not isinstance(actions, (list, tuple)):
-        actions = [actions]
-    actions = rewrite_actions(task, task_ctx, actions)
-    await apply_actions(task, actions)
-
     # ── Continuation hooks ────────────────────────────────────────────────
     # Dispatch on_complete handler, chain next_task_spec, and resolve any
     # await_inline waiter — all three are independent (do all that apply).
+    #
+    # MUST run BEFORE the `route_result is None` early-return below.
+    # raw_dispatch child tasks (LLM calls spawned via beckman.enqueue,
+    # e.g. grade_task's reviewer child) have route_result return None —
+    # they carry no workflow routing. With the hook block placed after the
+    # early-return, the parent's inline-waiter future was never resolved,
+    # the child completed silently, and the parent blocked the full
+    # INLINE_TIMEOUT (600s) then DLQ'd. Production 2026-05-15 mission 69:
+    # grader tasks #31203/#31204/#35460 timed out while 10 reviewer
+    # children all completed cleanly.
     try:
         import json as _json
         _beckman_sub = (task_ctx or {}).get("beckman") or {}
@@ -787,6 +871,14 @@ async def on_task_finished(task_id, result: dict = None) -> None:
             resolve_inline(task_id, _tr)
     except Exception as _ce:
         log.debug("continuation hook failed", task_id=task_id, error=str(_ce))
+
+    actions = route_result(task, result)
+    if actions is None:
+        return
+    if not isinstance(actions, (list, tuple)):
+        actions = [actions]
+    actions = rewrite_actions(task, task_ctx, actions)
+    await apply_actions(task, actions)
 
     # Progress ping: terse per-step notification for workflow-step tasks so
     # the user sees a mission moving forward rather than 2+ minutes of
@@ -919,6 +1011,7 @@ async def enqueue(
     await_inline: bool = False,
     on_complete: str | None = None,
     next_task_spec: dict | None = None,
+    lane: str | None = None,
 ) -> "int | TaskResult":
     """Single external write path for all Beckman tasks.
 
@@ -942,11 +1035,23 @@ async def enqueue(
     import json as _json
     from src.infra.db import add_task
     from general_beckman.queue_profile_push import build_and_push
+    from general_beckman.lanes import pick_lane
 
     spec = dict(spec)  # shallow copy — don't mutate caller's dict
 
     # ── kind ──────────────────────────────────────────────────────────────
     kind = spec.pop("kind", "main_work")
+
+    # ── lane ──────────────────────────────────────────────────────────────
+    # Z8 T1B: explicit ``lane=`` overrides; otherwise derive from
+    # agent_type via ``pick_lane``. spec.lane (rare) wins last so an
+    # in-spec value is respected.
+    if "lane" in spec:
+        _lane = spec.pop("lane")
+    elif lane is not None:
+        _lane = lane
+    else:
+        _lane = pick_lane(spec.get("agent_type"))
 
     # ── parent_id ─────────────────────────────────────────────────────────
     if parent_id is not None:
@@ -973,17 +1078,33 @@ async def enqueue(
         ctx["beckman"] = beckman_sub
         spec["context"] = ctx  # add_task will json.dumps() it
 
-    task_id = await add_task(**spec, kind=kind)
+    task_id = await add_task(**spec, kind=kind, lane=_lane)
     await build_and_push()
 
     if not await_inline:
         return task_id
 
     # ── inline-wait path ───────────────────────────────────────────────────
+    # Keep the PARENT task's heartbeat fresh while we wait on the child.
+    # The child's runner sets the heartbeat contextvar to the child id,
+    # so the parent goes silent and the orchestrator's no-progress watchdog
+    # kills it at 300s even though work is happening. Wrap every inline
+    # wait — grade_task and other beckman.enqueue(await_inline=True)
+    # callers all suffered from this; only dispatcher.request had its own
+    # wrapper (production 2026-05-14 mission 69 grader task #31203:
+    # 6× watchdog kills × 5 min = 30 min wasted before DLQ).
+    try:
+        from src.core import heartbeat as _hb_inline
+        _inline_keepalive_cm = _hb_inline.keepalive
+    except Exception:
+        _inline_keepalive_cm = None
     loop = asyncio.get_event_loop()
     fut: asyncio.Future[TaskResult] = loop.create_future()
     _inline_waiters[task_id] = fut
     try:
+        if _inline_keepalive_cm is not None:
+            async with _inline_keepalive_cm():
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
         return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
     except asyncio.TimeoutError:
         _inline_waiters.pop(task_id, None)

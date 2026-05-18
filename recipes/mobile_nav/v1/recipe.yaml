@@ -1,0 +1,42 @@
+name: mobile_nav
+version: v1
+description: "Expo Router file-based navigation — root stack + nested bottom tabs, typed routes, deep-link config, auth-gated route group"
+requires:
+  tech_stack:
+    - "fastapi+sqlite+expo"
+    - "fastapi+postgres+expo"
+    - "expo"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - test_run
+  - pattern_lint
+templates:
+  frontend: frontend/
+  tests: tests/
+prompts:
+  expo: prompts/expo.md
+lessons_domain: mobile_nav
+dependencies:
+  backend: []
+  frontend:
+    - expo
+    - expo-router
+    - react-native-safe-area-context
+    - react-native-screens
+param_defaults:
+  APP_NAME: "MyApp"
+  APP_SCHEME: "myapp"
+  SIGN_IN_ROUTE: "/(auth)/sign-in"
+  HOME_TAB_TITLE: "Home"
+  EXPLORE_TAB_TITLE: "Explore"
+  PROFILE_TAB_TITLE: "Profile"
+  INITIAL_TAB: "index"
+  DEEP_LINK_HOST: "app"
+entry_points:
+  frontend_components: frontend/
+  root_layout: frontend/app/_layout.tsx
+  tab_layout: frontend/app/(tabs)/_layout.tsx
+  routes_helper: frontend/lib/routes.ts
+  smoke_tests: tests/tab_layout.test.template.tsx

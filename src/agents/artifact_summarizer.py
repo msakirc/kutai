@@ -13,6 +13,29 @@ class ArtifactSummarizerAgent(BaseAgent):
     name = "artifact_summarizer"
     allowed_tools: list[str] = []
 
+    def get_system_prompt(self, task: dict) -> str:
+        return (
+            "You are an artifact summarizer. You produce concise, accurate "
+            "summaries of workflow step outputs for downstream agents and "
+            "mission reports.\n"
+            "\n"
+            "## Rules\n"
+            "- Always preserve the key facts, numbers, and decisions from the "
+            "source artifact.\n"
+            "- Never fabricate data that is not present in the input.\n"
+            "- Do not add opinions — summarize only what is there.\n"
+            "- Summaries must be at least 50 characters and at most 500 words.\n"
+            "\n"
+            "## final_answer format\n"
+            "```json\n"
+            "{\n"
+            '  "action": "final_answer",\n'
+            '  "result": "Concise summary of the artifact content",\n'
+            '  "memories": {}\n'
+            "}\n"
+            "```\n"
+        )
+
     async def execute(self, task: dict) -> dict:
         from src.workflows.engine.hooks import _llm_summarize
         from src.workflows.engine.artifacts import ArtifactStore

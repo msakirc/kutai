@@ -1,0 +1,94 @@
+{
+  "service_name": "posthog",
+  "base_url": "https://us.posthog.com",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "api_key",
+  "webhook_secret": "${POSTHOG_WEBHOOK_SECRET}",
+  "actions": {
+    "query_events": {
+      "method": "GET",
+      "path": "/api/projects/{project_id}/events/",
+      "required_params": ["project_id"]
+    },
+    "query_funnel": {
+      "method": "POST",
+      "path": "/api/projects/{project_id}/insights/funnel/",
+      "required_params": ["project_id"]
+    },
+    "query_retention": {
+      "method": "GET",
+      "path": "/api/projects/{project_id}/insights/retention/",
+      "required_params": ["project_id"]
+    },
+    "list_cohorts": {
+      "method": "GET",
+      "path": "/api/projects/{project_id}/cohorts/",
+      "required_params": ["project_id"]
+    },
+    "get_insight": {
+      "method": "GET",
+      "path": "/api/projects/{project_id}/insights/{insight_id}/",
+      "required_params": ["project_id", "insight_id"]
+    },
+    "create_feature_flag": {
+      "method": "POST",
+      "path": "/api/projects/{project_id}/feature_flags/",
+      "required_params": ["project_id", "key"]
+    },
+    "update_feature_flag": {
+      "method": "PATCH",
+      "path": "/api/projects/{project_id}/feature_flags/{flag_id}/",
+      "required_params": ["project_id", "flag_id"]
+    },
+    "get_active_users": {
+      "method": "GET",
+      "path": "/api/projects/{project_id}/insights/trend/",
+      "required_params": ["project_id"]
+    }
+  },
+  "mock_responses": {
+    "query_events": {
+      "results": [
+        {"id": "evt_mock_1", "event": "signup_completed", "timestamp": "2026-05-14T09:00:00Z", "properties": {"segment": "new_signups"}},
+        {"id": "evt_mock_2", "event": "first_value_event", "timestamp": "2026-05-14T09:05:00Z", "properties": {"segment": "new_signups"}},
+        {"id": "evt_mock_3", "event": "checkout_completed", "timestamp": "2026-05-14T11:30:00Z", "properties": {"segment": "paid_users"}}
+      ],
+      "next": null
+    },
+    "query_funnel": {
+      "result": [
+        {"name": "signup_started", "count": 100, "order": 0},
+        {"name": "signup_completed", "count": 62, "order": 1},
+        {"name": "first_value_event", "count": 41, "order": 2}
+      ]
+    },
+    "query_retention": {
+      "result": [
+        {"date": "2026-05-07", "cohort_size": 50, "values": [50, 31, 22, 18, 15, 14, 13]}
+      ]
+    },
+    "list_cohorts": {
+      "results": [
+        {"id": 1, "name": "new_signups", "count": 120},
+        {"id": 2, "name": "paid_users", "count": 38}
+      ]
+    },
+    "get_insight": {
+      "id": 1, "name": "Mock Insight", "result": [{"label": "metric", "data": [10, 12, 15, 14]}]
+    },
+    "create_feature_flag": {
+      "id": 7001, "key": "mock_experiment_flag", "active": true,
+      "filters": {"multivariate": {"variants": [
+        {"key": "control", "rollout_percentage": 50},
+        {"key": "treatment", "rollout_percentage": 50}
+      ]}}
+    },
+    "update_feature_flag": {
+      "id": 7001, "key": "mock_experiment_flag", "active": true
+    },
+    "get_active_users": {
+      "result": [{"label": "Active users", "data": [240, 248, 252, 250], "count": 250}]
+    }
+  }
+}

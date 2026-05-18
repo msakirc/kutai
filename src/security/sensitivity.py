@@ -177,6 +177,127 @@ def redact_secrets(text: str, placeholder: str = "[REDACTED]") -> str:
     return result
 
 
+# ─── User PII Redaction ────────────────────────────────────────────────────
+#
+# Z9 T3A — external product signals (support tickets, error reports, analytics
+# events) arrive carrying raw end-user PII. ``redact_user_pii`` strips that
+# class of data before a signal is persisted to ``growth_events``.
+#
+# Scope is deliberately narrower than ``redact_secrets``: it targets
+# *user-identifying* data (emails, IPs, street addresses, phone numbers) and
+# explicitly leaves UUIDs alone — those are commonly non-sensitive object IDs
+# (event ids, ticket ids) that downstream classifiers (T3B) still need.
+
+# IPv4: four dotted octets, each 0-255.
+_PII_IPV4 = (
+    r'\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}'
+    r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b'
+)
+# IPv6: full form, or compressed ``::`` forms (head and/or tail groups). The
+# ``::`` alternative is listed first and allows hex groups on BOTH sides so a
+# compressed address like ``2001:db8::ff00:42:8329`` is matched as one span.
+# Requires >=2 colons overall so a lone ``a:b`` is not mistaken for an address.
+_PII_IPV6 = (
+    r'(?<![:.\w])'
+    r'(?:'
+    r'(?:[A-Fa-f0-9]{1,4}:){1,7}:(?:[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{1,4}){0,6})?'
+    r'|::(?:[A-Fa-f0-9]{1,4}:){0,6}[A-Fa-f0-9]{1,4}'
+    r'|(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}'
+    r')'
+    r'(?![:.\w])'
+)
+# Phone: international + grouped national forms. Requires 7+ digits total so a
+# bare year or short number is not redacted.
+_PII_PHONE = (
+    r'(?<![\w.])\+?\d[\d().\-\s]{7,}\d(?![\w])'
+)
+# Street address: a street number followed by words then a street suffix.
+_PII_ADDRESS = (
+    r'\b\d{1,5}\s+(?:[A-Za-z0-9.\'-]+\s+){0,4}'
+    r'(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|'
+    r'Court|Ct|Way|Place|Pl|Terrace|Ter|Circle|Cir|Square|Sq|Highway|Hwy|'
+    r'Parkway|Pkwy)\b\.?'
+)
+
+# UUID shape — 8-4-4-4-12 hex. NOT redacted (often non-sensitive object IDs);
+# also used to shield UUIDs from the broad phone-number matcher, since an
+# all-numeric UUID otherwise reads as a digit run with dash separators.
+_PII_UUID = re.compile(
+    r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+    r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
+)
+
+# Order matters: addresses (contain digits) and phones overlap with raw digit
+# runs — match the more specific patterns first.
+_USER_PII_PATTERNS: list[tuple[str, str, int]] = [
+    (_EMAIL_PATTERNS[0][0], "Email address", 0),
+    (_PII_IPV4, "IPv4 address", 0),
+    (_PII_IPV6, "IPv6 address", 0),
+    (_PII_ADDRESS, "Street address", re.IGNORECASE),
+    (_PII_PHONE, "Phone number", 0),
+]
+
+_USER_PII_COMPILED: list[tuple[re.Pattern, str]] = []
+
+
+def _build_user_pii_patterns() -> list[tuple[re.Pattern, str]]:
+    """Compile user-PII patterns once for reuse."""
+    if _USER_PII_COMPILED:
+        return _USER_PII_COMPILED
+    for pattern_str, desc, flags in _USER_PII_PATTERNS:
+        _USER_PII_COMPILED.append((re.compile(pattern_str, flags), desc))
+    return _USER_PII_COMPILED
+
+
+def _redact_user_pii_text(text: str, placeholder: str) -> str:
+    """Redact user-PII patterns from a single string.
+
+    UUIDs are masked with a sentinel before redaction and restored after, so
+    an all-numeric UUID is never swallowed by the broad phone-number matcher.
+    """
+    # Shield UUIDs from the phone/digit-run matchers.
+    uuids: list[str] = []
+
+    def _stash(m: re.Match) -> str:
+        uuids.append(m.group(0))
+        return f"\x00UUID{len(uuids) - 1}\x00"
+
+    result = _PII_UUID.sub(_stash, text)
+    for compiled, _desc in _build_user_pii_patterns():
+        result = compiled.sub(placeholder, result)
+    # Restore the shielded UUIDs verbatim.
+    for i, original in enumerate(uuids):
+        result = result.replace(f"\x00UUID{i}\x00", original)
+    return result
+
+
+def redact_user_pii(value, placeholder: str = "[PII]"):
+    """Strip user PII (emails, IPs, street addresses, phone numbers) from text.
+
+    Z9 T3A — applied to external product signals before persistence.
+
+    ``value`` may be a ``str``, ``dict``, or ``list`` — the function returns a
+    redacted copy of the same shape (dicts/lists recursed; keys left intact).
+    Non-string scalars (int/float/bool/None) pass through untouched. UUIDs are
+    deliberately NOT redacted — they are commonly non-sensitive object IDs.
+
+    Composable with ``redact_secrets``: ``redact_user_pii(redact_secrets(x))``
+    yields a payload with both secrets and user-PII stripped.
+    """
+    if value is None:
+        return value
+    if isinstance(value, str):
+        if not value:
+            return value
+        return _redact_user_pii_text(value, placeholder)
+    if isinstance(value, dict):
+        return {k: redact_user_pii(v, placeholder) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        redacted = [redact_user_pii(v, placeholder) for v in value]
+        return type(value)(redacted) if isinstance(value, tuple) else redacted
+    return value
+
+
 def scan_task(
     title: str,
     description: str,

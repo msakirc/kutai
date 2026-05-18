@@ -1,0 +1,23 @@
+{
+  "step_id": "1.13",
+  "step_name": "research_quality_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "market_research_report": {
+      "_schema_version": "1",
+      "summary": "Big market. We will win.",
+      "citations": [],
+      "feature_matrix_complete": false,
+      "gap_analysis_present": false
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "verdict": "fail",
+    "issues": [
+      "claims without evidence: market size unsourced",
+      "feature_matrix incomplete",
+      "gap analysis missing"
+    ]
+  }
+}

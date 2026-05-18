@@ -1,0 +1,107 @@
+{
+  "plan_id": "incident_comms",
+  "version": "1.0",
+  "metadata": {
+    "description": "B3 incident comms mission: open incident → draft customer-facing updates → founder review → publish → resolve → auto-draft postmortem. Triggered when oncall alert has customer_impacting:true, or via /incident open.",
+    "agents_required": ["assistant", "mechanical"],
+    "trigger": "oncall_alert.customer_impacting == true  OR  /incident open Telegram command",
+    "product_scoping": "product_id required; all rows scoped per-product"
+  },
+  "phases": [
+    {
+      "phase_id": "open",
+      "description": "Open the incident and record initial details.",
+      "steps": [
+        {
+          "step_id": "1.open_incident",
+          "agent": "mechanical",
+          "title": "Open incident record",
+          "description": "Insert a row into incidents with severity, affected_components_json, and initial customer_impact_summary. Sets opened_at = now, resolved_at = NULL.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "run_cmd",
+            "cmd": "echo 'Incident opened by B3 mission via SQL (handled by orchestrator)'"
+          },
+          "tools_hint": "DB insert into incidents table via init_db migration. Caller passes incident_id forward.",
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "comms_loop",
+      "description": "Iterative customer comms: draft → founder review → publish. Repeat until resolved.",
+      "steps": [
+        {
+          "step_id": "2.draft_update",
+          "agent": "mechanical",
+          "title": "Draft customer-facing status update + founder-review gate",
+          "description": "Call incident/draft_update with the internal alert details. Redacts hostnames, stack traces, and PII. Returns draft text for founder review. The incident_update_review post-hook fires automatically on completion: it carries the drafted text into a founder_action so the founder reviews BEFORE 2.publish runs. NOTE: max 4hr SLA — if founder unavailable >4h, B6 crisis playbook escalation applies (TODO: wire SLA timer when B6 T3E lands).",
+          "executor": "mechanical",
+          "payload": {
+            "action": "incident/draft_update"
+          },
+          "post_hooks": ["incident_update_review"],
+          "tools_hint": "mr_roboto verb: incident/draft_update. Payload: incident_id, product_id, alert_details (dict), status_kind. The incident_update_review post-hook gates 2.publish on founder approval.",
+          "produces": []
+        },
+        {
+          "step_id": "2.publish",
+          "agent": "mechanical",
+          "title": "Publish approved status update",
+          "description": "Call incident/publish_status with the founder-approved text. Inserts status_updates row, updates incidents.current_status_md, busts /status page cache.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "incident/publish_status"
+          },
+          "tools_hint": "mr_roboto verb: incident/publish_status. Payload: incident_id, product_id, body_md, status_kind, founder_action_id.",
+          "produces": []
+        }
+      ]
+    },
+    {
+      "phase_id": "resolve",
+      "description": "Resolve the incident and auto-draft postmortem.",
+      "steps": [
+        {
+          "step_id": "3.resolve_publish",
+          "agent": "mechanical",
+          "title": "Publish resolved status update",
+          "description": "Publish final status update with status_kind='resolved'. Sets incidents.resolved_at = now.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "incident/publish_status",
+            "status_kind": "resolved"
+          },
+          "tools_hint": "Same as 2.publish but status_kind=resolved. Sets resolved_at on the incidents row.",
+          "produces": []
+        },
+        {
+          "step_id": "3.draft_postmortem",
+          "agent": "mechanical",
+          "title": "Auto-draft postmortem template",
+          "description": "Call incident/draft_postmortem. Writes a markdown template with the incident timeline, customer updates, and placeholder sections (root cause, contributing factors, action items). Emits a founder_action requesting publication within 7 days.",
+          "executor": "mechanical",
+          "payload": {
+            "action": "incident/draft_postmortem"
+          },
+          "tools_hint": "mr_roboto verb: incident/draft_postmortem. Payload: incident_id, product_id, workspace_path (optional), mission_id.",
+          "produces": ["data/incidents/{product_id}/postmortem_incident_{incident_id}.md"]
+        }
+      ]
+    }
+  ],
+  "trigger_mapping": {
+    "oncall_alert": {
+      "condition": "payload.customer_impacting == true",
+      "auto_spawn": true,
+      "initial_status_kind": "investigating",
+      "initial_severity": "payload.severity OR 'minor'"
+    },
+    "manual": {
+      "telegram_command": "/incident open",
+      "description": "Founder opens incident manually via Telegram.",
+      "initial_status_kind": "investigating",
+      "prompts_for": ["product_id", "severity", "affected_components", "customer_impact_summary"]
+    }
+  }
+}

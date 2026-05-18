@@ -1,0 +1,11 @@
+{
+  "_schema_version": "1",
+  "mission_id": 101,
+  "primary_content_type": "fact_primary",
+  "primary_content_type_rationale": "Charter solutions revolve around delivering verifiable claims with source attribution; UI must lead with the fact, not the conversation around it.",
+  "secondary_emphasis": ["community_primary"],
+  "tone_keywords": ["clinical", "minimal", "trustworthy"],
+  "tone_rationale": "Brand keywords (truth, accuracy, no-spin) demand a sober, low-ornament voice.",
+  "key_visual_priorities": ["readability", "trust-cues", "speed"],
+  "anti_emphasis": ["not gamified", "not ornamental", "not playful"]
+}

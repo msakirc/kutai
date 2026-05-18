@@ -1,0 +1,24 @@
+name: cc-pypackage
+name_original: cookiecutter-pypackage
+version: 1.0.0
+artifact_type: skill
+kind: shell_recipe
+source: github:audreyfeldroy/cookiecutter-pypackage
+owner: audreyfeldroy
+license: BSD-3-Clause
+mechanizable: true
+applies_to: execution
+intent_keywords: [python-package, pypi, library, packaging, scaffold]
+inputs_schema:
+  project_name:
+    type: string
+    bind_from: [task.payload.project_name, task.title]
+  full_name:
+    type: string
+    bind_from: [task.payload.author_name]
+    default: KutAI
+invocation:
+  steps:
+    - cmd: "uvx cookiecutter --no-input gh:audreyfeldroy/cookiecutter-pypackage project_name={project_name} full_name={full_name}"
+artifacts: [setup.py, pyproject.toml, README.rst]
+disabled_imports_check: true

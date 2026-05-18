@@ -36,7 +36,7 @@ _URL_FIELD_CANDIDATES = ("url", "staging_url", "deploy_url", "preview_url")
 
 async def _load_artifact(mission_id: int, name: str) -> dict | None:
     try:
-        from src.workflows.engine.artifacts import get_artifact_store
+        from src.workflows.engine.hooks import get_artifact_store
         store = get_artifact_store()
         raw = await store.retrieve(mission_id, name)
         if isinstance(raw, dict):

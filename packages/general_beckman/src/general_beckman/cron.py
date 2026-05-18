@@ -42,6 +42,14 @@ async def fire_due() -> None:
                 await _nerd_herd_health_alert()
             elif marker == "btable_rollup":
                 await _btable_rollup()
+            elif marker == "file_locks_sweep":
+                await _file_locks_sweep()
+            elif marker == "mission_budget_alerts":
+                await _mission_budget_alerts()
+            elif marker == "mission_pacing_check":
+                await _mission_pacing_check()
+            elif marker == "confidence_calibration_recompute":
+                await _confidence_calibration_recompute()
             else:
                 await _insert_scheduled_task(row, payload)
             await _advance_schedule(row, now)
@@ -116,6 +124,75 @@ async def _refresh_benchmarks_if_stale() -> None:
             await hoca()
     except Exception as e:
         logger.debug("hoca benchmark refresh skipped", error=str(e))
+
+
+async def _file_locks_sweep() -> None:
+    """Z10 T1A — release orphan file_locks rows.
+
+    Defensive: file_locks lives in src.infra.db, which is the same DB this
+    cron pump talks to. Failures are logged at warning, never crash the
+    pump.
+    """
+    try:
+        from src.infra.db import sweep_file_locks
+        n = await sweep_file_locks()
+        if n:
+            logger.info("file_locks_sweep released orphans", count=n)
+    except Exception as e:
+        logger.warning("file_locks_sweep failed", error=str(e))
+
+
+async def _mission_budget_alerts() -> None:
+    """Z10 T2A — write mission_budget_alerts rows at threshold breaches.
+
+    Idempotent via UNIQUE(mission_id, threshold). T2B drains.
+    """
+    try:
+        from src.infra.db import check_and_write_mission_budget_alerts
+        n = await check_and_write_mission_budget_alerts()
+        if n:
+            logger.info("mission_budget_alerts wrote rows", count=n)
+    except Exception as e:
+        logger.warning("mission_budget_alerts failed", error=str(e))
+
+
+async def _mission_pacing_check() -> None:
+    """Z10 T3A — pacing tradeoff prompt at 75% burn + 25% scope remaining.
+
+    For every mission with status in {active, processing} and a non-NULL
+    ``time_budget_hours``, compute pacing. If ``tradeoff_due`` is True
+    and no row exists for ``(mission_id, today)`` in
+    ``mission_tradeoff_prompts``, build a 30%-cut suggestion and post
+    a single ``[asking]`` event via ``post_event``. UNIQUE index keeps
+    it idempotent across cron ticks.
+    """
+    try:
+        from src.infra.mission_pacing_cron import check_and_post_tradeoff_prompts
+        n = await check_and_post_tradeoff_prompts()
+        if n:
+            logger.info("mission_pacing_check posted prompts", count=n)
+    except Exception as e:
+        logger.warning("mission_pacing_check failed", error=str(e))
+
+
+async def _confidence_calibration_recompute() -> None:
+    """Z10 T4B — aggregate confidence_outcomes → reliability_scores.
+
+    After the rollup, push the matrix into the coulson prompt-builder
+    cache so freshly-tuned scores influence the next prompt assembly
+    without waiting for a process restart.
+    """
+    try:
+        from src.infra.db import recompute_reliability_scores
+        n = await recompute_reliability_scores()
+        logger.info("confidence_calibration_recompute wrote rows", rows=n)
+        try:
+            from coulson.context import refresh_calibration_cache
+            await refresh_calibration_cache()
+        except Exception as e:
+            logger.debug("calibration cache refresh failed", error=str(e))
+    except Exception as e:
+        logger.warning("confidence_calibration_recompute failed", error=str(e))
 
 
 async def _btable_rollup() -> None:

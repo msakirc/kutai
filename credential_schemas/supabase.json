@@ -1,0 +1,10 @@
+{
+  "service_name": "supabase",
+  "required_fields": ["service_role_key", "project_ref"],
+  "optional_fields": ["anon_key", "db_password"],
+  "scopes": ["read_only", "read_write", "admin"],
+  "default_scope": "read_write",
+  "rotation_recommended_days": 90,
+  "test_endpoint": { "action": "list_projects", "expect_status": 200 },
+  "docs_url": "https://supabase.com/docs/guides/api/api-keys"
+}

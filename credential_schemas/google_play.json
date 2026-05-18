@@ -1,0 +1,15 @@
+{
+  "service_name": "google_play",
+  "required_fields": ["service_account_json"],
+  "optional_fields": ["package_name", "default_track", "scopes"],
+  "scopes": ["read_only", "read_write"],
+  "default_scope": "read_write",
+  "rotation_recommended_days": 180,
+  "test_endpoint": { "action": "list_apps", "expect_status": 200 },
+  "docs_url": "https://developers.google.com/android-publisher/getting_started",
+  "enrollment_notes": [
+    "Google Play Console developer account is one-way: KYC + $25 one-time fee.",
+    "Create a service account in Google Cloud Console, grant it Play Developer API access.",
+    "Download the service account JSON key and paste the entire object into service_account_json."
+  ]
+}

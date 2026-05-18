@@ -1065,6 +1065,36 @@ async def should_skip_workflow_step(task: dict) -> tuple[bool, str]:
     op = m.group(3)
     literal = m.group(4)
 
+    # Z1 Tier 1: support ``mission.<column>`` form so legacy-flag gates
+    # (``mission.legacy_pre_charter == '1'``) skip new-shape steps for
+    # missions backfilled by the migration. The column is read directly
+    # off the missions row — no blackboard round-trip.
+    if artifact_name == "mission" and len(path) == 1:
+        col = path[0]
+        try:
+            from src.infra.db import get_db as _get_db
+            _db = await _get_db()
+            _cur = await _db.execute(
+                f"SELECT {col} FROM missions WHERE id = ?", (mission_id,),
+            )
+            _row = await _cur.fetchone()
+            await _cur.close()
+        except Exception as exc:
+            logger.debug(
+                f"[Workflow Hook] skip_when mission.{col} lookup failed: {exc}"
+            )
+            return False, ""
+        current = None if (_row is None) else _row[0]
+        # Coerce both sides to strings so the SQLite int column compares
+        # cleanly against the literal in the workflow JSON.
+        cur_s = "" if current is None else str(current)
+        matched = (op == "==" and cur_s == literal) or (
+            op == "!=" and cur_s != literal
+        )
+        if matched:
+            return True, f"mission.{col} {op} {literal!r}"
+        return False, ""
+
     try:
         store = get_artifact_store()
         raw_artifact = await store.retrieve(mission_id, artifact_name)
@@ -1216,10 +1246,45 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             import os
             from ...tools.workspace import WORKSPACE_DIR
             artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+            # Build candidate paths from BOTH the legacy `<output>.<ext>`
+            # convention AND the step's declared `produces` list (which
+            # may include subdirs like `.charter/`, `.intake/`). Without
+            # the produces-derived candidates, a step that writes to
+            # `.charter/product_charter.md` is never found by the
+            # `mission_<id>/product_charter.md` probe, and result-only
+            # validation runs against whatever the agent emitted on retry
+            # (production 2026-05-14 mission 69 step 0.1: full charter on
+            # disk at .charter/ subdir, result was a short blurb, schema
+            # validation said all 5 sections missing).
+            _produces = ctx.get("produces") or []
             file_parts = []
+            _seen_paths: set[str] = set()
+            for entry in _produces:
+                if isinstance(entry, str) and entry:
+                    rel = entry
+                    abs_p = rel if os.path.isabs(rel) else os.path.join(WORKSPACE_DIR, rel)
+                    if abs_p in _seen_paths:
+                        continue
+                    _seen_paths.add(abs_p)
+                    if os.path.isfile(abs_p):
+                        try:
+                            with open(abs_p, "r", encoding="utf-8") as f:
+                                fc = f.read()
+                            fc = _unwrap_envelope(fc)
+                            if len(fc) > 100:
+                                file_parts.append(fc)
+                                logger.info(
+                                    f"[Workflow Hook] Found produces "
+                                    f"'{rel}' ({len(fc)} chars)"
+                                )
+                        except OSError:
+                            pass
             for name in output_names:
                 for ext in (".json", ".md", ".txt"):
                     fpath = os.path.join(artifact_dir, f"{name}{ext}")
+                    if fpath in _seen_paths:
+                        continue
+                    _seen_paths.add(fpath)
                     if os.path.isfile(fpath):
                         with open(fpath, "r", encoding="utf-8") as f:
                             file_content = f.read()
@@ -1282,6 +1347,44 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 current_ok = bool(output_value) and _parses_ok(output_value)
                 if not current_ok and _parses_ok(best_file):
                     output_value = best_file
+                else:
+                    # Markdown schemas — JSON-parse gate is meaningless.
+                    # Adopt the workspace file when it is materially longer
+                    # than the result AND contains required-section markers
+                    # the result is missing. Keeps the JSON-truncation guard
+                    # above for JSON schemas while letting markdown
+                    # validation see the on-disk artifact.
+                    _schema = ctx.get("artifact_schema") or {}
+                    _markdown_schema = None
+                    if isinstance(_schema, dict):
+                        for _v in _schema.values():
+                            if isinstance(_v, dict) and _v.get("type") == "markdown":
+                                _markdown_schema = _v
+                                break
+                    if _markdown_schema is not None:
+                        _req_sections = _markdown_schema.get("required_sections") or []
+                        def _has_all_sections(text: str) -> bool:
+                            tl = (text or "").lower()
+                            for s in _req_sections:
+                                sl = s.lower()
+                                if not (
+                                    f"# {sl}" in tl
+                                    or f"**{sl}**" in tl
+                                    or f"\n{sl}\n" in tl
+                                ):
+                                    return False
+                            return bool(_req_sections)
+                        if (
+                            len(best_file) > max(500, len(output_value or "") * 2)
+                            and _has_all_sections(best_file)
+                            and not _has_all_sections(output_value or "")
+                        ):
+                            logger.info(
+                                "[Workflow Hook] Adopted workspace markdown artifact "
+                                f"({len(best_file)} chars) over short result "
+                                f"({len(output_value or '')} chars) for schema validation"
+                            )
+                            output_value = best_file
         except Exception as e:
             logger.debug(f"[Workflow Hook] Workspace artifact recovery failed: {e}")
 
@@ -1290,6 +1393,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     if output_value and _is_disguised_failure(output_value):
         result["status"] = "failed"
         result["error"] = "Agent reported completion but output indicates failure"
+        result["error_category"] = "quality"  # deterministic — retry immediately
         logger.warning(
             f"[Workflow Hook] Step '{step_id}' detected as disguised failure — "
             f"overriding to failed for retry"
@@ -1305,6 +1409,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
         if cq.is_degenerate:
             result["status"] = "failed"
             result["error"] = f"Degenerate content rejected: {cq.summary}"
+            result["error_category"] = "quality"  # deterministic — retry immediately
             logger.warning(
                 f"[Workflow Hook] Step '{step_id}' output rejected: "
                 f"{cq.summary} ({len(output_value)} chars)"
@@ -1497,8 +1602,18 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 logger.debug(f"[Workflow Hook] Could not update task context: {e}")
             # Signal failure — the unified retry/DLQ path in the orchestrator
             # decides whether to retry, delay, or give up.
+            # error_category="quality": schema validation is deterministic —
+            # same input + same model reproduces the failure. beckman's
+            # decide_retry fires quality retries IMMEDIATELY (no backoff
+            # ladder) because wall-clock waiting changes nothing; only the
+            # retry-hint checklist / model swap / agent refresh help.
+            # Without the explicit tag the failure defaulted to a non-quality
+            # category and hit the availability backoff ladder (production
+            # 2026-05-15 mission 70 #44529: schema-fail retry showed
+            # eta=34s instead of firing immediately).
             result["status"] = "failed"
             result["error"] = f"Schema validation: {error_msg}"
+            result["error_category"] = "quality"
 
     # ── Force needs_clarification for human-gate steps ──
     # Steps with triggers_clarification=true bypass LLM's clarify action.
@@ -1528,6 +1643,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 f"Clarification question was degenerate ({_clar_cq.summary}), "
                 f"retrying instead of sending garbled text to human"
             )
+            result["error_category"] = "quality"  # deterministic — retry immediately
             logger.warning(
                 f"[Workflow Hook] Step '{step_id}' clarification rejected: "
                 f"{_clar_cq.summary}"
@@ -1959,6 +2075,33 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
             logger.warning("[Workflow Hook] feature_implementation_template not found")
             return
 
+        # Z5 T1 — resolve the mission's target platform so the feature
+        # template expands the web (feat.7-10) or Expo (feat.7m-10m)
+        # frontend variant. Read from the platform_requirements artifact;
+        # default to 'web' when the artifact is absent or lacks the field
+        # (legacy missions / non-i2p workflows are unaffected).
+        target_platform = "web"
+        try:
+            _store = ArtifactStore(use_db=True)
+            _pr_raw = await _store.retrieve(mission_id, "platform_requirements")
+            if _pr_raw:
+                _pr = _json.loads(_pr_raw) if isinstance(_pr_raw, str) else _pr_raw
+                if isinstance(_pr, dict):
+                    _tp = _pr.get("target_platform")
+                    if isinstance(_tp, str) and _tp.strip().lower() in (
+                        "web", "mobile", "both"
+                    ):
+                        target_platform = _tp.strip().lower()
+        except Exception as _exc:
+            logger.debug(
+                f"[Workflow Hook] could not resolve target_platform for "
+                f"mission #{mission_id}: {_exc!r} — defaulting to 'web'"
+            )
+        logger.info(
+            f"[Workflow Hook] mission #{mission_id} feature-template "
+            f"target_platform={target_platform!r}"
+        )
+
         # Track feature_id → (first_task_id, last_task_id) for cross-feature deps
         feature_task_range: dict[str, tuple[int, int]] = {}
 
@@ -2013,7 +2156,11 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
 
             expanded = expand_template(
                 template,
-                params={"feature_id": fid, "feature_name": fname},
+                params={
+                    "feature_id": fid,
+                    "feature_name": fname,
+                    "target_platform": target_platform,
+                },
                 prefix=f"8.{fid}.",
             )
 

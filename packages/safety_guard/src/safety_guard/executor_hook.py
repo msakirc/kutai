@@ -73,7 +73,7 @@ def pre_action(
 
     # 3. Reversibility-driven flow.
     tag = resolve(step, runtime_reversibility)
-    if tag is Reversibility.NONE:
+    if tag is Reversibility.IRREVERSIBLE:
         if step.get("locked", False) or not founder_recently_active:
             return WaitForFounder(reason="non_reversible_step")
 

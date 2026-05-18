@@ -1,0 +1,24 @@
+name: dependency_hygiene_node
+version: v1
+kind: dependency_hygiene
+description: "Run npm audit on the workspace, flag known-vulnerable packages."
+requires:
+  tech_stack:
+    - "node"
+    - "fastapi+postgres+nextjs"
+    - "fastapi+sqlite+nextjs"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  notes: notes.md
+prompts: {}
+lessons_domain: dependency_hygiene
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  PACKAGE_JSON_PATH: "package.json"
+  AUTO_MERGE_PATCH: "false"
+entry_points:
+  notes: notes.md

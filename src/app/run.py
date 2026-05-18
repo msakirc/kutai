@@ -434,6 +434,30 @@ async def main():
         _log.warning("API server not started", reason=str(exc))
         api_task = None
 
+    # Z8 T3A: webhook listener (FastAPI) — vendor webhooks ingest here and
+    # land alert_triage tasks on the ongoing lane via Beckman. Port defaults
+    # to 9882 (nerd_herd holds 9881; api_server holds 8000).
+    webhook_port = int(os.getenv("WEBHOOK_PORT", "9882"))
+    try:
+        import uvicorn  # type: ignore
+        from src.app.webhook_listener import app as _webhook_app
+
+        _webhook_config = uvicorn.Config(
+            _webhook_app,
+            host="0.0.0.0",
+            port=webhook_port,
+            log_level="warning",
+            access_log=False,
+        )
+        _webhook_server = uvicorn.Server(_webhook_config)
+        webhook_task = asyncio.create_task(
+            _webhook_server.serve(), name="webhook_listener"
+        )
+        _log.info("Webhook listener task created", port=webhook_port)
+    except Exception as exc:
+        _log.warning("Webhook listener not started", reason=str(exc))
+        webhook_task = None
+
     # Phase 14.3: Monitoring is now a cron-seeded mechanical task routed via
     # mr_roboto monitoring_check executor — no background loop needed here.
 

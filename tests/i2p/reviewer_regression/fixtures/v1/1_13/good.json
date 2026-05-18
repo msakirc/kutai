@@ -1,0 +1,22 @@
+{
+  "step_id": "1.13",
+  "step_name": "research_quality_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "market_research_report": {
+      "_schema_version": "1",
+      "summary": "Identified 3 direct competitors and 2 indirect alternatives. Pricing tiers documented. Feature matrix complete with sources cited per row.",
+      "citations": [
+        {"claim": "Competitor A charges $29/mo", "source": "https://competitor-a.com/pricing"},
+        {"claim": "TAM in EU SMB segment is ~$1.2B", "source": "https://example-research.com/eu-smb-2025"}
+      ],
+      "feature_matrix_complete": true,
+      "gap_analysis_present": true
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "verdict": "pass",
+    "issues": []
+  }
+}

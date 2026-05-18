@@ -1,0 +1,24 @@
+name: cve_scan_node
+version: v1
+kind: cve_scan
+description: "Query OSV.dev for each pinned npm package and surface known CVEs."
+requires:
+  tech_stack:
+    - "node"
+    - "fastapi+postgres+nextjs"
+    - "fastapi+sqlite+nextjs"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  notes: notes.md
+prompts: {}
+lessons_domain: cve_scan
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  PACKAGE_LOCK_PATH: "package-lock.json"
+  ECOSYSTEM: "npm"
+entry_points:
+  notes: notes.md

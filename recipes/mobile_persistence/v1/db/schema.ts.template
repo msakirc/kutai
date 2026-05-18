@@ -1,0 +1,46 @@
+/**
+ * Drizzle schema — on-device SQLite table for an Expo app.
+ *
+ * RECIPE_PARAM markers:
+ *   // RECIPE_PARAM:ENTITY=note
+ *   // RECIPE_PARAM:TABLE_NAME=notes
+ *
+ * This file is consumed by `drizzle-kit generate` to produce SQL migrations
+ * under `migrations/`. Keep it as the single source of truth for the table
+ * shape — never hand-edit the generated migration SQL.
+ *
+ * Generic by design: one parameterized `<<ENTITY>>` table. Re-run
+ * `npx drizzle-kit generate` after any column change.
+ */
+import { sql } from "drizzle-orm";
+import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+
+// RECIPE_PARAM:TABLE_NAME=notes
+export const noteTable = sqliteTable("notes", {
+  // Surrogate primary key — SQLite AUTOINCREMENT semantics.
+  id: integer("id").primaryKey({ autoIncrement: true }),
+
+  // Caller-visible fields. Replace/extend for the real entity.
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),
+
+  // Soft-state flags.
+  done: integer("done", { mode: "boolean" }).notNull().default(false),
+
+  // Timestamps stored as UNIX epoch millis (integer). SQLite has no native
+  // datetime type — epoch-int sorts and compares correctly and is
+  // timezone-free. Do NOT store ISO strings here.
+  createdAt: integer("created_at")
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+  updatedAt: integer("updated_at")
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+});
+
+// Inferred row types — use these everywhere instead of hand-written interfaces.
+export type Note = typeof noteTable.$inferSelect;
+export type NewNote = typeof noteTable.$inferInsert;
+
+// Aggregated export so the rest of the app imports one object.
+export const schema = { noteTable };

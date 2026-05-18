@@ -1,0 +1,10 @@
+{
+  "service_name": "github",
+  "required_fields": ["token"],
+  "optional_fields": ["org", "username"],
+  "scopes": ["read_only", "read_write", "admin"],
+  "default_scope": "read_write",
+  "rotation_recommended_days": 90,
+  "test_endpoint": { "action": "list_repos", "expect_status": 200 },
+  "docs_url": "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+}

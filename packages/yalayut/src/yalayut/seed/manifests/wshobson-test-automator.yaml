@@ -1,0 +1,12 @@
+name: wshobson-test-automator
+name_original: test-automator
+version: 1.0.0
+artifact_type: skill
+kind: agent_config
+source: github:wshobson/agents@/plugins
+owner: wshobson
+license: MIT
+mechanizable: false
+model_hint: inherit
+applies_to: execution
+intent_keywords: [test, automation, coverage, ci, test-suite, fixtures]

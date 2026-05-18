@@ -1,0 +1,36 @@
+name: search
+version: v1
+description: "Full-text search via Postgres tsvector or Meilisearch adapter"
+requires:
+  tech_stack:
+    - "fastapi+postgres+nextjs"
+    - "fastapi+sqlite+nextjs"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - migration_apply
+  - test_run
+  - pattern_lint
+templates:
+  backend: backend.template.py
+  migrations: migrations/
+  tests: tests/
+prompts:
+  fastapi: prompts/fastapi.md
+lessons_domain: search
+dependencies:
+  backend:
+    - fastapi
+    - aiosqlite
+    - meilisearch-python-sdk
+  frontend: []
+param_defaults:
+  SEARCH_BACKEND: "postgres_tsvector"
+  INDEX_NAME: "default_search"
+  MIN_QUERY_LEN: "2"
+  MAX_RESULTS: "50"
+entry_points:
+  backend_routes: backend.template.py
+  migration: migrations/001_search_index.sql.template
+  smoke_tests: tests/backend_smoke.template.py

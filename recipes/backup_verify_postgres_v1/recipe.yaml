@@ -1,0 +1,24 @@
+name: backup_verify_postgres
+version: v1
+kind: backup_verify
+description: "pg_restore a postgres dump into an ephemeral database and run smoke SELECTs."
+requires:
+  tech_stack:
+    - "postgres"
+    - "fastapi+postgres+nextjs"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  smoke: smoke.sql
+prompts: {}
+lessons_domain: backup_verify
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  DUMP_PATH: ""
+  EPHEMERAL_DB_NAME: "backup_verify_sandbox"
+  EXPECT_TABLES: ""
+entry_points:
+  smoke: smoke.sql

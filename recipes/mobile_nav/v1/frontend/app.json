@@ -1,0 +1,34 @@
+{
+  "_recipe_params": [
+    "// RECIPE_PARAM:APP_NAME=MyApp",
+    "// RECIPE_PARAM:APP_SCHEME=myapp",
+    "// RECIPE_PARAM:DEEP_LINK_HOST=app"
+  ],
+  "expo": {
+    "name": "<<APP_NAME>>",
+    "slug": "<<APP_SCHEME>>",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "<<APP_SCHEME>>",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "supportsTablet": true,
+      "associatedDomains": ["applinks:<<DEEP_LINK_HOST>>.example.com"]
+    },
+    "android": {
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [{ "scheme": "https", "host": "<<DEEP_LINK_HOST>>.example.com" }],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
+    }
+  }
+}

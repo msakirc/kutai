@@ -1,0 +1,45 @@
+name: analytics_instrumentation
+version: v1
+kind: analytics_instrumentation
+description: "Standardized PostHog analytics instrumentation — track_event shims (posthog-js web + posthog-python server) emitting the AARRR event taxonomy with mission/feature/segment metadata."
+requires:
+  tech_stack:
+    - "fastapi+sqlite+nextjs"
+    - "fastapi+postgres+nextjs"
+    - "nextjs"
+    - "react"
+    - "fastapi"
+features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+  - pattern_lint
+# Z9 T5A — optional cohort gate. When set, the track_event shims tag every
+# event with the active segment AND only emit events for users matching the
+# predicate. Unset (the default) → events fire for the whole user base.
+# Free-form expression evaluated against the analytics context's segment.
+segment_predicate: null
+templates:
+  client: client.template.ts
+  server: server.template.py
+  events: events.template.ts
+  notes: notes.md
+prompts:
+  nextjs: prompts/nextjs.md
+  fastapi: prompts/fastapi.md
+lessons_domain: analytics_instrumentation
+dependencies:
+  backend:
+    - posthog
+  frontend:
+    - posthog-js
+param_defaults:
+  POSTHOG_API_KEY_ENV: "POSTHOG_API_KEY"
+  POSTHOG_HOST_ENV: "POSTHOG_HOST"
+  POSTHOG_HOST_DEFAULT: "https://us.i.posthog.com"
+  ACTIVATION_EVENT: "first_value_event"
+entry_points:
+  client_shim: client.template.ts
+  server_shim: server.template.py
+  event_taxonomy: events.template.ts
+  notes: notes.md

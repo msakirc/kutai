@@ -1,0 +1,63 @@
+-- mobile_auth recipe v1 — database migration
+-- Template: 001_mobile_users.sql.template
+--
+-- Portable subset: works for both SQLite and PostgreSQL.
+-- Choice rationale:
+--   - INTEGER PRIMARY KEY AUTOINCREMENT (SQLite) == BIGSERIAL PRIMARY KEY (Postgres).
+--     The template uses the SQLite spelling; for Postgres replace via RECIPE_PARAM:PK_TYPE.
+--   - TEXT for token hashes: 64 chars for SHA-256 hex digest.
+--   - Timestamps stored as TEXT in UTC, space-separated to match SQLite's
+--     datetime('now') — never store datetime.isoformat() (uses 'T').
+--
+-- A user may sign in with email/password OR Apple OR Google. The same person
+-- arriving through two providers is two distinct rows in v1 (no account
+-- linking — that is a v2 concern). `provider` + `provider_subject` is the
+-- federated identity; `password_hash` is set only for `provider='email'`.
+--
+-- RECIPE_PARAM:PK_TYPE=INTEGER PRIMARY KEY AUTOINCREMENT
+
+-- ---------------------------------------------------------------------------
+-- users
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- RECIPE_PARAM:PK_TYPE=INTEGER PRIMARY KEY AUTOINCREMENT
+    email             TEXT,                       -- nullable: Apple may withhold it
+    password_hash     TEXT,                       -- NULL for social-only accounts
+    provider          TEXT    NOT NULL DEFAULT 'email',  -- 'email' | 'apple' | 'google'
+    provider_subject  TEXT,                       -- the provider 'sub' claim; NULL for email
+    display_name      TEXT,
+    created_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+    updated_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+);
+
+-- One identity per (provider, provider_subject) — blocks duplicate social rows.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_provider_subject
+    ON users (provider, provider_subject);
+-- Email uniqueness is enforced only for password accounts; a partial index
+-- keeps NULL emails (Apple private-relay opt-outs) from colliding.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+    ON users (email) WHERE email IS NOT NULL AND provider = 'email';
+
+-- ---------------------------------------------------------------------------
+-- auth_sessions  (refresh token ledger)
+-- ---------------------------------------------------------------------------
+-- One row per active device session. The mobile client holds the raw refresh
+-- token in expo-secure-store; only its SHA-256 hash is stored here.
+-- refresh-token rotation: /auth/refresh revokes the presented row and inserts
+-- a new one, so a stolen-and-reused token is detected by the revoked check.
+-- GC: DELETE FROM auth_sessions
+--     WHERE expires_at < strftime('%Y-%m-%d %H:%M:%S','now') OR revoked_at IS NOT NULL;
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    refresh_token_hash  TEXT    NOT NULL UNIQUE,
+    device_label        TEXT,                   -- optional: "iPhone 15 Pro", set by client
+    created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
+    expires_at          TEXT    NOT NULL,
+    revoked_at          TEXT    DEFAULT NULL    -- NULL = active session
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id    ON auth_sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON auth_sessions (refresh_token_hash);

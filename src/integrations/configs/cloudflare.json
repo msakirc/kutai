@@ -1,0 +1,29 @@
+{
+  "service_name": "cloudflare",
+  "base_url": "https://api.cloudflare.com/client/v4",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "api_token",
+  "actions": {
+    "list_zones": {
+      "method": "GET",
+      "path": "/zones",
+      "required_params": []
+    },
+    "list_dns_records": {
+      "method": "GET",
+      "path": "/zones/{zone_id}/dns_records",
+      "required_params": ["zone_id"]
+    },
+    "create_dns_record": {
+      "method": "POST",
+      "path": "/zones/{zone_id}/dns_records",
+      "required_params": ["zone_id", "type", "name", "content"]
+    },
+    "delete_dns_record": {
+      "method": "DELETE",
+      "path": "/zones/{zone_id}/dns_records/{id}",
+      "required_params": ["zone_id", "id"]
+    }
+  }
+}

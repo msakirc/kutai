@@ -1,0 +1,46 @@
+# Maestro mobile-QA smoke flow — mobile_push/v1
+#
+# Drives the canonical sign in -> onboard -> core action -> sign out path,
+# with the core action being "grant notification permission + reach the
+# notifications-enabled state". Consumed by the `mobile_smoke` post-hook
+# (general_beckman) via the `maestro` mr_roboto verb.
+#
+# RECIPE_PARAM:APP_ID=com.example.app
+# RECIPE_PARAM:LOGIN_EMAIL=smoke@example.com
+# RECIPE_PARAM:LOGIN_PASSWORD=smoke-password
+#
+# The template engine substitutes `KEY` tokens before this file is
+# written into the mission workspace. The `#` RECIPE_PARAM markers are
+# plain YAML comments — they survive YAML parsing untouched.
+appId: <<APP_ID>>
+---
+# --- launch -------------------------------------------------------------
+- launchApp:
+    clearState: true
+
+# --- sign in ------------------------------------------------------------
+- tapOn: "Sign in"
+- tapOn:
+    id: "email-input"
+- inputText: "<<LOGIN_EMAIL>>"
+- tapOn:
+    id: "password-input"
+- inputText: "<<LOGIN_PASSWORD>>"
+- tapOn: "Log in"
+- assertVisible: "Welcome"
+
+# --- onboard ------------------------------------------------------------
+- tapOn: "Get started"
+- assertVisible: "Enable notifications"
+
+# --- core action: grant notification permission -------------------------
+- tapOn: "Enable notifications"
+# System permission dialog — Maestro auto-grants when allowPermissions is
+# set; this assertion confirms the app reached the enabled state.
+- assertVisible: "Notifications on"
+
+# --- sign out -----------------------------------------------------------
+- tapOn:
+    id: "menu-button"
+- tapOn: "Sign out"
+- assertVisible: "Sign in"

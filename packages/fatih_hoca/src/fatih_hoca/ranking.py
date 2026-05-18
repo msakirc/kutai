@@ -481,6 +481,19 @@ def rank_candidates(
         if reqs.prefer_quality:
             weights["capability"] += 10
             weights["cost"] -= 10
+
+        # Z10 T2A D7 — quality_mode dial. Scale by 10 to convert
+        # speed_weight_delta/benchmark_weight_delta (which live in +-1
+        # space) into weight units; balanced contributes 0.
+        _qmode = getattr(reqs, "quality_mode", "balanced")
+        if _qmode == "quick":
+            weights["speed"] += 10
+            weights["performance"] -= 5
+            weights["capability"] -= 5
+        elif _qmode == "thorough":
+            weights["capability"] += 5
+            weights["performance"] += 5
+            weights["speed"] -= 10
         if reqs.prefer_local:
             weights["cost"] += 10
             weights["speed"] -= 5

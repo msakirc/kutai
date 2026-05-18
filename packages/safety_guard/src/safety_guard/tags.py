@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 class Reversibility(Enum):
     FULL = ("full", 0)
     PARTIAL = ("partial", 1)
-    NONE = ("none", 2)
+    # Most-severe tier. Canonical label is "irreversible" (matches the
+    # mr_roboto taxonomy and i2p_v3.json); "none" is accepted as a legacy
+    # alias by from_str().
+    IRREVERSIBLE = ("irreversible", 2)
 
     @property
     def label(self) -> str:
@@ -28,6 +31,8 @@ class Reversibility(Enum):
 
     @classmethod
     def from_str(cls, s: str) -> "Reversibility":
+        if s == "none":  # legacy alias for the most-severe tier
+            return cls.IRREVERSIBLE
         for r in cls:
             if r.label == s:
                 return r

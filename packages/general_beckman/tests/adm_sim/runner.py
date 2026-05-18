@@ -89,7 +89,7 @@ async def run_ticks(state: SimState, ticks: int = 50) -> dict:
     """
     import general_beckman as gb
 
-    async def fake_top_k(k: int = 5):
+    async def fake_top_k(k: int = 5, lane: str | None = None):
         return [_task_dict(t) for t in state.unclaimed_tasks()[:k]]
 
     async def fake_claim(task_id: int) -> bool:

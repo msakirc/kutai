@@ -1,0 +1,57 @@
+{
+  "step_id": "3.11",
+  "step_name": "requirements_review",
+  "schema_version": "1",
+  "input_artifacts": {
+    "requirements_spec_summary": {
+      "_schema_version": "1",
+      "functional_count": 24,
+      "non_functional_count": 8,
+      "every_requirement_has_acceptance_criteria": true,
+      "no_orphans": true,
+      "every_item_has_falsification_triple": true
+    },
+    "prd_final_summary": {
+      "_schema_version": "1",
+      "named_competitors_section": true,
+      "differentiation_clear": true
+    },
+    "non_goals": {
+      "_schema_version": "1",
+      "items": [
+        "No real-time multiplayer features.",
+        "No mobile-app version (web-only at launch).",
+        "No support for under-13 users."
+      ]
+    },
+    "functional_requirements_falsification_result": {
+      "_schema_version": "1",
+      "ok": true,
+      "checked": 24,
+      "missing": []
+    },
+    "nfr_perf_scale_falsification_result": {
+      "_schema_version": "1",
+      "ok": true,
+      "checked": 8,
+      "missing": []
+    },
+    "nfr_availability_security_falsification_result": {
+      "_schema_version": "1",
+      "ok": true,
+      "checked": 6,
+      "missing": []
+    },
+    "business_rules_falsification_result": {
+      "_schema_version": "1",
+      "ok": true,
+      "checked": 5,
+      "missing": []
+    }
+  },
+  "expected_verdict": {
+    "_schema_version": "1",
+    "status": "pass",
+    "issues": []
+  }
+}

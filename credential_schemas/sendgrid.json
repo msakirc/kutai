@@ -1,0 +1,10 @@
+{
+  "service_name": "sendgrid",
+  "required_fields": ["api_key"],
+  "optional_fields": ["from_email", "from_name"],
+  "scopes": ["read_only", "read_write", "admin"],
+  "default_scope": "read_write",
+  "rotation_recommended_days": 90,
+  "test_endpoint": { "action": "list_templates", "expect_status": 200 },
+  "docs_url": "https://docs.sendgrid.com/ui/account-and-settings/api-keys"
+}

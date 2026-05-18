@@ -1,0 +1,10 @@
+{
+  "service_name": "railway",
+  "required_fields": ["token"],
+  "optional_fields": ["project_id", "environment_id"],
+  "scopes": ["read_only", "read_write", "admin"],
+  "default_scope": "read_write",
+  "rotation_recommended_days": 90,
+  "test_endpoint": null,
+  "docs_url": "https://docs.railway.com/reference/public-api"
+}

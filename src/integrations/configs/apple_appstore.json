@@ -1,0 +1,34 @@
+{
+  "service_name": "apple_appstore",
+  "base_url": "https://api.appstoreconnect.apple.com/v1",
+  "auth_type": "jwt_p8",
+  "auth_header": "Authorization",
+  "auth_token_field": "_synthesized",
+  "actions": {
+    "list_apps": {
+      "method": "GET",
+      "path": "/apps",
+      "required_params": []
+    },
+    "list_builds": {
+      "method": "GET",
+      "path": "/builds",
+      "required_params": []
+    },
+    "list_app_store_versions": {
+      "method": "GET",
+      "path": "/appStoreVersions",
+      "required_params": []
+    },
+    "submit_for_review": {
+      "method": "POST",
+      "path": "/appStoreVersionSubmissions",
+      "required_params": ["data"]
+    },
+    "list_review_states": {
+      "method": "GET",
+      "path": "/appStoreVersionSubmissions",
+      "required_params": []
+    }
+  }
+}

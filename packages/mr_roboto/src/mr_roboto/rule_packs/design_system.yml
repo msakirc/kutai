@@ -1,0 +1,78 @@
+# design_system.yml — Design-system guardrail rule pack
+#
+# These are PROJECT-OVERRIDABLE DEFAULTS.  Teams swap by setting
+# ``design_system_rule_pack`` in the step context to point at a project-
+# specific YAML that overrides or replaces these rules.  The shipped rules
+# catch the most common design-system drift patterns in JSX/TSX codebases.
+#
+# Severity levels (semgrep → beckman):
+#   ERROR   → blocker  (hard failure)
+#   WARNING → warning  (surfaced in ctx, source still advances)
+#   INFO    → info     (informational only)
+#
+# All rules below are WARNING or INFO as this hook is v1-ramp (warning-only).
+# Promote to ERROR once the team has a clean baseline.
+
+rules:
+  - id: no-raw-hex-color
+    pattern: "$X"
+    pattern-where: "$X =~ '^#[0-9a-fA-F]{3,8}$'"
+    message: >
+      Raw hex color literal detected. Use design-system tokens
+      (e.g. theme.palette.primary.main) instead of hard-coded hex values.
+      Override via project rule-pack swap if this rule is too strict.
+    languages: [typescript, javascript]
+    severity: WARNING
+    paths:
+      include:
+        - "*.tsx"
+        - "*.jsx"
+        - "src/**/*.tsx"
+        - "src/**/*.jsx"
+
+  - id: no-inline-style-attr
+    pattern: "<$TAG style={{...}} />"
+    message: >
+      Inline style prop detected. Prefer design-system styling utilities
+      (sx prop, styled(), makeStyles) over raw style={{}} objects.
+    languages: [typescript, javascript]
+    severity: WARNING
+
+  - id: no-direct-mui-import
+    patterns:
+      - pattern: "import $X from '@mui/material/colors'"
+      - pattern: "import $X from '@mui/material/colors/$COLOR'"
+    message: >
+      Direct MUI color import bypasses the design-system token layer.
+      Import from your project's theme barrel (e.g. '@/theme') instead.
+      NOTE: This rule is a placeholder intended to be overridden via a
+      project-specific rule-pack path (set design_system_rule_pack in step
+      context). Adjust the pattern to match your actual forbidden paths.
+    languages: [typescript, javascript]
+    severity: WARNING
+
+  - id: no-css-import-from-node-modules
+    patterns:
+      - pattern: "import '$PKG.css'"
+        metavariable-regex:
+          metavariable: "$PKG"
+          regex: "^(@|node_modules/)"
+      - pattern: "import \"$PKG.css\""
+        metavariable-regex:
+          metavariable: "$PKG"
+          regex: "^(@|node_modules/)"
+    message: >
+      CSS import from node_modules or scoped package detected. Prefer
+      importing styles through the design-system abstraction layer.
+      Add an explicit allowlist to the project rule-pack if vendor CSS
+      imports are intentional (e.g. reset stylesheets).
+    languages: [typescript, javascript]
+    severity: WARNING
+
+  - id: no-px-in-styles
+    pattern: "style={{$X: \"$VALpx\"}}"
+    message: >
+      Hard-coded px value in inline style prop. Use spacing tokens
+      (e.g. theme.spacing(2)) or rem/em units for layout consistency.
+    languages: [typescript, javascript]
+    severity: INFO

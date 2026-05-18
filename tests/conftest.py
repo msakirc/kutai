@@ -1,5 +1,16 @@
+import os
 import sys
 from pathlib import Path
+
+# Z1 Tier 5C (B4) — Critic gate is default-on in production but must be
+# default-off in unit tests so that pre-existing router tests don't hit
+# the real LLMDispatcher. Dedicated gate tests opt back in via
+# `monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)`.
+#
+# Lives in tests/conftest.py (not worktree-root conftest.py) so the
+# setdefault only fires during pytest runs from under tests/. Production
+# orchestrator paths must keep the var unset.
+os.environ.setdefault("KUTAI_CRITIC_GATE", "off")
 
 _ROOT = Path(__file__).resolve().parent.parent   # worktree root
 

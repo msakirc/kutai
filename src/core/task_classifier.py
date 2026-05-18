@@ -52,44 +52,55 @@ class TaskClassification:
 CLASSIFIER_PROMPT = """You are a task classifier for an AI agent system. Classify this task.
 Respond ONLY with valid JSON, no markdown.
 
-Available agent types:
-- "planner": mission decomposition, project planning, step ordering
-- "architect": system design, API design, technology decisions
-- "coder": writing new code from specs
-- "implementer": following detailed implementation plans exactly
-- "fixer": debugging, fixing errors, root cause analysis
-- "test_generator": writing tests, edge case identification
-- "reviewer": code review, quality analysis, critique
-- "researcher": finding information, comparisons, documentation lookup
-- "writer": prose, documentation, emails, reports
-- "executor": running tools, file operations, simple transformations
-- "visual_reviewer": analyzing screenshots, UI review, diagram understanding
-- "assistant": general conversation, Q&A, personal assistance
-- "summarizer": condensing long content, extracting key points
-- "analyst": data analysis, feasibility studies, structured evaluation, risk assessment
-- "shopping_advisor": product research, price checks, deal finding, purchase advice, comparisons. IMPORTANT: bare product names/nouns (e.g. "kahve makinesi", "laptop", "buzdolabı", "ayakkabı") are shopping queries — classify as shopping_advisor, NOT coder.
+AGENT PICK/REJECT RULES (read carefully — overlapping types have explicit tie-breakers):
+
+CODING CLUSTER:
+- "coder": Pick for ad-hoc multi-file builds, standalone projects, "build a X", "create a project", "make a small app", writing new code with no existing spec. Has git_commit + run_code. NOT when there's an existing ARCHITECTURE.md or a detailed spec file — that's "implementer".
+- "implementer": Pick for "implement <file>", "write the X module per spec", ONE file following an existing ARCHITECTURE.md or detailed spec. No git, no run. NOT for greenfield builds or vague requests.
+- "fixer": Pick when description references "fix", "bug", "feedback", "test failure", "review found", "error", "crash", debugging driven by review or test output. NOT for new features.
+- "test_generator": Pick for "write tests", "add tests for X", "generate pytest", edge case identification. NOT for running tests.
+
+REVIEW CLUSTER:
+- "reviewer": Pick for general code/content quality review, "review this PR", "check for issues", critique, structured review. NOT for numeric scoring.
+- "code_reviewer": Pick for strict code-specific review with pass/fail verdict, "code review", "audit this PR". More stringent than reviewer. NOT for numeric scoring.
+- "integration_reviewer": Pick for cross-file / cross-module consistency checks — "check integration", "verify signatures match", "cross-module consistency", "caller callee alignment", "migration model alignment", "interface contract", "type contract across modules", "check boundary". NOT for single-file reviews.
+- "grader": Pick when output is a numeric score, pass/fail, yes/no judgment — "score", "grade", "rate", "0-10", "evaluate answer quality". NOT for open-ended critique.
+
+RESEARCH & ANALYSIS CLUSTER:
+- "researcher": Pick for general web-search synthesis, "research X", "find information about", "look up", non-shopping topics. NOT for structured data analysis.
+- "analyst": Pick for structured data/feasibility/contract/risk analysis on non-shopping topics — "analyze", "feasibility study", "risk assessment", "structured report", "fee structure". NOT for simple Q&A.
+
+SHOPPING CLUSTER:
+- "shopping_advisor": Pick for Turkish market product queries, "find me a X under Y TL", price checks, deal finding, purchase advice, product comparisons. Bare product nouns (laptop, buzdolabı, kahve makinesi, ayakkabı) count as shopping. NOT for general research.
+- "shopping_clarifier": Pick for one-turn clarification of vague shopping intent — typically called when user invokes /shop with no clear product. NOT for actual product search.
+- "product_researcher": Pick for deep multi-vendor product research, "research X product in detail", thorough spec comparison across many sources. NOT for quick price checks.
+- "deal_analyst": Pick for analyzing existing deal/discount data — "analyze this deal", "is this a good price", "compare these offers". NOT for finding new products.
+
+CONTENT CREATION CLUSTER:
+- "writer": Pick for prose, docs, markdown — "write blog post", "write docs", "draft an article", "write an email". NOT for code.
+- "summarizer": Pick for condensing long content — "summarize", "TLDR", "shorten", "key points", "condense". NOT for creating new content.
+- "artifact_summarizer": Pick for summarizing a specific workflow artifact or multi-step mission output. Typically called from a workflow post-hook, not directly by users.
+
+PLANNING & DESIGN CLUSTER:
+- "planner": Pick for decomposing missions into ordered subtasks — "plan", "break down", "decompose", "roadmap", "step ordering". NOT for system design.
+- "architect": Pick for system design and ARCHITECTURE.md creation — "design the X module", "design the auth system", "system layout", "architecture", "API design". NOT for implementation.
+
+UTILITIES:
+- "assistant": Pick for general Q&A, conversation, simple factual questions — "what is", "what's the capital of", "explain", "define". Pick when no other type clearly fits and no execution is needed.
+- "executor": Pick for tool-execution fallback — file operations, deploy, run, install, when no specific role fits but tools are needed.
+- "visual_reviewer": Pick ONLY when image/screenshot analysis is explicitly required — "analyze this screenshot", "review this UI image", "look at this diagram".
 
 Determine:
-- agent_type: best matching type from above
-- difficulty (1-10): how capable the model needs to be.
-  1-3: trivial (definitions, formatting, classification)
-  4-6: moderate (standard code, summaries, Q&A)
-  7-8: complex (multi-file refactoring, architecture, deep analysis)
-  9-10: critical (production decisions, novel algorithms, security audits)
+- agent_type: best matching type from above rules
+- difficulty (1-10): 1-3 trivial, 4-6 moderate, 7-8 complex, 9-10 critical
 - needs_tools: does this need to execute actions (files, shell, search)?
 - needs_vision: does this need to look at images/screenshots?
 - needs_thinking: does this need deep multi-step reasoning?
 - local_only: personal/sensitive data that shouldn't go to cloud?
 - priority: "critical" | "high" | "normal" | "low" | "background"
-- search_depth: how much web research does this need?
-  "deep" — market analysis, multi-source research, review synthesis
-  "standard" — product info, comparison, how-to with examples
-  "quick" — simple fact, definition, date, status
-  "none" — no web search needed (code tasks, file operations)
+- search_depth: "deep" | "standard" | "quick" | "none"
 
-BIAS: Most tasks need difficulty 4-6. Only use 8+ for genuinely complex work.
-Default to needs_tools=false unless the task clearly requires execution.
-Default to local_only=false unless personal data is explicitly mentioned.
+BIAS: Most tasks need difficulty 4-6. Default needs_tools=false, local_only=false.
 
 Task: {task_description}
 
@@ -356,32 +367,52 @@ _KEYWORD_RULES: list[tuple[str, int, list[str]]] = [
     # (agent_type, difficulty, keywords)
     # Difficulty is a HINT for model quality — keep moderate (3-6) so
     # available models don't get filtered out. Only genuinely hard tasks get 7+.
+    #
+    # ORDER MATTERS: first match wins. Put more specific agents before generic ones.
+    # Rule: shopping > fixer > analyst > architect > test_generator > coder >
+    #       implementer > summarizer > grader > reviewer > planner >
+    #       visual_reviewer > researcher > writer > assistant > executor
     ("shopping_advisor", 5, [
         "fiyat", "fiyatı", "price", "how much", "ne kadar", "en ucuz",
         "cheapest", "indirim", "kampanya", "deal", "discount",
         "almak istiyorum", "want to buy", "should i buy", "almalı mıyım",
-        "karşılaştır", "compare", "vs ", " vs ", "upgrade", "yükseltme",
+        "karşılaştır", " vs. ", " vs ", "upgrade", "yükseltme",
         "hediye", "gift", "tavsiye", "recommendation", "öneri",
+        # English price patterns
+        "under 5000", "under tl", "tl budget", "coffee machine",
         # Turkish product category nouns (bare product names = shopping)
         "makinesi", "makinası", "makine", "telefon", "laptop", "tablet",
         "buzdolabı", "bulaşık", "çamaşır", "kulaklık", "hoparlör",
         "monitör", "klavye", "mouse", "ayakkabı", "kahve", "espresso",
         "klima", "süpürge", "fırın", "ocak", "televizyon",
     ]),
-    ("fixer",          5, ["fix", "bug", "error", "debug", "traceback", "crash"]),
+    ("fixer",          5, ["fix ", "bug", "error", "debug", "traceback", "crash"]),
+    # analyst before reviewer so "analyze" doesn't accidentally match reviewer
+    ("analyst",        5, ["analyze ", "analyse ", "feasibility", "risk analysis",
+                            "fee structure", "evaluate ", "assess ", "structured report"]),
     ("architect",      6, ["architect", "system design", "api design", "scalability"]),
-    ("coder",          5, ["implement", "create", "build", "write code", "refactor"]),
-    ("implementer",    5, ["follow plan", "implement plan", "step by step", "execute plan"]),
-    ("test_generator", 4, ["test", "spec", "coverage", "unit test"]),
-    ("reviewer",       5, ["review", "analyze", "audit", "critique"]),
-    ("planner",        5, ["plan", "design", "roadmap", "schema", "decompose"]),
-    ("visual_reviewer",4, ["screenshot", "image", "visual", "ui review", "layout"]),
-    ("writer",         4, ["write", "document", "email", "report", "readme"]),
-    ("researcher",     4, ["search", "find", "research", "compare", "look up"]),
-    ("analyst",        5, ["analyze", "evaluate", "assess", "feasibility", "risk analysis"]),
-    ("summarizer",     3, ["summarize", "tldr", "key points", "condense"]),
-    ("executor",       3, ["deploy", "run", "install", "execute", "download"]),
-    ("assistant",      3, ["what is", "what does", "how many", "define", "explain"]),
+    # test_generator before coder so "write tests" doesn't hit coder via "write code"
+    ("test_generator", 4, ["write tests", "add tests", "unit test", "write pytest",
+                            "test coverage", "edge case"]),
+    # coder: explicit code-construction phrases; avoid bare "write" (→ writer)
+    ("coder",          5, ["implement ", "create ", "build ", "write code",
+                            "write a parser", "write a script", "write a module",
+                            "make a ", "refactor", "new project"]),
+    ("implementer",    5, ["follow plan", "implement plan", "step by step", "execute plan",
+                            "implement the ", "from architecture.md", "from spec"]),
+    ("grader",         3, ["score this", "grade this", "rate this", "0-10",
+                            "pass or fail", "yes or no judgment", "numeric score"]),
+    ("summarizer",     3, ["summarize", "tldr", "key points", "condense", "shorten"]),
+    ("reviewer",       5, ["review", "audit", "critique", "check for issues"]),
+    ("planner",        5, ["plan ", "roadmap", "schema", "decompose", "break down",
+                            "step ordering", "subtasks"]),
+    ("visual_reviewer",4, ["screenshot", "ui image", "visual", "ui review", "layout image"]),
+    ("researcher",     4, ["research ", "search for", "find information", "look up",
+                            "find out about"]),
+    ("writer",         4, ["write ", "write blog", "draft ", "document", "email", "readme"]),
+    ("assistant",      3, ["what is", "what's the", "what does", "how many",
+                            "define ", "explain ", "capital of", "who is"]),
+    ("executor",       3, ["deploy", "run ", "install", "execute", "download"]),
 ]
 
 

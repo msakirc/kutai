@@ -1,0 +1,31 @@
+id: incident_playbook_cert_expiring_v1
+kind: incident_playbook
+description: "TLS cert <7 days from expiry → renew via certbot (acme.sh fallback)"
+requires:
+  tech_stack:
+    - nginx
+    - caddy
+    - traefik
+  runtime_state:
+    - condition: cert.days_remaining_lt
+      threshold: 7
+match:
+  alerts:
+    - integration: betterstack
+      event: cert_expiry_warning
+    - integration: ssl_monitor
+      event: cert_near_expiry
+action_sequence:
+  - verb: restart_service
+    params:
+      service: certbot
+      mode: renew
+    reversibility: partial
+  - verb: escalate_to_founder
+    params:
+      summary: "TLS cert renewal triggered — verify new certificate is live."
+      severity: medium
+    reversibility: irreversible
+on_failure:
+  - verb: escalate_to_founder
+    severity: critical

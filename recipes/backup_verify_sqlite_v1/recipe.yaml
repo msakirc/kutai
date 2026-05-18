@@ -1,0 +1,24 @@
+name: backup_verify_sqlite
+version: v1
+kind: backup_verify
+description: "Restore a sqlite backup file into a sandbox path and run smoke SELECTs."
+requires:
+  tech_stack:
+    - "sqlite"
+    - "fastapi+sqlite+nextjs"
+  features: []
+conflicts_with: []
+post_hooks: []
+templates:
+  smoke: smoke.sql
+prompts: {}
+lessons_domain: backup_verify
+dependencies:
+  backend: []
+  frontend: []
+param_defaults:
+  BACKUP_PATH: ""
+  SANDBOX_DIR: "/tmp/backup_verify"
+  EXPECT_TABLES: ""
+entry_points:
+  smoke: smoke.sql

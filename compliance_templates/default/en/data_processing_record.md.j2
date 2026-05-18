@@ -1,0 +1,86 @@
+# Record of Processing Activities — template (Article 30 / equivalent)
+
+_Generated: {{ generated_at }}_
+_Controller: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Controller contact: {{ controller_contact | default('[NOT SPECIFIED]') }}_
+_Jurisdiction: {{ jurisdiction | default('default') }}_
+
+This record documents processing activities carried out by
+{{ project_name | default('the Controller') }}. It is intended to
+satisfy Article 30 GDPR record-keeping obligations and equivalent
+obligations in other jurisdictions where applicable.
+
+## 1. Controller
+
+- **Name:** {{ project_name | default('[NOT SPECIFIED]') }}
+- **Contact:** {{ controller_contact | default('[NOT SPECIFIED]') }}
+- **DPO:** [LEGAL REVIEW REQUIRED] — required under GDPR Art. 37 when applicable.
+
+## 2. Purposes of processing
+
+[LEGAL REVIEW REQUIRED] — enumerate every distinct purpose
+(account creation, billing, support, analytics, marketing, etc.).
+
+## 3. Categories of data subjects
+
+[LEGAL REVIEW REQUIRED] — e.g. registered users, prospective users,
+visitors, customers, employees.
+
+## 4. Categories of Personal Data
+
+{% if data_categories %}
+{% for cat in data_categories -%}
+- {{ cat }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list categories of Personal Data processed.
+{% endif %}
+
+## 5. Recipients
+
+{% if third_parties %}
+Personal Data is disclosed to:
+
+{% for t in third_parties -%}
+- {{ t }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list recipients (sub-processors, banks, regulators).
+{% endif %}
+
+## 6. International transfers
+
+[LEGAL REVIEW REQUIRED] — list every transfer outside the controller's
+home jurisdiction with the legal mechanism (SCCs, adequacy, derogation).
+
+## 7. Retention
+
+{% if retention_period %}
+Default retention period: **{{ retention_period }}**.
+{% else %}
+[LEGAL REVIEW REQUIRED] — retention periods by category.
+{% endif %}
+
+See `retention_policy.md` for category-specific terms.
+
+## 8. Technical and organisational measures
+
+- Encryption in transit (TLS 1.2+).
+- Encryption at rest for credential and PII stores.
+- Role-based access control with audit logging.
+- Documented incident-response plan.
+- [LEGAL REVIEW REQUIRED] — add measures specific to your environment.
+
+## 9. Lawful basis
+
+{% if lawful_basis %}
+{% for b in lawful_basis -%}
+- {{ b }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — lawful basis per processing purpose.
+{% endif %}
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before relying on it as a compliance record._

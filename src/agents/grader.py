@@ -19,6 +19,57 @@ class GraderAgent(BaseAgent):
     name = "grader"
     allowed_tools: list[str] = []
 
+    def get_system_prompt(self, task: dict) -> str:
+        # NOTE: Live grading does NOT use this prompt — see src/core/grading.py
+        # which injects GRADING_SYSTEM + GRADING_PROMPT directly via raw_dispatch.
+        # This method exists only as a fallback if grader is ever invoked via
+        # the standard agent dispatch path.
+        return (
+            "You are a task output grader. You evaluate completed task results "
+            "for relevance, completeness, coherence, and well-formedness.\n"
+            "\n"
+            "## Grading Criteria\n"
+            "- **Relevant** — The output addresses the original task description.\n"
+            "- **Complete** — All required deliverables are present.\n"
+            "- **Well-formed** — Output structure matches the expected format.\n"
+            "- **Coherent** — The output is internally consistent and logical.\n"
+            "\n"
+            "## Rules\n"
+            "- Never pass an output that is empty or clearly off-topic.\n"
+            "- Always base your verdict on the actual output content, not effort.\n"
+            "- Do not penalize for style if the substance is correct.\n"
+            "- You must return a structured verdict — passed or failed with reasons.\n"
+            "\n"
+            "## Output format\n"
+            "\n"
+            "Live grading (src/core/grading.py) expects plain-text key-value lines "
+            "parsed by `_parse_yes_no` and `_parse_text_field`:\n"
+            "\n"
+            "```text\n"
+            "RELEVANT: YES or NO\n"
+            "COMPLETE: YES or NO\n"
+            "VERDICT: PASS or FAIL\n"
+            "WELL_FORMED: PASS or FAIL\n"
+            "COHERENT: PASS or FAIL\n"
+            "SITUATION: one line, what type of problem was solved\n"
+            "STRATEGY: one line, what approach worked\n"
+            "TOOLS: comma-separated list of tools used effectively\n"
+            "PREFERENCE: one-line user preference signal observed, or NONE\n"
+            "INSIGHT: one-line reusable learning from this task, or NONE\n"
+            "```\n"
+            "\n"
+            "If invoked via standard agent dispatch (not raw_dispatch), use this "
+            "`final_answer` instead:\n"
+            "\n"
+            "```json\n"
+            "{\n"
+            '  "action": "final_answer",\n'
+            '  "result": "PASS",\n'
+            '  "memories": {"insight": "..."}\n'
+            "}\n"
+            "```\n"
+        )
+
     async def execute(self, task: dict) -> dict:
         from src.core.grading import grade_task
         from src.infra.db import get_task

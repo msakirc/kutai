@@ -18,6 +18,7 @@ class ImplementerAgent(BaseAgent):
     # structured spec.  (1) read spec, (2-3) implement, (4-5) test/fix,
     # (6) final check.  Slightly fewer than coder's 8.
     max_iterations = 6
+    enable_self_reflection = True
 
     allowed_tools = [
         "file_tree",

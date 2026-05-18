@@ -55,11 +55,20 @@ def test_determine_posthooks_skips_grade_when_disabled_but_keeps_extras():
     assert kinds == ["verify_artifacts"]
 
 
-def test_determine_posthooks_excluded_agent_returns_empty():
+def test_determine_posthooks_excluded_agent_suppresses_only_implicit_grade():
+    """Excluded agent types skip the implicit `grade` hook — but an
+    EXPLICITLY declared post-hook is still honoured (Z7 B3: the
+    incident_update_review gate fires on a mechanical incident/draft_update
+    step). Only the implicit grade is suppressed, never an explicit kind.
+    """
     task = {"id": 1, "agent_type": "mechanical"}
+    # No explicit post_hooks → nothing (grade is suppressed for mechanical).
+    assert determine_posthooks(task, {}, {}) == []
+    # Explicit post_hooks ARE honoured even for a mechanical task.
     ctx = {"post_hooks": ["verify_artifacts"]}
     kinds = determine_posthooks(task, ctx, {})
-    assert kinds == []
+    assert "grade" not in kinds
+    assert kinds == ["verify_artifacts"]
 
 
 # ── _posthook_agent_and_payload ──────────────────────────────────────────

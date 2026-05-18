@@ -194,6 +194,10 @@ class HttpIntegration(BaseIntegration):
         self._auth_header = config.get("auth_header", "Authorization")
         self._auth_query_param = config.get("auth_query_param", "token")
         self._actions = config.get("actions", {})
+        # Z9 T1B — deterministic offline payloads keyed by action name.
+        # The registry copies this onto itself at register() time and serves
+        # it when mock_mode is active.
+        self.mock_responses: dict = config.get("mock_responses", {}) or {}
         # Validate base_url at construction time
         _validate_url(self._base_url)
 
@@ -229,6 +233,45 @@ class HttpIntegration(BaseIntegration):
         """Return the list of configured action names."""
         return sorted(self._actions.keys())
 
+    def _maybe_mock(self, action: str) -> dict | None:
+        """Return a deterministic mock envelope when mock mode is active.
+
+        Mock mode + the per-provider payloads both live on the
+        IntegrationRegistry singleton. We only mock when (a) the registry
+        reports ``mock_mode`` and (b) a payload exists for this action —
+        otherwise the real network path runs. If the registry can't be
+        reached we fall back to the env-resolved default so a standalone
+        HttpIntegration still mocks in non-prod test runs.
+        """
+        try:
+            from .registry import get_integration_registry, _resolve_mock_default
+
+            registry = get_integration_registry()
+            mock_on = registry.mock_mode
+            payload = registry.mock_response(self.service_name, action)
+            if payload is not None:
+                # Registry knows this provider — honour its flag.
+                return payload if mock_on else None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("registry mock lookup failed: %s", exc)
+            try:
+                from .registry import _resolve_mock_default
+                mock_on = _resolve_mock_default()
+            except Exception:
+                return None
+
+        # Provider not in the registry (e.g. ad-hoc HttpIntegration). Fall
+        # back to this instance's own config-supplied mock_responses.
+        if mock_on and action in self.mock_responses:
+            import copy
+            return {
+                "status": "ok",
+                "data": copy.deepcopy(self.mock_responses[action]),
+                "status_code": 200,
+                "mocked": True,
+            }
+        return None
+
     async def execute(self, action: str, params: dict) -> dict:
         """Execute an API action."""
         if action not in self._actions:
@@ -250,6 +293,18 @@ class HttpIntegration(BaseIntegration):
                 "status": "error",
                 "error": f"Missing required params: {missing}",
             }
+
+        # Z9 T1B — mock mode short-circuit. When the registry has mock_mode
+        # active (default in any non-prod env) and a deterministic payload is
+        # registered for this action, return it without touching the network
+        # or the credential vault.
+        mocked = self._maybe_mock(action)
+        if mocked is not None:
+            logger.debug(
+                "[%s] mock_mode active — returning fake response for %s",
+                self.service_name, action,
+            )
+            return mocked
 
         # Get credentials
         try:
@@ -290,14 +345,58 @@ class HttpIntegration(BaseIntegration):
         }
 
         query_params: dict[str, str] = {}
-        token = cred.get("token") or cred.get("api_key") or cred.get("key", "")
 
-        if self._auth_type == "bearer":
-            headers[self._auth_header] = f"Bearer {token}"
-        elif self._auth_type == "header":
-            headers[self._auth_header] = token
-        elif self._auth_type == "query":
-            query_params[self._auth_query_param] = token
+        # Z6 T6C: non-static auth flows (JWT mint, OAuth service account)
+        # synthesise an Authorization header from credential material each
+        # call. The other paths read a static token field.
+        if self._auth_type == "jwt_p8":
+            try:
+                from .adapters.apple_jwt import auth_header_from_credential
+                headers[self._auth_header] = auth_header_from_credential(cred)
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "error": f"apple jwt mint failed: {e}",
+                }
+        elif self._auth_type == "oauth_service_account":
+            try:
+                from .adapters.google_sa import auth_header_from_credential
+                headers[self._auth_header] = await auth_header_from_credential(
+                    {
+                        "service_account_json": (
+                            cred.get("service_account_json") or cred
+                        ),
+                        "scopes": (
+                            cred.get("scopes")
+                            or self._config.get("oauth_scopes")
+                        ),
+                    }
+                )
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "error": f"google oauth mint failed: {e}",
+                }
+        else:
+            # Static-token paths. Honour ``auth_token_field`` so configs can
+            # name their field explicitly (e.g. stripe ``secret_key``,
+            # sendgrid ``api_key``). Fall back to the historical guess.
+            token_field = self._config.get("auth_token_field")
+            if token_field and token_field != "_synthesized":
+                token = cred.get(token_field) or ""
+            else:
+                token = (
+                    cred.get("token")
+                    or cred.get("api_key")
+                    or cred.get("key", "")
+                )
+
+            if self._auth_type == "bearer":
+                headers[self._auth_header] = f"Bearer {token}"
+            elif self._auth_type == "header":
+                headers[self._auth_header] = token
+            elif self._auth_type == "query":
+                query_params[self._auth_query_param] = token
 
         # Separate body params from query params for GET
         body_params = None

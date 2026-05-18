@@ -45,6 +45,48 @@ def _mechanical_context(action: str, **payload_fields) -> dict:
 logger = get_logger("beckman.apply")
 
 
+async def _record_and_resolve_confidence(
+    task_id: int, correct: bool, source: str,
+    reviewer_verdict_id: int | None = None,
+) -> None:
+    """Z10 T4B — record + immediately resolve a confidence claim.
+
+    Skips silently if the source task has no confidence signal (record
+    returns None) or already resolved. Safe in mechanical/skipped paths.
+    """
+    from src.infra.db import (
+        record_confidence_claim, resolve_confidence_outcome,
+    )
+    claim_id = await record_confidence_claim(task_id)
+    if claim_id is None:
+        return
+    await resolve_confidence_outcome(
+        claim_id, correct=correct, source=source,
+        reviewer_verdict_id=reviewer_verdict_id,
+    )
+
+
+def _task_phase_label(task: dict, ctx: dict | None = None) -> str:
+    """Return a phase label for B10 rework telemetry.
+
+    Prefers ``workflow_step_id`` (e.g. "8.3") which is the granular step
+    address, falls back to ``workflow_phase`` (e.g. "phase_8") which is
+    the band, falls back to "" when neither is set (non-workflow task).
+    """
+    if ctx is None:
+        try:
+            raw = task.get("context") or "{}"
+            ctx = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception:
+            ctx = {}
+    return str(
+        ctx.get("workflow_step_id")
+        or ctx.get("step_id")
+        or ctx.get("workflow_phase")
+        or ""
+    )
+
+
 async def apply_actions(task: dict, actions: Iterable[Action]) -> None:
     for a in actions:
         await _apply_one(task, a)
@@ -106,6 +148,37 @@ async def _apply_complete(task: dict, a) -> None:
         retry_reason=None,
         failed_in_phase=None,
     )
+
+    # Z2 T5C — pin recipes from artifact when the completing task was a
+    # pick_recipe mechanical step with pin_recipes=true in its context.
+    # Best-effort: failure must never break the completion path.
+    try:
+        ctx = _parse_ctx(task)
+        payload = ctx.get("payload") or {}
+        if (
+            payload.get("action") == "pick_recipe"
+            and ctx.get("pin_recipes")
+        ):
+            recipe_picks_path = str(
+                payload.get("recipe_picks_path")
+                or ctx.get("recipe_picks_path")
+                or ""
+            )
+            mission_id = task.get("mission_id")
+            if recipe_picks_path and mission_id:
+                from src.infra.recipes import pin_recipes_from_artifact
+                count = await pin_recipes_from_artifact(
+                    mission_id=int(mission_id),
+                    recipe_picks_path=recipe_picks_path,
+                )
+                logger.info(
+                    "_apply_complete: pin_recipes_from_artifact: mission_id=%s count=%d",
+                    mission_id, count,
+                )
+    except Exception:
+        logger.debug(
+            "_apply_complete: pin_recipes_from_artifact failed", exc_info=True
+        )
 
 
 async def _apply_subtasks(task: dict, a: SpawnSubtasks) -> None:
@@ -346,6 +419,89 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
         context=json.dumps(ctx),
     )
 
+    # B10 telemetry: a quality-category retry is a schema_failure rework
+    # signal. Today the retry replays the SAME step (no cross-band
+    # rollback) so the counter only bumps when ctx already records the
+    # original (pre-retry) step as phase>=7 AND the retry forces a
+    # re-entry to phase<=6. The helper handles that test internally —
+    # we just hand it both phases. For same-step retries the helper
+    # logs the event but skips the counter bump per is_phase_7_rework.
+    if category == "quality" and task.get("mission_id"):
+        try:
+            from src.telemetry.rework import record_rollback
+            phase_label = _task_phase_label(task, ctx)
+            if phase_label:
+                await record_rollback(
+                    mission_id=int(task["mission_id"]),
+                    from_phase=phase_label,
+                    # to_phase from ctx if a rollback target was set by
+                    # the workflow engine; otherwise same-step retry
+                    to_phase=str(ctx.get("rollback_to_phase") or phase_label),
+                    reason="schema_failure",
+                    triggered_by=str(task.get("agent_type") or "worker"),
+                )
+        except Exception as _exc:
+            logger.debug("rework telemetry skipped",
+                         task_id=task.get("id"), error=str(_exc))
+
+
+async def _maybe_emit_lesson_from_posthook_fail(
+    source: dict,
+    kind: str,
+    error_str: str,
+    feedback: str,
+    attempts: int,
+) -> None:
+    """Side-effect: upsert a mission_lessons row on posthook exhaustion.
+
+    Wraps import + upsert in try/except — NEVER lets lesson-emit failure
+    cascade into the verdict path. Idempotent via dedup_key.
+    """
+    try:
+        from src.infra.mission_lessons import upsert_mission_lesson
+        from src.infra.db import get_db
+        import json as _json
+
+        mission_id = source.get("mission_id")
+        stack = "unknown"
+        if mission_id:
+            try:
+                _db = await get_db()
+                _cur = await _db.execute(
+                    "SELECT context FROM missions WHERE id = ?", (mission_id,)
+                )
+                _row = await _cur.fetchone()
+                if _row:
+                    _ctx = _json.loads(_row[0] or "{}")
+                    stack = str(_ctx.get("tech_stack_detected") or "unknown")
+            except Exception:
+                pass
+
+        pattern = (error_str or "").strip()[:120]
+        fix = (feedback or "").strip()[:300]
+
+        await upsert_mission_lesson(
+            stack=stack,
+            domain=kind,
+            pattern=pattern or f"{kind} gate exhausted",
+            fix=fix,
+            severity="blocker",
+            source_kind="posthook_fail",
+            source_ref={
+                "mission_id": source.get("mission_id"),
+                "source_task_id": source.get("id"),
+                "kind": kind,
+                "attempts": attempts,
+            },
+        )
+    except Exception as _exc:
+        logger.debug(
+            "lesson emit skipped (posthook_fail)",
+            kind=kind,
+            task_id=source.get("id"),
+            error=str(_exc),
+        )
+
 
 async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) -> None:
     from src.infra.db import add_task, update_task
@@ -399,6 +555,25 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         ),
         depends_on=[],
     )
+    # Yalayut demand signal: a DLQ'd task is unmet demand -- its intent could
+    # not be satisfied. Record it (reactive `dlq` signal) WITHOUT importing
+    # yalayut into this core-loop file; route through a mechanical task.
+    _title = (task.get("title") or "").strip()
+    if _title:
+        await add_task(
+            title=f"Demand signal: DLQ #{task['id']}",
+            description="",
+            agent_type="mechanical",
+            mission_id=task.get("mission_id"),
+            context=_mechanical_context(
+                "yalayut_demand",
+                source_step_pattern=f"dlq:{_title[:40]}",
+                intent_keywords=[w for w in _title.split() if len(w) > 2][:12],
+                signal_type="dlq",
+                confidence=0.3,
+            ),
+            depends_on=[],
+        )
 
 
 
@@ -687,6 +862,198 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
                        source_id=source_id, verifier_task_id=task["id"])
         return
 
+    if posthook_kind == "pattern_lint":
+        # Mechanical semgrep runner DLQ'd (e.g. workspace permission denied,
+        # unexpected semgrep crash).  pattern_lint is v1-warning-only so a
+        # DLQ here does NOT cascade the source to failed — we soft-drop the
+        # pending kind and let the source advance.  This mirrors the
+        # soft-skip path used when semgrep is not installed.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "pattern_lint"
+        ]
+        source_ctx["_pattern_lint_dlq_reason"] = error[:300]
+        new_pending = source_ctx["_pending_posthooks"]
+        if not new_pending:
+            await update_task(
+                source_id,
+                status="completed",
+                context=_json.dumps(source_ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning(
+            "pattern_lint DLQ soft-dropped (warning-only kind)",
+            source_id=source_id, linter_task_id=task["id"],
+        )
+        return
+
+    if posthook_kind == "design_system_check":
+        # Z2 T3C — design_system_check is v1-warning-only; same soft-drop
+        # behaviour as pattern_lint.  Never cascade source to failed.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "design_system_check"
+        ]
+        source_ctx["_design_system_check_dlq_reason"] = error[:300]
+        new_pending = source_ctx["_pending_posthooks"]
+        if not new_pending:
+            await update_task(
+                source_id,
+                status="completed",
+                context=_json.dumps(source_ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning(
+            "design_system_check DLQ soft-dropped (warning-only kind)",
+            source_id=source_id, linter_task_id=task["id"],
+        )
+        return
+
+    if posthook_kind in ("openapi_sync", "typescript_sync"):
+        # Z2 T3B — blocker kinds: DLQ cascades source to failed so it doesn't
+        # get stuck in 'ungraded' when the regen_and_diff executor itself DLQs.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != posthook_kind
+        ]
+        source_ctx[f"_{posthook_kind}_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"{posthook_kind} DLQ: {error[:400]}",
+            failed_in_phase="posthook",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning(
+            "%s DLQ cascaded source to failed",
+            posthook_kind, source_id=source_id, posthook_task_id=task["id"],
+        )
+        return
+
+    # Z3 R1 — review-density blocker kinds. DLQ cascades source to failed.
+    # Z5 T4b — mobile_smoke joins this group: a DLQ'd Maestro flow gate
+    # means the build step can't advance, so cascade source to failed.
+    if posthook_kind in (
+        "security_review", "accessibility_review", "contract_review",
+        "performance_review", "adr_drift_check", "integration_replay",
+        "integration_review", "adr_drift_judge", "visual_review", "mobile_smoke",
+    ):
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != posthook_kind
+        ]
+        source_ctx[f"_{posthook_kind}_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"{posthook_kind} DLQ: {error[:400]}",
+            failed_in_phase="posthook",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning(
+            "%s DLQ cascaded source to failed",
+            posthook_kind, source_id=source_id, posthook_task_id=task["id"],
+        )
+        return
+
+    if posthook_kind in _Z1_BLOCKER_KINDS:
+        # Z1 blocker post-hook (compliance_template_present, etc.) DLQ'd
+        # — cascade source to failed so it doesn't get stuck in 'ungraded'.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != posthook_kind
+        ]
+        source_ctx[f"_{posthook_kind}_dlq_reason"] = error[:300]
+        await update_task(
+            source_id,
+            status="failed",
+            error=f"{posthook_kind} DLQ: {error[:400]}",
+            failed_in_phase="posthook",
+            context=_json.dumps(source_ctx),
+        )
+        logger.warning(
+            "%s DLQ cascaded source to failed",
+            posthook_kind, source_id=source_id, posthook_task_id=task["id"],
+        )
+        return
+
+    if posthook_kind in _Z1_WARNING_KINDS:
+        # Z1 warning post-hook (find_similar_missions, etc.) DLQ'd — soft-drop
+        # the pending kind; advance source if no others remain.
+        new_pending = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != posthook_kind
+        ]
+        source_ctx["_pending_posthooks"] = new_pending
+        source_ctx[f"_{posthook_kind}_dlq_reason"] = error[:300]
+        if not new_pending:
+            await update_task(
+                source_id, status="completed",
+                context=_json.dumps(source_ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning(
+            "%s DLQ soft-dropped (Z1 warning kind)",
+            posthook_kind, source_id=source_id, posthook_task_id=task["id"],
+        )
+        return
+
+    if posthook_kind == "capture_hint":
+        # Yalayut Phase 4 — capture_hint is warning-only telemetry; a DLQ of
+        # the capture task itself must never cascade the source to failed.
+        # Soft-drop the pending kind and advance the source if none remain.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "capture_hint"
+        ]
+        new_pending = source_ctx["_pending_posthooks"]
+        if not new_pending:
+            await update_task(
+                source_id, status="completed",
+                context=_json.dumps(source_ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning("capture_hint DLQ soft-dropped (warning-only kind)",
+                       source_id=source_id, posthook_task_id=task["id"])
+        return
+
     if agent_type == "artifact_summarizer":
         artifact_name = ctx.get("artifact_name") or ""
         kind = f"summary:{artifact_name}"
@@ -727,7 +1094,20 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
         context=_json.dumps(ctx),
     )
 
-    agent_type, payload = _posthook_agent_and_payload(a, source, ctx)
+    # Use a.source_ctx (built by rewrite.py with result scalars merged in, e.g.
+    # "draft" from incident/draft_update) rather than the DB-read ctx.  The DB
+    # ctx is intentionally not updated with result scalars — it stores the task's
+    # original input context.  a.source_ctx is the enriched view that posthook
+    # handlers need to read fields like "draft", "incident_id", "status_kind".
+    # ctx above is still used for _pending_posthooks tracking + update_task only.
+    posthook_ctx = a.source_ctx if a.source_ctx else ctx
+    agent_type, payload = _posthook_agent_and_payload(a, source, posthook_ctx)
+
+    # Z3 T2C: For integration_review, run the mechanical AST pre-check here
+    # (async context) and inject the result into the payload before enqueue.
+    if a.kind == "integration_review":
+        payload = await _enrich_integration_review_payload(payload)
+
     await add_task(
         title=_posthook_title(a, source),
         description="",
@@ -800,7 +1180,669 @@ def _posthook_agent_and_payload(
             "produces": produces,
             "review_excluded_models": list(source_ctx.get("review_excluded_models") or []),
         })
+    if a.kind == "imports_check":
+        produces = list(source_ctx.get("produces") or [])
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "imports_check",
+            "executor": "mechanical",
+            "payload": {
+                "action": "check_imports",
+                "target_files": produces,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "test_run":
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "test_run",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_tests",
+                "target_files": produces,
+                "stack_hint": source_ctx.get("stack_hint") or "",
+            },
+        })
+    if a.kind == "pattern_lint":
+        # Z2 T2C — semgrep with forbidden-patterns rule pack. Warning-only
+        # in v1; soft-skips when semgrep not installed.
+        from mr_roboto.run_semgrep import DEFAULT_RULE_PACK
+        produces = list(source_ctx.get("produces") or [])
+        rule_pack = str(source_ctx.get("rule_pack_path") or DEFAULT_RULE_PACK)
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "pattern_lint",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_semgrep",
+                "target_files": produces,
+                "rule_pack_path": rule_pack,
+            },
+        })
+    if a.kind == "openapi_sync":
+        # Z2 T3B — regenerate OpenAPI spec; diff vs committed.
+        default_cmd = [
+            "python", "-c",
+            "from app.main import app; import json; print(json.dumps(app.openapi()))",
+        ]
+        generator_cmd = list(source_ctx.get("regen_cmd") or default_cmd)
+        target_path = str(source_ctx.get("openapi_target_path") or "openapi.json")
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "openapi_sync",
+            "executor": "mechanical",
+            "payload": {
+                "action": "regen_and_diff",
+                "generator_cmd": generator_cmd,
+                "target_path": target_path,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "typescript_sync":
+        # Z2 T3B — regenerate frontend API types; diff vs committed.
+        default_cmd = ["npx", "openapi-typescript", "openapi.json"]
+        generator_cmd = list(source_ctx.get("regen_cmd") or default_cmd)
+        target_path = str(source_ctx.get("types_target_path") or "types/api.ts")
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "typescript_sync",
+            "executor": "mechanical",
+            "payload": {
+                "action": "regen_and_diff",
+                "generator_cmd": generator_cmd,
+                "target_path": target_path,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "design_system_check":
+        # Z2 T3C — semgrep with design-system rule pack; warning-only.
+        from pathlib import Path as _Path
+        _DS_RULE_PACK = str(
+            _Path(__file__).parent.parent.parent.parent.parent
+            / "mr_roboto" / "src" / "mr_roboto" / "rule_packs" / "design_system.yml"
+        )
+        try:
+            import importlib.resources as _ir
+            import mr_roboto.rule_packs as _rp_pkg  # type: ignore[import]
+            _DS_RULE_PACK = str(_ir.files(_rp_pkg).joinpath("design_system.yml"))
+        except Exception:
+            pass
+        produces = list(source_ctx.get("produces") or [])
+        rule_pack = str(source_ctx.get("design_system_rule_pack") or _DS_RULE_PACK)
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "design_system_check",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_semgrep",
+                "target_files": produces,
+                "rule_pack_path": rule_pack,
+            },
+        })
+    if a.kind == "migration_apply":
+        # Z2 T3A — apply migration to ephemeral DB. Stack-aware.
+        produces = list(source_ctx.get("produces") or [])
+        workspace_path = source_ctx.get("workspace_path") or ""
+        stack_hint = str(source_ctx.get("stack_hint") or "")
+        enable_tc = bool(source_ctx.get("enable_testcontainers", False))
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "migration_apply",
+            "executor": "mechanical",
+            "payload": {
+                "action": "apply_migration",
+                "target_files": produces,
+                "workspace_path": workspace_path,
+                "stack_hint": stack_hint,
+                "enable_testcontainers": enable_tc,
+            },
+        })
+    if a.kind == "mobile_smoke":
+        # Z5 T4b — run a recipe-driven Maestro mobile-QA flow against the
+        # running app. flow_paths come from step context (the mobile
+        # recipes ship a smoke-flow .yaml and the step declares them via
+        # `maestro_flows`). Falls back to scanning produces for flow YAMLs
+        # so a step that emits a *.flow.yaml needs no extra wiring.
+        produces = list(source_ctx.get("produces") or [])
+        flow_paths = list(source_ctx.get("maestro_flows") or [])
+        if not flow_paths:
+            flow_paths = [
+                p for p in produces
+                if isinstance(p, str)
+                and (p.endswith(".flow.yaml") or p.endswith(".flow.yml")
+                     or "maestro" in p.lower())
+            ]
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "mobile_smoke",
+            "executor": "mechanical",
+            "payload": {
+                "action": "maestro",
+                "flow_paths": flow_paths,
+                "workspace_path": workspace_path,
+                "extra_args": list(source_ctx.get("maestro_extra_args") or []),
+                "timeout_s": float(source_ctx.get("maestro_timeout_s", 600.0)),
+            },
+        })
+    if a.kind == "compliance_template_present":
+        # Z1 T5A (P6) — overlay_path defaults to produces[0]
+        # (mission_<id>/compliance_overlay.json). Handler reads file +
+        # extracts required_documents → template_ids → walks
+        # compliance_templates/.
+        produces = list(source_ctx.get("produces") or [])
+        overlay_path = (
+            source_ctx.get("overlay_path")
+            or (produces[0] if produces else None)
+        )
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "compliance_template_present",
+            "executor": "mechanical",
+            "payload": {
+                "action": "compliance_template_present",
+                "overlay_path": overlay_path,
+                "template_ids": source_ctx.get("template_ids"),
+                "template_root": source_ctx.get("template_root"),
+                "workspace_path": source_ctx.get("workspace_path"),
+            },
+        })
+    if a.kind == "compliance_blocker_check":
+        # Z1 T5A (P6) — phase-boundary check on step 6.6 project_plan_review.
+        # current_phase defaults to 6 (matches step ID phase_6).
+        current_phase = (
+            source_ctx.get("current_phase")
+            or source_ctx.get("workflow_phase_index")
+            or 6
+        )
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "compliance_blocker_check",
+            "executor": "mechanical",
+            "payload": {
+                "action": "compliance_blocker_check",
+                "current_phase": int(current_phase) if isinstance(current_phase, (int, str)) and str(current_phase).isdigit() else 6,
+                "workspace_path": source_ctx.get("workspace_path"),
+            },
+        })
+    if a.kind == "find_similar_missions":
+        # Z1 T6A (A7) — handler resolves idea_summary from workspace
+        # (.charter/product_charter.md, idea_brief.md) when None.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "find_similar_missions",
+            "executor": "mechanical",
+            "payload": {
+                "action": "find_similar_missions",
+                "idea_summary": source_ctx.get("idea_summary"),
+                "workspace_path": source_ctx.get("workspace_path"),
+                "top_k": int(source_ctx.get("similar_top_k") or 3),
+                "threshold": source_ctx.get("similar_threshold"),
+            },
+        })
+    if a.kind == "index_idea_fingerprint":
+        # Z1 T6A (A7) — siblings find_similar_missions on step 0.1.
+        # Indexes idea fingerprint into mission_ideas ChromaDB collection
+        # so future missions can dedup. Title from source title or ctx.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "index_idea_fingerprint",
+            "executor": "mechanical",
+            "payload": {
+                "action": "index_idea_fingerprint",
+                "idea_summary": source_ctx.get("idea_summary"),
+                "workspace_path": source_ctx.get("workspace_path"),
+                "title": str(
+                    source_ctx.get("title")
+                    or source_ctx.get("mission_title")
+                    or source.get("title")
+                    or ""
+                ),
+                "final_status_note": str(
+                    source_ctx.get("final_status_note") or ""
+                ),
+            },
+        })
+    if a.kind == "surface_prior_mission_hints":
+        # Z1 T6A (P9) — advisory cross-mission ADR + compliance hints on
+        # step 0.5 clarification_questions. Handler always completes.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "surface_prior_mission_hints",
+            "executor": "mechanical",
+            "payload": {
+                "action": "surface_prior_mission_hints",
+                "workspace_path": source_ctx.get("workspace_path"),
+                "founder_id": str(source_ctx.get("founder_id") or "default"),
+                "top_k": int(source_ctx.get("hints_top_k") or 3),
+                "jaccard_threshold": float(
+                    source_ctx.get("hints_jaccard_threshold") or 0.3
+                ),
+            },
+        })
+    if a.kind == "prior_art_min_coverage":
+        # Z1 T6B (P5) — handler reads report_path; defaults to produces[0]
+        # (mission_<id>/.research/prior_art_report.json).
+        produces = list(source_ctx.get("produces") or [])
+        report_path = (
+            source_ctx.get("report_path")
+            or (produces[0] if produces else None)
+        )
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "prior_art_min_coverage",
+            "executor": "mechanical",
+            "payload": {
+                "action": "prior_art_min_coverage",
+                "report_path": report_path,
+                "report": source_ctx.get("report"),
+            },
+        })
+    if a.kind == "verify_falsification_present":
+        # Z1 T2 (P4) — falsification triple check on phase-3 commitments.
+        # Resolve artifacts from source.result. Most phase-3 steps emit a
+        # single output artifact (functional_requirements, etc.); we wrap
+        # the parsed result under its declared output_artifacts[0] name.
+        # legacy_pre_falsification flag flows through source_ctx when the
+        # mission predates the Z1 P4 reshape.
+        source_result = source.get("result") or ""
+        parsed: object = {}
+        if isinstance(source_result, str) and source_result.strip():
+            try:
+                parsed = json.loads(source_result)
+            except (ValueError, TypeError):
+                parsed = {}
+        elif isinstance(source_result, (list, dict)):
+            parsed = source_result
+        output_names = list(source_ctx.get("output_artifacts") or [])
+        artifacts: dict = {}
+        if isinstance(parsed, dict):
+            # Result is already a {name: value} mapping.
+            artifacts = parsed
+        elif output_names and parsed:
+            artifacts = {output_names[0]: parsed}
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "verify_falsification_present",
+            "executor": "mechanical",
+            "payload": {
+                "action": "verify_falsification_present",
+                "artifacts": artifacts,
+                "legacy_pre_falsification": bool(
+                    source_ctx.get("legacy_pre_falsification", False)
+                ),
+            },
+        })
+    if a.kind == "critic_gate":
+        # Z1 T5C (B4) — standalone critic-gate post-hook. action_name +
+        # target_payload come from source_ctx so any step that declares
+        # `post_hooks: ["critic_gate"]` can pass the payload the critic
+        # should judge. mission_id flows through the source row.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "critic_gate",
+            "executor": "mechanical",
+            "payload": {
+                "action": "critic_gate",
+                "action_name": str(
+                    source_ctx.get("critic_action_name")
+                    or source_ctx.get("step_id")
+                    or "unknown"
+                ),
+                "target_payload": source_ctx.get("critic_target_payload"),
+                "mission_id": source.get("mission_id"),
+            },
+        })
+    if a.kind == "integration_review":
+        # Z3 T2C — cross-file consistency review after multi-file expansion.
+        # The mechanical pre-check (extract_signatures) is run async in
+        # _enrich_integration_review_payload, called from _apply_request_posthook
+        # AFTER this function returns. Signatures start empty here; enriched
+        # before the reviewer task row is enqueued.
+        all_produces = list(
+            source_ctx.get("all_sub_task_produces")
+            or source_ctx.get("produces")
+            or []
+        )
+        workspace_path = source_ctx.get("workspace_path") or ""
+        sub_task_ids = list(source_ctx.get("sub_task_ids") or [])
+
+        return ("integration_reviewer", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "integration_review",
+            "sub_task_ids": sub_task_ids,
+            "sub_task_titles": list(source_ctx.get("sub_task_titles") or []),
+            "all_sub_task_produces": all_produces,
+            "workspace_path": workspace_path,
+            # Enriched by _enrich_integration_review_payload (async):
+            "signatures": {},
+            "mismatches": [],
+        })
+    if a.kind == "security_review":
+        # Z3 T3A — composite mechanical: semgrep + bandit + npm audit.
+        produces = list(source_ctx.get("produces") or [])
+        workspace_path = source_ctx.get("workspace_path") or ""
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "security_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "security_review",
+                "target_files": produces,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "accessibility_review":
+        # Z3 T3B — axe-core scan against tunneled preview URL.
+        # URL resolved from .preview/last_preview_url.txt (T3B follow-up in
+        # emit_preview_url) with source_ctx fallback.
+        # "pending:" marker (hosting deferred) suppresses URL — axe soft-skips.
+        import os as _os
+        workspace_path = source_ctx.get("workspace_path") or ""
+        preview_url = source_ctx.get("preview_url") or ""
+        if workspace_path and not preview_url:
+            _last_url_path = _os.path.join(workspace_path, ".preview", "last_preview_url.txt")
+            try:
+                with open(_last_url_path, "r", encoding="utf-8") as _f:
+                    _read = _f.read().strip()
+                # Filter pending markers — only real URLs propagate downstream.
+                if _read.startswith("http://") or _read.startswith("https://"):
+                    preview_url = _read
+            except (OSError, FileNotFoundError):
+                pass
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "accessibility_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_axe",
+                "preview_url": preview_url,
+                "target_paths": produces,
+            },
+        })
+    if a.kind == "contract_review":
+        # Z3 T3C — schemathesis contract fuzz against running app.
+        import os as _os
+        workspace_path = source_ctx.get("workspace_path") or ""
+        spec_path = source_ctx.get("openapi_spec_path") or source_ctx.get("spec_path") or ""
+        if not spec_path and workspace_path:
+            _candidate = _os.path.join(workspace_path, "openapi.json")
+            if _os.path.exists(_candidate):
+                spec_path = _candidate
+        base_url = source_ctx.get("preview_url") or source_ctx.get("base_url") or ""
+        if workspace_path and not base_url:
+            _last_url_path = _os.path.join(workspace_path, ".preview", "last_preview_url.txt")
+            try:
+                with open(_last_url_path, "r", encoding="utf-8") as _f:
+                    base_url = _f.read().strip()
+            except (OSError, FileNotFoundError):
+                pass
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "contract_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_schemathesis",
+                "spec_path": spec_path,
+                "base_url": base_url,
+            },
+        })
+    if a.kind == "performance_review":
+        # Z3 T3C — opt-in lighthouse (web) or k6 (api).
+        import os as _os
+        workspace_path = source_ctx.get("workspace_path") or ""
+        mode = source_ctx.get("perf_mode") or "web"
+        preview_url = source_ctx.get("preview_url") or ""
+        if workspace_path and not preview_url:
+            _last_url_path = _os.path.join(workspace_path, ".preview", "last_preview_url.txt")
+            try:
+                with open(_last_url_path, "r", encoding="utf-8") as _f:
+                    preview_url = _f.read().strip()
+            except (OSError, FileNotFoundError):
+                pass
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "performance_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "performance_review",
+                "mode": mode,
+                "preview_url": preview_url,
+                "script_path": source_ctx.get("perf_script_path") or "",
+                "thresholds": source_ctx.get("perf_thresholds") or {},
+            },
+        })
+    if a.kind == "visual_review":
+        # Z4 T3B — vision-model diff against tunneled preview URL.
+        # URL resolved from .preview/last_preview_url.txt (same pattern as
+        # accessibility_review) with source_ctx fallback.
+        # "pending:" marker (hosting deferred) suppresses URL — verb soft-skips.
+        import os as _os
+        workspace_path = source_ctx.get("workspace_path") or ""
+        preview_url = source_ctx.get("preview_url") or ""
+        if workspace_path and not preview_url:
+            _last_url_path = _os.path.join(workspace_path, ".preview", "last_preview_url.txt")
+            try:
+                with open(_last_url_path, "r", encoding="utf-8") as _f:
+                    _read = _f.read().strip()
+                # Filter pending markers — only real URLs propagate downstream.
+                if _read.startswith("http://") or _read.startswith("https://"):
+                    preview_url = _read
+            except (OSError, FileNotFoundError):
+                pass
+        produces = list(source_ctx.get("produces") or [])
+        step_id = str(source.get("step_id") or source.get("id") or "")
+        mission_id = source.get("mission_id") or 0
+        routes = list(source_ctx.get("routes") or []) or None
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "visual_review",
+            "executor": "mechanical",
+            "payload": {
+                "action": "visual_review",
+                "workspace_path": workspace_path,
+                "step_id": step_id,
+                "mission_id": mission_id,
+                "produces": produces,
+                "routes": routes,
+                "baseline_dir": None,
+            },
+        })
+    if a.kind == "capture_hint":
+        # Yalayut Phase 4 — internal-hint auto-capture. Mechanical post-hook:
+        # mr_roboto's capture_hint executor calls yalayut.capture_hint with
+        # the source task + its outcome. Advisory — never fails the source.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "capture_hint",
+            "executor": "mechanical",
+            "payload": {
+                "action": "capture_hint",
+                "source_task": {
+                    "id": a.source_task_id,
+                    "title": source_ctx.get("title") or source.get("title", ""),
+                    "description": source_ctx.get("description")
+                    or source.get("description", ""),
+                    "agent_type": source.get("agent_type", ""),
+                },
+                "outcome": {
+                    "status": source.get("status", "completed"),
+                    "iterations": int(source_ctx.get("iterations") or 0),
+                    "result": source.get("result", ""),
+                },
+            },
+        })
+    if a.kind == "integration_replay":
+        # Z3 T5 — rerun suite against shuffled prior commits. mode from dial
+        # (quick|standard|strict); commits + shuffle_seed default from mission_id.
+        workspace_path = source_ctx.get("workspace_path") or ""
+        mission_id = source.get("mission_id") or 0
+        mode = source_ctx.get("integration_replay_mode") or "standard"
+        commits = list(source_ctx.get("integration_replay_commits") or [])
+        seed = int(source_ctx.get("shuffle_seed") or mission_id or 0)
+        suite_glob = source_ctx.get("integration_suite_glob") or "tests/integration/**"
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "integration_replay",
+            "executor": "mechanical",
+            "payload": {
+                "action": "integration_replay",
+                "commits": commits,
+                "suite_glob": suite_glob,
+                "shuffle_seed": seed,
+                "mode": mode,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind == "adr_drift_check":
+        # Z3 T4B — mechanical ADR drift gate.
+        workspace_path = source_ctx.get("workspace_path") or ""
+        register_path = source_ctx.get("adr_register_path") or ""
+        if workspace_path and not register_path:
+            # Use forward slash regardless of platform — downstream consumers
+            # treat the path as a POSIX-style artifact reference.
+            wp = workspace_path.rstrip("/\\")
+            register_path = f"{wp}/.adr/register.md"
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "adr_drift_check",
+            "executor": "mechanical",
+            "payload": {
+                "action": "check_adr_drift",
+                "adr_register_path": register_path,
+                "produced_files": produces,
+                "workspace_path": workspace_path,
+            },
+        })
+    if a.kind in ("copy_compliance_review", "brand_voice_lint",
+                  "briefing_compose", "audit_completeness_check"):
+        # Z7 T1.0 — humanish-layers posthook handlers.
+        # Each runs as a mechanical task whose executor calls the handler
+        # module in posthook_handlers/<kind>.py.  The handler receives the
+        # full source task and result and returns {status: ok|fail, ...}.
+        produces = list(source_ctx.get("produces") or [])
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "produces": produces,
+                "workspace_path": source_ctx.get("workspace_path") or "",
+                "jurisdiction": source_ctx.get("jurisdiction") or "",
+                "channel": source_ctx.get("channel") or "",
+                "artifact_metadata": source_ctx.get("artifact_metadata") or {},
+                "copy_path": source_ctx.get("copy_path") or "",
+                "privacy_policy_path": source_ctx.get("privacy_policy_path") or "",
+            },
+        })
+    if a.kind in ("demo_artifact_check", "demo_accessibility_check"):
+        # Z7 T3B — demo pipeline posthook handlers (A3 + A3.r1).
+        # Route to general_beckman.posthook_handlers.<kind> via mr_roboto dispatcher.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "workspace_path": source_ctx.get("workspace_path") or "",
+                "demo_cuts": source_ctx.get("demo_cuts") or {},
+                "demo_vtt_path": source_ctx.get("demo_vtt_path") or "",
+                "demo_cut_targets": source_ctx.get("demo_cut_targets") or {},
+                "demo_accessibility_manifest_path": (
+                    source_ctx.get("demo_accessibility_manifest_path") or ""
+                ),
+            },
+        })
+    if a.kind == "launch_readiness_gate":
+        # Z7 T3A — A2.r1: pre-T-0 readiness gate for launch playbook.
+        # Fires before publish_synchronized; runs 7 hard checks.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "product_id": source_ctx.get("product_id") or "",
+                "launch_id": source_ctx.get("launch_id") or 0,
+                "channels": source_ctx.get("channels") or [],
+            },
+        })
+    if a.kind == "incident_update_review":
+        # Z7 T3D — B3: founder-review gate for incident status update drafts.
+        # Fires after incident/draft_update; emits a founder_action with the draft.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "incident_id": source_ctx.get("incident_id"),
+                "product_id": source_ctx.get("product_id") or "",
+                "draft": source_ctx.get("draft") or "",
+                "status_kind": source_ctx.get("status_kind") or "investigating",
+            },
+        })
+    if a.kind == "documentation_gap_detect":
+        # Z7 T4 A8 — documentation_gap_detect: semantic-search question against
+        # per-language support_docs collection; writes docs_gap_log row when no match.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "question": source_ctx.get("question") or "",
+                "product_id": source_ctx.get("product_id") or "",
+            },
+        })
+    if a.kind == "outreach_deliverability_check":
+        # Z7 T6 A7 — outreach_deliverability_check: read-only scan of bounce+complaint
+        # rates; emits founder_action if thresholds exceeded.
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": {
+                "action": a.kind,
+                "product_id": source_ctx.get("product_id") or "",
+                "list_id": source_ctx.get("list_id") or "",
+            },
+        })
     raise ValueError(f"unknown posthook kind: {a.kind!r}")
+
+
+async def _enrich_integration_review_payload(payload: dict) -> dict:
+    """Z3 T2C — run extract_signatures and inject the result into *payload*.
+
+    Called from ``_apply_request_posthook`` in the async path so we can
+    properly await the mr_roboto verb without wrapping in sync hacks.
+    Best-effort: any failure returns the original payload unchanged.
+    """
+    all_produces = list(payload.get("all_sub_task_produces") or [])
+    workspace_path = payload.get("workspace_path") or None
+    if not all_produces:
+        return payload
+    try:
+        from mr_roboto.extract_signatures import extract_signatures as _es
+        sig_result = await _es(
+            target_files=all_produces,
+            workspace_path=workspace_path,
+        )
+        return {
+            **payload,
+            "signatures": sig_result.get("signatures") or {},
+            "mismatches": sig_result.get("mismatches") or [],
+        }
+    except Exception:
+        # Best-effort — never block the reviewer dispatch
+        return payload
 
 
 async def _apply_grounding_verdict(
@@ -848,6 +1890,15 @@ async def _apply_grounding_verdict(
             await update_task(
                 verdict.source_task_id, context=_json.dumps(ctx),
             )
+        # Z10 wire-fix F8 — grounding-PASS resolves confidence claim true.
+        try:
+            await _record_and_resolve_confidence(
+                task_id=verdict.source_task_id, correct=True,
+                source="grounding",
+            )
+        except Exception as _e:
+            logger.debug("confidence claim record failed (grounding pass)",
+                         task_id=verdict.source_task_id, error=str(_e))
         return
 
     raw = verdict.raw or {}
@@ -902,6 +1953,10 @@ async def _apply_grounding_verdict(
             source, error=error_str or "grounding gate exhausted",
             category="quality", attempts=attempts,
         )
+        await _maybe_emit_lesson_from_posthook_fail(
+            source=source, kind="grounding",
+            error_str=error_str, feedback=feedback, attempts=attempts,
+        )
         return
 
     ctx["_schema_error"] = feedback
@@ -918,6 +1973,16 @@ async def _apply_grounding_verdict(
         next_retry_at=None,
         context=_json.dumps(ctx),
     )
+
+    # Z10 wire-fix F8 — grounding-FAIL resolves confidence claim false.
+    try:
+        await _record_and_resolve_confidence(
+            task_id=verdict.source_task_id, correct=False,
+            source="grounding",
+        )
+    except Exception as _e:
+        logger.debug("confidence claim record (grounding reject) failed",
+                     task_id=verdict.source_task_id, error=str(_e))
 
 
 async def _apply_verify_artifacts_verdict(
@@ -1017,6 +2082,10 @@ async def _apply_verify_artifacts_verdict(
             source, error=error_str or "verify_artifacts gate exhausted",
             category="quality", attempts=attempts,
         )
+        await _maybe_emit_lesson_from_posthook_fail(
+            source=source, kind="verify_artifacts",
+            error_str=error_str, feedback=feedback, attempts=attempts,
+        )
         return
 
     ctx["_schema_error"] = feedback
@@ -1075,10 +2144,17 @@ async def _apply_code_review_verdict(
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
             except Exception:
                 pass
-        else:
-            await update_task(
-                verdict.source_task_id, context=_json.dumps(ctx),
+        # Z10 T4B — record + resolve confidence claim against this reviewer
+        # verdict. record+resolve in one go: the verdict IS the resolution
+        # signal, no need for a separate pending row.
+        try:
+            await _record_and_resolve_confidence(
+                task_id=verdict.source_task_id, correct=True,
+                source="reviewer_verdict",
             )
+        except Exception as _e:
+            logger.debug("confidence claim record failed",
+                         task_id=verdict.source_task_id, error=str(_e))
         return
 
     # Fail path
@@ -1131,6 +2207,161 @@ async def _apply_code_review_verdict(
             source, error=error_str or "code review gate exhausted",
             category="quality", attempts=attempts,
         )
+        await _maybe_emit_lesson_from_posthook_fail(
+            source=source, kind="code_review",
+            error_str=error_str, feedback=feedback, attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
+
+    # Z10 T4B — reviewer rejection: confidence claim resolves as incorrect
+    try:
+        await _record_and_resolve_confidence(
+            task_id=verdict.source_task_id, correct=False,
+            source="reviewer_verdict",
+        )
+    except Exception as _e:
+        logger.debug("confidence claim record (reject) failed",
+                     task_id=verdict.source_task_id, error=str(_e))
+
+    # B10 telemetry: code-reviewer rejection is a reviewer_reject rework
+    # signal. See _retry_or_dlq for the same-step / cross-band rationale.
+    if source.get("mission_id"):
+        try:
+            from src.telemetry.rework import record_rollback
+            phase_label = _task_phase_label(source, ctx)
+            if phase_label:
+                await record_rollback(
+                    mission_id=int(source["mission_id"]),
+                    from_phase=phase_label,
+                    to_phase=str(ctx.get("rollback_to_phase") or phase_label),
+                    reason="reviewer_reject",
+                    triggered_by="code_reviewer",
+                )
+        except Exception as _exc:
+            logger.debug("rework telemetry skipped (review)",
+                         task_id=source.get("id"), error=str(_exc))
+
+
+async def _apply_test_run_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a test_run post-hook verdict back to the source task."""
+    import json as _json
+    from src.infra.db import update_task
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "test_run"]
+        ctx["_pending_posthooks"] = new_pending
+        # Surface slow-suite warning into context without blocking.
+        raw = verdict.raw or {}
+        if raw.get("warning"):
+            ctx["_test_run_warning"] = raw["warning"]
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    # Fail path: blocker on any red result (failed/errors > 0, timed_out,
+    # zero-collected = import error, spawn error).
+    raw = verdict.raw or {}
+    failed_n = int(raw.get("failed") or 0)
+    errors_n = int(raw.get("errors") or 0)
+    total_n = int(raw.get("total") or 0)
+    timed_out = bool(raw.get("timed_out"))
+    spawn_err = raw.get("error") or ""
+    stdout_tail = (raw.get("stdout_tail") or "")[:400]
+
+    if timed_out:
+        error_str = "test_run: suite timed out"
+    elif spawn_err:
+        error_str = f"test_run: spawn error: {spawn_err}"[:500]
+    elif total_n == 0:
+        error_str = "test_run: 0 tests collected (possible import error)"
+    else:
+        error_str = (
+            f"test_run: {failed_n} failed, {errors_n} errors, "
+            f"{total_n} total."
+        )
+    if stdout_tail:
+        error_str = (error_str + f" output={stdout_tail!r}")[:500]
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    feedback = (
+        "Tests you wrote are failing. Fix the implementation (or the test "
+        "if it is wrong) so the suite goes green. "
+        f"Details: {error_str}"
+    )
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "test_run gate exhausted",
+            category="quality", attempts=attempts,
+        )
         return
 
     ctx["_schema_error"] = feedback
@@ -1149,6 +2380,764 @@ async def _apply_code_review_verdict(
     )
 
 
+async def _apply_semgrep_warning_verdict(
+    kind: str,
+    findings_ctx_key: str,
+    dlq_reason_ctx_key: str,
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Shared implementation for warning-only semgrep post-hook kinds.
+
+    Used by both pattern_lint (T2C) and design_system_check (T3C).  The two
+    callers differ only in the ``kind`` name used to remove the pending entry
+    and the ctx keys used to surface findings.
+
+    Parameters
+    ----------
+    kind:
+        The post-hook kind string (e.g. ``"pattern_lint"``).
+    findings_ctx_key:
+        Context key under which findings list is stored
+        (e.g. ``"_pattern_lint_findings"``).
+    dlq_reason_ctx_key:
+        Context key for DLQ soft-drop reason (unused here; present for
+        symmetry with ``_posthook_dlq_cascade``).
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    findings = raw.get("findings") or []
+    skipped = bool(raw.get("skipped"))
+    skipped_platform = bool(raw.get("skipped_platform"))
+
+    if findings:
+        ctx[findings_ctx_key] = findings[:50]
+        blocker_count = int(raw.get("blocker_count") or 0)
+        warning_count = int(raw.get("warning_count") or 0)
+        logger.info(
+            f"{kind}: findings surfaced (warning-only, not retrying)",
+            source_id=verdict.source_task_id,
+            findings=len(findings),
+            blockers=blocker_count,
+            warnings=warning_count,
+            skipped=skipped,
+        )
+    elif skipped:
+        if skipped_platform:
+            logger.warning(
+                f"{kind}: semgrep gate DID NOT RUN — platform skip "
+                f"(Windows, no Docker fallback). Gate is NOT enforced.",
+                source_id=verdict.source_task_id,
+                kind=kind,
+            )
+            ctx[f"_{kind}_platform_skip"] = True
+        else:
+            logger.warning(
+                f"{kind}: semgrep not installed — gate skipped",
+                source_id=verdict.source_task_id,
+            )
+
+    new_pending = [k for k in pending if k != kind]
+    ctx["_pending_posthooks"] = new_pending
+
+    if not new_pending:
+        await update_task(
+            verdict.source_task_id,
+            status="completed",
+            context=_json.dumps(ctx),
+            error=None,
+            error_category=None,
+            next_retry_at=None,
+            retry_reason=None,
+            failed_in_phase=None,
+        )
+        await _spawn_workflow_advance_if_mission(source, verdict.raw)
+        try:
+            from general_beckman import _send_step_progress
+            from src.infra.db import get_task
+            fresh = await get_task(verdict.source_task_id)
+            if fresh:
+                await _send_step_progress(fresh, "completed", verdict.raw or {})
+        except Exception:
+            pass
+    else:
+        await update_task(
+            verdict.source_task_id,
+            context=_json.dumps(ctx),
+        )
+
+
+async def _apply_semgrep_blocker_verdict(
+    kind: str,
+    findings_ctx_key: str,
+    dlq_reason_ctx_key: str,
+    blocker_threshold: str,
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Blocker-severity semgrep post-hook verdict.
+
+    Mirrors _apply_test_run_verdict shape: retry-with-feedback on findings,
+    bonus-budget + DLQ-on-exhaust. Soft-skip preserved when semgrep absent.
+
+    Parameters
+    ----------
+    kind:
+        Post-hook kind string (e.g. ``"pattern_lint"``).
+    findings_ctx_key:
+        Context key for findings list.
+    dlq_reason_ctx_key:
+        Context key for DLQ reason.
+    blocker_threshold:
+        Severity level that triggers blocking (e.g. ``"ERROR"``).
+        Findings with severity >= threshold cause a retry.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    findings = raw.get("findings") or []
+    skipped = bool(raw.get("skipped"))
+    skipped_platform = bool(raw.get("skipped_platform"))
+
+    # Soft-skip: semgrep not installed → advance, but surface platform skips
+    # as WARNING so reviewers know the gate did not enforce anything.
+    if skipped:
+        if skipped_platform:
+            logger.warning(
+                f"{kind}: semgrep gate DID NOT RUN — platform skip "
+                f"(Windows, no Docker fallback). Gate is NOT enforced. "
+                f"Install semgrep via WSL or run Docker to enable this gate.",
+                source_id=verdict.source_task_id,
+                kind=kind,
+            )
+            # Stamp the platform-skip flag into context so mission audit logs
+            # and downstream consumers can distinguish a real pass from a skip.
+            ctx[f"_{kind}_platform_skip"] = True
+        else:
+            logger.warning(
+                f"{kind}: semgrep not installed — gate skipped "
+                f"(non-Windows; install semgrep to enable enforcement)",
+                source_id=verdict.source_task_id,
+            )
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id,
+                status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Separate blocker-level findings from sub-threshold findings.
+    #
+    # blocker_threshold is a semgrep severity string (ERROR / WARNING / INFO).
+    # A finding blocks the source when its severity is >= threshold.
+    #
+    # When the threshold value is the posthook severity word "blocker" or
+    # "warning" (i.e. caller passed `default_severity` straight through), it
+    # is reinterpreted: "blocker" means "this kind gates aggressively" → use
+    # the LOWEST semgrep severity (INFO) so ANY finding blocks. "warning"
+    # means "non-fatal" → use ERROR so only the worst findings block.
+    # Step context can override via `semgrep_blocker_threshold`.
+    _POSTHOOK_TO_SEMGREP = {"blocker": "WARNING", "warning": "ERROR"}
+    _SEVERITY_ORDER = {"ERROR": 3, "WARNING": 2, "INFO": 1}
+    normalised_threshold = _POSTHOOK_TO_SEMGREP.get(
+        blocker_threshold.lower(), blocker_threshold.upper()
+    )
+    threshold_level = _SEVERITY_ORDER.get(normalised_threshold.upper(), 2)
+    blocker_findings = [
+        f for f in findings
+        if _SEVERITY_ORDER.get((f.get("severity") or "WARNING").upper(), 2) >= threshold_level
+    ]
+
+    if not blocker_findings:
+        # All findings below threshold → warning surface + advance (old behaviour).
+        if findings:
+            ctx[findings_ctx_key] = findings[:50]
+            logger.info(
+                f"{kind}: {len(findings)} finding(s) below blocker threshold, warning only",
+                source_id=verdict.source_task_id,
+                threshold=blocker_threshold,
+            )
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id,
+                status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Blocker path: retry-with-feedback.
+    ctx[findings_ctx_key] = blocker_findings[:50]
+
+    finding_strs = [
+        f"{f.get('path','?')}:{f.get('line','?')} {f.get('rule_id','?')} {f.get('message','')}"
+        for f in blocker_findings[:10]
+    ]
+    error_str = (
+        f"{kind}: {len(blocker_findings)} blocker finding(s). "
+        f"Fix: {'; '.join(finding_strs)}"
+    )[:500]
+
+    feedback = (
+        f"Semgrep found {len(blocker_findings)} pattern violation(s) that must be fixed. "
+        f"Details: {error_str}"
+    )
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or f"{kind} blocker gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
+
+
+async def _apply_pattern_lint_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T2C — routes by registry default_severity (blocker or warning)."""
+    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    spec = POST_HOOK_REGISTRY.get("pattern_lint")
+    default_severity = (spec.default_severity if spec else "warning")
+    step_threshold = ctx.get("semgrep_blocker_threshold") or default_severity
+    if default_severity == "blocker":
+        await _apply_semgrep_blocker_verdict(
+            kind="pattern_lint",
+            findings_ctx_key="_pattern_lint_findings",
+            dlq_reason_ctx_key="_pattern_lint_dlq_reason",
+            blocker_threshold=step_threshold,
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+    else:
+        await _apply_semgrep_warning_verdict(
+            kind="pattern_lint",
+            findings_ctx_key="_pattern_lint_findings",
+            dlq_reason_ctx_key="_pattern_lint_dlq_reason",
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+
+
+async def _apply_design_system_check_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T3C — routes by registry default_severity (blocker or warning)."""
+    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    spec = POST_HOOK_REGISTRY.get("design_system_check")
+    default_severity = (spec.default_severity if spec else "warning")
+    step_threshold = ctx.get("semgrep_blocker_threshold") or default_severity
+    if default_severity == "blocker":
+        await _apply_semgrep_blocker_verdict(
+            kind="design_system_check",
+            findings_ctx_key="_design_system_findings",
+            dlq_reason_ctx_key="_design_system_check_dlq_reason",
+            blocker_threshold=step_threshold,
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+    else:
+        await _apply_semgrep_warning_verdict(
+            kind="design_system_check",
+            findings_ctx_key="_design_system_findings",
+            dlq_reason_ctx_key="_design_system_check_dlq_reason",
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+
+
+async def _apply_type_sync_verdict(
+    kind: str,
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T3B — openapi_sync / typescript_sync shared verdict.
+
+    Drift detected → blocker retry with feedback. Skipped → soft-advance.
+    No drift → advance.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    skipped = bool(raw.get("skipped"))
+    diff_present = bool(raw.get("diff_present"))
+    target_path = str(raw.get("target_path") or "")
+    generator_cmd = list(raw.get("generator_cmd") or [])
+
+    # Slow-regen warning — surface into ctx but never block.
+    if raw.get("warning"):
+        ctx[f"_{kind}_warning"] = raw["warning"]
+
+    if not verdict.passed or diff_present:
+        # Soft-skip: generator not installed → advance (v1 ramp).
+        if skipped:
+            logger.debug(
+                "%s: generator not installed, soft-skipped",
+                kind, source_id=verdict.source_task_id,
+            )
+            new_pending = [k for k in pending if k != kind]
+            ctx["_pending_posthooks"] = new_pending
+            if not new_pending:
+                await update_task(
+                    verdict.source_task_id,
+                    status="completed",
+                    context=_json.dumps(ctx),
+                    error=None,
+                    error_category=None,
+                    next_retry_at=None,
+                    retry_reason=None,
+                    failed_in_phase=None,
+                )
+                await _spawn_workflow_advance_if_mission(source, verdict.raw)
+                try:
+                    from general_beckman import _send_step_progress
+                    from src.infra.db import get_task
+                    fresh = await get_task(verdict.source_task_id)
+                    if fresh:
+                        await _send_step_progress(fresh, "completed", verdict.raw or {})
+                except Exception:
+                    pass
+            else:
+                await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+            return
+
+        # Drift or internal failure → blocker retry with feedback.
+        diff_excerpt = str(raw.get("diff_excerpt") or "")
+        error_str = (
+            f"{kind}: Drift detected in {target_path!r}. "
+            f"Regenerate via {generator_cmd!r}."
+        )
+        if diff_excerpt:
+            error_str = (error_str + f" Diff:\n{diff_excerpt}")[:500]
+
+        attempts = int(source.get("worker_attempts") or 0) + 1
+        max_attempts = int(source.get("max_worker_attempts") or 15)
+        ctx["_pending_posthooks"] = []
+
+        feedback = (
+            f"The committed {target_path!r} is out of sync with the generated "
+            f"output. Run: {' '.join(generator_cmd)!r} and commit the updated file. "
+            f"Details: {error_str}"
+        )
+
+        if attempts >= max_attempts:
+            from general_beckman.retry import _MAX_BONUS
+            bonus_count = int(ctx.get("_bonus_count", 0))
+            progress = _parse_progress(source)
+            can_bonus = (
+                progress is not None
+                and progress >= 0.5
+                and bonus_count < _MAX_BONUS
+            )
+            if can_bonus:
+                ctx["_bonus_count"] = bonus_count + 1
+                max_attempts += 1
+                ctx["_schema_error"] = feedback
+                prev_output = source.get("result") or ""
+                if isinstance(prev_output, str) and prev_output.strip():
+                    ctx["_prev_output"] = prev_output[:6000]
+                _stamp_retry_feedback(ctx, attempts)
+                await update_task(
+                    verdict.source_task_id,
+                    status="pending",
+                    worker_attempts=attempts,
+                    max_worker_attempts=max_attempts,
+                    error=error_str[:500],
+                    error_category="quality",
+                    next_retry_at=None,
+                    context=_json.dumps(ctx),
+                )
+                return
+            await _dlq_write(
+                source, error=error_str[:500] or f"{kind} gate exhausted",
+                category="quality", attempts=attempts,
+            )
+            return
+
+        ctx["_schema_error"] = feedback
+        prev_output = source.get("result") or ""
+        if isinstance(prev_output, str) and prev_output.strip():
+            ctx["_prev_output"] = prev_output[:6000]
+        _stamp_retry_feedback(ctx, attempts)
+        await update_task(
+            verdict.source_task_id,
+            status="pending",
+            worker_attempts=attempts,
+            error=error_str[:500],
+            error_category="quality",
+            next_retry_at=None,
+            context=_json.dumps(ctx),
+        )
+        return
+
+    # Pass — no drift.
+    new_pending = [k for k in pending if k != kind]
+    ctx["_pending_posthooks"] = new_pending
+    if not new_pending:
+        await update_task(
+            verdict.source_task_id,
+            status="completed",
+            context=_json.dumps(ctx),
+            error=None,
+            error_category=None,
+            next_retry_at=None,
+            retry_reason=None,
+            failed_in_phase=None,
+        )
+        await _spawn_workflow_advance_if_mission(source, verdict.raw)
+        try:
+            from general_beckman import _send_step_progress
+            from src.infra.db import get_task
+            fresh = await get_task(verdict.source_task_id)
+            if fresh:
+                await _send_step_progress(fresh, "completed", verdict.raw or {})
+        except Exception:
+            pass
+    else:
+        await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+
+
+async def _apply_migration_apply_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z2 T3A — migration_apply verdict.
+
+    Apply error → blocker retry. Slow migration → warning surfaced, no
+    block. Skipped (testcontainers absent) → pass through.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    skipped = bool(raw.get("skipped"))
+    warning = raw.get("warning") or ""
+
+    # Skipped or slow-warning pass-through.
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "migration_apply"]
+        ctx["_pending_posthooks"] = new_pending
+        if warning:
+            ctx["_migration_apply_warning"] = warning
+        if skipped:
+            logger.debug(
+                "migration_apply: soft-skipped",
+                source_id=verdict.source_task_id,
+                reason=raw.get("reason") or "",
+            )
+        elif warning:
+            logger.info(
+                "migration_apply: slow migration warning",
+                source_id=verdict.source_task_id,
+                warning=warning,
+                duration_s=raw.get("duration_s"),
+            )
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    # Fail path — blocker: migration apply error.
+    error_detail = raw.get("error") or ""
+    stack_used = raw.get("stack_used") or ""
+    stderr_tail = (raw.get("stderr_tail") or "")[:300]
+    error_str = (
+        f"migration_apply: apply error (stack={stack_used}). "
+        f"{error_detail}"
+        + (f" stderr={stderr_tail!r}" if stderr_tail else "")
+    )[:500]
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    feedback = (
+        "Migration apply failed. Fix the migration file so it applies "
+        "cleanly to an empty database. "
+        f"Error: {error_str}"
+    )
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None
+            and progress >= 0.5
+            and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id,
+                status="pending",
+                worker_attempts=attempts,
+                max_worker_attempts=max_attempts,
+                error=error_str,
+                error_category="quality",
+                next_retry_at=None,
+                context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "migration_apply gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id,
+        status="pending",
+        worker_attempts=attempts,
+        error=error_str,
+        error_category="quality",
+        next_retry_at=None,
+        context=_json.dumps(ctx),
+    )
+
+
+# Z1 mechanical post-hook kinds — handled by the shared
+# _apply_z1_mechanical_verdict below. Blocker kinds DLQ the source on
+# fail; warning kinds soft-drop the pending kind and let source advance.
+_Z1_BLOCKER_KINDS: frozenset[str] = frozenset({
+    "compliance_template_present",
+    "compliance_blocker_check",
+    "prior_art_min_coverage",
+    "verify_falsification_present",
+    "critic_gate",  # Z1 T5C — veto fails source
+})
+
+_Z1_WARNING_KINDS: frozenset[str] = frozenset({
+    "find_similar_missions",
+    "index_idea_fingerprint",
+    "surface_prior_mission_hints",
+})
+
+_Z1_MECHANICAL_KINDS: frozenset[str] = _Z1_BLOCKER_KINDS | _Z1_WARNING_KINDS
+
+
+async def _apply_z1_mechanical_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z1 mechanical post-hook verdict.
+
+    Pass: drop ``kind`` from pending; if no other post-hooks remain,
+    mark source completed and advance the workflow.
+
+    Fail (blocker kinds): DLQ source with the error string.  No retry —
+    these are deterministic shape checks against artifacts that are
+    already on disk; a retry of the source step would re-emit the same
+    artifact unless the founder intervenes.  We surface DLQ so the
+    founder reviews the report path (e.g. similar_missions.md,
+    prior_art_report.json) and either fixes the artifact directly or
+    branches the mission.
+
+    Fail (warning kinds): soft-drop the pending kind and advance source.
+    The handler's own side-effects (write report + Telegram notify)
+    surface the issue; the source step itself shouldn't block.
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    kind = verdict.kind
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, verdict.raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", verdict.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(
+                verdict.source_task_id, context=_json.dumps(ctx),
+            )
+        return
+
+    raw = verdict.raw or {}
+
+    # Warning kind — soft-drop pending and advance regardless.
+    if kind in _Z1_WARNING_KINDS:
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        ctx[f"_{kind}_warning"] = (
+            raw.get("error") or raw.get("summary") or "needs_review"
+        )[:300]
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, raw)
+            except Exception:
+                pass
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", raw)
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        logger.info(
+            "Z1 warning post-hook soft-dropped",
+            kind=kind, source_id=verdict.source_task_id,
+        )
+        return
+
+    # Blocker kind — DLQ source. No retry-with-feedback: these checks
+    # are deterministic against on-disk artifacts; founder must intervene.
+    error_detail = (
+        raw.get("error")
+        or str(raw.get("problems"))
+        or str(raw.get("missing"))
+        or str(raw.get("pending"))
+        or "blocker post-hook failed"
+    )
+    error_str = f"{kind}: {error_detail}"[:500]
+    ctx["_pending_posthooks"] = []
+    ctx[f"_{kind}_dlq_reason"] = error_str[:300]
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    await _dlq_write(
+        source, error=error_str, category="quality", attempts=attempts,
+    )
+    await _maybe_emit_lesson_from_posthook_fail(
+        source=source, kind=kind,
+        error_str=error_str, feedback=error_str, attempts=attempts,
+    )
+
+
 def _posthook_title(a: RequestPostHook, source: dict) -> str:
     if a.kind == "grade":
         return f"Grade task #{a.source_task_id}"
@@ -1161,7 +3150,402 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Code review for #{a.source_task_id}"
     if a.kind == "grounding":
         return f"Grounding check for #{a.source_task_id}"
+    if a.kind == "test_run":
+        return f"Test run for #{a.source_task_id}"
+    if a.kind == "mobile_smoke":
+        return f"Mobile smoke flow for #{a.source_task_id}"
+    if a.kind == "pattern_lint":
+        return f"Pattern lint for #{a.source_task_id}"
+    if a.kind == "design_system_check":
+        return f"Design system check for #{a.source_task_id}"
+    if a.kind == "openapi_sync":
+        return f"OpenAPI sync check for #{a.source_task_id}"
+    if a.kind == "typescript_sync":
+        return f"TypeScript sync check for #{a.source_task_id}"
+    if a.kind == "migration_apply":
+        return f"Migration apply for #{a.source_task_id}"
+    if a.kind == "compliance_template_present":
+        return f"Compliance template presence for #{a.source_task_id}"
+    if a.kind == "compliance_blocker_check":
+        return f"Compliance blocker check for #{a.source_task_id}"
+    if a.kind == "find_similar_missions":
+        return f"Find similar missions for #{a.source_task_id}"
+    if a.kind == "index_idea_fingerprint":
+        return f"Index idea fingerprint for #{a.source_task_id}"
+    if a.kind == "surface_prior_mission_hints":
+        return f"Surface prior mission hints for #{a.source_task_id}"
+    if a.kind == "prior_art_min_coverage":
+        return f"Prior art min coverage for #{a.source_task_id}"
+    if a.kind == "verify_falsification_present":
+        return f"Verify falsification present for #{a.source_task_id}"
     return f"Posthook {a.kind} for #{a.source_task_id}"
+
+
+async def _apply_simple_blocker_verdict(
+    kind: str,
+    source: dict,
+    ctx: dict,
+    pending: list[str],
+    verdict: PostHookVerdict,
+    feedback_prefix: str,
+) -> None:
+    """Z3 T3 — generic pass/fail handler for mechanical security/access/contract/perf hooks.
+
+    Pass: drop *kind* from pending; mark source completed when nothing left.
+    Fail: retry source with feedback; DLQ on attempts exhausted (bonus path honored).
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    skipped = bool(raw.get("skipped"))
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != kind]
+        ctx["_pending_posthooks"] = new_pending
+        if skipped:
+            logger.debug(f"{kind}: soft-skipped",
+                         source_id=verdict.source_task_id,
+                         reason=raw.get("reason") or "")
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None, next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", raw)
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Fail path.
+    findings = raw.get("findings") or []
+    findings_summary = "; ".join(
+        (f.get("why") or f.get("kind") or str(f))[:80]
+        for f in findings[:3]
+    )
+    error_str = f"{feedback_prefix}: {findings_summary}"[:500]
+    feedback = (
+        f"{feedback_prefix} failed. Fix the issues and re-emit. "
+        f"Findings: {findings_summary}"
+    )
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None and progress >= 0.5 and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id, status="pending",
+                worker_attempts=attempts, max_worker_attempts=max_attempts,
+                error=error_str, error_category="quality",
+                next_retry_at=None, context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(source, error=error_str or f"{kind} gate exhausted",
+                         category="quality", attempts=attempts)
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id, status="pending",
+        worker_attempts=attempts, error=error_str, error_category="quality",
+        next_retry_at=None, context=_json.dumps(ctx),
+    )
+
+
+# Z3 T3A — security_review verdict is a thin wrapper around the generic helper
+# above. Tests import this name directly.
+async def _apply_security_review_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    await _apply_simple_blocker_verdict(
+        kind="security_review", source=source, ctx=ctx, pending=pending,
+        verdict=verdict, feedback_prefix="security_review gate",
+    )
+
+
+# Z5 T4b — mobile_smoke verdict. The Maestro verb result has no `findings`
+# list (it carries {flows_run, passed, failed, exit, error}), so the generic
+# _apply_simple_blocker_verdict's findings-based summary would be empty.
+# This handler mirrors _apply_test_run_verdict: pass drops the kind from
+# pending; fail retries the source with the Maestro flow failure detail and
+# DLQs on attempts-exhausted (bonus path honoured). A soft-skipped run
+# (Maestro CLI absent) arrives as passed=True via rewrite.py Rule 0b reading
+# the `ok` key — so it drains pending without blocking.
+async def _apply_mobile_smoke_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a mobile_smoke (Maestro flow) post-hook verdict to the source."""
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+
+    if verdict.passed:
+        new_pending = [k for k in pending if k != "mobile_smoke"]
+        ctx["_pending_posthooks"] = new_pending
+        if raw.get("skipped"):
+            logger.debug(
+                "mobile_smoke: soft-skipped",
+                source_id=verdict.source_task_id,
+                reason=raw.get("reason") or "",
+            )
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None, next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", raw)
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Fail path: at least one Maestro flow failed (or the verb itself failed).
+    failed_n = int(raw.get("failed") or 0)
+    flows_n = int(raw.get("flows_run") or 0)
+    error_detail = raw.get("error") or ""
+    stdout_tail = (raw.get("stdout_tail") or "")[:400]
+    if error_detail:
+        error_str = f"mobile_smoke: {error_detail}"
+    elif failed_n:
+        error_str = f"mobile_smoke: {failed_n}/{flows_n} Maestro flow(s) failed"
+    else:
+        error_str = "mobile_smoke: Maestro gate failed"
+    if stdout_tail:
+        error_str = (error_str + f" output={stdout_tail!r}")[:500]
+    error_str = error_str[:500]
+
+    feedback = (
+        "The Maestro mobile smoke flow failed (sign in → onboard → core "
+        "action → sign out). Fix the app behaviour or the flow YAML so the "
+        f"Maestro run goes green. Details: {error_str}"
+    )
+
+    attempts = int(source.get("worker_attempts") or 0) + 1
+    max_attempts = int(source.get("max_worker_attempts") or 15)
+    ctx["_pending_posthooks"] = []
+
+    if attempts >= max_attempts:
+        from general_beckman.retry import _MAX_BONUS
+        bonus_count = int(ctx.get("_bonus_count", 0))
+        progress = _parse_progress(source)
+        can_bonus = (
+            progress is not None and progress >= 0.5 and bonus_count < _MAX_BONUS
+        )
+        if can_bonus:
+            ctx["_bonus_count"] = bonus_count + 1
+            max_attempts += 1
+            ctx["_schema_error"] = feedback
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id, status="pending",
+                worker_attempts=attempts, max_worker_attempts=max_attempts,
+                error=error_str, error_category="quality",
+                next_retry_at=None, context=_json.dumps(ctx),
+            )
+            return
+        await _dlq_write(
+            source, error=error_str or "mobile_smoke gate exhausted",
+            category="quality", attempts=attempts,
+        )
+        return
+
+    ctx["_schema_error"] = feedback
+    prev_output = source.get("result") or ""
+    if isinstance(prev_output, str) and prev_output.strip():
+        ctx["_prev_output"] = prev_output[:6000]
+    _stamp_retry_feedback(ctx, attempts)
+    await update_task(
+        verdict.source_task_id, status="pending",
+        worker_attempts=attempts, error=error_str, error_category="quality",
+        next_retry_at=None, context=_json.dumps(ctx),
+    )
+
+
+async def _maybe_spawn_adr_drift_judge(
+    *, source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict
+) -> bool:
+    """Z3 R3 — spawn adr_drift_judge LLM task for judgment_only ADRs.
+
+    Reads ``verdict.raw.judgment_only_adr_ids`` (populated by check_adr_drift
+    when an ADR's falsification_signal is v1-string / null / unknown-shape).
+    Enqueues a single ``adr_drift_judge`` task carrying the ADR ids + paths
+    + produced_files.
+
+    MUST be called BEFORE ``_apply_simple_blocker_verdict`` for the
+    adr_drift_check verdict: it appends ``adr_drift_judge`` to both *ctx*'s
+    ``_pending_posthooks`` and the in-memory *pending* list IN PLACE, so the
+    subsequent simple_blocker pass sees a non-empty pending list and does NOT
+    prematurely complete the source / fire workflow_advance. The judge's own
+    verdict (kind=``adr_drift_judge``, also in the simple_blocker tuple) then
+    drains the last pending entry and completes the source properly.
+
+    Verdict precedence: mechanical-fail > judge-fail > judge-pass — enforced
+    by the caller gating on ``verdict.passed`` (judge only spawns on a
+    mechanical pass).
+
+    Returns True when a judge was spawned (ctx/pending mutated), else False.
+    """
+    raw = verdict.raw or {}
+    judgment_ids: list[str] = list(raw.get("judgment_only_adr_ids") or [])
+    if not judgment_ids:
+        return False
+
+    import json as _json
+    from src.infra.db import add_task
+
+    workspace_path = ctx.get("workspace_path") or ""
+    produced = list(ctx.get("produces") or [])
+
+    # Resolve adr_paths from workspace .adr/ dir.
+    adr_paths: dict[str, str] = {}
+    if workspace_path:
+        import os as _os
+        adr_dir = _os.path.join(workspace_path, ".adr")
+        for adr_id in judgment_ids:
+            candidate = _os.path.join(adr_dir, f"{adr_id}.json")
+            if _os.path.isfile(candidate):
+                adr_paths[adr_id] = candidate
+
+    judge_ctx = {
+        "source_task_id": source.get("id"),
+        "posthook_kind": "adr_drift_judge",
+        "adr_ids": judgment_ids,
+        "adr_paths": adr_paths,
+        "produced_files": produced,
+        "workspace_path": workspace_path,
+    }
+
+    # Mutate ctx + pending IN PLACE so the caller's simple_blocker pass keeps
+    # the source ungraded until the judge verdict lands.
+    if "adr_drift_judge" not in pending:
+        pending.append("adr_drift_judge")
+    ctx["_pending_posthooks"] = list(pending)
+
+    await add_task(
+        title=f"ADR drift judge for {len(judgment_ids)} judgment_only ADR(s)",
+        description=(
+            "Judge whether the produced files drift from the listed ADRs. "
+            "Read each ADR + relevant files; emit per-ADR verdict."
+        ),
+        agent_type="adr_drift_judge",
+        context=_json.dumps(judge_ctx),
+        mission_id=source.get("mission_id"),
+    )
+
+    logger.info(
+        "adr_drift_judge spawned",
+        source_id=source.get("id"),
+        adr_count=len(judgment_ids),
+    )
+    return True
+
+
+async def _maybe_spawn_integration_bisect(
+    *, source: dict, ctx: dict, verdict: PostHookVerdict
+) -> bool:
+    """Z3 R4 — spawn an advisory integration_bisect mechanical task.
+
+    Called when an ``integration_replay`` verdict failed. Reads the replayed
+    commit list from ``verdict.raw.commits_replayed`` and enqueues a
+    fire-and-forget mechanical ``integration_bisect`` task. The bisect verb's
+    dispatch wrapper (mr_roboto.__init__) upserts a ``mission_lessons`` row
+    when it isolates a breaking pair — that lesson is the entire point.
+
+    NOT a post-hook: the task carries no ``source_task_id``/``posthook_kind``
+    so it never produces a PostHookVerdict and never gates the source. The
+    source has already been retried/DLQ'd by ``_apply_simple_blocker_verdict``.
+
+    Returns True when a bisect task was enqueued, else False (too few commits).
+    """
+    raw = verdict.raw or {}
+    commits = list(raw.get("commits_replayed") or [])
+    # Bisect needs at least 2 commits to narrow a pair.
+    if len(commits) < 2:
+        return False
+
+    import json as _json
+    from src.infra.db import add_task
+
+    workspace_path = ctx.get("workspace_path") or ""
+    if not workspace_path:
+        return False
+
+    suite_glob = ctx.get("integration_suite_glob") or "tests/integration/**"
+    stack = str(ctx.get("tech_stack_detected") or ctx.get("stack") or "unknown")
+
+    # Deliberately enqueued with mission_id=None: the bisect is advisory, not
+    # a workflow step. A mission-scoped task would make rewrite.py emit a
+    # spurious MissionAdvance on completion. The real mission_id is carried in
+    # the payload so the mission_lessons row is still attributed correctly.
+    await add_task(
+        title=f"Integration bisect for #{source.get('id')} ({len(commits)} commits)",
+        description=(
+            "Binary-search the replayed commit list for the regression. "
+            "Advisory — emits a mission_lessons row, does not gate."
+        ),
+        agent_type="mechanical",
+        mission_id=None,
+        context={
+            # No source_task_id / posthook_kind — deliberately NOT a post-hook.
+            "executor": "mechanical",
+            "payload": {
+                "action": "integration_bisect",
+                "commits": commits,
+                "suite_glob": suite_glob,
+                "workspace_path": workspace_path,
+                "mission_id": source.get("mission_id"),
+                "stack": stack,
+                "source_task_id": source.get("id"),
+            },
+        },
+    )
+    logger.info(
+        "integration_bisect spawned (advisory)",
+        source_id=source.get("id"), commit_count=len(commits),
+    )
+    return True
 
 
 async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
@@ -1261,6 +3645,22 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 source, error=error_str or "quality gate exhausted",
                 category="quality", attempts=attempts,
             )
+            await _maybe_emit_lesson_from_posthook_fail(
+                source=source, kind="grade",
+                error_str=error_str,
+                feedback=f"Grader rejected output: {error_str}",
+                attempts=attempts,
+            )
+            # Z10 wire-fix F8 — grade-FAIL/DLQ resolves confidence claim false.
+            try:
+                await _record_and_resolve_confidence(
+                    task_id=a.source_task_id, correct=False, source="grade",
+                )
+            except Exception as _e:
+                logger.debug(
+                    "confidence claim record (grade DLQ) failed",
+                    task_id=a.source_task_id, error=str(_e),
+                )
             return
 
         # Feed the grader's rejection text + previous output back into the
@@ -1305,12 +3705,89 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             next_retry_at=None,
             context=_json.dumps(ctx),
         )
+        # Z10 wire-fix F8 — grade-FAIL resolves confidence claim false.
+        try:
+            await _record_and_resolve_confidence(
+                task_id=a.source_task_id, correct=False, source="grade",
+            )
+        except Exception as _e:
+            logger.debug("confidence claim record (grade reject) failed",
+                         task_id=a.source_task_id, error=str(_e))
         return
 
     if a.kind == "verify_artifacts":
         await _apply_verify_artifacts_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
+        return
+
+    # Z3 T2C + T3 + T4B + T5 + Z4 T3B — integration_review/security/accessibility/
+    # contract/performance/adr_drift_check/integration_replay/adr_drift_judge/
+    # visual_review share the simple blocker-or-pass pattern: the producing
+    # verb (mechanical OR config-only LLM reviewer) emits {verdict, findings}.
+    if a.kind in (
+        "integration_review",
+        "security_review", "accessibility_review", "contract_review",
+        "performance_review", "adr_drift_check", "integration_replay",
+        "adr_drift_judge", "visual_review",
+    ):
+        # Z3 R3 — ADR drift gray-zone path: when the mechanical check passed
+        # but some ADRs were judgment_only, spawn an LLM judge. This MUST run
+        # BEFORE simple_blocker so the judge kind is in `pending` — otherwise
+        # simple_blocker completes the source + fires workflow_advance and the
+        # judge verdict can no longer gate anything. Best-effort: a spawn
+        # failure leaves pending untouched and the source completes normally.
+        if a.kind == "adr_drift_check" and a.passed:
+            try:
+                await _maybe_spawn_adr_drift_judge(
+                    source=source, ctx=ctx, pending=pending, verdict=a,
+                )
+            except Exception as _exc:
+                logger.debug(
+                    "adr_drift_judge spawn skipped",
+                    source_id=source.get("id"), error=str(_exc),
+                )
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix=f"{a.kind} gate",
+        )
+        # Z3 R4 — integration_replay fail → spawn an advisory integration_bisect
+        # mechanical task to narrow the breaking commit pair. Fire-and-forget:
+        # it is NOT a post-hook (carries no source_task_id/posthook_kind) so it
+        # never gates the source — its only job is to emit a mission_lessons
+        # row. Needs >= 2 replayed commits to bisect anything.
+        if a.kind == "integration_replay" and not a.passed:
+            try:
+                await _maybe_spawn_integration_bisect(source=source, ctx=ctx, verdict=a)
+            except Exception as _exc:
+                logger.debug(
+                    "integration_bisect spawn skipped",
+                    source_id=source.get("id"), error=str(_exc),
+                )
+        # Z4 T4A — fire founder-loop visual-review notification (best-effort).
+        if a.kind == "visual_review":
+            try:
+                from mr_roboto._visual_review_notify import enqueue_visual_review_notice
+                _vr_result = getattr(a, "result", None) or {}
+                if isinstance(_vr_result, dict):
+                    await enqueue_visual_review_notice(
+                        mission_id=int(source.get("mission_id") or 0),
+                        step_id=str(
+                            ctx.get("workflow_step_id")
+                            or ctx.get("step_id")
+                            or source.get("id")
+                            or ""
+                        ),
+                        verdict=_vr_result.get("verdict", "pass"),
+                        findings=list(_vr_result.get("findings") or []),
+                        captured_paths=list(_vr_result.get("captured_paths") or []),
+                        workspace_path=ctx.get("workspace_path") or None,
+                    )
+            except Exception as _exc:
+                logger.debug(
+                    "visual_review_notify skipped",
+                    source_id=source.get("id"), error=str(_exc),
+                )
         return
 
     if a.kind == "grounding":
@@ -1323,6 +3800,197 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         await _apply_code_review_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
+        return
+
+    if a.kind == "test_run":
+        await _apply_test_run_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "mobile_smoke":
+        await _apply_mobile_smoke_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "pattern_lint":
+        await _apply_pattern_lint_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "design_system_check":
+        await _apply_design_system_check_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "migration_apply":
+        await _apply_migration_apply_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind in ("openapi_sync", "typescript_sync"):
+        await _apply_type_sync_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind in _Z1_MECHANICAL_KINDS:
+        await _apply_z1_mechanical_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    # Z7 T1.0 — humanish-layers posthooks.
+    # copy_compliance_review is a blocker (privacy mismatch = blocker);
+    # brand_voice_lint is a blocker (per registry default_severity).
+    # briefing_compose + audit_completeness_check are warnings (advisory).
+    if a.kind == "copy_compliance_review":
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix="copy_compliance_review gate",
+        )
+        return
+
+    if a.kind == "brand_voice_lint":
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix="brand_voice_lint gate",
+        )
+        return
+
+    if a.kind in ("briefing_compose", "audit_completeness_check"):
+        # Warning severity: soft-drop pending kind and advance source.
+        import json as _json
+        from src.infra.db import update_task as _update_task
+        new_pending = [k for k in pending if k != a.kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not a.passed:
+            ctx[f"_{a.kind}_warning"] = (
+                (a.raw or {}).get("error") or (a.raw or {}).get("summary") or "needs_review"
+            )[:300]
+        if not new_pending:
+            await _update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, a.raw or {})
+            except Exception:
+                pass
+        else:
+            await _update_task(a.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Z7 T3B — demo pipeline posthook verdicts (A3 + A3.r1).
+    # Both are blockers (per registry default_severity).
+    if a.kind in ("demo_artifact_check", "demo_accessibility_check"):
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix=f"{a.kind} gate",
+        )
+        return
+
+    # Z7 T3A — A2.r1: launch_readiness_gate posthook verdict.
+    # Blocker: all 7 checks must pass before T-0 publish fires.
+    # ready / ready_with_warnings → passes gate (warnings surfaced but not blocking).
+    # blocked → keeps pending, T-0 frozen until founder acts.
+    if a.kind == "launch_readiness_gate":
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix="launch_readiness_gate",
+        )
+        return
+
+    # Z7 T3D — B3: incident_update_review posthook verdict.
+    # Blocker: founder must review the draft before publish_status is called.
+    # Pass: drop kind from pending, advance source task.
+    # Fail: keep pending, re-surface to founder.
+    if a.kind == "incident_update_review":
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix="incident_update_review gate",
+        )
+        return
+
+    # Z7 T6 A7 — outreach_deliverability_check posthook verdict.
+    # Warning severity: advisory — pauses campaign via DB flag + founder_action,
+    # but never blocks the source outreach/send task from completing.
+    if a.kind == "outreach_deliverability_check":
+        import json as _json
+        from src.infra.db import update_task as _update_task
+        new_pending = [k for k in pending if k != a.kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not a.passed:
+            ctx["_outreach_deliverability_warning"] = (
+                (a.raw or {}).get("issue") or (a.raw or {}).get("error") or "needs_review"
+            )[:300]
+        if not new_pending:
+            await _update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, a.raw or {})
+            except Exception:
+                pass
+        else:
+            await _update_task(a.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Z7 T4 A8 — documentation_gap_detect posthook verdict.
+    # Warning severity: advisory — logs docs gaps but doesn't block escalation.
+    # Always soft-drops the kind from pending and advances the source task.
+    if a.kind == "documentation_gap_detect":
+        import json as _json
+        from src.infra.db import update_task as _update_task
+        new_pending = [k for k in pending if k != a.kind]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await _update_task(a.source_task_id, status="completed",
+                               context=_json.dumps(ctx))
+        else:
+            await _update_task(a.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Yalayut Phase 4 — capture_hint posthook verdict.
+    # Warning severity: pure telemetry (replaces the old skills.py
+    # auto-capture). A capture miss must NEVER block or DLQ the source —
+    # always soft-drop the kind. The mechanical executor no-ops on
+    # <2-iteration / failed tasks and returns ok=True even on internal
+    # failure, so the verdict is effectively always passed. Without this
+    # branch the kind falls through to the "unknown kind" warning at the
+    # end of this function and the source is stranded in 'ungraded'
+    # forever (capture_hint auto-wires on every task via triggers=["*"]).
+    if a.kind == "capture_hint":
+        new_pending = [k for k in pending if k != "capture_hint"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, a.raw or {})
+            # capture_hint may be the last hook to resolve (after grade),
+            # so it owns the step-completion notification in that case.
+            try:
+                from general_beckman import _send_step_progress
+                fresh = await get_task(a.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", a.raw or {})
+            except Exception:
+                pass
+        else:
+            await update_task(a.source_task_id, context=_json.dumps(ctx))
         return
 
     if a.kind == "grade" and a.passed:
@@ -1375,6 +4043,17 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
             await update_task(
                 a.source_task_id, context=_json.dumps(ctx),
             )
+        # Z10 wire-fix F8 — grade-PASS resolves confidence claim true. Wire
+        # fires once whether or not summary post-hooks are still pending —
+        # the grader verdict is the resolution signal, summaries are
+        # orthogonal artefact extraction.
+        try:
+            await _record_and_resolve_confidence(
+                task_id=a.source_task_id, correct=True, source="grade",
+            )
+        except Exception as _e:
+            logger.debug("confidence claim record (grade pass) failed",
+                         task_id=a.source_task_id, error=str(_e))
         return
 
     if a.kind.startswith("summary:"):

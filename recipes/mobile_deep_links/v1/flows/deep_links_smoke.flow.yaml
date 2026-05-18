@@ -1,0 +1,45 @@
+# Maestro mobile-QA smoke flow — mobile_deep_links/v1
+#
+# Drives sign in -> onboard -> core action -> sign out, where the core
+# action is "open a deep link and land on the target screen". Consumed by
+# the `mobile_smoke` post-hook via the `maestro` mr_roboto verb.
+#
+# RECIPE_PARAM:APP_ID=com.example.app
+# RECIPE_PARAM:APP_SCHEME=myapp
+# RECIPE_PARAM:LOGIN_EMAIL=smoke@example.com
+# RECIPE_PARAM:LOGIN_PASSWORD=smoke-password
+#
+# The template engine substitutes `KEY` tokens before this file is
+# written. The `#` RECIPE_PARAM markers are plain YAML comments.
+appId: <<APP_ID>>
+---
+# --- launch + sign in ---------------------------------------------------
+- launchApp:
+    clearState: true
+- tapOn: "Sign in"
+- tapOn:
+    id: "email-input"
+- inputText: "<<LOGIN_EMAIL>>"
+- tapOn:
+    id: "password-input"
+- inputText: "<<LOGIN_PASSWORD>>"
+- tapOn: "Log in"
+- assertVisible: "Welcome"
+
+# --- onboard ------------------------------------------------------------
+- tapOn: "Get started"
+- assertVisible: "Home"
+
+# --- core action: open a deep link, land on the item screen -------------
+# openLink drives the OS to resolve the URL — exercises the scheme +
+# expo-router linking config end to end.
+- openLink:
+    link: "<<APP_SCHEME>>://item/42"
+- assertVisible:
+    id: "item-detail-42"
+
+# --- sign out -----------------------------------------------------------
+- tapOn:
+    id: "menu-button"
+- tapOn: "Sign out"
+- assertVisible: "Sign in"

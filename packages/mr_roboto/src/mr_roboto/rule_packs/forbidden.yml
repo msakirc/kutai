@@ -1,0 +1,43 @@
+rules:
+  - id: no-console-log
+    pattern: console.log(...)
+    message: "console.log() must not appear in production code."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  - id: no-time-sleep-in-tests
+    pattern: time.sleep(...)
+    message: "time.sleep() in test files causes flaky and slow test suites."
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - "test_*.py"
+        - "tests/**"
+        - "**/test_*.py"
+
+  - id: no-assert-true
+    pattern: assert True
+    message: "assert True is a no-op test — the assertion always passes and catches nothing."
+    languages: [python]
+    severity: ERROR
+
+  - id: no-bare-exec
+    patterns:
+      - pattern: |
+          exec(...)
+        pattern-not-inside: |
+          def $FUNC(...):
+            ...
+        pattern-not-inside: |
+          class $CLASS:
+            ...
+    message: "exec() at module scope is a code-injection risk."
+    languages: [python]
+    severity: ERROR
+
+  - id: no-bare-eval
+    pattern: eval(...)
+    message: "eval() is a code-injection risk."
+    languages: [python, javascript, typescript]
+    severity: ERROR

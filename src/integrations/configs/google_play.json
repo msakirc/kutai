@@ -1,0 +1,32 @@
+{
+  "service_name": "google_play",
+  "base_url": "https://androidpublisher.googleapis.com/androidpublisher/v3",
+  "auth_type": "oauth_service_account",
+  "auth_header": "Authorization",
+  "auth_token_field": "_synthesized",
+  "oauth_scopes": [
+    "https://www.googleapis.com/auth/androidpublisher"
+  ],
+  "actions": {
+    "list_apps": {
+      "method": "GET",
+      "path": "/applications/{package_name}/edits",
+      "required_params": ["package_name"]
+    },
+    "list_release_tracks": {
+      "method": "GET",
+      "path": "/applications/{package_name}/edits/{edit_id}/tracks",
+      "required_params": ["package_name", "edit_id"]
+    },
+    "upload_apk_metadata": {
+      "method": "PATCH",
+      "path": "/applications/{package_name}/edits/{edit_id}/listings/{language}",
+      "required_params": ["package_name", "edit_id", "language"]
+    },
+    "list_review_status": {
+      "method": "GET",
+      "path": "/applications/{package_name}/reviews",
+      "required_params": ["package_name"]
+    }
+  }
+}

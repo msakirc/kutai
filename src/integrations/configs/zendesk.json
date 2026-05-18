@@ -1,0 +1,55 @@
+{
+  "service_name": "zendesk",
+  "base_url": "https://kutai.zendesk.com/api/v2",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "api_token",
+  "webhook_secret": "${ZENDESK_WEBHOOK_SECRET}",
+  "actions": {
+    "list_tickets": {
+      "method": "GET",
+      "path": "/tickets.json",
+      "required_params": []
+    },
+    "get_ticket": {
+      "method": "GET",
+      "path": "/tickets/{ticket_id}.json",
+      "required_params": ["ticket_id"]
+    },
+    "search_tickets": {
+      "method": "GET",
+      "path": "/search.json",
+      "required_params": ["query"]
+    },
+    "list_satisfaction_ratings": {
+      "method": "GET",
+      "path": "/satisfaction_ratings.json",
+      "required_params": []
+    }
+  },
+  "mock_responses": {
+    "list_tickets": {
+      "tickets": [
+        {"id": 1001, "subject": "App crashes on launch", "status": "open", "priority": "high"},
+        {"id": 1002, "subject": "Billing question", "status": "pending", "priority": "normal"}
+      ],
+      "count": 2
+    },
+    "get_ticket": {
+      "ticket": {"id": 1001, "subject": "App crashes on launch", "status": "open", "priority": "high",
+                 "description": "The app closes immediately after the splash screen."}
+    },
+    "search_tickets": {
+      "results": [
+        {"id": 1001, "subject": "App crashes on launch", "result_type": "ticket"}
+      ],
+      "count": 1
+    },
+    "list_satisfaction_ratings": {
+      "satisfaction_ratings": [
+        {"id": 5001, "score": "good", "ticket_id": 1002}
+      ],
+      "count": 1
+    }
+  }
+}

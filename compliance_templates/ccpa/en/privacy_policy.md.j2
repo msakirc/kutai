@@ -1,0 +1,111 @@
+# Privacy Policy — California (CCPA / CPRA) variant (review with counsel before publishing)
+
+_Generated: {{ generated_at }}_
+_Business: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Contact: {{ controller_contact | default('[NOT SPECIFIED]') }}_
+
+This privacy notice is provided under the California Consumer Privacy
+Act of 2018 (Cal. Civ. Code § 1798.100 et seq.) as amended by the
+California Privacy Rights Act ("CCPA"). Defined terms have the meaning
+given to them in the CCPA.
+
+## 1. Categories of Personal Information collected (§ 1798.140(v))
+
+We collect or have collected within the preceding 12 months the
+following categories of Personal Information about California
+consumers:
+
+{% if data_categories_coarse %}
+{% for cat in data_categories_coarse -%}
+- {{ cat }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — map collected data to the § 1798.140(v) categories: identifiers; customer records; characteristics of protected classifications; commercial information; biometric information; internet or network activity; geolocation; sensory data; professional information; education information; inferences; and sensitive personal information.
+{% endif %}
+
+## 2. Sources of Personal Information
+
+[LEGAL REVIEW REQUIRED] — disclose sources (directly from consumer, devices, service providers, public sources, etc.).
+
+## 3. Business or commercial purposes (§ 1798.140(e))
+
+We use Personal Information for the following purposes:
+
+[LEGAL REVIEW REQUIRED] — enumerate purposes per § 1798.140(e). Examples:
+auditing, security, debugging, short-term transient use, performing
+services, internal research for product improvement, quality assurance.
+
+## 4. Sensitive Personal Information (§ 1798.121)
+
+[LEGAL REVIEW REQUIRED] — if Sensitive Personal Information is processed,
+disclose categories AND state whether processing is limited to the purposes
+identified in § 1798.121(a). If beyond those, provide a "Limit the Use of
+My Sensitive Personal Information" link.
+
+## 5. Sale or sharing of Personal Information
+
+[LEGAL REVIEW REQUIRED] — disclose whether we **sell** or **share**
+(cross-context behavioural advertising) Personal Information. If yes,
+include the **"Do Not Sell or Share My Personal Information"** link
+prominently in the website footer and on this page.
+
+> **[Do Not Sell or Share My Personal Information]**
+
+## 6. Consumer rights (§§ 1798.100-1798.125)
+
+California residents have the right to:
+
+- **Right to Know** (§ 1798.110): request categories and specific pieces of Personal Information we have collected.
+- **Right to Delete** (§ 1798.105): request deletion of Personal Information, subject to statutory exceptions.
+- **Right to Correct** (§ 1798.106): request correction of inaccurate Personal Information.
+- **Right to Opt-Out of Sale or Sharing** (§ 1798.120).
+- **Right to Limit Use of Sensitive Personal Information** (§ 1798.121).
+- **Right to Non-Discrimination** (§ 1798.125) for exercising any of the above rights.
+- **Right to Data Portability** in a structured, commonly used, machine-readable format where technically feasible.
+
+## 7. How to exercise rights and verification
+
+You may submit a verifiable consumer request through:
+
+- {{ controller_contact | default('[NOT SPECIFIED]') }}
+- [LEGAL REVIEW REQUIRED] — at least one toll-free phone number is required for some businesses (§ 1798.130(a)(1)(A)).
+
+We verify your identity by matching at least three data points against
+our records before fulfilling the request. Authorised agents may submit
+on your behalf with signed permission.
+
+## 8. Retention
+
+{% if retention_period %}
+We retain Personal Information for **{{ retention_period }}** unless a
+longer retention is required by law.
+{% else %}
+[LEGAL REVIEW REQUIRED] — disclose retention per category as required by § 1798.100(a)(3).
+{% endif %}
+
+See `retention_policy.md` for category-specific terms.
+
+## 9. Children under 16
+
+We do not knowingly sell or share the Personal Information of consumers
+under 16 without affirmative opt-in consent (parental consent for
+consumers under 13) per § 1798.120(c).
+
+## 10. Categories of third parties
+
+{% if third_party_processors_expected %}
+{% for p in third_party_processors_expected -%}
+- {{ p }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list categories of third parties to whom Personal Information is disclosed.
+{% endif %}
+
+## 11. Changes
+
+We update this notice at least every 12 months as required by
+§ 1798.130(a)(5).
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before publishing._

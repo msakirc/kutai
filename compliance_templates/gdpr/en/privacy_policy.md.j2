@@ -1,0 +1,110 @@
+# Privacy Policy — GDPR variant (review with counsel before publishing)
+
+_Generated: {{ generated_at }}_
+_Controller: {{ project_name | default('[NOT SPECIFIED]') }}_
+_Controller contact: {{ controller_contact | default('[NOT SPECIFIED]') }}_
+_Jurisdictions: {{ jurisdictions | join(", ") }}_
+
+## 1. Controller and Data Protection Officer
+
+- **Controller:** {{ project_name | default('[NOT SPECIFIED]') }}
+- **Contact:** {{ controller_contact | default('[NOT SPECIFIED]') }}
+- **DPO:** [LEGAL REVIEW REQUIRED] — required under GDPR Article 37 when processing involves regular and systematic monitoring on a large scale, or special-category data on a large scale. Otherwise optional but recommended.
+
+## 2. Categories of personal data we process
+
+{% if data_categories_coarse %}
+{% for cat in data_categories_coarse -%}
+- {{ cat }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — enumerate categories processed.
+{% endif %}
+
+## 3. Lawful basis (Article 6 GDPR)
+
+{% if lawful_basis %}
+We rely on the following lawful bases:
+
+{% for b in lawful_basis -%}
+- {{ b }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — declare lawful basis per processing purpose (Art. 6(1)(a)-(f)). Special-category processing additionally requires an Art. 9(2) condition.
+{% endif %}
+
+## 4. Purposes of processing
+
+[LEGAL REVIEW REQUIRED] — list each distinct purpose paired with its
+lawful basis from §3.
+
+## 5. Data subject rights (Articles 12-22)
+
+You have the right to:
+
+- **Article 15** — Access: receive confirmation of processing and a copy of your data.
+- **Article 16** — Rectification: correct inaccurate data.
+- **Article 17** — Erasure ("right to be forgotten"): request deletion under the conditions of Art. 17(1).
+- **Article 18** — Restriction of processing.
+- **Article 20** — Data portability: receive your data in a structured, commonly used, machine-readable format and transmit it to another controller.
+- **Article 21** — Object: object to processing based on legitimate interests or direct marketing.
+- **Article 22** — Not be subject to a decision based solely on automated processing, including profiling, that produces legal or similarly significant effects.
+
+To exercise these rights contact: {{ controller_contact | default('[NOT SPECIFIED]') }}.
+We respond within one month (Art. 12(3)), extendable by two further months for complex requests.
+
+## 6. International transfers (Chapter V)
+
+[LEGAL REVIEW REQUIRED] — for transfers outside the EEA list the mechanism:
+adequacy decision (Art. 45), Standard Contractual Clauses (Art. 46(2)(c)),
+Binding Corporate Rules (Art. 47), or a derogation (Art. 49). Include the
+recipient categories and country.
+
+## 7. Retention
+
+{% if retention_period %}
+We retain personal data for **{{ retention_period }}** unless a longer
+retention is required by law.
+{% else %}
+[LEGAL REVIEW REQUIRED] — declare retention periods by category.
+{% endif %}
+
+See `retention_policy.md` for category-specific terms.
+
+## 8. Recipients and sub-processors
+
+{% if third_party_processors_expected %}
+{% for p in third_party_processors_expected -%}
+- {{ p }}
+{% endfor %}
+{% else %}
+[LEGAL REVIEW REQUIRED] — list sub-processors with locations and DPA references.
+{% endif %}
+
+## 9. Right to lodge a complaint with a supervisory authority
+
+You may lodge a complaint with the supervisory authority of your habitual
+residence, place of work, or place of the alleged infringement (Art. 77).
+Examples: ICO (UK), CNIL (France), Datatilsynet (Denmark), BfDI (Germany),
+AEPD (Spain). [LEGAL REVIEW REQUIRED] — name the lead supervisory authority
+for the controller.
+
+## 10. Article 30 record
+
+A record of processing activities is maintained per Article 30 GDPR and
+made available to supervisory authorities on request.
+
+## 11. Children's data
+
+[LEGAL REVIEW REQUIRED] — Article 8 GDPR digital-age-of-consent threshold
+varies between 13 and 16 by Member State. State the age and the
+verification mechanism.
+
+## 12. Changes to this policy
+
+We notify users of material changes via in-product banner and email at
+least 30 days before the change takes effect.
+
+---
+
+_This is a starter draft, not legal advice. Engage counsel before publishing._

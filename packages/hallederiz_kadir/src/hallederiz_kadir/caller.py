@@ -269,6 +269,41 @@ def _extract_reasoning_tokens(raw_result) -> int:
 
 # ─── Streaming ─────────────────────────────────────────────────────────────
 
+
+def _streaming_guard_sink(result) -> None:
+    """Z1 T5C (B3) — sink for StreamingGuardPipeline.
+
+    Mirrors the default sink's logger.warning behaviour AND schedules a
+    fire-and-forget DB row write to ``streaming_guard_log``. ``task_id``
+    is resolved from the ``current_task_id`` contextvar; ``mission_id``
+    is left NULL (the streaming layer doesn't carry mission context —
+    join via tasks.mission_id at query time).
+
+    Errors here are swallowed: telemetry must never abort streaming.
+    """
+    if result.action not in {"warn", "halt", "fix"}:
+        return
+    if result.action in {"warn", "halt"}:
+        _get_logger().warning(
+            f"[streaming_guard:{result.guard_name}] "
+            f"{result.action}: {result.note}"
+        )
+    try:
+        import asyncio as _aio
+        from src.core.heartbeat import current_task_id as _ctid
+        from src.infra.db import record_streaming_guard_outcome
+        loop = _aio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(record_streaming_guard_outcome(
+                guard_name=result.guard_name or "",
+                action=result.action,
+                note=result.note or "",
+                task_id=_ctid.get(),
+            ))
+    except Exception:
+        pass
+
+
 async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     """Call litellm with streaming, accumulate content for partial recovery.
 
@@ -285,6 +320,19 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
     # Size capping is llama-server's job (ctx-size); we only watch for
     # repetition / low-entropy degeneration during streaming.
     _should_abort = make_stream_callback(max_size=200_000, check_interval=2000)
+
+    # Z1 Tier 5C (B3) — streaming post-processor pipeline. Rule-based
+    # guards run on each content delta before it's accumulated. `fix`
+    # outcomes rewrite the delta in place; `warn` rows go to the
+    # default sink (logger.warning); `halt` aborts the stream. Opt-out
+    # via KUTAI_STREAMING_GUARDS=off. Pipeline is no-op if import fails
+    # so broken guards never block real LLM work.
+    _stream_pipeline = None
+    try:
+        from coulson.streaming_guards import StreamingGuardPipeline
+        _stream_pipeline = StreamingGuardPipeline(sink=_streaming_guard_sink)
+    except Exception:
+        _stream_pipeline = None
 
     # First-chunk wait covers prefill (10k-token prompts on 9B ≈ 50s).
     # Inter-chunk wait covers between-token silence (real stream that's
@@ -356,7 +404,23 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta:
             if delta.content:
-                accumulated += delta.content
+                content_token = delta.content
+                # Z1 Tier 5C (B3) — run guards before accumulating.
+                if _stream_pipeline is not None:
+                    try:
+                        outcome = _stream_pipeline.process(content_token)
+                        content_token = outcome.text
+                        if outcome.halt:
+                            _get_logger().warning(
+                                "stream aborted: streaming_guard halt"
+                            )
+                            finish_reason = "length"
+                            accumulated += content_token
+                            partial_content_ref[0] = accumulated
+                            break
+                    except Exception:  # never block on guard bugs
+                        content_token = delta.content
+                accumulated += content_token
                 partial_content_ref[0] = accumulated
             # Capture reasoning_content from thinking models (DeepSeek, etc.)
             rc = getattr(delta, "reasoning_content", None)
@@ -390,6 +454,17 @@ async def _stream_with_accumulator(completion_kwargs, partial_content_ref):
             )
             finish_reason = "length"
             break
+
+    # Z1 Tier 5C (B3) — drain streaming-guard tail (typo carry-over,
+    # auto-closed fences) before reasoning rescue.
+    if _stream_pipeline is not None:
+        try:
+            tail = _stream_pipeline.finalize()
+            if tail.text:
+                accumulated += tail.text
+                partial_content_ref[0] = accumulated
+        except Exception:
+            pass
 
     # If content is empty but reasoning was captured, rescue it
     if not accumulated.strip() and accumulated_reasoning.strip():
@@ -485,7 +560,11 @@ async def call(
         # supported between instances of 'NoneType' and 'int'" killed
         # 3 backend_tests / frontend_tests in succession.
         _model_cap = model.max_tokens if model.max_tokens is not None else 4096
-        _max_tokens = min(estimated_output_tokens * 2, _model_cap)
+        # Floor at 256: callers that forget to set estimated_output_tokens
+        # would otherwise send max_tokens=0, which Gemini rejects with
+        # "max_output_tokens must be positive" (production 2026-05-14
+        # critic_gate:notify_user). Cap is still respected.
+        _max_tokens = max(256, min(estimated_output_tokens * 2, _model_cap))
 
     # ── Per-request reasoning override ──
     # If a thinking-capable model is loaded with --reasoning on but this
@@ -1115,7 +1194,7 @@ async def call(
         _t_step = _t_ctx.get("workflow_step_id") if isinstance(_t_ctx, dict) else None
         _t_phase = _t_ctx.get("workflow_phase") if isinstance(_t_ctx, dict) else None
 
-        from src.infra.db import record_call_tokens
+        from src.infra.db import record_call_tokens, record_call_cost
         await record_call_tokens(
             task_id=_t_id,
             agent_type=_t_agent,
@@ -1142,6 +1221,15 @@ async def call(
             iteration_n=int(iteration_n or 0),
             success=True,
         )
+        # Z10 T2A: stamp the just-written row with its USD cost AND
+        # increment the matching mission's cost_budgets aggregate.
+        try:
+            await record_call_cost(
+                task_id=_t_id,
+                cost_usd=float(parsed.get("cost", 0.0) or 0.0),
+            )
+        except Exception:
+            pass
     except Exception:
         pass  # telemetry best-effort
 

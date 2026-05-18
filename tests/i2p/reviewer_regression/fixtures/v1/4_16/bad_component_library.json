@@ -1,0 +1,39 @@
+{
+  "step_id": "4.2a",
+  "step_name": "component_library_decision",
+  "schema_version": "1",
+  "comment": "Component-library ADR missing stack_adr_ref + falsification_signal + chosen_option_id orphan — three failure modes the verify_adr_shape mechanical action must catch.",
+  "adr": {
+    "_schema_version": "1",
+    "adr_id": "ADR-2026-05-10-202",
+    "title": "Use some component library",
+    "status": "accepted",
+    "context": "Picking a library.",
+    "decision": "Use OPT-Z — magic-ui (not in options).",
+    "consequences": "Lock-in.",
+    "options_considered": [
+      {
+        "id": "OPT-A",
+        "name": "shadcn/ui",
+        "rationale_for": "ok",
+        "rationale_against": "manual",
+        "tech_maturity_score": 7,
+        "novelty_benefit": "high",
+        "reversal_cost": "low"
+      },
+      {
+        "id": "OPT-B",
+        "name": "MUI",
+        "rationale_for": "mature",
+        "rationale_against": "heavy",
+        "tech_maturity_score": 9,
+        "novelty_benefit": "low",
+        "reversal_cost": "high"
+      }
+    ],
+    "chosen_option_id": "OPT-Z",
+    "falsification_signal": "",
+    "reversal_cost": "low",
+    "supersedes_adr_id": null
+  }
+}

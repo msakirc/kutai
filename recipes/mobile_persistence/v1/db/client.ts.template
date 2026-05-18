@@ -1,0 +1,63 @@
+/**
+ * expo-sqlite connection + Drizzle bootstrap + migration runner.
+ *
+ * RECIPE_PARAM markers:
+ *   // RECIPE_PARAM:DB_FILE_NAME=app.db
+ *
+ * Responsibilities:
+ *   1. Open the on-device SQLite database (synchronous handle — see below).
+ *   2. Wrap it in a Drizzle instance bound to `schema`.
+ *   3. Expose `runMigrations()` which MUST be awaited before the first query.
+ *
+ * Why `openDatabaseSync` and not the async `openDatabaseAsync`?
+ *   Drizzle's Expo driver (`drizzle-orm/expo-sqlite`) is built on the
+ *   *synchronous* `SQLiteDatabase` handle. Passing an async handle throws at
+ *   construction time. The DB file open is cheap — the sync call is correct
+ *   here. Actual query execution is still async via Drizzle.
+ *
+ * `enableChangeListener: true` is REQUIRED for `useLiveQuery` (drizzle-orm's
+ * Expo live-query hook) to receive update notifications. Without it, live
+ * queries silently never refresh.
+ */
+import { openDatabaseSync } from "expo-sqlite";
+import { drizzle } from "drizzle-orm/expo-sqlite";
+import { migrate } from "drizzle-orm/expo-sqlite/migrator";
+
+import { schema } from "./schema";
+import migrationsBundle from "../migrations/migrations";
+
+// RECIPE_PARAM:DB_FILE_NAME=app.db
+const DB_FILE_NAME = "app.db";
+
+// The raw expo-sqlite handle. `enableChangeListener` powers useLiveQuery.
+export const sqliteDb = openDatabaseSync(DB_FILE_NAME, {
+  enableChangeListener: true,
+});
+
+// The Drizzle instance — import this everywhere you need DB access.
+export const db = drizzle(sqliteDb, { schema });
+
+let _migrationsApplied = false;
+
+/**
+ * Apply all pending Drizzle migrations.
+ *
+ * MUST run before any query — call it from a top-level effect in the root
+ * layout (see prompts/expo.md). Idempotent: drizzle-kit tracks applied
+ * migrations in its own `__drizzle_migrations` table, and this guard prevents
+ * a redundant second pass within one app session.
+ */
+export async function runMigrations(): Promise<void> {
+  if (_migrationsApplied) return;
+  await migrate(db, migrationsBundle);
+  _migrationsApplied = true;
+}
+
+/**
+ * Test/diagnostic helper — drops all rows. NOT exposed in production UI.
+ * Note: the SQLite file lives in the app sandbox and is wiped on app
+ * uninstall regardless; this is for in-session resets only.
+ */
+export function __resetForTests(): void {
+  sqliteDb.execSync("DELETE FROM notes;");
+}

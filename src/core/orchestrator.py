@@ -28,6 +28,23 @@ logger = get_logger("core.orchestrator")
 # behind a still-running budget.
 
 
+async def _check_mcp_idle_sweep() -> None:
+    """Periodically shut down idle MCP servers (lazy-start companion).
+
+    Runs on the same cadence as the other orchestrator _check_* jobs. Never
+    starts a server — only kills servers idle past their idle_timeout_s.
+    """
+    try:
+        from yalayut.mcp_manager import get_manager
+        killed = await get_manager().sweep_idle()
+        if killed:
+            from src.infra.logging_config import get_logger as _get_logger
+            _get_logger("orchestrator.mcp").info("mcp idle sweep", killed=killed)
+    except Exception:
+        # Sweep failures must never disturb the pump.
+        pass
+
+
 class Orchestrator:
     def __init__(self, shutdown_event=None):
         self.telegram = TelegramInterface(self)
@@ -37,6 +54,10 @@ class Orchestrator:
         self.requested_exit_code: int | None = None
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
+        # Yalayut Phase 4 — periodic-check gates. 0.0 → first pump tick after
+        # boot fires both checks immediately, then they self-gate to 24h.
+        self._last_yalayut_discovery: float = 0.0
+        self._last_source_scout: float = 0.0
 
     def _drop_running_future(self, f: asyncio.Task) -> None:
         """done_callback: remove a completed dispatch task from the tracker.
@@ -45,6 +66,63 @@ class Orchestrator:
             self._running_futures.remove(f)
         except ValueError:
             pass
+
+    # ─── Yalayut Phase 4 periodic checks ─────────────────────────────────
+    #
+    # Mirror the _check_todo_reminders pattern: timestamp-gated, enqueue a
+    # plain dict via beckman.enqueue. The orchestrator imports ZERO from
+    # yalayut — the mechanical executor (action "yalayut_discovery" /
+    # "source_scout") owns the yalayut import. The cron_seed cadence rows
+    # are the restart-survivable backstop; these in-process checks give a
+    # finer cadence and fire promptly after boot.
+
+    _YALAYUT_DISCOVERY_INTERVAL_S: float = 86400.0   # 24h
+    _SOURCE_SCOUT_INTERVAL_S: float = 86400.0        # 24h
+
+    async def _check_yalayut_discovery(self) -> None:
+        """Enqueue a yalayut daily-discovery mechanical task when due."""
+        import time as _time
+        last = getattr(self, "_last_yalayut_discovery", 0.0)
+        now = _time.time()
+        if now - last < self._YALAYUT_DISCOVERY_INTERVAL_S:
+            return
+        self._last_yalayut_discovery = now
+        try:
+            import general_beckman
+            await general_beckman.enqueue(
+                {
+                    "agent_type": "mechanical",
+                    "title": "Yalayut daily discovery",
+                    "payload": {"action": "yalayut_discovery",
+                                "mode": "daily"},
+                },
+                lane="oneshot",
+            )
+            logger.info("enqueued yalayut daily discovery task")
+        except Exception as e:
+            logger.warning("yalayut discovery enqueue failed: %s", e)
+
+    async def _check_source_scout(self) -> None:
+        """Enqueue a yalayut source-scout mechanical task when due."""
+        import time as _time
+        last = getattr(self, "_last_source_scout", 0.0)
+        now = _time.time()
+        if now - last < self._SOURCE_SCOUT_INTERVAL_S:
+            return
+        self._last_source_scout = now
+        try:
+            import general_beckman
+            await general_beckman.enqueue(
+                {
+                    "agent_type": "mechanical",
+                    "title": "Yalayut source scout",
+                    "payload": {"action": "source_scout"},
+                },
+                lane="oneshot",
+            )
+            logger.info("enqueued yalayut source-scout task")
+        except Exception as e:
+            logger.warning("source-scout enqueue failed: %s", e)
 
     # ─── Dispatch ────────────────────────────────────────────────────────
 
@@ -286,11 +364,31 @@ class Orchestrator:
                 return await ShoppingPipelineV2().run(task)
             return await get_agent(agent_type).execute(task)
 
+        # Z6 W2 — set audit_context for the per-task execution. Any
+        # credential vault read fired by the agent or vendor_call tool now
+        # gets mission_id/task_id/agent stamped on its credential_access_log
+        # row. Without this, the rows have NULL provenance and post-mortem
+        # audits can't tie a credential read to a specific step.
+        try:
+            from src.security._audit_context import audit_context as _audit_cm
+        except Exception:  # pragma: no cover - defensive
+            _audit_cm = None  # type: ignore[assignment]
+
+        async def _run_with_audit() -> dict:
+            if _audit_cm is None:
+                return await _run()
+            async with _audit_cm(
+                mission_id=task.get("mission_id"),
+                task_id=task_id,
+                agent=agent_type,
+            ):
+                return await _run()
+
         try:
             from src.core import heartbeat as _hb
             _hb.current_task_id.set(int(task_id) if task_id else None)
             _hb.bump(task_id)  # initial heartbeat — task is alive
-            runner_task = asyncio.create_task(_run())
+            runner_task = asyncio.create_task(_run_with_audit())
 
             async def _watchdog() -> None:
                 """Wake periodically; abort runner if heartbeat goes stale."""
@@ -388,6 +486,11 @@ class Orchestrator:
         shutdown_signal = Path("logs") / "shutdown.signal"
         import general_beckman
 
+        # Z6 T1E: throttle counter for the founder_actions unblock sweep.
+        # 20 ticks * 3s base sleep ≈ 60s between sweeps. Keep it cheap —
+        # the sweep is one indexed SELECT + zero-to-N UPDATEs.
+        _z6_sweep_counter = 0
+
         while self.running and not self.shutdown_event.is_set():
             try:
                 if shutdown_signal.exists():
@@ -402,9 +505,59 @@ class Orchestrator:
                     break
                 task = await general_beckman.next_task()
                 if task is not None:
+                    # Yalayut Phase 2 — match catalog skills for this task
+                    # once, before dispatch. intersect.flash() attaches a
+                    # task["skills"] envelope (coulson reads it) or, for a
+                    # preempt recipe, sets runner=mechanical + payload so
+                    # the task routes to mr_roboto. Imported lazily so the
+                    # orchestrator module load doesn't pull yalayut. flash
+                    # graceful-degrades internally — no try/except needed,
+                    # but guard the import itself in case the package is
+                    # absent in a stripped deploy.
+                    try:
+                        import intersect
+                        task = await intersect.flash(task)
+                    except Exception as _e:
+                        logger.debug("intersect.flash skipped #%s: %s",
+                                     task.get("id"), _e)
+                        task.setdefault("skills", [])
                     t = asyncio.create_task(self._dispatch(task))
                     self._running_futures.append(t)
                     t.add_done_callback(self._drop_running_future)
+
+                # Z6 T1E: periodic mission-unblock sweep. Founder may resolve
+                # actions via the Yaşar Usta bot or external tooling without
+                # the per-resolve hook firing in this process — sweep is the
+                # backstop. Throttle to ~once per minute (20 ticks * 3s).
+                _z6_sweep_counter += 1
+                if _z6_sweep_counter >= 20:
+                    _z6_sweep_counter = 0
+                    try:
+                        import src.founder_actions as _fa
+                        n = await _fa.sweep_unblock_all()
+                        if n > 0:
+                            logger.info(
+                                "z6 lifecycle sweep: unblocked %d mission(s)",
+                                n,
+                            )
+                    except Exception as _e:
+                        logger.debug(f"z6 sweep skipped: {_e}")
+
+                # Yalayut Phase 3 — MCP idle sweep: kill servers idle past
+                # their idle_timeout_s. Runs every loop tick (cheap select);
+                # never starts a server; failures are silenced so the pump
+                # is never disturbed.
+                await _check_mcp_idle_sweep()
+
+                # Yalayut Phase 4 — periodic discovery + source-scout checks.
+                # Both are timestamp-gated internally; calling every tick is
+                # cheap (a getattr + time comparison).
+                try:
+                    await self._check_yalayut_discovery()
+                    await self._check_source_scout()
+                except Exception as e:
+                    logger.debug("yalayut periodic check skipped: %s", e)
+
                 await asyncio.sleep(3)
             except asyncio.CancelledError:
                 raise
@@ -435,6 +588,34 @@ class Orchestrator:
         )
 
     # ─── Background Tasks & Startup ───────────────────────────────────────
+
+    async def _rebind_ongoing(self, mission) -> None:
+        """Z8 T1C v1 + T5-prep — re-bind an ongoing mission after restart.
+
+        Webhook listener (T3) reads ``mission.cursor`` to skip
+        already-processed events. T5-prep wires the cron scheduler:
+        ``mission.cursor['cron']`` is a list of
+        ``{"action": str, "interval_seconds": int}`` entries; each is
+        armed via ``mission_cron.arm()``.
+        """
+        logger.debug(
+            f"_rebind_ongoing: mission #{mission.id} parked for "
+            f"handler-side replay (cursor_keys="
+            f"{sorted(mission.cursor.keys()) if mission.cursor else []})"
+        )
+        try:
+            from general_beckman.mission_cron import arm_from_cursor
+            armed = await arm_from_cursor(mission)
+            if armed:
+                logger.info(
+                    "mission_cron armed",
+                    mission_id=mission.id,
+                    armed=armed,
+                )
+        except Exception as e:
+            logger.warning(
+                f"mission_cron arm failed for mid={mission.id}: {e}"
+            )
 
     async def _heartbeat_loop(self):
         """Run heartbeat + state-snapshot writer.
@@ -477,6 +658,30 @@ class Orchestrator:
             await startup_recovery()
         except Exception as e:
             logger.warning(f"Startup recovery failed: {e}")
+
+        # Z8 T1C — replay ongoing missions. find_resumable() returns every
+        # kind='ongoing' AND lifecycle_state='active' AND not revoked
+        # mission. v1 just logs + delegates re-binding to handler-side
+        # code (webhook listener wakes via cursor in T3; cron scheduler
+        # re-arms in T5 by querying find_resumable() itself).
+        try:
+            from general_beckman.resumption import find_resumable
+            resumed = await find_resumable()
+            for m in resumed:
+                logger.info(
+                    "resuming ongoing mission",
+                    mission_id=m.id,
+                    title=m.title,
+                    cursor_keys=sorted(m.cursor.keys()) if m.cursor else [],
+                )
+                await self._rebind_ongoing(m)
+            if resumed:
+                logger.info(
+                    f"z8 resumption: {len(resumed)} ongoing mission(s) "
+                    "marked for handler-side replay"
+                )
+        except Exception as e:
+            logger.warning(f"Ongoing-mission resumption failed: {e}")
 
         from ..models.local_model_manager import get_local_manager
         manager = get_local_manager()

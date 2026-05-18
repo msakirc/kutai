@@ -29,6 +29,25 @@ async def enqueue(spec: dict, **kwargs) -> dict:
     return await _enqueue(spec, **kwargs)
 
 
+# Template registry — maps template_id to the draft instruction. Without
+# this the template_id string was passed through but nothing branched on it,
+# so a 'follow_up' draft was structurally identical to a cold draft.
+_TEMPLATE_INSTRUCTIONS: dict[str, str] = {
+    "cold": (
+        "Generate a personalized COLD outreach email body — first contact, "
+        "no prior relationship. Lead with a specific, researched reason for "
+        "reaching out. Inputs are in context.prospect_data. Output body_md."
+    ),
+    "follow_up": (
+        "Generate a FOLLOW-UP reply. The prospect already replied — their "
+        "message is in context.prospect_data.reply_body. Acknowledge what "
+        "they said, answer directly, and move the conversation forward. Do "
+        "NOT re-pitch from scratch. Output body_md."
+    ),
+}
+_DEFAULT_TEMPLATE_INSTRUCTION = _TEMPLATE_INSTRUCTIONS["cold"]
+
+
 async def run_outreach_draft(
     product_id: str,
     mission_id: int,
@@ -42,13 +61,12 @@ async def run_outreach_draft(
       {"status": "enqueued", "task_id": <int>}
       {"status": "error", "error": <str>}
     """
+    instruction = _TEMPLATE_INSTRUCTIONS.get(
+        template_id, _DEFAULT_TEMPLATE_INSTRUCTION)
+    _kind = "follow-up" if template_id == "follow_up" else "outreach"
     spec = {
-        "title": f"Draft outreach for {prospect_data.get('name', 'prospect')} ({product_id})",
-        "description": (
-            "Generate a personalized cold outreach email body. "
-            "Inputs are in context.prospect_data and context.template_id. "
-            "Output the final body_md in the result artifact."
-        ),
+        "title": f"Draft {_kind} for {prospect_data.get('name', 'prospect')} ({product_id})",
+        "description": instruction,
         "agent_type": "coder",  # generic LLM agent; workflow steps use agent-type routing
         "mission_id": mission_id,
         "context": {

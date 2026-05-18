@@ -156,6 +156,93 @@ async def email_webhook_inbound(
     return {"status": "accepted", "provider": provider, "product_id": product_id}
 
 
+# ── Z7 A7.r1 — Cold-outreach inbound-reply webhook ─────────────────────────────
+# Route: POST /webhook/outreach/reply/{product_id}
+# An ESP inbound-parse webhook POSTs here when a prospect replies to a cold
+# outreach email. The send_id (canonical handle stamped into the original
+# email's Reply-To / X-Send-ID headers) is read from the JSON body or the
+# X-Send-ID header. We enqueue an outreach/handle_reply mechanical task —
+# the classifier + CRM log + positive-interest follow-up draft all run there.
+# Before this route, outreach/handle_reply had no inbound caller at all.
+
+
+@app.post("/webhook/outreach/reply/{product_id}")
+async def outreach_reply_inbound(product_id: str, request: Request) -> dict:
+    """Receive an ESP inbound-reply event and dispatch outreach/handle_reply."""
+    try:
+        raw = await request.body()
+        payload = __import__("json").loads(raw) if raw else {}
+    except (ValueError, Exception) as exc:
+        raise HTTPException(status_code=400, detail=f"bad json: {exc}") from exc
+    if not isinstance(payload, dict):
+        payload = {}
+
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    # send_id: body field first, then the X-Send-ID header the original
+    # email carried. ESPs echo custom headers back on inbound-parse events.
+    send_id_raw = (
+        payload.get("send_id")
+        or headers.get("x-send-id")
+        or _extract_send_id_from_refs(payload)
+    )
+    try:
+        send_id = int(send_id_raw) if send_id_raw is not None else 0
+    except (TypeError, ValueError):
+        send_id = 0
+    if not send_id:
+        raise HTTPException(
+            status_code=400,
+            detail="no send_id (body.send_id / X-Send-ID header / In-Reply-To)",
+        )
+
+    reply_body = str(
+        payload.get("text") or payload.get("body")
+        or payload.get("reply_body") or payload.get("plain") or ""
+    )
+    reply_from = str(
+        payload.get("from") or payload.get("sender")
+        or payload.get("reply_from") or ""
+    )
+    # ESP "from" is often "Name <addr>" — keep just the address.
+    if "<" in reply_from and ">" in reply_from:
+        reply_from = reply_from.split("<", 1)[1].split(">", 1)[0].strip()
+
+    try:
+        from general_beckman import enqueue
+        await enqueue(
+            {"agent_type": "mechanical",
+             "title": f"Outreach reply: send {send_id}",
+             "payload": {"action": "outreach/handle_reply",
+                         "product_id": product_id,
+                         "send_id": send_id,
+                         "reply_body": reply_body,
+                         "reply_from": reply_from}},
+            lane="ongoing",
+        )
+    except Exception as exc:
+        logger.error("outreach reply enqueue failed",
+                      product_id=product_id, send_id=send_id, exc=str(exc))
+        raise HTTPException(status_code=500, detail="enqueue error") from exc
+
+    return {"status": "accepted", "send_id": send_id, "product_id": product_id}
+
+
+def _extract_send_id_from_refs(payload: dict) -> str | None:
+    """Best-effort send_id parse from In-Reply-To / References mail headers.
+
+    Original outreach mail uses a Message-ID like ``<outreach-{send_id}@...>``;
+    a reply echoes it in In-Reply-To. Returns the digits or None.
+    """
+    import re
+    for key in ("in_reply_to", "In-Reply-To", "references", "References"):
+        val = payload.get(key)
+        if val:
+            m = re.search(r"outreach-(\d+)@", str(val))
+            if m:
+                return m.group(1)
+    return None
+
+
 # ── Z7 T5 B1 — Email preference center ────────────────────────────────────────
 # Routes: GET /email/preferences/{user_token}?product_id=...
 #         POST /email/preferences/{user_token}?product_id=...

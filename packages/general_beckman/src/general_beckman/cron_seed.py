@@ -96,6 +96,18 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": int(os.getenv("MONITOR_INTERVAL", "300")),
         "payload": {"_executor": "monitoring_check"},
     },
+    # Z7 A6 — daily cold-outreach deliverability sweep. The
+    # outreach_deliverability_check verb scans bounce/complaint rates and
+    # writes an outreach_pauses row when a domain degrades; outreach_send
+    # Gate 2b then honors the pause. Its PostHookSpec has auto_wire_triggers=[]
+    # and no workflow step declares it, so without this cadence the pause is
+    # never written in production.
+    {
+        "title": "outreach_deliverability_check",
+        "description": "Daily cold-outreach deliverability sweep: pause degraded sender domains",
+        "interval_seconds": 86400,
+        "payload": {"_executor": "outreach_deliverability_check"},
+    },
     {
         "title": "vector_maint_wal",
         "description": "ChromaDB WAL checkpoint to release write-ahead log bloat",

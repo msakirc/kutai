@@ -190,6 +190,42 @@ async def run_deliverability_check(
     }
 
 
+async def run_deliverability_sweep() -> dict[str, Any]:
+    """Cron entry — check deliverability for every active (product_id, list_id).
+
+    The per-list ``run_deliverability_check`` needs a specific list; a cron
+    tick carries none. This sweeps every distinct list that has real sends
+    and runs the check on each. Z7 A6: this is the periodic sweep the
+    deliverability subsystem was missing — without it the pause is never
+    written in production.
+    """
+    from src.infra.db import get_db
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT DISTINCT product_id, list_id FROM outreach_sends "
+            "WHERE sent_at IS NOT NULL"
+        )
+        lists = [(r[0], r[1]) for r in await cur.fetchall()]
+        await cur.close()
+    except Exception as exc:  # noqa: BLE001 — no table / no data → empty sweep
+        logger.debug("deliverability sweep: list query failed: %s", exc)
+        return {"status": "ok", "lists_checked": 0, "paused": 0}
+
+    paused = 0
+    checked = 0
+    for product_id, list_id in lists:
+        if not product_id or not list_id:
+            continue
+        res = await run_deliverability_check(product_id, list_id)
+        checked += 1
+        if res.get("status") == "paused":
+            paused += 1
+    logger.info("deliverability sweep complete",
+                lists_checked=checked, paused=paused)
+    return {"status": "ok", "lists_checked": checked, "paused": paused}
+
+
 async def clear_pause(product_id: str, list_id: str) -> dict[str, str]:
     """Stamp cleared_at on the active pause row for (product_id, list_id).
 
@@ -261,7 +297,9 @@ async def handle(task: dict, result: dict) -> dict:
     mission_id = task.get("mission_id") or 0
 
     if not product_id or not list_id:
-        return {"status": "skip", "reason": "product_id or list_id missing"}
+        # No specific list — this is a cron-tick (Z7 A6 daily sweep).
+        # Check every active list instead of skipping.
+        return await run_deliverability_sweep()
 
     return await run_deliverability_check(
         product_id=product_id,

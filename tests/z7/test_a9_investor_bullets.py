@@ -532,3 +532,72 @@ async def test_llm_hypothesis_non_completed_returns_empty(bad_status):
     assert hyp == "", (
         f"Expected empty string for status={bad_status!r}, got {hyp!r}"
     )
+
+
+# ===========================================================================
+# Z7 #7 wiring sweep — product_id default + analytics_digest metric emission
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_add_mission_defaults_product_id_to_mission_id(db):
+    """add_mission must set product_id = mission_id so investor_bullets'
+    product-scoped JOINs match rows."""
+    from src.infra.db import add_mission
+    mid = await add_mission("M", "desc")
+    cur = await db.execute("SELECT product_id FROM missions WHERE id=?", (mid,))
+    row = await cur.fetchone()
+    assert row[0] == str(mid), "product_id not defaulted to mission id"
+
+
+@pytest.mark.asyncio
+async def test_emit_investor_metrics_writes_both_kinds(db):
+    """_emit_investor_metrics writes the metric_emit + review_density_metric
+    growth_events rows investor_bullets reads."""
+    from src.infra.db import add_mission
+    from mr_roboto.executors.analytics_digest import _emit_investor_metrics
+
+    mid = await add_mission("M", "desc")
+    # A completed coder task counts toward prs_shipped.
+    await db.execute(
+        "INSERT INTO tasks (mission_id, title, status, agent_type, created_at) "
+        "VALUES (?, 't', 'completed', 'coder', '2000-01-01 00:00:00')", (mid,))
+    await db.commit()
+
+    await _emit_investor_metrics(
+        mid, since="1999-01-01 00:00:00",
+        posthog={"event_count": 123, "funnel": []},
+        db_agg={"retry_stats": {"total": 10, "retried": 2}},
+    )
+
+    cur = await db.execute(
+        "SELECT kind, properties_json FROM growth_events "
+        "WHERE mission_id=? ORDER BY kind", (mid,))
+    rows = {k: json.loads(p) for k, p in await cur.fetchall()}
+    assert "metric_emit" in rows
+    assert rows["metric_emit"]["event_count"] == 123
+    assert rows["metric_emit"]["task_retry_rate"] == 0.2
+    assert "review_density_metric" in rows
+    assert rows["review_density_metric"]["prs_shipped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_investor_bullets_reads_emitted_metrics(db):
+    """End-to-end: emitted metric rows flow through _fetch_z6_metrics and
+    _fetch_review_density for the mission's product."""
+    from src.infra.db import add_mission, insert_growth_event
+    from src.app.jobs.investor_bullets import _fetch_z6_metrics, _fetch_review_density
+
+    mid = await add_mission("M", "desc")
+    product_id = str(mid)
+    await insert_growth_event(mid, "metric_emit", {"event_count": 500})
+    await insert_growth_event(mid, "review_density_metric", {"prs_shipped": 7})
+
+    z6 = await _fetch_z6_metrics(product_id)
+    assert z6.get("event_count", {}).get("current") == 500.0, (
+        "metric_emit not surfaced by _fetch_z6_metrics"
+    )
+    rd = await _fetch_review_density(product_id)
+    assert rd.get("prs_shipped", {}).get("current") == 7.0, (
+        "review_density_metric not surfaced by _fetch_review_density"
+    )

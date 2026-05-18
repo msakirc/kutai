@@ -258,13 +258,20 @@ async def _fetch_z6_metrics(product_id: str) -> dict:
         return {}
 
     metrics: dict[str, list[float]] = {}
+    # Read every numeric property. The financial keys (mrr/revenue/...) flow
+    # through when a Stripe producer wires them; analytics_digest currently
+    # emits usage metrics (event_count, funnel_conversion, task_retry_rate).
+    # A generic numeric sweep means the bullets populate from whatever the
+    # producer emits rather than only a hardcoded financial whitelist.
+    _skip = {"mission_id"}
     for row in rows:
         try:
             props = json.loads(row[0] or "{}")
-            for key in ("mrr", "revenue", "churn_rate", "customer_count",
-                        "burn", "runway_months", "mrr_delta"):
-                if key in props and props[key] is not None:
-                    metrics.setdefault(key, []).append(float(props[key]))
+            for key, val in props.items():
+                if key in _skip or val is None or isinstance(val, bool):
+                    continue
+                if isinstance(val, (int, float)):
+                    metrics.setdefault(key, []).append(float(val))
         except Exception:
             continue
 

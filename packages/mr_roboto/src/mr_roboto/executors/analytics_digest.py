@@ -501,6 +501,17 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("analytics_digest digest_run write failed", error=str(exc))
 
+    # 5b. Z7 #7 — emit the metric growth_events investor_bullets reads.
+    # investor_bullets' _fetch_z6_metrics / _fetch_review_density query
+    # growth_events for kinds 'metric_emit' / 'review_density_metric' but
+    # nothing ever wrote them, so the monthly investor card was always
+    # empty. analytics_digest is the metric-pull cron — it emits them here.
+    try:
+        await _emit_investor_metrics(mission_id_int, since, posthog, db_agg)
+    except Exception as exc:  # noqa: BLE001 — metric emit must not fail the digest
+        logger.warning("analytics_digest investor-metric emit failed",
+                        error=str(exc))
+
     # 6. Hand off to the LLM synthesis agent via Beckman (NOT the dispatcher).
     agent_task_id = await _enqueue_synthesis_agent(
         mission_id_int, task.get("id"), digest_input
@@ -523,6 +534,74 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
         "synthesis_agent_task_id": agent_task_id,
         "digest_input": digest_input,
     }
+
+
+#: agent_type values that count as a shipped unit of code work.
+_CODE_AGENT_TYPES: tuple[str, ...] = (
+    "coder", "implementer", "fixer", "test_generator",
+)
+
+
+async def _emit_investor_metrics(
+    mission_id: int | None,
+    since: str,
+    posthog: dict,
+    db_agg: dict,
+) -> None:
+    """Write the metric_emit + review_density_metric growth_events rows that
+    investor_bullets consumes. One row of each kind per digest run.
+
+    metric_emit carries the usage metrics analytics_digest genuinely has
+    (event_count, funnel conversion). review_density_metric carries
+    prs_shipped — completed code-emitting tasks for the mission in window.
+    Financial keys (mrr/revenue) stay absent until a Stripe producer wires
+    them; investor_bullets reads every numeric key, so partial data is fine.
+    """
+    if mission_id is None:
+        return
+    from src.infra.db import get_db, insert_growth_event
+    db = await get_db()
+
+    # ── metric_emit ──
+    metric_props: dict[str, Any] = {
+        "event_count": int(posthog.get("event_count", 0) or 0),
+    }
+    funnel = posthog.get("funnel") or []
+    if funnel and isinstance(funnel, list):
+        # First→last step conversion, if the funnel has numeric counts.
+        try:
+            first = float(funnel[0].get("count", 0))
+            last = float(funnel[-1].get("count", 0))
+            if first > 0:
+                metric_props["funnel_conversion"] = round(last / first, 4)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+    retry = db_agg.get("retry_stats") or {}
+    if isinstance(retry, dict) and retry.get("total"):
+        metric_props["task_retry_rate"] = round(
+            float(retry.get("retried", 0)) / float(retry["total"]), 4)
+    await insert_growth_event(
+        mission_id=mission_id, kind="metric_emit", properties=metric_props)
+
+    # ── review_density_metric ──
+    prs_shipped = 0
+    try:
+        placeholders = ",".join("?" * len(_CODE_AGENT_TYPES))
+        cur = await db.execute(
+            f"SELECT COUNT(*) FROM tasks "
+            f"WHERE mission_id = ? AND status = 'completed' "
+            f"  AND agent_type IN ({placeholders}) "
+            f"  AND COALESCE(completed_at, created_at) >= ?",
+            (mission_id, *_CODE_AGENT_TYPES, since),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        prs_shipped = int(row[0]) if row else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("prs_shipped count failed", error=str(exc))
+    await insert_growth_event(
+        mission_id=mission_id, kind="review_density_metric",
+        properties={"prs_shipped": prs_shipped})
 
 
 __all__ = ["run"]

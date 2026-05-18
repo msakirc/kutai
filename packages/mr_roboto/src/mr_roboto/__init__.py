@@ -3507,15 +3507,38 @@ async def _run_dispatch(task: dict) -> Action:
         # (OVERHEAD lane), emits 3 segmented variants, surfaces founder_action.
         from src.app.jobs.investor_bullets import run_investor_bullets
         try:
-            product_id = payload.get("product_id", "default")
-            res = await run_investor_bullets(product_id=product_id)
-            if not res.get("ok"):
-                return Action(
-                    status="failed",
-                    error=f"investor_bullets: {res.get('reason') or 'failed'}",
-                    result=res,
-                )
-            return Action(status="completed", result=res)
+            product_id = payload.get("product_id")
+            if product_id and product_id != "default":
+                res = await run_investor_bullets(product_id=product_id)
+                if not res.get("ok"):
+                    return Action(
+                        status="failed",
+                        error=f"investor_bullets: {res.get('reason') or 'failed'}",
+                        result=res,
+                    )
+                return Action(status="completed", result=res)
+            # Cron tick — no specific product. Z7 #7: product_id now defaults
+            # to mission_id, so sweep every distinct product. Without this the
+            # cron ran for the literal "default" which matches no mission.
+            from src.infra.db import get_db
+            _db = await get_db()
+            _cur = await _db.execute(
+                "SELECT DISTINCT product_id FROM missions "
+                "WHERE product_id IS NOT NULL"
+            )
+            _products = [r[0] for r in await _cur.fetchall()]
+            await _cur.close()
+            ran = 0
+            for _pid in _products:
+                try:
+                    _r = await run_investor_bullets(product_id=str(_pid))
+                    if _r.get("ok"):
+                        ran += 1
+                except Exception as _e:  # noqa: BLE001 — one product must not abort
+                    logger.warning("investor_bullets failed for %s: %s", _pid, _e)
+            return Action(status="completed",
+                          result={"ok": True, "products_swept": len(_products),
+                                  "products_ran": ran})
         except Exception as e:
             return Action(status="failed", error=str(e))
 

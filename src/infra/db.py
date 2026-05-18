@@ -3860,6 +3860,23 @@ async def init_db():
         ),
     )
 
+    # ── Z7 #7: backfill missions.product_id = id for legacy rows ─────────────────
+    # add_mission now defaults product_id to the mission id; backfill the rows
+    # created before that so investor_bullets' product-scoped JOINs see them.
+    await apply_migration(
+        version="2026-05-18-z7-product-id-backfill",
+        sql=(
+            "UPDATE missions SET product_id = CAST(id AS TEXT) "
+            "WHERE product_id IS NULL;\n"
+        ),
+        reversal_sql=None,  # data backfill — no structural reversal
+        description=(
+            "Z7 #7: backfill missions.product_id with the mission id for rows "
+            "predating the add_mission default. Unblocks investor_bullets' "
+            "product-scoped metric JOINs."
+        ),
+    )
+
     # ── Z7 fix-pass: product-scope the mentions UNIQUE constraint ────────────────
     # The original 2026-05-16-z7-a11-mentions migration used
     # UNIQUE(source, source_id). Two *different* products mentioned in the same
@@ -4362,6 +4379,20 @@ async def add_mission(title, description, priority=5, context=None,
     )
     await db.commit()
     mission_id = cursor.lastrowid
+    # Z7 #7: default product_id to the mission's own id. The column was a
+    # nullable placeholder no code ever populated, so investor_bullets'
+    # product-scoped JOINs (WHERE m.product_id=?) always matched zero rows.
+    # One mission == one product unless something explicitly re-groups it.
+    try:
+        if mission_id is not None:
+            await db.execute(
+                "UPDATE missions SET product_id = ? "
+                "WHERE id = ? AND product_id IS NULL",
+                (str(mission_id), mission_id),
+            )
+            await db.commit()
+    except Exception as e:
+        logger.debug(f"product_id default at add_mission skipped: {e}")
     # Z10 T2A: seed the per-mission cost_budgets row so token accounting
     # has a target to increment into. budget_ceiling_usd remains NULL
     # (= unlimited) unless the caller supplies one.

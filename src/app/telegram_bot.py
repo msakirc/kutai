@@ -2024,6 +2024,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("lifecycle", self.cmd_lifecycle))
         # Z7 T6 A7 — cold outreach + deliverability spine
         self.app.add_handler(CommandHandler("outreach", self.cmd_outreach))
+        # Z7 B2 — changelog publish (founder-gated announcement trigger)
+        self.app.add_handler(CommandHandler("changelog", self.cmd_changelog))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -3406,6 +3408,109 @@ class TelegramInterface:
                 lines.append(f"  {s['name']}: {s['success_rate']}% ({s['successes']}/{s['total']})")
 
         await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_changelog(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /changelog command — the founder-gated publish trigger.
+
+        Subcommands:
+          /changelog [list]        — list unpublished changelog drafts
+          /changelog publish <id>  — publish a draft (marks it released,
+                                     invalidates caches, queues the B1
+                                     announcement email blast to subscribers)
+
+        The changelog/publish mr_roboto verb had no production caller — i2p
+        step 11.4 produces a changelog artifact but never publishes it, and
+        the changelog_freshness posthook only emits advisory text. This
+        command is that missing trigger; publish broadcasts to subscribers,
+        so it stays an explicit founder action.
+        """
+        chat_id = update.effective_chat.id
+        product_id = str(chat_id)
+        args = context.args or []
+        sub = (args[0].lower() if args else "list")
+
+        if sub == "list":
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+                cur = await db.execute(
+                    "SELECT entry_id, version, title FROM changelog_entries "
+                    "WHERE product_id=? AND published=0 "
+                    "ORDER BY entry_id DESC LIMIT 20",
+                    (product_id,),
+                )
+                rows = await cur.fetchall()
+            except Exception as e:
+                await self._reply(update, f"changelog list failed: {e}")
+                return
+            if not rows:
+                await self._reply(
+                    update,
+                    "No unpublished changelog drafts.\n"
+                    "Drafts are created by the `changelog/draft` verb during "
+                    "a release mission.",
+                    parse_mode="Markdown",
+                )
+                return
+            lines = ["*Unpublished changelog drafts:*"]
+            for entry_id, version, title in rows:
+                lines.append(f"  `{entry_id}` — {version or '(no version)'}: {title or '(untitled)'}")
+            lines.append("\nPublish with `/changelog publish <id>`")
+            await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+            return
+
+        if sub == "publish":
+            if len(args) < 2 or not args[1].isdigit():
+                await self._reply(
+                    update,
+                    "Usage: `/changelog publish <entry_id>`\n"
+                    "Run `/changelog` to see draft entry ids.",
+                    parse_mode="Markdown",
+                )
+                return
+            entry_id = int(args[1])
+            try:
+                from src.infra.db import get_db
+                db = await get_db()
+                cur = await db.execute(
+                    "SELECT published FROM changelog_entries "
+                    "WHERE entry_id=? AND product_id=?",
+                    (entry_id, product_id),
+                )
+                row = await cur.fetchone()
+            except Exception as e:
+                await self._reply(update, f"changelog lookup failed: {e}")
+                return
+            if row is None:
+                await self._reply(update, f"No changelog draft #{entry_id} for this product.")
+                return
+            if row[0]:
+                await self._reply(update, f"Changelog #{entry_id} is already published.")
+                return
+            import general_beckman
+            await general_beckman.enqueue(
+                {"agent_type": "mechanical",
+                 "title": f"Publish changelog #{entry_id}",
+                 "payload": {"action": "changelog/publish",
+                             "entry_id": entry_id,
+                             "product_id": product_id}},
+                lane="oneshot",
+            )
+            await self._reply(
+                update,
+                f"Changelog #{entry_id} queued for publish — entry will be "
+                "marked released and the announcement email blast queued to "
+                "subscribers.",
+            )
+            return
+
+        await self._reply(
+            update,
+            "Usage:\n"
+            "  `/changelog` — list unpublished drafts\n"
+            "  `/changelog publish <id>` — publish a draft + announce",
+            parse_mode="Markdown",
+        )
 
     async def cmd_smartsearch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show smart search stats and API/MCP observability."""

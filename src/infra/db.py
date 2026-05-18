@@ -3835,6 +3835,31 @@ async def init_db():
         ),
     )
 
+    # ── Z7 wiring-sweep A11: mention_monitors — registry of monitored products ───
+    # The mention monitor only polls products the founder has explicitly
+    # registered via /mention_monitor add. One row per (product_id). channels
+    # is a JSON list of enabled source names ('hn','reddit','google','discord').
+    await apply_migration(
+        version="2026-05-18-z7-a11-mention-monitors",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS mention_monitors ("
+            " product_id    TEXT    PRIMARY KEY,"
+            " product_name  TEXT    NOT NULL DEFAULT '',"
+            " channels_json TEXT    NOT NULL DEFAULT '[]',"
+            " enabled       INTEGER NOT NULL DEFAULT 1,"
+            " created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " last_run_at   TEXT"
+            ");\n"
+        ),
+        reversal_sql="DROP TABLE IF EXISTS mention_monitors;\n",
+        description=(
+            "Z7 wiring-sweep A11: mention_monitors — registry of products the "
+            "founder opted into mention monitoring for. channels_json is the "
+            "enabled source list; the hourly mention_monitor_sweep cron polls "
+            "only the rows here. Without this the A11 monitor never runs."
+        ),
+    )
+
     # ── Z7 fix-pass: product-scope the mentions UNIQUE constraint ────────────────
     # The original 2026-05-16-z7-a11-mentions migration used
     # UNIQUE(source, source_id). Two *different* products mentioned in the same

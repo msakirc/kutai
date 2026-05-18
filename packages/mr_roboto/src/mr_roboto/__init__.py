@@ -4482,6 +4482,15 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    # ── Z7 A11: mention_monitor_sweep — hourly cron over registered products ─
+    if action == "mention_monitor_sweep":
+        try:
+            from mr_roboto.mention_monitor_sweep import run as _mms_run
+            res = await _mms_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     # ── Z7 T6 A11.r2: internal_signal_poll — proxy until Z6 event stream ────
     if action == "internal_signal_poll":
         try:

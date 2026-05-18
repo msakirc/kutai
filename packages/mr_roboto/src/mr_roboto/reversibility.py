@@ -288,6 +288,12 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "mention_polls/discord": "full",
     # internal_signal_poll: reads tickets + appends mentions; idempotent. full.
     "internal_signal_poll": "full",
+    # mention_monitor_sweep: hourly cron — polls sources, appends mentions
+    # (UNIQUE dedup), enqueues digest notify tasks. Idempotent. full.
+    "mention_monitor_sweep": "full",
+    # yalayut_demand: records one demand signal (append-only DB write) so
+    # core-loop files need not import yalayut. Idempotent. full.
+    "yalayut_demand": "full",
     # ---- Z7 T6 A12 marketing copy generator (A12 / A1) ----------------------
     # marketing_copy: writes local JSON artifact + emits founder_action (advisory).
     # Artifact is git-reversible; founder_action is advisory (no external publish).

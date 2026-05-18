@@ -2026,6 +2026,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("outreach", self.cmd_outreach))
         # Z7 B2 — changelog publish (founder-gated announcement trigger)
         self.app.add_handler(CommandHandler("changelog", self.cmd_changelog))
+        # Z7 A11 — mention monitor registration
+        self.app.add_handler(CommandHandler("mention_monitor", self.cmd_mention_monitor))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -3509,6 +3511,112 @@ class TelegramInterface:
             "Usage:\n"
             "  `/changelog` — list unpublished drafts\n"
             "  `/changelog publish <id>` — publish a draft + announce",
+            parse_mode="Markdown",
+        )
+
+    async def cmd_mention_monitor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /mention_monitor command — register A11 mention monitoring.
+
+        Subcommands:
+          /mention_monitor [list]                  — show this product's monitor
+          /mention_monitor add <name> [channels..] — register; default channels
+                                                     hn google (free, no key)
+          /mention_monitor remove                  — disable monitoring
+
+        Once registered, the hourly mention_monitor_sweep cron polls the
+        enabled channels and surfaces a digest. Without a row here the
+        sweep has nothing to poll — the A11 monitor never runs.
+        """
+        chat_id = update.effective_chat.id
+        product_id = str(chat_id)
+        args = context.args or []
+        sub = (args[0].lower() if args else "list")
+        valid = {"hn", "reddit", "google", "discord"}
+
+        from src.infra.db import get_db
+        import json as _json
+        db = await get_db()
+
+        if sub == "list":
+            cur = await db.execute(
+                "SELECT product_name, channels_json, enabled, last_run_at "
+                "FROM mention_monitors WHERE product_id=?",
+                (product_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                await self._reply(
+                    update,
+                    "No mention monitor for this product.\n"
+                    "Register with `/mention_monitor add <product_name> [channels]`",
+                    parse_mode="Markdown",
+                )
+                return
+            name, channels_json, enabled, last_run = row
+            try:
+                channels = _json.loads(channels_json or "[]")
+            except Exception:
+                channels = []
+            await self._reply(
+                update,
+                f"*Mention monitor:* {name}\n"
+                f"  channels: {', '.join(channels) or '(none)'}\n"
+                f"  enabled: {'yes' if enabled else 'no'}\n"
+                f"  last run: {last_run or 'never'}",
+                parse_mode="Markdown",
+            )
+            return
+
+        if sub == "add":
+            if len(args) < 2:
+                await self._reply(
+                    update,
+                    "Usage: `/mention_monitor add <product_name> [channels]`\n"
+                    "Channels: hn reddit google discord (default: hn google)",
+                    parse_mode="Markdown",
+                )
+                return
+            product_name = args[1]
+            channels = [c.lower() for c in args[2:] if c.lower() in valid]
+            if not channels:
+                channels = ["hn", "google"]
+            await db.execute(
+                "INSERT INTO mention_monitors "
+                "(product_id, product_name, channels_json, enabled) "
+                "VALUES (?, ?, ?, 1) "
+                "ON CONFLICT(product_id) DO UPDATE SET "
+                "  product_name=excluded.product_name, "
+                "  channels_json=excluded.channels_json, enabled=1",
+                (product_id, product_name, _json.dumps(channels)),
+            )
+            await db.commit()
+            await self._reply(
+                update,
+                f"Mention monitor registered for *{product_name}*.\n"
+                f"Channels: {', '.join(channels)}. The hourly sweep will "
+                "poll these and surface a digest.",
+                parse_mode="Markdown",
+            )
+            return
+
+        if sub == "remove":
+            cur = await db.execute(
+                "UPDATE mention_monitors SET enabled=0 WHERE product_id=?",
+                (product_id,),
+            )
+            await db.commit()
+            if cur.rowcount:
+                await self._reply(update, "Mention monitor disabled.")
+            else:
+                await self._reply(update, "No mention monitor to remove.")
+            return
+
+        await self._reply(
+            update,
+            "Usage:\n"
+            "  `/mention_monitor` — show monitor\n"
+            "  `/mention_monitor add <name> [channels]` — register\n"
+            "  `/mention_monitor remove` — disable",
             parse_mode="Markdown",
         )
 

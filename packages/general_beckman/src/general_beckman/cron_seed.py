@@ -96,6 +96,16 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": int(os.getenv("MONITOR_INTERVAL", "300")),
         "payload": {"_executor": "monitoring_check"},
     },
+    # Z7 A11 — hourly mention-monitor sweep. Polls the founder-enabled
+    # channels for every product registered via /mention_monitor and
+    # enqueues a per-product digest of mid-tier (score 4-6) mentions.
+    # Soft no-op when no products are registered.
+    {
+        "title": "mention_monitor_sweep",
+        "description": "Hourly mention monitor: poll registered products + enqueue digests",
+        "interval_seconds": 3600,
+        "payload": {"_executor": "mention_monitor_sweep"},
+    },
     # Z7 A6 — daily cold-outreach deliverability sweep. The
     # outreach_deliverability_check verb scans bounce/complaint rates and
     # writes an outreach_pauses row when a domain degrades; outreach_send

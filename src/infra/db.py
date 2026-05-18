@@ -3860,6 +3860,38 @@ async def init_db():
         ),
     )
 
+    # ── Z7 #4: outreach_prospects — uploaded cold-outreach prospect lists ────────
+    # /outreach upload persists prospects here as 'pending'; on founder
+    # approval of the batch card they flip to 'approved' and an outreach/draft
+    # task is dispatched per prospect. Without this table /outreach upload was
+    # a pure stub with no list storage.
+    await apply_migration(
+        version="2026-05-18-z7-a7-outreach-prospects",
+        sql=(
+            "CREATE TABLE IF NOT EXISTS outreach_prospects ("
+            " prospect_id  INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " product_id   TEXT    NOT NULL,"
+            " list_id      TEXT    NOT NULL,"
+            " target_email TEXT    NOT NULL,"
+            " name         TEXT    NOT NULL DEFAULT '',"
+            " status       TEXT    NOT NULL DEFAULT 'pending',"
+            " created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+            " UNIQUE(product_id, list_id, target_email)"
+            ");\n"
+            "CREATE INDEX IF NOT EXISTS idx_outreach_prospects_list "
+            "ON outreach_prospects(product_id, list_id, status);\n"
+        ),
+        reversal_sql=(
+            "DROP INDEX IF EXISTS idx_outreach_prospects_list;\n"
+            "DROP TABLE IF EXISTS outreach_prospects;\n"
+        ),
+        description=(
+            "Z7 #4 A7: outreach_prospects — uploaded cold-outreach prospect "
+            "lists. status pending->approved on founder batch approval; "
+            "UNIQUE(product_id,list_id,target_email) dedups re-uploads."
+        ),
+    )
+
     # ── Z7 #7: backfill missions.product_id = id for legacy rows ─────────────────
     # add_mission now defaults product_id to the mission id; backfill the rows
     # created before that so investor_bullets' product-scoped JOINs see them.

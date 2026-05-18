@@ -3622,6 +3622,21 @@ class TelegramInterface:
             parse_mode="Markdown",
         )
 
+    async def _resolve_or_create_outreach_mission(self, product_id: str) -> int:
+        """Find (or lazily create) the per-product mission that hosts cold-
+        outreach founder_actions. founder_actions.mission_id is NOT NULL but
+        ad-hoc outreach has no natural mission — one ongoing mission per
+        product owns all its outreach cards."""
+        from src.infra.db import get_db, add_mission
+        db = await get_db()
+        title = f"Cold outreach: {product_id}"
+        cur = await db.execute(
+            "SELECT id FROM missions WHERE title=? LIMIT 1", (title,))
+        row = await cur.fetchone()
+        if row:
+            return int(row[0])
+        return int(await add_mission(title, "Cold-outreach campaign container"))
+
     async def cmd_force_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /force_action command — manually trigger an on-call action.
 
@@ -10367,10 +10382,64 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         # this hook the only writer of those collections had zero callers,
         # so support_docs_* stayed permanently empty.
         extra = await self._apply_faq_approval_if_pending(action, payload)
+        extra += await self._dispatch_outreach_if_pending(action, payload)
         await self._reply(
             update,
             f"✅ founder_action #{action.id} marked done.{extra}",
         )
+
+    async def _dispatch_outreach_if_pending(self, action, payload) -> str:
+        """If `action` is an outreach batch-approval card, draft + dispatch
+        every pending prospect on its list. Returns a reply suffix."""
+        schema = getattr(action, "expected_output_schema", None) or {}
+        if not schema.get("_outreach_approval_pending"):
+            return ""
+        if isinstance(payload, dict) and (
+            payload.get("reject") or payload.get("approved") is False
+        ):
+            return "\nOutreach batch rejected — nothing dispatched."
+        list_id = schema.get("list_id")
+        product_id = schema.get("product_id")
+        if not list_id or not product_id:
+            return "\n⚠️ Outreach card missing list_id/product_id."
+        try:
+            from src.infra.db import get_db
+            import general_beckman
+            db = await get_db()
+            cur = await db.execute(
+                "SELECT prospect_id, target_email, name FROM outreach_prospects "
+                "WHERE product_id=? AND list_id=? AND status='pending'",
+                (product_id, list_id),
+            )
+            prospects = await cur.fetchall()
+            if not prospects:
+                return "\nNo pending prospects on that list."
+            mid = getattr(action, "mission_id", None)
+            dispatched = 0
+            for prospect_id, email, name in prospects:
+                await general_beckman.enqueue(
+                    {"agent_type": "mechanical",
+                     "title": f"Draft outreach: {email}",
+                     "mission_id": mid,
+                     "payload": {"action": "outreach/draft",
+                                 "product_id": product_id,
+                                 "list_id": list_id,
+                                 "template_id": "cold",
+                                 "prospect_data": {"email": email,
+                                                   "name": name or ""}}},
+                    lane="oneshot",
+                )
+                dispatched += 1
+            await db.execute(
+                "UPDATE outreach_prospects SET status='approved' "
+                "WHERE product_id=? AND list_id=? AND status='pending'",
+                (product_id, list_id),
+            )
+            await db.commit()
+            return f"\nOutreach: {dispatched} prospect(s) queued for draft + send."
+        except Exception as e:
+            logger.warning(f"outreach dispatch failed: {e}")
+            return f"\n⚠️ Outreach dispatch failed: {e}"
 
     async def _apply_faq_approval_if_pending(self, action, payload) -> str:
         """If `action` is a FAQ-approval card, route its entry into the
@@ -12401,13 +12470,87 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if sub == "upload":
             list_id = args[1] if len(args) > 1 else None
             if not list_id:
-                await self._reply(update, "Usage: `/outreach upload <list_id>`", parse_mode="Markdown")
+                await self._reply(
+                    update,
+                    "Usage: `/outreach upload <list_id> <email> [email ...]`",
+                    parse_mode="Markdown",
+                )
+                return
+            # Parse the prospect emails (args after the list_id).
+            emails = [e.strip().lower() for e in args[2:]
+                      if "@" in e and "." in e.split("@")[-1]]
+            if not emails:
+                await self._reply(
+                    update,
+                    "No valid prospect emails.\n"
+                    "Usage: `/outreach upload <list_id> <email> [email ...]`",
+                    parse_mode="Markdown",
+                )
+                return
+            from src.infra.db import get_db
+            db = await get_db()
+            inserted = 0
+            for em in emails:
+                try:
+                    cur = await db.execute(
+                        "INSERT OR IGNORE INTO outreach_prospects "
+                        "(product_id, list_id, target_email, status) "
+                        "VALUES (?, ?, ?, 'pending')",
+                        (product_id, list_id, em),
+                    )
+                    inserted += cur.rowcount or 0
+                except Exception as e:
+                    logger.warning(f"outreach prospect insert failed: {e}")
+            await db.commit()
+            if inserted == 0:
+                await self._reply(
+                    update,
+                    f"All {len(emails)} prospect(s) already on list `{list_id}` "
+                    "— nothing new to approve.",
+                    parse_mode="Markdown",
+                )
+                return
+            # Founder approval card — approving it drafts + dispatches.
+            try:
+                import src.founder_actions as fa
+                preview = ", ".join(emails[:3])
+                mid = await self._resolve_or_create_outreach_mission(product_id)
+                await fa.create(
+                    mission_id=mid,
+                    kind="generic",
+                    title=f"Approve cold-outreach batch: list {list_id}",
+                    why=(
+                        f"{inserted} new prospect(s) uploaded to list "
+                        f"'{list_id}'. Approve to draft + dispatch outreach "
+                        f"to each (gated by warmup quota + suppression)."
+                    ),
+                    instructions=[
+                        f"Prospects ({inserted} new): {preview}"
+                        + (" ..." if len(emails) > 3 else ""),
+                        "Approve via /action_done <id> to draft + send.",
+                        "Reject via /action_done <id> {\"reject\": true}.",
+                    ],
+                    expected_output_kind="ack_only",
+                    expected_output_schema={
+                        "_outreach_approval_pending": True,
+                        "list_id": list_id,
+                        "product_id": product_id,
+                    },
+                    notify_telegram=True,
+                )
+            except Exception as e:
+                logger.warning(f"outreach approval card failed: {e}")
+                await self._reply(
+                    update,
+                    f"{inserted} prospect(s) saved to `{list_id}` but the "
+                    f"approval card failed to surface: {e}",
+                    parse_mode="Markdown",
+                )
                 return
             await self._reply(
                 update,
-                f"Outreach batch for list `{list_id}` queued for founder approval.\n\n"
-                "A founder_action card will surface with the first 3 draft previews "
-                "and the total count. Approve there to dispatch.",
+                f"{inserted} prospect(s) saved to list `{list_id}`. A founder "
+                "approval card has surfaced — approve it to draft + dispatch.",
                 parse_mode="Markdown",
             )
             return

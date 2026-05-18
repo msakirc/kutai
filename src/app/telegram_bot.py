@@ -2028,6 +2028,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("changelog", self.cmd_changelog))
         # Z7 A11 — mention monitor registration
         self.app.add_handler(CommandHandler("mention_monitor", self.cmd_mention_monitor))
+        # Z8 — manual on-call action trigger
+        self.app.add_handler(CommandHandler("force_action", self.cmd_force_action))
         # Z9 T5E — full-params typed confirmation for irreversible pricing A/B.
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("approve", self.cmd_approve))
@@ -3617,6 +3619,65 @@ class TelegramInterface:
             "  `/mention_monitor` — show monitor\n"
             "  `/mention_monitor add <name> [channels]` — register\n"
             "  `/mention_monitor remove` — disable",
+            parse_mode="Markdown",
+        )
+
+    async def cmd_force_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /force_action command — manually trigger an on-call action.
+
+        Usage: /force_action <mission_id> <verb> [params_json]
+
+        The Z8 on-call agent normally chooses + dispatches ops verbs
+        autonomously; /force_action lets the founder force one. The verb
+        still goes through oncall_action's cooldown + handler + record path —
+        only the *decision* is manual. Z8 shipped without this command.
+        """
+        args = context.args or []
+        from mr_roboto.executors.oncall_action import WHITELISTED_VERBS
+        if len(args) < 2:
+            await self._reply(
+                update,
+                "Usage: `/force_action <mission_id> <verb> [params_json]`\n"
+                f"Verbs: {', '.join(sorted(WHITELISTED_VERBS))}",
+                parse_mode="Markdown",
+            )
+            return
+        if not args[0].isdigit():
+            await self._reply(update, "mission_id must be an integer.")
+            return
+        mission_id = int(args[0])
+        verb = args[1]
+        if verb not in WHITELISTED_VERBS:
+            await self._reply(
+                update,
+                f"Unknown on-call verb `{verb}`.\n"
+                f"Valid: {', '.join(sorted(WHITELISTED_VERBS))}",
+                parse_mode="Markdown",
+            )
+            return
+        params: dict = {}
+        if len(args) > 2:
+            import json as _json
+            try:
+                parsed = _json.loads(" ".join(args[2:]))
+                if isinstance(parsed, dict):
+                    params = parsed
+            except Exception:
+                await self._reply(update, "params must be valid JSON object.")
+                return
+        import general_beckman
+        await general_beckman.enqueue(
+            {"agent_type": "mechanical",
+             "title": f"Force on-call action: {verb} (mission {mission_id})",
+             "mission_id": mission_id,
+             "payload": {"action": "oncall_action", "verb": verb,
+                         "params": params}},
+            lane="oneshot",
+        )
+        await self._reply(
+            update,
+            f"Forced on-call action `{verb}` queued for mission {mission_id} "
+            "— routes through the cooldown + handler + audit path.",
             parse_mode="Markdown",
         )
 

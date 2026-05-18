@@ -7,7 +7,14 @@ I2P = pathlib.Path("src/workflows/i2p/i2p_v3.json")
 # These steps perform truly irreversible actions: cloud provisioning (billing starts),
 # DNS propagation, production DB migrations, live payment activation, public deploys,
 # public announcements, mass email sends, and app store submissions.
-LOCKED_NONE_IDS = {
+#
+# Each is tagged reversibility="irreversible" (the most-severe tier of the
+# canonical full/partial/irreversible taxonomy — see safety_guard.tags) plus
+# locked=true. The pairing matters: safety_guard.executor_hook gates a step
+# on the founder ONLY when its resolved tag is IRREVERSIBLE, and `locked`
+# makes the static tag authoritative (no runtime downgrade). A locked step
+# tagged merely "full"/"partial" would NOT trip the founder-wait gate.
+LOCKED_IRREVERSIBLE_IDS = {
     "13.1",  # production_infrastructure — cloud resources provisioned, billing starts
     "13.2",  # network_and_security_infra — DNS records propagate globally
     "13.6",  # production_data_setup — DB migrations run against production DB
@@ -31,15 +38,17 @@ def _walk(node, found, target_ids):
             _walk(v, found, target_ids)
 
 
-def test_dangerous_steps_are_locked_none():
-    if not LOCKED_NONE_IDS:
+def test_dangerous_steps_are_locked_irreversible():
+    if not LOCKED_IRREVERSIBLE_IDS:
         import pytest
         pytest.skip("no dangerous steps tagged in this workflow yet")
     data = json.loads(I2P.read_text(encoding="utf-8"))
     found = {}
-    _walk(data, found, LOCKED_NONE_IDS)
-    missing = LOCKED_NONE_IDS - found.keys()
+    _walk(data, found, LOCKED_IRREVERSIBLE_IDS)
+    missing = LOCKED_IRREVERSIBLE_IDS - found.keys()
     assert not missing, f"missing dangerous step ids in workflow: {missing}"
     for sid, step in found.items():
-        assert step.get("reversibility") == "none", f"{sid} reversibility != none"
+        assert step.get("reversibility") == "irreversible", (
+            f"{sid} reversibility != irreversible"
+        )
         assert step.get("locked") is True, f"{sid} locked != true"

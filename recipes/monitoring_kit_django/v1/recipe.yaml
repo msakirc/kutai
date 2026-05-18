@@ -1,0 +1,32 @@
+name: monitoring_kit_django
+version: v1
+kind: monitoring_kit
+description: "Free-first observability kit for Django: healthz/readyz views, env-gated Sentry error tracking, structured JSON logging config. No paid APM required — pairs with a free external uptime monitor."
+requires:
+  tech_stack:
+    - "django"
+    - "django+postgres"
+    - "django+sqlite"
+  features: []
+conflicts_with: []
+post_hooks:
+  - imports_check
+templates:
+  health: health.template.py
+  observability: observability.template.py
+  notes: notes.md
+prompts: {}
+lessons_domain: monitoring_kit
+dependencies:
+  backend:
+    - sentry-sdk
+  frontend: []
+param_defaults:
+  SENTRY_DSN_ENV: "SENTRY_DSN"
+  ENVIRONMENT_ENV: "DJANGO_ENV"
+  HEALTH_PATH: "healthz/"
+  READY_PATH: "readyz/"
+entry_points:
+  health: health.template.py
+  observability: observability.template.py
+  notes: notes.md

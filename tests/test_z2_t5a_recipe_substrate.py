@@ -189,13 +189,17 @@ class TestPickRecipeVerb:
         assert result["picked"]["fit_score"] >= 0.7
 
     def test_non_matching_stack_returns_no_pick(self):
-        """Non-matching stack → picked is None, reason mentions threshold."""
+        """Non-matching stack → picked is None, reason mentions threshold.
+
+        Uses a stack no recipe in the library covers — django/fastapi/nextjs
+        are all covered now (incl. the monitoring_kit_* recipes), so this
+        needs a genuinely alien stack to exercise the no-pick path."""
         async def _run():
             from mr_roboto.pick_recipe import pick_recipe
             result = await pick_recipe(
                 mission_id=2,
                 feature_decl="random feature xyz",
-                stack="django+postgres",
+                stack="elixir+phoenix",
                 recipes_dir=str(WORKTREE_ROOT / "recipes"),
                 min_fit=0.7,
             )

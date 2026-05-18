@@ -4293,12 +4293,16 @@ async def init_db():
     except Exception as e:
         logger.debug(f"tasks.estimated_cost_usd migration skipped: {e}")
 
-    # Z0 mission preflight columns (2026-05-05)
+    # Z0 mission preflight columns (2026-05-05). NOTE: lifecycle_state is
+    # intentionally NOT added here — it is owned by the Z8 T1A migration
+    # above (NOT NULL DEFAULT 'terminal'). Z0 lifecycle (pause/resume/kill)
+    # shares that single column; its state set extends Z8's with
+    # {paused, killed}. Legacy rows backfill to 'terminal', which is
+    # correct: a pre-existing mission is not running.
     for ddl in (
         "ALTER TABLE missions ADD COLUMN cost_ceiling_usd REAL",
         "ALTER TABLE missions ADD COLUMN spent_usd REAL DEFAULT 0",
         "ALTER TABLE missions ADD COLUMN message_thread_id INTEGER",
-        "ALTER TABLE missions ADD COLUMN lifecycle_state TEXT DEFAULT 'active'",
     ):
         try:
             await db.execute(ddl)
@@ -4320,10 +4324,8 @@ async def init_db():
     """)
     await db.commit()
 
-    # Backfill any pre-existing NULL rows (older installs)
-    await db.execute(
-        "UPDATE missions SET lifecycle_state = 'active' WHERE lifecycle_state IS NULL"
-    )
+    # Backfill any pre-existing NULL rows (older installs). lifecycle_state
+    # is NOT NULL via the Z8 migration, so only spent_usd needs backfill.
     await db.execute(
         "UPDATE missions SET spent_usd = 0 WHERE spent_usd IS NULL"
     )

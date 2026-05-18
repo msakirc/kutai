@@ -44,7 +44,10 @@ async def test_z0_columns_added(tmp_path, monkeypatch):
             "FROM missions WHERE title = 'legacy'"
         )
         row = await cur.fetchone()
-        assert row == ("active", 0, None)
+        # lifecycle_state is owned by the Z8 T1A migration (NOT NULL
+        # DEFAULT 'terminal'); legacy/pre-existing missions backfill to
+        # 'terminal' — correct, an old mission is not running.
+        assert row == ("terminal", 0, None)
 
         cur = await db.execute(
             "SELECT name FROM sqlite_master "

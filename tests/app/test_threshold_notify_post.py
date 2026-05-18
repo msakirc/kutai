@@ -19,7 +19,7 @@ async def test_notify_threshold_posts_to_thread(tmp_path, monkeypatch):
     await init_db()
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "INSERT INTO missions (title, message_thread_id, context) "
+            "INSERT INTO missions (title, telegram_thread_id, context) "
             "VALUES ('m', 999, json_object('chat_id', 1234))"
         )
         cur = await db.execute("SELECT last_insert_rowid()")
@@ -51,7 +51,7 @@ async def test_notify_threshold_no_chat_id_logs_and_returns(tmp_path, monkeypatc
     await init_db()
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "INSERT INTO missions (title, message_thread_id, context) VALUES ('m', 999, '{}')"
+            "INSERT INTO missions (title, telegram_thread_id, context) VALUES ('m', 999, '{}')"
         )
         cur = await db.execute("SELECT last_insert_rowid()")
         mid = (await cur.fetchone())[0]
@@ -79,7 +79,7 @@ async def test_notify_threshold_swallows_telegram_errors(tmp_path, monkeypatch):
     await init_db()
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "INSERT INTO missions (title, message_thread_id, context) "
+            "INSERT INTO missions (title, telegram_thread_id, context) "
             "VALUES ('m', 999, json_object('chat_id', 1234))"
         )
         cur = await db.execute("SELECT last_insert_rowid()")

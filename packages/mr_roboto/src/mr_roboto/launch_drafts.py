@@ -46,6 +46,7 @@ Returns ``{"status": "enqueued", "task_id": int}`` on success.
 from __future__ import annotations
 
 from src.infra.logging_config import get_logger
+from src.ops.brand_voice import load_founder_voice
 
 logger = get_logger("mr_roboto.launch_drafts")
 
@@ -145,7 +146,10 @@ async def run(channel: str, payload: dict) -> dict:
     product_id = payload.get("product_id") or ""
     launch_id = payload.get("launch_id")
     spec_text = payload.get("spec") or ""
-    brand_voice = payload.get("brand_voice") or ""
+    # Explicit caller brand_voice wins; otherwise fall back to the founder's
+    # own voice profile (docs/templates/brand_voices/founder.md). Empty when
+    # the founder has not filled the template — same as the prior default.
+    brand_voice = payload.get("brand_voice") or load_founder_voice()
 
     # Z7 T6E — cross-mission lessons loop.
     # If caller provided explicit lessons, use them.
@@ -176,9 +180,10 @@ async def run(channel: str, payload: dict) -> dict:
             lessons_block = "\nPrior launch lessons:\n" + "\n".join(lines)
 
     system_prompt = channel_ctx
+    voice_block = f"\n\nBrand voice:\n{brand_voice[:800]}" if brand_voice else ""
     user_message = (
-        f"Product spec:\n{spec_text[:2000]}\n\n"
-        f"Brand voice:\n{brand_voice[:800]}"
+        f"Product spec:\n{spec_text[:2000]}"
+        f"{voice_block}"
         f"{lessons_block}"
     )
 

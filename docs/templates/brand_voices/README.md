@@ -76,3 +76,13 @@ Avoid: "Data can be exported by users via the export function."
 
 Any violation in category 1, 5, or 6 → FAIL (blocker).
 Categories 2, 3, 4 → WARNING if within 20% of threshold; FAIL if exceeded.
+
+## founder.md — the founder's personal voice
+
+`founder.md` is a special profile. Unlike the per-audience lint profiles
+above, its prose body is fed directly into the LLM prompt of the public-content
+generators (launch posts, cold outreach, marketing copy) so they write in the
+founder's voice. It ships as a fill-in template carrying a
+`FOUNDER_VOICE_UNFILLED` sentinel — while that sentinel is present,
+`load_founder_voice()` returns `""` and generators use their generic default.
+Delete the sentinel line once the template is filled in.

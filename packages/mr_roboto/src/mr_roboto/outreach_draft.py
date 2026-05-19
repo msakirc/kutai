@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.infra.logging_config import get_logger
+from src.ops.brand_voice import load_founder_voice
 
 logger = get_logger("mr_roboto.outreach_draft")
 
@@ -63,6 +64,10 @@ async def run_outreach_draft(
     """
     instruction = _TEMPLATE_INSTRUCTIONS.get(
         template_id, _DEFAULT_TEMPLATE_INSTRUCTION)
+    # Write the draft in the founder's voice when they have defined one.
+    _voice = load_founder_voice()
+    if _voice:
+        instruction = f"{instruction}\n\nBrand voice:\n{_voice[:800]}"
     _kind = "follow-up" if template_id == "follow_up" else "outreach"
     spec = {
         "title": f"Draft {_kind} for {prospect_data.get('name', 'prospect')} ({product_id})",

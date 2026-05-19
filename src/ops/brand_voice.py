@@ -282,3 +282,34 @@ def load_brand_voice(audience: str, voices_dir: str | None = None) -> "BrandVoic
                 voice.slug = slug
             return voice
     return None
+
+
+# Sentinel left in the shipped founder.md template. While present, the
+# founder has not personalized their voice yet → loader returns "".
+_FOUNDER_UNFILLED_MARKER = "FOUNDER_VOICE_UNFILLED"
+
+
+def load_founder_voice(voices_dir: str | None = None) -> str:
+    """Return the founder's voice description as a prose block for LLM prompts.
+
+    Reads ``docs/templates/brand_voices/founder.md``. Returns ``""`` when the
+    file is absent or still carries the unfilled-template sentinel — callers
+    treat an empty string as "no founder voice", their existing default.
+    """
+    _voices_dir = voices_dir or _default_voices_dir()
+    path = os.path.join(_voices_dir, "founder.md")
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        logger.debug("founder_voice: unreadable: %s (%s)", path, exc)
+        return ""
+    if _FOUNDER_UNFILLED_MARKER in text:
+        return ""
+    voice = _parse_brand_voice(text)
+    body = (voice.raw_body_md or "").strip()
+    # Strip residual HTML-comment scaffolding so the LLM sees only real guidance.
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL).strip()
+    return body

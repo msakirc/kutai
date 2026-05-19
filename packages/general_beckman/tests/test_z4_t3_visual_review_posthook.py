@@ -191,22 +191,28 @@ def test_visual_review_in_dlq_cascade_kinds():
 
 
 def test_visual_review_in_simple_blocker_verdict_kinds():
-    """visual_review must be in the _apply_simple_blocker_verdict kind tuple."""
+    """visual_review must route through _apply_simple_blocker_verdict.
+
+    Anchors on the actual ``await _apply_simple_blocker_verdict(`` call site
+    and scans upward to the enclosing ``if a.kind in (...)`` dispatch tuple.
+    The window is wide (30 lines) because the tuple and the call are
+    deliberately separated by the adr_drift_judge gray-zone branch.
+    """
     import pathlib
     src = pathlib.Path(
         "packages/general_beckman/src/general_beckman/apply.py"
     ).read_text(encoding="utf-8")
-    # Find the _apply_simple_blocker_verdict block
-    simple_blocker_line = None
-    for i, line in enumerate(src.splitlines()):
-        if "_apply_simple_blocker_verdict" in line:
-            # Scan backward for the if a.kind in ( ... ) block
-            context_block = "\n".join(src.splitlines()[max(0, i-6):i+2])
-            if "visual_review" in context_block:
-                simple_blocker_line = i
+    lines = src.splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        if "await _apply_simple_blocker_verdict(" in line:
+            block = "\n".join(lines[max(0, i - 30):i])
+            if "a.kind in (" in block and '"visual_review"' in block:
+                found = True
                 break
-    assert simple_blocker_line is not None, (
-        "visual_review not found in _apply_simple_blocker_verdict kind tuple in apply.py"
+    assert found, (
+        "visual_review not found in any a.kind dispatch tuple routing to "
+        "_apply_simple_blocker_verdict in apply.py"
     )
 
 

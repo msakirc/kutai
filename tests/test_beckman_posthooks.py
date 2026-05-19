@@ -79,7 +79,9 @@ async def test_apply_request_posthook_grade_enqueues_grader_and_parks_source(tmp
         description="",
         agent_type="writer",
         mission_id=1,
-        context=json.dumps({"generating_model": "qwen-7b"}),
+        # add_task expects a dict for `context` and serializes it itself;
+        # passing a pre-dumped string double-encodes (production passes a dict).
+        context={"generating_model": "qwen-7b"},
     )
 
     source_task = await get_task(source_id)

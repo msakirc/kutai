@@ -31,3 +31,14 @@ def test_filled_template_returns_body(tmp_path):
 def test_real_repo_template_is_unfilled():
     # The shipped template must read as unfilled until the founder edits it.
     assert load_founder_voice() == ""
+
+
+def test_headers_only_body_returns_empty(tmp_path):
+    # Sentinel removed but no prose added — only empty section headers.
+    vf = tmp_path / "founder.md"
+    vf.write_text(
+        "---\nslug: founder\n---\n"
+        "## Who I am\n\n## How I write\n\n## Sample sentences in my voice\n",
+        encoding="utf-8",
+    )
+    assert load_founder_voice(voices_dir=str(tmp_path)) == ""

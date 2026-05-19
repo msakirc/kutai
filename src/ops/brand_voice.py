@@ -312,4 +312,9 @@ def load_founder_voice(voices_dir: str | None = None) -> str:
     body = (voice.raw_body_md or "").strip()
     # Strip residual HTML-comment scaffolding so the LLM sees only real guidance.
     body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL).strip()
+    # Guard: if only ATX headers remain (no prose), treat as hollow template and
+    # fall back to the generic empty-string default so LLM prompts stay clean.
+    prose_only = re.sub(r"(?m)^#{1,6}\s[^\n]*", "", body).strip()
+    if not prose_only:
+        return ""
     return body

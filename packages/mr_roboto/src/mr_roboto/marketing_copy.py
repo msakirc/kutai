@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from src.infra.logging_config import get_logger
+from src.ops.brand_voice import load_founder_voice
 
 logger = get_logger("mr_roboto.marketing_copy")
 
@@ -425,6 +426,11 @@ async def run_marketing_copy(
 
     # ── Step 2: Dispatch LLM copy generation (MAIN_WORK lane) ─────────────
     prompt = _build_prompt(product_spec, faq_seed)
+    # Prepend the founder's voice so generated hero/feature/pricing copy
+    # reads in their voice, not generic corporate-speak. No-op when unfilled.
+    _voice = load_founder_voice()
+    if _voice:
+        prompt = f"Brand voice — write all copy in this voice:\n{_voice[:800]}\n\n{prompt}"
     spec = {
         "title": f"marketing_copy:{product_id}:mission#{mission_id}",
         "description": prompt,

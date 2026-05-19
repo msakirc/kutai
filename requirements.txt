@@ -90,6 +90,8 @@ telegram~=0.0.1
 sentence-transformers>=2.2.0
 chromadb>=0.4.0
 langdetect==1.0.9
+fastapi>=0.110.0   # Z8 T3 inbound webhook listener (src/app/run.py)
+uvicorn>=0.27.0    # ASGI server for the webhook listener
 
 # External packages (own repos)
 yazbunu @ git+https://github.com/msakirc/yazbunu.git

@@ -2144,6 +2144,14 @@ async def _apply_code_review_verdict(
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
             except Exception:
                 pass
+        else:
+            # Other post-hooks still pending — persist the dropped
+            # code_review so it is not re-run when the next verdict
+            # arrives. Source stays 'ungraded' (no status change).
+            await update_task(
+                verdict.source_task_id,
+                context=_json.dumps(ctx),
+            )
         # Z10 T4B — record + resolve confidence claim against this reviewer
         # verdict. record+resolve in one go: the verdict IS the resolution
         # signal, no need for a separate pending row.

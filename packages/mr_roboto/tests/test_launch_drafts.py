@@ -36,3 +36,20 @@ async def test_explicit_brand_voice_wins_over_founder_voice():
 
     assert "EXPLICIT" in captured["desc"]
     assert "FALLBACK" not in captured["desc"]
+
+
+@pytest.mark.asyncio
+async def test_launch_draft_no_dangling_voice_header_when_unfilled():
+    captured = {}
+
+    async def fake_enqueue(spec, **kw):
+        captured["desc"] = spec["description"]
+        return {"task_id": 1}
+
+    with patch.object(ld, "_enqueue", fake_enqueue), \
+         patch.object(ld, "fetch_launch_lessons", AsyncMock(return_value=[])), \
+         patch.object(ld, "load_founder_voice", return_value=""):
+        await ld.run("twitter", {"product_id": "p1", "launch_id": 7, "spec": "x"})
+
+    # No founder voice + no payload brand_voice → no dangling header.
+    assert "Brand voice:" not in captured["desc"]

@@ -180,9 +180,10 @@ async def run(channel: str, payload: dict) -> dict:
             lessons_block = "\nPrior launch lessons:\n" + "\n".join(lines)
 
     system_prompt = channel_ctx
+    voice_block = f"\n\nBrand voice:\n{brand_voice[:800]}" if brand_voice else ""
     user_message = (
-        f"Product spec:\n{spec_text[:2000]}\n\n"
-        f"Brand voice:\n{brand_voice[:800]}"
+        f"Product spec:\n{spec_text[:2000]}"
+        f"{voice_block}"
         f"{lessons_block}"
     )
 

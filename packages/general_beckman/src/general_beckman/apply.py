@@ -53,6 +53,14 @@ async def _record_and_resolve_confidence(
 
     Skips silently if the source task has no confidence signal (record
     returns None) or already resolved. Safe in mechanical/skipped paths.
+
+    Sibling loop: Z9 reinforce (mr_roboto/executors/record_verdict.py::
+    _reinforce_winning_model). Kept deliberately separate — Z9 fires only
+    on confirmed hypothesis verdicts and adjusts model SELECTION score;
+    Z10 fires on every post-hook verdict and adjusts the LLM PROMPT via a
+    per-bucket reliability rollup. Different signals, different surfaces,
+    different aggregation cadence. See docs/handoff/
+    2026-05-18-z0-and-backlog-handoff.md §2c.
     """
     from src.infra.db import (
         record_confidence_claim, resolve_confidence_outcome,

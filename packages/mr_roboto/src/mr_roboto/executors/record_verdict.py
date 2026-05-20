@@ -171,6 +171,16 @@ async def _mirror_to_lessons(
 
 
 # ── reinforce loop (confirmed verdict → model_pick_log nudge) ──────────────
+#
+# Sibling loop: Z10 calibration (general_beckman/apply.py::_record_and_resolve_confidence).
+# Kept deliberately separate — different signal, different surface:
+#   - Z9 (here): hypothesis verdict = "confirmed" → bumps model SELECTION score
+#     in fatih_hoca.grading. Read-time decay (50%/30d). Async fire-forget.
+#   - Z10 (apply.py): every post-hook verdict → reliability bucket per
+#     (model, task_kind, confidence_bucket) → injects [CALIBRATION NOTE]
+#     into the LLM PROMPT. Nightly batch rollup. Sync post-hook critical path.
+# Merging requires a null-heavy union schema + couples async telemetry to
+# the sync post-hook path. See docs/handoff/2026-05-18-z0-and-backlog-handoff.md §2c.
 
 
 async def _reinforce_winning_model(

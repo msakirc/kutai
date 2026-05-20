@@ -1,0 +1,46 @@
+# Maestro mobile-QA smoke flow — mobile_auth/v1
+#
+# Drives sign in -> onboard -> core action -> sign out, where the core
+# action is the authenticated "request profile" handshake against the
+# FastAPI backend. Consumed by the `mobile_smoke` post-hook via the
+# `maestro` mr_roboto verb (general_beckman/apply.py::mobile_smoke).
+#
+# RECIPE_PARAM:APP_ID=com.example.app
+# RECIPE_PARAM:LOGIN_EMAIL=smoke@example.com
+# RECIPE_PARAM:LOGIN_PASSWORD=smoke-password
+#
+# The template engine substitutes `KEY` tokens before this file is
+# written into the mission workspace.
+appId: <<APP_ID>>
+---
+# --- launch -------------------------------------------------------------
+- launchApp:
+    clearState: true
+
+# --- sign in (email/password path — Apple/Google paths drive OS dialogs
+#              that Maestro cannot fully script in CI) ------------------
+- tapOn: "Sign in"
+- tapOn:
+    id: "email-input"
+- inputText: "<<LOGIN_EMAIL>>"
+- tapOn:
+    id: "password-input"
+- inputText: "<<LOGIN_PASSWORD>>"
+- tapOn: "Log in"
+- assertVisible: "Welcome"
+
+# --- onboard ------------------------------------------------------------
+- tapOn: "Get started"
+- assertVisible: "Home"
+
+# --- core action: hit an authenticated route (the JWT must round-trip
+#                  through expo-secure-store + FastAPI verify) ----------
+- tapOn:
+    id: "profile-tab"
+- assertVisible: "Your profile"
+
+# --- sign out (clears secure-store session) -----------------------------
+- tapOn:
+    id: "menu-button"
+- tapOn: "Sign out"
+- assertVisible: "Sign in"

@@ -18,6 +18,7 @@ templates:
   sync_engine: sync_engine.template.ts
   query_client: query_client.template.ts
   tests: tests/
+  smoke_flow: flows/offline_sync_smoke.flow.yaml
 prompts:
   expo: prompts/expo.md
 lessons_domain: mobile_offline_sync

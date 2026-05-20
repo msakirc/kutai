@@ -1,0 +1,53 @@
+# Maestro mobile-QA smoke flow — mobile_offline_sync/v1
+#
+# Drives sign in -> onboard -> core action -> sign out, where the core
+# action is "go offline, edit locally, come back online, confirm the
+# server received it". Exercises the offline outbox + sync reconciler.
+#
+# Note on `setAirplaneMode` — Maestro supports it on Android emulators
+# only. On iOS / non-emulator targets the helper is a no-op and the flow
+# falls back to a UI-level "offline mode" toggle the recipe ships.
+#
+# RECIPE_PARAM:APP_ID=com.example.app
+# RECIPE_PARAM:LOGIN_EMAIL=smoke@example.com
+# RECIPE_PARAM:LOGIN_PASSWORD=smoke-password
+appId: <<APP_ID>>
+---
+- launchApp:
+    clearState: true
+
+- tapOn: "Sign in"
+- tapOn:
+    id: "email-input"
+- inputText: "<<LOGIN_EMAIL>>"
+- tapOn:
+    id: "password-input"
+- inputText: "<<LOGIN_PASSWORD>>"
+- tapOn: "Log in"
+- assertVisible: "Welcome"
+
+- tapOn: "Get started"
+- assertVisible: "Home"
+
+# --- core action: edit offline, then sync ------------------------------
+- setAirplaneMode:
+    value: true
+- tapOn:
+    id: "compose-button"
+- tapOn:
+    id: "note-input"
+- inputText: "smoke-offline-edit"
+- tapOn: "Save"
+- assertVisible: "Pending sync"
+
+- setAirplaneMode:
+    value: false
+- waitForAnimationToEnd
+- assertVisible: "Synced"
+- assertVisible: "smoke-offline-edit"
+
+# --- sign out ----------------------------------------------------------
+- tapOn:
+    id: "menu-button"
+- tapOn: "Sign out"
+- assertVisible: "Sign in"

@@ -1317,6 +1317,41 @@ def _posthook_agent_and_payload(
                      or "maestro" in p.lower())
             ]
         workspace_path = source_ctx.get("workspace_path") or ""
+        # Z5 P2 (2026-05-18 sweep) — auto-discover instantiated recipe
+        # flows under the mission workspace. Mobile recipes (mobile_auth /
+        # mobile_nav / mobile_persistence / mobile_offline_sync /
+        # mobile_push / mobile_deep_links) each ship a flows/<name>.flow.yaml
+        # under templates.smoke_flow; once a recipe is instantiated into the
+        # workspace its flow lives at <workspace>/recipes/<name>/v1/flows/...
+        # Without this fallback step 14.8 always sees flow_paths=[] (its
+        # produces are .store/*.json only) and maestro_run soft-passes every
+        # mission.
+        if not flow_paths and workspace_path:
+            try:
+                import os as _os
+                discovered: list[str] = []
+                recipes_root = _os.path.join(workspace_path, "recipes")
+                if _os.path.isdir(recipes_root):
+                    for root, _dirs, files in _os.walk(recipes_root):
+                        # Only enter flows/ directories to keep the walk cheap.
+                        if _os.path.basename(root) != "flows":
+                            continue
+                        for fn in files:
+                            if fn.endswith(".flow.yaml") or fn.endswith(".flow.yml"):
+                                # Store paths relative to workspace_path so
+                                # maestro_run (which joins workspace_path)
+                                # resolves them correctly.
+                                full = _os.path.join(root, fn)
+                                rel = _os.path.relpath(full, workspace_path)
+                                discovered.append(rel.replace("\\", "/"))
+                if discovered:
+                    discovered.sort()  # deterministic order
+                    flow_paths = discovered
+            except Exception as _disc_exc:
+                logger.debug(
+                    "mobile_smoke flow auto-discovery skipped: %s",
+                    _disc_exc,
+                )
         return ("mechanical", {
             "source_task_id": a.source_task_id,
             "posthook_kind": "mobile_smoke",

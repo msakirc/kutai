@@ -992,10 +992,38 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         or _task_ctx.get("tech_stack")
                         or ""
                     ) or None
+                    # Z3 P3 (2026-05-18 sweep) — layer-aware reflection.
+                    # Use the first produces path under inspect_layer to
+                    # pick a LAYER_BLOCKS fragment (domain/adapter/infra/
+                    # ui/test). Best-effort: any failure leaves _layer None
+                    # and the prompt behaves identically to the pre-P3 path.
+                    _layer: str | None = None
+                    try:
+                        _produces = _task_ctx.get("produces") or []
+                        _first = None
+                        for entry in _produces:
+                            if isinstance(entry, str):
+                                _first = entry
+                                break
+                            if isinstance(entry, list) and entry:
+                                _first = entry[0] if isinstance(entry[0], str) else None
+                                if _first:
+                                    break
+                        if _first:
+                            from src.tools.inspect_layer import inspect_layer as _il
+                            _layer_val = await _il(
+                                _first,
+                                workspace_path=_task_ctx.get("workspace_path"),
+                            )
+                            if _layer_val and _layer_val != "unknown":
+                                _layer = str(_layer_val)
+                    except Exception as _lex:
+                        logger.debug("inspect_layer skipped: %s", _lex)
                     reflection = await self_reflect(
                         task, result, reqs, used_model,
                         checklist=build_reflection_prompt(
-                            profile.name, iteration, stack=_stack,
+                            profile.name, iteration,
+                            stack=_stack, layer=_layer,
                         ),
                     )
                     if reflection and reflection.get("verdict") == "fix":

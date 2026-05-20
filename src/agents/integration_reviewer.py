@@ -27,6 +27,10 @@ class IntegrationReviewerAgent(BaseAgent):
         "read_file",
         "file_tree",
         "ast_signatures",
+        # Z3 P3 (2026-05-18 sweep) — let the reviewer classify call sites
+        # by architectural layer (domain/adapter/infra/ui) so cross-layer
+        # violations can be flagged with the precise label.
+        "inspect_layer",
     ]
 
     def get_system_prompt(self, task: dict) -> str:

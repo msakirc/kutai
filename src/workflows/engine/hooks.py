@@ -2053,7 +2053,10 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
 
     try:
         from .loader import load_workflow
-        from .expander import expand_template, expand_steps_to_tasks
+        from .expander import (
+            expand_template, expand_steps_to_tasks,
+            expand_steps_with_multifile,
+        )
         from ...infra.db import add_task as insert_task, update_task
 
         # Try the workflow used by this mission, fall back to i2p_v3
@@ -2164,8 +2167,11 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
                 prefix=f"8.{fid}.",
             )
 
-            tasks = expand_steps_to_tasks(
-                expanded, mission_id=mission_id, initial_context={}
+            # Z3 P2 (2026-05-18 sweep): use multifile-aware expander so
+            # feature template expansion picks up multifile targets +
+            # founder /density dials.
+            tasks = await expand_steps_with_multifile(
+                expanded, mission_id=mission_id, initial_context={},
             )
 
             # Batch insert with rollback on failure

@@ -519,3 +519,49 @@ async def test_compliance_degrades_gracefully_on_error(tmp_path, monkeypatch):
     assert result["status"] == "completed"
     comp = result.get("compliance_result", {})
     assert comp.get("status") in ("error", "skip", "ok")
+
+
+# ── Test: workspace_path takes precedence over env / global default ─────────
+
+
+@pytest.mark.asyncio
+async def test_artifact_writes_under_workspace_path(tmp_path, monkeypatch):
+    """When workspace_path is passed, artifact lands at
+    {workspace_path}/marketing_copy.json — per-mission convention, not the
+    global artifacts/ dir."""
+    await _setup_db(tmp_path, monkeypatch)
+
+    workspace = tmp_path / "workspace" / "mission_42"
+    workspace.mkdir(parents=True)
+
+    # Set the env override too — it must be ignored when workspace_path wins.
+    bogus = tmp_path / "should_not_be_used"
+    monkeypatch.setenv("MARKETING_COPY_ARTIFACTS_DIR", str(bogus))
+
+    from mr_roboto.marketing_copy import run_marketing_copy
+
+    with patch(
+        "mr_roboto.marketing_copy.enqueue",
+        new=AsyncMock(return_value={"status": "completed", "result": _MOCK_COPY_RESULT}),
+    ), patch(
+        "mr_roboto.marketing_copy._run_brand_voice_lint",
+        new=AsyncMock(return_value={"status": "skip", "reason": "no doc"}),
+    ), patch(
+        "mr_roboto.marketing_copy._run_copy_compliance",
+        new=AsyncMock(return_value={"status": "ok"}),
+    ), patch(
+        "mr_roboto.marketing_copy._emit_founder_action",
+        new=AsyncMock(return_value=11),
+    ):
+        result = await run_marketing_copy(
+            product_id="prod-1",
+            mission_id=42,
+            product_spec=_PRODUCT_SPEC,
+            brand_voice_audience=None,
+            workspace_path=str(workspace),
+        )
+
+    expected = workspace / "marketing_copy.json"
+    assert result["artifact_path"] == str(expected)
+    assert expected.exists()
+    assert not bogus.exists()

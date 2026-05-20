@@ -4701,6 +4701,7 @@ async def _run_dispatch(task: dict) -> Action:
     if action == "marketing_copy":
         try:
             from mr_roboto.marketing_copy import run_marketing_copy
+            _ctx = task.get("context") or {}
             res = await run_marketing_copy(
                 product_id=payload.get("product_id") or str(task.get("mission_id") or ""),
                 mission_id=int(task.get("mission_id") or payload.get("mission_id") or 0),
@@ -4708,6 +4709,7 @@ async def _run_dispatch(task: dict) -> Action:
                 brand_voice_audience=payload.get("brand_voice_audience"),
                 faq_artifact_path=payload.get("faq_artifact_path"),
                 task_id=task.get("id"),
+                workspace_path=_ctx.get("workspace_path") or payload.get("workspace_path"),
             )
             if res.get("status") == "error":
                 return Action(status="failed", error=res.get("error") or "marketing_copy failed", result=res)

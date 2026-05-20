@@ -63,7 +63,7 @@ logger = get_logger("mr_roboto.marketing_copy")
 
 # ─── Artifact output directory ────────────────────────────────────────────────
 # Overridable via env var for tests.
-_DEFAULT_ARTIFACTS_DIR = "artifacts/marketing_copy"
+_DEFAULT_ARTIFACTS_DIR = "data/artifacts/marketing_copy"
 
 
 def _artifacts_dir() -> str:
@@ -123,19 +123,30 @@ async def enqueue(spec: dict, **kwargs) -> dict:
 # ─── FAQ seed loader ─────────────────────────────────────────────────────────
 
 
-def _load_faq_seed(faq_artifact_path: str | None, mission_id: int | None) -> list | None:
+def _load_faq_seed(
+    faq_artifact_path: str | None,
+    mission_id: int | None,
+    workspace_path: str | None = None,
+) -> list | None:
     """Load FAQ entries from A8 artifact. Returns list or None (absent)."""
     candidates: list[str] = []
 
     if faq_artifact_path:
         candidates.append(faq_artifact_path)
 
-    # Common default paths
+    # Per-mission workspace (standard convention) takes precedence.
+    if workspace_path:
+        candidates.extend([
+            f"{workspace_path}/faq_en.md",
+            f"{workspace_path}/faq.md",
+        ])
+
+    # Legacy / orphan-call fallbacks.
     if mission_id is not None:
         candidates.extend([
-            f"artifacts/faq_en.md",
-            f"mission_{mission_id}/faq_en.md",
-            f"mission_{mission_id}/faq.md",
+            f"data/artifacts/faq_en.md",
+            f"data/mission_{mission_id}/faq_en.md",
+            f"data/mission_{mission_id}/faq.md",
         ])
 
     for p in candidates:
@@ -329,11 +340,24 @@ async def _emit_founder_action(
 # ─── Artifact serializer ─────────────────────────────────────────────────────
 
 
-def _write_artifact(mission_id: int, artifact: dict) -> str:
-    """Write artifact JSON to disk. Returns the file path."""
-    out_dir = Path(_artifacts_dir())
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{mission_id}.json"
+def _write_artifact(mission_id: int, artifact: dict, workspace_path: str | None = None) -> str:
+    """Write artifact JSON to disk. Returns the file path.
+
+    Precedence:
+      1. workspace_path (per-mission, the standard convention) →
+         ``{workspace_path}/marketing_copy.json``
+      2. MARKETING_COPY_ARTIFACTS_DIR env override → ``{env}/{mission_id}.json``
+      3. global default ``data/artifacts/marketing_copy/{mission_id}.json``
+         (orphan calls without a mission workspace).
+    """
+    if workspace_path:
+        out_dir = Path(workspace_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "marketing_copy.json"
+    else:
+        out_dir = Path(_artifacts_dir())
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{mission_id}.json"
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(artifact, fh, indent=2, ensure_ascii=False)
     return str(path)
@@ -393,6 +417,7 @@ async def run_marketing_copy(
     brand_voice_audience: str | None = None,
     faq_artifact_path: str | None = None,
     task_id: int | None = None,
+    workspace_path: str | None = None,
 ) -> dict[str, Any]:
     """Generate structured marketing copy for a product.
 
@@ -415,7 +440,7 @@ async def run_marketing_copy(
     )
 
     # ── Step 1: seed FAQ from A8 artifact ─────────────────────────────────
-    faq_seed = _load_faq_seed(faq_artifact_path, mission_id)
+    faq_seed = _load_faq_seed(faq_artifact_path, mission_id, workspace_path)
     if faq_seed:
         logger.info(
             "marketing_copy: seeded %d FAQ entries from artifact",
@@ -498,7 +523,7 @@ async def run_marketing_copy(
         artifact["faq"] = faq_seed or []
 
     # ── Step 4: Write artifact to disk ────────────────────────────────────
-    artifact_path = _write_artifact(mission_id, artifact)
+    artifact_path = _write_artifact(mission_id, artifact, workspace_path)
     logger.info("marketing_copy: artifact written to %s", artifact_path)
 
     # ── Step 5: Flatten copy text for lint/compliance ─────────────────────

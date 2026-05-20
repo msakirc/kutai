@@ -8410,6 +8410,51 @@ async def purge_mission_chroma_collections_via_db(mission_id: int) -> int:
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _confidence_bucket(numeric: float) -> str:
+    """Map a 1-5 confidence scalar to {low, medium, high}.
+
+    Boundaries match the calibration prompt-injection consumer in
+    ``packages/coulson/src/coulson/context.py`` (low<2.5, 2.5≤medium<4,
+    high≥4). Kept deterministic so reliability scores group consistently.
+    """
+    try:
+        n = float(numeric)
+    except (TypeError, ValueError):
+        return "low"
+    if n < 2.5:
+        return "low"
+    if n < 4.0:
+        return "medium"
+    return "high"
+
+
+async def set_task_confidence(
+    task_id: int, *, numeric: float | None, categorical: str | None = None,
+) -> None:
+    """Persist a confidence claim on the tasks row.
+
+    Called from ``packages/coulson/src/coulson/react.py`` at the finalize
+    site (success + gate-needs-review). ``record_confidence_claim`` reads
+    these columns; without this write the Z10 trust-calibration loop is a
+    no-op. (Sweep handoff 2026-05-18, Z10 P1.)
+
+    Idempotent — same task can overwrite (e.g. retry).
+    """
+    if numeric is None and categorical is None:
+        return
+    if categorical is None and numeric is not None:
+        categorical = _confidence_bucket(numeric)
+    db = await get_db()
+    await db.execute(
+        "UPDATE tasks "
+        "SET confidence_numeric = COALESCE(?, confidence_numeric), "
+        "    confidence_categorical = COALESCE(?, confidence_categorical) "
+        "WHERE id = ?",
+        (numeric, categorical, task_id),
+    )
+    await db.commit()
+
+
 async def record_confidence_claim(task_id: int) -> int | None:
     """Record a confidence claim row for ``task_id``.
 

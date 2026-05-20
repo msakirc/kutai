@@ -3288,6 +3288,20 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "synthetic_check":
+        # Z8 T5F (2026-05-18 sweep) — Lighthouse / k6 synthetic check with
+        # perf_baselines regression diff. The executor was complete but
+        # had no dispatch branch — every triggered task hit the
+        # unknown-action path. Doubly dead pre-fix because the Z8 ops
+        # recipes (which schedule this verb) were also undiscoverable; the
+        # recipe-layout restructure in this same merge re-enables them.
+        from mr_roboto.executors.synthetic_check import run as _synthetic_run
+        try:
+            res = await _synthetic_run(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "oncall_action":
         # Z8 T4B — on-call verb gateway: whitelist + cooldown check, then
         # delegate to the verb sub-handler. See executors/oncall_action.py.

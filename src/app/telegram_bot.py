@@ -11685,6 +11685,33 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         # We have RAG hits; queue a tier-1 task and ack with hits inline.
         snippet = (docs[0].get("text") or "")[:300]
+        # Z8 P1 (2026-05-18 sweep) — enqueue support_tier1 so the answer
+        # actually arrives. The previous version saved the ticket, acked
+        # "Full answer coming." and exited; the agent never ran. Tickets
+        # piled up status='open' forever.
+        try:
+            from general_beckman import enqueue as _enqueue
+            await _enqueue({
+                "title": f"support tier-1: ticket #{ticket_id}",
+                "description": (
+                    f"Answer the founder support ticket #{ticket_id} using "
+                    "the retrieved support_docs as grounding. Update the "
+                    "tickets row with answer + confidence + sentiment via "
+                    "src.ops.support_rag.update_ticket; escalate via "
+                    "escalate_if_needed when confidence < 0.6 or the "
+                    "answer doesn't address the question."
+                ),
+                "agent_type": "support_tier1",
+                "context": {
+                    "ticket_id": ticket_id,
+                    "user_id": user_id,
+                    "question": question,
+                    "sentiment": sentiment,
+                    "rag_docs": docs,
+                },
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cmd_ask: support_tier1 enqueue failed: %s", exc)
         await self._reply(
             update,
             f"📨 Ticket #{ticket_id} opened — closest doc:\n\n{snippet}\n\n"

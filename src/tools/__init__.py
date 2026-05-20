@@ -995,6 +995,40 @@ from .inspect_layer import inspect_layer  # noqa: E402
 # Z9 T2D — growth anti-pattern detectors
 from .growth_anti_patterns import growth_anti_patterns  # noqa: E402
 
+
+# Z3 P2 (2026-05-18 sweep) — integration_reviewer agent's allowed_tools
+# listed "ast_signatures" but the kind wasn't in TOOL_REGISTRY. The actual
+# extractor lives in packages/mr_roboto/extract_signatures.py and is used by
+# the mechanical pre-check post-hook (apply.py::_extract_signatures). This
+# thin wrapper exposes the same extractor as an LLM tool so the reviewer
+# agent's `ast_signatures` tool call actually resolves.
+async def ast_signatures(  # noqa: E402
+    target_files: list[str] | str,
+    workspace_path: str | None = None,
+) -> dict[str, Any]:
+    """Extract public-API signatures from *target_files*.
+
+    Thin LLM-facing wrapper over
+    :func:`mr_roboto.extract_signatures.extract_signatures`. Accepts either a
+    list of paths or a single comma-separated string (LLMs often emit the
+    latter). Returns a trimmed dict (no raw timing) suited to a tool reply.
+    """
+    from mr_roboto.extract_signatures import (  # lazy import avoids circular
+        extract_signatures as _es,
+    )
+    if isinstance(target_files, str):
+        target_files = [
+            p.strip() for p in target_files.split(",") if p.strip()
+        ]
+    if not target_files:
+        return {"signatures": {}, "mismatches": [], "skipped": []}
+    res = await _es(target_files=target_files, workspace_path=workspace_path)
+    return {
+        "signatures": res.get("signatures", {}),
+        "mismatches": res.get("mismatches", []),
+        "skipped": res.get("skipped", []),
+    }
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -1073,6 +1107,20 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "Args: filepath (str), max_lines (int, optional, default 200)"
         ),
         "example": '{"action": "tool_call", "tool": "read_file", "args": {"filepath": "src/main.py"}}',
+    },
+    "ast_signatures": {
+        "function": ast_signatures,
+        "description": (
+            "Extract public-API signatures (functions, methods, classes) from "
+            "a list of files. Returns per-file signature lists plus detected "
+            "cross-file arity mismatches. Use this when reviewing integration "
+            "consistency across files. Args: target_files (list[str] of paths "
+            "OR comma-separated string), workspace_path (str, optional)."
+        ),
+        "example": (
+            '{"action": "tool_call", "tool": "ast_signatures", '
+            '"args": {"target_files": ["src/foo.py", "src/bar.py"]}}'
+        ),
     },
     "write_file": {
         "function": write_file,

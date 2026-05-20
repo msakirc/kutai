@@ -9,8 +9,11 @@ requires:
   features: []
 conflicts_with: []
 post_hooks:
+  # mobile_release_rejection is a markdown playbook recipe — no source
+  # code emitted, no tests/ dir shipped. test_run with zero collected
+  # tests exits 5 + total==0 → post-hook fails its own recipe. mobile_ci
+  # correctly omits test_run for the same reason. (Sweep 2026-05-18 Z5 P3.)
   - imports_check
-  - test_run
 templates:
   rejection_response: templates/rejection_response.md.template
   demo_account: templates/demo_account.json.template

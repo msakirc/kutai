@@ -87,6 +87,70 @@ class TestEvaluateCondition(unittest.TestCase):
             evaluate_condition("platforms_include('ios')", artifact)
         )
 
+    # --- Z5 P1 sweep-handoff fix: mobile_support / target_platform fallback ---
+
+    def test_platforms_include_reads_mobile_support_list(self):
+        """platforms_include('ios') True when mobile_support is a list with ios."""
+        artifact = json.dumps({"mobile_support": ["ios", "android"]})
+        self.assertTrue(evaluate_condition("platforms_include('ios')", artifact))
+        self.assertTrue(
+            evaluate_condition("platforms_include('android')", artifact)
+        )
+
+    def test_platforms_include_reads_mobile_support_dict(self):
+        """platforms_include('X') honors mobile_support dict truthy keys."""
+        artifact = json.dumps({"mobile_support": {"ios": True, "android": False}})
+        self.assertTrue(evaluate_condition("platforms_include('ios')", artifact))
+        self.assertFalse(
+            evaluate_condition("platforms_include('android')", artifact)
+        )
+
+    def test_platforms_include_target_platform_fallback(self):
+        """target_platform ∈ (mobile, both) → both ios + android True.
+
+        Coarse fallback used when neither platforms nor mobile_support is
+        populated — per-store credential gating handles the discrimination
+        downstream. Mobile-only mission with no finer signal is the realistic
+        case caught by the 2026-05-18 wiring sweep (Z5 P1).
+        """
+        artifact = json.dumps({"target_platform": "mobile"})
+        self.assertTrue(evaluate_condition("platforms_include('ios')", artifact))
+        self.assertTrue(
+            evaluate_condition("platforms_include('android')", artifact)
+        )
+        # Web-only never fires either group.
+        web = json.dumps({"target_platform": "web"})
+        self.assertFalse(evaluate_condition("platforms_include('ios')", web))
+        self.assertFalse(
+            evaluate_condition("platforms_include('android')", web)
+        )
+
+    def test_platforms_include_full_step36_shape(self):
+        """End-to-end: the real platform_requirements artifact from step 3.6
+        with target_platform + mobile_support but no top-level platforms key
+        must still resolve all three mobile submission group conditions.
+
+        This is the exact shape the i2p step 3.6 instruction tells the agent
+        to emit (`target_platform` derived from `mobile_support`). Before the
+        Z5 P1 fix all 9 14.8.* mobile submit steps were skipped for every
+        mission.
+        """
+        artifact = json.dumps({
+            "primary_platform": "mobile",
+            "mobile_support": ["ios", "android"],
+            "target_platform": "both",
+        })
+        self.assertTrue(
+            evaluate_condition(
+                "platforms_include('ios') OR platforms_include('android')",
+                artifact,
+            )
+        )
+        self.assertTrue(evaluate_condition("platforms_include('ios')", artifact))
+        self.assertTrue(
+            evaluate_condition("platforms_include('android')", artifact)
+        )
+
     # --- field == true/false (boolean) ---
 
     def test_evaluate_boolean_field(self):

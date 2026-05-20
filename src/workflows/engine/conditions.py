@@ -66,11 +66,34 @@ def evaluate_condition(condition_check: str, artifact_value: str) -> bool:
             )
 
         # --- platforms_include('value') ---
+        # Reads from any of (in order): top-level `platforms` list (legacy),
+        # `mobile_support` (the actual field step 3.6 emits — list, dict, or
+        # str), then `target_platform` ∈ ('mobile','both') as a coarse
+        # fallback for 'ios'/'android' when finer info is absent. The latter
+        # fires both submission groups; per-store credential gating + recipe
+        # skip handles the discrimination. (Sweep handoff 2026-05-18, Z5 P1.)
         m = re.match(r"platforms_include\('([^']+)'\)", condition_check)
         if m:
             value = m.group(1)
-            platforms = data.get("platforms", []) if isinstance(data, dict) else []
-            return value in platforms
+            if not isinstance(data, dict):
+                return False
+            platforms = data.get("platforms")
+            if isinstance(platforms, list) and value in platforms:
+                return True
+            mobile_support = data.get("mobile_support")
+            if isinstance(mobile_support, list) and value in mobile_support:
+                return True
+            if isinstance(mobile_support, dict):
+                # Truthy presence (e.g. {"ios": true, "android": false}).
+                if mobile_support.get(value):
+                    return True
+            if isinstance(mobile_support, str) and value == mobile_support:
+                return True
+            if value in ("ios", "android"):
+                tp = data.get("target_platform")
+                if tp in ("mobile", "both"):
+                    return True
+            return False
 
         # --- field in ('a', 'b', ...) ---
         m = re.match(r"(\w+)\s+in\s+\(([^)]*)\)", condition_check)

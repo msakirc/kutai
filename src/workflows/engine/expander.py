@@ -271,6 +271,7 @@ def expand_steps_to_tasks(
     steps: list[dict],
     mission_id: str,
     initial_context: Optional[dict] = None,
+    dial_ctx: Optional["MissionDialContext"] = None,
 ) -> list[dict]:
     """Convert workflow step dicts into task dicts for DB insertion.
 
@@ -283,6 +284,14 @@ def expand_steps_to_tasks(
     initial_context:
         Optional dict of initial context (e.g. user idea) to propagate
         into each task's ``workflow_context``.
+    dial_ctx:
+        Optional :class:`~general_beckman.posthooks.MissionDialContext` from
+        :func:`expand_steps_with_multifile` (which calls ``get_dials``).
+        Forwarded into :func:`_auto_wire_posthooks` so callable
+        ``auto_wire_triggers`` (security_review / accessibility_review /
+        contract_review) see the founder's ``/density`` setting. Without
+        this thread, those hooks fell back to ``qa_dial="standard"``
+        unconditionally — Z3 P2 in the 2026-05-18 wiring sweep handoff.
 
     Returns
     -------
@@ -388,7 +397,7 @@ def expand_steps_to_tasks(
         # which matches every produces entry, preserving identical behavior.
         # Idempotent: a kind already present in post_hooks is never added again.
         if context.get("produces"):
-            _auto_wire_posthooks(context)
+            _auto_wire_posthooks(context, dial_ctx)
 
         # Hint-from-targets pass (T1C): if tools_hint includes "write_file"
         # and any declared produce path already exists in the workspace,
@@ -1047,7 +1056,9 @@ async def expand_steps_with_multifile(
     try:
         from src.workflows.review_density import get_dials, to_mission_dial_context
         raw_dials = await get_dials(mission_id)
-        mission_dials = to_mission_dial_context(mission_id, raw_dials)
+        # to_mission_dial_context takes (dials,), not (mission_id, dials).
+        # Latent TypeError flagged in the 2026-05-18 wiring sweep (Z3 P2).
+        mission_dials = to_mission_dial_context(raw_dials)
     except Exception:
         mission_dials = None
 
@@ -1074,8 +1085,12 @@ async def expand_steps_with_multifile(
         else:
             expanded_steps.append(step)
 
-    # Run through standard task expansion (post-hook auto-wire, etc.)
-    return expand_steps_to_tasks(expanded_steps, mission_id, initial_context)
+    # Run through standard task expansion (post-hook auto-wire, etc.) —
+    # forward the resolved dial context so callable auto_wire_triggers see
+    # the founder's /density setting (Z3 P2 dial-threading fix).
+    return expand_steps_to_tasks(
+        expanded_steps, mission_id, initial_context, dial_ctx=mission_dials,
+    )
 
 
 def filter_skipped_steps(

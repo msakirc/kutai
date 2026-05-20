@@ -14,6 +14,7 @@ from src.infra.logging_config import get_logger
 from src.workflows.engine.artifacts import ArtifactStore, format_artifacts_for_prompt
 from src.workflows.engine.expander import (
     expand_steps_to_tasks,
+    expand_steps_with_multifile,
     filter_steps_for_context,
 )
 from src.workflows.engine.loader import load_workflow, validate_dependencies
@@ -202,7 +203,13 @@ class WorkflowRunner:
         # Find and insert missing steps
         missing_steps = [s for s in wf.steps if s["id"] not in existing_step_ids]
         if missing_steps:
-            task_dicts = expand_steps_to_tasks(missing_steps, mission_id=mission_id, initial_context={})
+            # Z3 P2 (2026-05-18 sweep): use the multifile-aware expander so
+            # multifile-targeted steps spawn their integration_review +
+            # integration_replay siblings on resume, and dial-aware auto-wire
+            # honors the founder's /density setting.
+            task_dicts = await expand_steps_with_multifile(
+                missing_steps, mission_id=mission_id, initial_context={},
+            )
             step_to_task: dict[str, int] = {}
             for t in tasks:
                 ctx = t.get("context", "{}")
@@ -441,8 +448,13 @@ class WorkflowRunner:
                 len(deferred_phase15),
             )
 
-        # 7. Expand non-recurring steps to tasks
-        task_dicts = expand_steps_to_tasks(
+        # 7. Expand non-recurring steps to tasks.
+        #    Z3 P2 (2026-05-18 sweep): use the multifile-aware expander so
+        #    Z3 multi-file targets actually spawn their per-file sub-steps
+        #    plus the integration_review + integration_replay siblings, and
+        #    so the founder's /density dials thread through into the
+        #    callable auto_wire_triggers.
+        task_dicts = await expand_steps_with_multifile(
             non_recurring_steps,
             mission_id=mission_id,
             initial_context=initial_input,

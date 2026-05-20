@@ -17,6 +17,7 @@ templates:
   frontend: frontend.template.tsx
   migrations: migrations/
   tests: tests/
+  smoke_flow: flows/auth_smoke.flow.yaml
 prompts:
   expo: prompts/expo.md
   fastapi: prompts/fastapi.md

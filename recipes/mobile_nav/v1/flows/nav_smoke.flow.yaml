@@ -1,0 +1,48 @@
+# Maestro mobile-QA smoke flow — mobile_nav/v1
+#
+# Drives sign in -> onboard -> core action -> sign out, where the core
+# action is navigating across all primary tabs and back via the bottom
+# tab bar so expo-router stack + linking are exercised end to end.
+#
+# RECIPE_PARAM:APP_ID=com.example.app
+# RECIPE_PARAM:LOGIN_EMAIL=smoke@example.com
+# RECIPE_PARAM:LOGIN_PASSWORD=smoke-password
+appId: <<APP_ID>>
+---
+- launchApp:
+    clearState: true
+
+# --- sign in -----------------------------------------------------------
+- tapOn: "Sign in"
+- tapOn:
+    id: "email-input"
+- inputText: "<<LOGIN_EMAIL>>"
+- tapOn:
+    id: "password-input"
+- inputText: "<<LOGIN_PASSWORD>>"
+- tapOn: "Log in"
+- assertVisible: "Welcome"
+
+# --- onboard ------------------------------------------------------------
+- tapOn: "Get started"
+- assertVisible: "Home"
+
+# --- core action: round-trip through every primary tab -----------------
+- tapOn:
+    id: "tab-search"
+- assertVisible: "Search"
+- tapOn:
+    id: "tab-library"
+- assertVisible: "Library"
+- tapOn:
+    id: "tab-profile"
+- assertVisible: "Your profile"
+- tapOn:
+    id: "tab-home"
+- assertVisible: "Home"
+
+# --- sign out ----------------------------------------------------------
+- tapOn:
+    id: "menu-button"
+- tapOn: "Sign out"
+- assertVisible: "Sign in"

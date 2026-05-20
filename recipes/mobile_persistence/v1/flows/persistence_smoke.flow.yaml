@@ -1,0 +1,46 @@
+# Maestro mobile-QA smoke flow — mobile_persistence/v1
+#
+# Drives sign in -> onboard -> core action -> sign out, where the core
+# action is "write a value, force a relaunch, confirm it survived". This
+# exercises both the on-device store (AsyncStorage / MMKV / SQLite via
+# expo-sqlite) and the relaunch lifecycle.
+#
+# RECIPE_PARAM:APP_ID=com.example.app
+# RECIPE_PARAM:LOGIN_EMAIL=smoke@example.com
+# RECIPE_PARAM:LOGIN_PASSWORD=smoke-password
+appId: <<APP_ID>>
+---
+- launchApp:
+    clearState: true
+
+- tapOn: "Sign in"
+- tapOn:
+    id: "email-input"
+- inputText: "<<LOGIN_EMAIL>>"
+- tapOn:
+    id: "password-input"
+- inputText: "<<LOGIN_PASSWORD>>"
+- tapOn: "Log in"
+- assertVisible: "Welcome"
+
+- tapOn: "Get started"
+- assertVisible: "Home"
+
+# --- core action: persist a value across an app relaunch ---------------
+- tapOn:
+    id: "note-input"
+- inputText: "smoke-persist-token"
+- tapOn: "Save"
+- assertVisible: "Saved"
+
+# Relaunch WITHOUT clearState so the local store survives.
+- launchApp:
+    clearState: false
+- assertVisible: "Welcome"
+- assertVisible: "smoke-persist-token"
+
+# --- sign out ----------------------------------------------------------
+- tapOn:
+    id: "menu-button"
+- tapOn: "Sign out"
+- assertVisible: "Sign in"

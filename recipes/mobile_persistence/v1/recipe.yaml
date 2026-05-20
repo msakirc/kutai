@@ -17,6 +17,7 @@ templates:
   db: db/
   migrations: migrations/
   tests: tests/
+  smoke_flow: flows/persistence_smoke.flow.yaml
 prompts:
   expo: prompts/expo.md
 lessons_domain: mobile_persistence

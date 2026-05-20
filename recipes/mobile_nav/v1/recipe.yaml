@@ -15,6 +15,7 @@ post_hooks:
 templates:
   frontend: frontend/
   tests: tests/
+  smoke_flow: flows/nav_smoke.flow.yaml
 prompts:
   expo: prompts/expo.md
 lessons_domain: mobile_nav

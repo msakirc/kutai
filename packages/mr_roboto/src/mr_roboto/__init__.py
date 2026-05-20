@@ -436,6 +436,34 @@ async def run(task: dict) -> Action:
     # Skeleton confirmation gate. Default off; only the explicit caller
     # flag arms it for T1C. T2B will wire auto-arm + Telegram surface.
     require_confirmation = bool(payload.get("require_confirmation", False))
+
+    # Z10 P2 (2026-05-18 sweep) — auto-arm based on confirm_policy when the
+    # caller didn't already set require_confirmation. Policy resolution
+    # order: task context override → env var KUTAI_CONFIRM_POLICY → 'off'.
+    #
+    # Policy values:
+    #   'off'                 — never auto-arm (current default; preserves
+    #                           pre-fix behaviour for any caller that
+    #                           hasn't opted in).
+    #   'irreversible_only'   — auto-arm when reversibility == 'irreversible'.
+    #   'partial_or_worse'    — auto-arm when reversibility in
+    #                           ('partial', 'irreversible').
+    if not require_confirmation:
+        _ctx = task.get("context") or {}
+        _ctx_policy = _ctx.get("confirm_policy") if isinstance(_ctx, dict) else None
+        try:
+            import os as _os
+            _env_policy = (_os.environ.get("KUTAI_CONFIRM_POLICY") or "").strip().lower()
+        except Exception:
+            _env_policy = ""
+        _policy = (_ctx_policy or _env_policy or "off").lower()
+        if _policy == "irreversible_only" and resolved_reversibility == "irreversible":
+            require_confirmation = True
+        elif _policy == "partial_or_worse" and resolved_reversibility in (
+            "partial", "irreversible",
+        ):
+            require_confirmation = True
+
     if require_confirmation and resolved_reversibility in (
         "partial", "irreversible"
     ):

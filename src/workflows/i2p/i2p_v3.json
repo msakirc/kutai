@@ -4655,6 +4655,26 @@
       "reversibility": "full"
     },
     {
+      "id": "5.0.tag_signature",
+      "phase": "phase_5",
+      "name": "derive_token_tag_signature",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "5.0.verify"
+      ],
+      "payload": {
+        "action": "derive_token_tag_signature",
+        "path": ".style/taste_emphasis.json"
+      },
+      "instruction": "Z1 Tier 4 — derive the canonical paraflow tag_signature from taste_emphasis.json (e.g. `mobile_fact_primary_light` → tag_signature `fact_primary`). Downstream HTML prototype generation (5.30a/b) names files by this signature. Pure mechanical, no LLM, no I/O beyond the one JSON read. Reversibility=full — recompute on every run.",
+      "done_when": "Verb returns ok=true with a non-empty tag_signature.",
+      "context": {},
+      "reversibility": "full"
+    },
+    {
       "id": "5.0a",
       "phase": "phase_5",
       "name": "design_tokens_generation",
@@ -11982,6 +12002,25 @@
       "done_when": "deliverable bundle posted to Telegram.",
       "context": {},
       "reversibility": "full"
+    },
+    {
+      "id": "15.14z_kill_preview_url",
+      "phase": "phase_15",
+      "name": "kill_preview_url",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "15.14b_deliverable_bundle"
+      ],
+      "payload": {
+        "action": "kill_preview_url"
+      },
+      "instruction": "Z1 Tier 4 mission-end cleanup — tear down the active preview tunnel for the mission. Only effective for tunneled providers (ngrok / cloudflared); soft-skips when no provider is configured or no .preview/last_preview_url.txt exists. Idempotent.",
+      "done_when": "Verb returns ok=true (provider closed OR nothing-to-do soft-skip).",
+      "context": {},
+      "reversibility": "irreversible"
     },
     {
       "id": "4.2a",

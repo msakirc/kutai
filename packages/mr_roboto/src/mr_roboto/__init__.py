@@ -3488,6 +3488,34 @@ async def _run_dispatch(task: dict) -> Action:
         # mechanical action by the audit cron, not as a per-step posthook).
         # Finds vendor_call rows with reversibility != 'full' that have no
         # external_comms_log row within the window; raises an ops alert per gap.
+        #
+        # Z6 P2 (2026-05-18 sweep) — when this verb arrives via the
+        # POST-HOOK path (the apply layer always sets source_task_id),
+        # delegate to general_beckman.posthook_handlers.audit_completeness_check
+        # instead of the cron scanner. The handler scopes its check to the
+        # source task's emitted vendor_call rows and returns the
+        # standard {status: ok|fail, ...} verdict shape that the apply
+        # layer's posthook_verdict path expects. Without this branch the
+        # post-hook always ran the cron scanner, which never persisted a
+        # verdict for the source task.
+        if payload.get("source_task_id"):
+            try:
+                import importlib
+                _mod = importlib.import_module(
+                    "general_beckman.posthook_handlers.audit_completeness_check"
+                )
+                from src.infra.db import get_task as _get_task
+                _src_id = int(payload.get("source_task_id"))
+                _src = await _get_task(_src_id)
+                _src_task = dict(_src) if _src else {}
+                _res = await _mod.handle(_src_task, {})
+                _status = (_res or {}).get("status", "ok")
+                return Action(
+                    status=("completed" if _status == "ok" else "failed"),
+                    result=_res or {},
+                )
+            except Exception as e:
+                return Action(status="failed", error=str(e))
         from mr_roboto.audit_log import pending_audit_gaps
         try:
             window_minutes = int(payload.get("window_minutes", 5))

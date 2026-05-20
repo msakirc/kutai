@@ -2023,7 +2023,7 @@ class TelegramInterface:
         # Z10 T2B: per-mission thread surfacing + cost peek
         self.app.add_handler(CommandHandler("mission_thread", self.cmd_mission_thread))
         self.app.add_handler(CommandHandler("missions_active", self.cmd_missions_active))
-        self.app.add_handler(CommandHandler("mission_cost", self.cmd_mission_cost))
+        # (mission_cost handler registered above at T2A line)
         # Z10 T3C: rollback mission to last green checkpoint
         self.app.add_handler(
             CommandHandler("rollback_mission", self.cmd_rollback_mission)
@@ -10173,32 +10173,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         await self._reply(
             update, "\n".join(lines), parse_mode="Markdown",
         )
-
-    async def cmd_mission_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show running cost for a mission (T2A integration). /mission_cost <id>"""
-        if not context.args:
-            await self._reply(update, "Usage: /mission_cost <mission_id>")
-            return
-        try:
-            mid = int(context.args[0])
-        except (TypeError, ValueError):
-            await self._reply(update, "❌ mission_id must be an integer.")
-            return
-        # T2A may not be merged yet — try to import its formatter and stub on
-        # ImportError or attribute miss.
-        text: str | None = None
-        try:
-            from src.app import mission_cost as _mc  # type: ignore
-            if hasattr(_mc, "format_mission_cost"):
-                text = await _mc.format_mission_cost(mid)
-        except Exception:  # noqa: BLE001
-            text = None
-        if text is None:
-            text = (
-                f"💸 Mission #{mid} cost: T2A (cost accounting) not merged yet. "
-                f"Stub response."
-            )
-        await self._reply(update, text)
 
     async def cmd_rollback_mission(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Roll a mission back to its last green checkpoint.

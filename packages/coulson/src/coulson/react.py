@@ -1007,6 +1007,23 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
 
             # Confidence gating (Z10 T1A — gate now actually enforces)
             confidence = parsed.get("confidence")
+            # Z10 P1 — persist the claim so record_confidence_claim has
+            # something to read. Without this, confidence_outcomes stays
+            # empty and the calibration loop is a no-op. (Sweep handoff
+            # 2026-05-18.)
+            if (
+                isinstance(confidence, (int, float))
+                and task.get("id") is not None
+            ):
+                try:
+                    from src.infra.db import set_task_confidence
+                    await set_task_confidence(
+                        int(task["id"]), numeric=float(confidence),
+                    )
+                except Exception as _conf_exc:
+                    logger.debug(
+                        "set_task_confidence failed: %s", _conf_exc,
+                    )
             if (
                 profile.min_confidence > 0
                 and isinstance(confidence, (int, float))

@@ -1653,6 +1653,23 @@ def _posthook_agent_and_payload(
                 "baseline_dir": None,
             },
         })
+    if a.kind == "inject_lessons":
+        # Z2 cross-mission lessons. The expander prepends this kind to the
+        # first phase-0 task; mr_roboto's inject_lessons executor reads top
+        # mission_lessons rows and stamps them into the next task's context
+        # under `lessons_top_n`. Advisory — never blocks. (Sweep handoff
+        # 2026-05-18, Z2 P1.)
+        mission_id = source.get("mission_id") or 0
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "inject_lessons",
+            "executor": "mechanical",
+            "payload": {
+                "action": "inject_lessons",
+                "mission_id": int(mission_id) if mission_id else 0,
+                "source_task_id": a.source_task_id,
+            },
+        })
     if a.kind == "capture_hint":
         # Yalayut Phase 4 — internal-hint auto-capture. Mechanical post-hook:
         # mr_roboto's capture_hint executor calls yalayut.capture_hint with
@@ -3776,7 +3793,10 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         if a.kind == "visual_review":
             try:
                 from mr_roboto._visual_review_notify import enqueue_visual_review_notice
-                _vr_result = getattr(a, "result", None) or {}
+                # PostHookVerdict carries payload on .raw, not .result. (Was
+                # silently {} → captured_paths always [] → Telegram album never
+                # sent. Sweep handoff 2026-05-18, Z4 P1.)
+                _vr_result = a.raw or {}
                 if isinstance(_vr_result, dict):
                     await enqueue_visual_review_notice(
                         mission_id=int(source.get("mission_id") or 0),
@@ -3997,6 +4017,23 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                     await _send_step_progress(fresh, "completed", a.raw or {})
             except Exception:
                 pass
+        else:
+            await update_task(a.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Z2 cross-mission lessons. Advisory — never blocks. Same soft-resolve
+    # shape as capture_hint above. (Sweep handoff 2026-05-18, Z2 P1.)
+    if a.kind == "inject_lessons":
+        new_pending = [k for k in pending if k != "inject_lessons"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                a.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None,
+                next_retry_at=None, retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, a.raw or {})
         else:
             await update_task(a.source_task_id, context=_json.dumps(ctx))
         return

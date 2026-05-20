@@ -837,6 +837,22 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "internal_hint artifact in yalayut_index. Mechanical; advisory."
         ),
     ),
+    # Z2 cross-mission lessons — READ side. The expander prepends this
+    # kind to the first phase-0 task's post_hooks (workflow_engine
+    # expander.py); the coulson consumer renders "Watch out for" from
+    # lessons_top_n. Without a registry entry, determine_posthooks() was
+    # dropping it and the loop ran open. (Sweep handoff 2026-05-18, Z2 P1.)
+    "inject_lessons": PostHookSpec(
+        kind="inject_lessons",
+        verb="inject_lessons",
+        default_severity="warning",
+        cost_band="cheap",
+        auto_wire_triggers=[],
+        description=(
+            "Z2 cross-mission learning — pull top mission_lessons rows and "
+            "inject them into the next mission's first task context."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------

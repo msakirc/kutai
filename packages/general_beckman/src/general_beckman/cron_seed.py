@@ -184,6 +184,41 @@ INTERNAL_CADENCES: list[dict] = [
         "interval_seconds": 604800,
         "payload": {"_executor": "paraflow_audit_all"},
     },
+    # Z8 P1 (2026-05-18 sweep) — 5 ops cadences that had mr_roboto dispatch
+    # branches (backup_verify / dependency_scan / cve_scan / secret_scan /
+    # cost_pull) but no cron seed rows, so the backup/CVE/cost/secret
+    # hygiene loop never fired. The same merge restored ops-recipe
+    # discoverability so a mission can actually pick them up too.
+    {
+        "title": "ops_backup_verify",
+        "description": "Daily ops scan — verify the latest backup restores cleanly",
+        "interval_seconds": 86400,  # daily
+        "payload": {"_executor": "cron_backup_verify"},
+    },
+    {
+        "title": "ops_dependency_hygiene",
+        "description": "Weekly ops scan — pip-audit / npm audit dependency vulnerabilities",
+        "interval_seconds": 604800,  # weekly
+        "payload": {"_executor": "cron_dep_hygiene"},
+    },
+    {
+        "title": "ops_cve_scan",
+        "description": "Daily ops scan — OSV.dev CVE lookup across installed deps",
+        "interval_seconds": 86400,  # daily
+        "payload": {"_executor": "cron_cve_scan"},
+    },
+    {
+        "title": "ops_secret_scan",
+        "description": "Daily ops scan — gitleaks sweep for accidentally-committed secrets",
+        "interval_seconds": 86400,  # daily
+        "payload": {"_executor": "cron_secret_scan"},
+    },
+    {
+        "title": "ops_cost_pull",
+        "description": "Daily ops scan — pull vendor spend via vendor_call + aggregate",
+        "interval_seconds": 86400,  # daily
+        "payload": {"_executor": "cron_cost_pull"},
+    },
     # Z6 T4D — weekly compliance-template staleness scan; emits
     # founder_action(kind='legal_counsel') for each template whose
     # .meta.json last_reviewed is >180 days old. Idempotent (skips dup titles).

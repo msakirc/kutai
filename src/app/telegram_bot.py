@@ -10534,6 +10534,36 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     payload = {"raw": payload}
             except Exception:
                 payload = {"raw_text": " ".join(context.args[1:])}
+        # Z6 P3 (2026-05-18 sweep) — validate the payload against the
+        # action's expected_output_schema BEFORE resolution. The schema
+        # is rendered to the founder in the action card but was never
+        # enforced — credential-paste actions could land arbitrary
+        # free-text payloads and the resolver accepted them. Validation
+        # uses the same shape rule consumers use: every required_fields
+        # key must be present in the payload.
+        try:
+            import src.founder_actions as fa
+            pending = await fa.get(aid)
+            schema = getattr(pending, "expected_output_schema", None) or {}
+            required = list((schema or {}).get("required_fields") or [])
+            if required and not isinstance(payload, dict):
+                await self._reply(
+                    update,
+                    "❌ This action requires a JSON payload with fields: "
+                    f"{', '.join(required)}",
+                )
+                return
+            if required and isinstance(payload, dict):
+                missing = [k for k in required if k not in payload]
+                if missing:
+                    await self._reply(
+                        update,
+                        "❌ Payload missing required fields: "
+                        f"{', '.join(missing)}",
+                    )
+                    return
+        except Exception as _vex:  # pragma: no cover — soft path
+            logger.debug("expected_output_schema validation skipped: %s", _vex)
         import src.founder_actions as fa
         try:
             action = await fa.resolve(aid, payload)

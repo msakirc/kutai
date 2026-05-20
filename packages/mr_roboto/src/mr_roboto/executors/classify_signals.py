@@ -248,28 +248,31 @@ async def _on_classifier_complete(task_id: int, result: dict) -> None:
         written=written,
     )
 
-    # Chain into scoring: classified_signal rows are now in place, so enqueue
-    # the mechanical score_backlog pass to turn them into backlog_candidate
-    # rows. Without this hop the signal→backlog loop dead-ends at classification.
-    if written:
-        try:
-            await general_beckman.enqueue(
-                {
-                    "title": "score growth backlog",
-                    "description": (
-                        f"Score {written} newly-classified signal(s) into "
-                        f"backlog candidates."
-                    ),
-                    "agent_type": "mechanical",
-                    "kind": "overhead",
-                    "priority": 4,
-                    "mission_id": mission_id,
-                    "context": {"payload": {"action": "score_backlog"}},
-                },
-                parent_id=task_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "classify_signals_complete: score_backlog enqueue failed",
-                error=str(exc),
-            )
+    # Chain into scoring unconditionally. Z9 sweep 2026-05-18 P3: the
+    # prior `if written:` gate silently skipped the weekly backlog
+    # recompute when the signal_classifier agent failed or classified
+    # nothing — no retry, no DLQ, no visibility. score_backlog is
+    # idempotent and cheap; running it on an empty input is a no-op
+    # rather than a regression. Always enqueue so a classifier outage
+    # never silently halts the backlog→roadmap chain.
+    try:
+        await general_beckman.enqueue(
+            {
+                "title": "score growth backlog",
+                "description": (
+                    f"Score {written} newly-classified signal(s) into "
+                    f"backlog candidates."
+                ),
+                "agent_type": "mechanical",
+                "kind": "overhead",
+                "priority": 4,
+                "mission_id": mission_id,
+                "context": {"payload": {"action": "score_backlog"}},
+            },
+            parent_id=task_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "classify_signals_complete: score_backlog enqueue failed",
+            error=str(exc),
+        )

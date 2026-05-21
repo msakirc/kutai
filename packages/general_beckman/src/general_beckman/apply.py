@@ -937,6 +937,41 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
         )
         return
 
+    if posthook_kind == "domain_layer_check":
+        # Z3 T4C — domain_layer_check mechanical task DLQ'd (e.g. workspace
+        # permission denied, unexpected semgrep crash).  A mechanical DLQ here
+        # means the layer-filter wrapper itself crashed — NOT that semgrep found
+        # violations (those are surfaced via verdict, not DLQ).  Soft-drop the
+        # kind and let the source advance, mirroring pattern_lint's DLQ policy.
+        source_ctx["_pending_posthooks"] = [
+            k for k in (source_ctx.get("_pending_posthooks") or [])
+            if k != "domain_layer_check"
+        ]
+        source_ctx["_domain_layer_check_dlq_reason"] = error[:300]
+        new_pending = source_ctx["_pending_posthooks"]
+        if not new_pending:
+            await update_task(
+                source_id,
+                status="completed",
+                context=_json.dumps(source_ctx),
+                error=None,
+                error_category=None,
+                next_retry_at=None,
+                retry_reason=None,
+                failed_in_phase=None,
+            )
+            try:
+                await _spawn_workflow_advance_if_mission(source, {})
+            except Exception:
+                pass
+        else:
+            await update_task(source_id, context=_json.dumps(source_ctx))
+        logger.warning(
+            "domain_layer_check DLQ soft-dropped (semgrep crash — not a findings violation)",
+            source_id=source_id, linter_task_id=task["id"],
+        )
+        return
+
     if posthook_kind in ("openapi_sync", "typescript_sync"):
         # Z2 T3B — blocker kinds: DLQ cascades source to failed so it doesn't
         # get stuck in 'ungraded' when the regen_and_diff executor itself DLQs.
@@ -1227,6 +1262,27 @@ def _posthook_agent_and_payload(
                 "action": "run_semgrep",
                 "target_files": produces,
                 "rule_pack_path": rule_pack,
+            },
+        })
+    if a.kind == "domain_layer_check":
+        # Z3 T4C — layer-filtered semgrep using forbidden_in_domain.yml.
+        # The mr_roboto verb run_semgrep_layer_filtered filters target_files
+        # to only domain-layer files before invoking semgrep. Soft-skips when
+        # semgrep is absent; real findings (ERROR severity) cascade the source.
+        produces = list(source_ctx.get("produces") or [])
+        workspace_path = source_ctx.get("workspace_path") or ""
+        mission_id = source.get("mission_id")
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": "domain_layer_check",
+            "executor": "mechanical",
+            "payload": {
+                "action": "run_semgrep_layer_filtered",
+                "rule_pack_path": "forbidden_in_domain.yml",
+                "required_layer": "domain",
+                "target_files": produces,
+                "workspace_path": workspace_path,
+                "mission_id": mission_id,
             },
         })
     if a.kind == "openapi_sync":
@@ -2792,6 +2848,38 @@ async def _apply_design_system_check_verdict(
         )
 
 
+async def _apply_domain_layer_check_verdict(
+    source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Z3 T4C — domain_layer_check: layer-filtered semgrep with forbidden_in_domain.yml.
+
+    Routes by registry default_severity (blocker). Real findings (ERROR severity
+    per rule pack) trigger retry-with-feedback; exhausted budget DLQs the source.
+    Soft-skips when semgrep is absent or no domain-layer files matched
+    (skipped=True in raw). A semgrep crash is handled upstream in
+    _posthook_dlq_cascade (soft-drop); this handler only sees valid verdicts.
+    """
+    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    spec = POST_HOOK_REGISTRY.get("domain_layer_check")
+    default_severity = (spec.default_severity if spec else "blocker")
+    step_threshold = ctx.get("semgrep_blocker_threshold") or default_severity
+    if default_severity == "blocker":
+        await _apply_semgrep_blocker_verdict(
+            kind="domain_layer_check",
+            findings_ctx_key="_domain_layer_check_findings",
+            dlq_reason_ctx_key="_domain_layer_check_dlq_reason",
+            blocker_threshold=step_threshold,
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+    else:
+        await _apply_semgrep_warning_verdict(
+            kind="domain_layer_check",
+            findings_ctx_key="_domain_layer_check_findings",
+            dlq_reason_ctx_key="_domain_layer_check_dlq_reason",
+            source=source, ctx=ctx, pending=pending, verdict=verdict,
+        )
+
+
 async def _apply_type_sync_verdict(
     kind: str,
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
@@ -3226,6 +3314,8 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
         return f"Pattern lint for #{a.source_task_id}"
     if a.kind == "design_system_check":
         return f"Design system check for #{a.source_task_id}"
+    if a.kind == "domain_layer_check":
+        return f"Domain layer check for #{a.source_task_id}"
     if a.kind == "openapi_sync":
         return f"OpenAPI sync check for #{a.source_task_id}"
     if a.kind == "typescript_sync":
@@ -3893,6 +3983,12 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
 
     if a.kind == "design_system_check":
         await _apply_design_system_check_verdict(
+            source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind == "domain_layer_check":
+        await _apply_domain_layer_check_verdict(
             source=source, ctx=ctx, pending=pending, verdict=a,
         )
         return

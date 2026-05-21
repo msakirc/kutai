@@ -837,6 +837,30 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "internal_hint artifact in yalayut_index. Mechanical; advisory."
         ),
     ),
+    # Z3 T4C — domain_layer_check via layer-filtered semgrep.
+    # Fires on any step that produces a domain-layer Python file.
+    # Delegates to run_semgrep_layer_filtered (mr_roboto), which filters
+    # target_files to only domain-layer paths before running semgrep with
+    # forbidden_in_domain.yml. Soft-skips on semgrep crash (same pattern
+    # as pattern_lint). Real findings cascade the source (blocker).
+    "domain_layer_check": PostHookSpec(
+        kind="domain_layer_check",
+        verb="run_semgrep_layer_filtered",
+        default_severity="blocker",
+        cost_band="cheap",
+        # Match any file produced under a domain/ directory.
+        # fnmatch.fnmatchcase treats * as matching slashes (Python fnmatch
+        # implementation), so **/domain/*.py matches src/domain/user.py and
+        # app/domain/models/user.py; src/domain/**/*.py covers nested files.
+        auto_wire_triggers=["**/domain/*.py", "src/domain/**/*.py"],
+        description=(
+            "Run semgrep with forbidden_in_domain.yml rule pack via the layer-filtered "
+            "wrapper. Only files that resolve to the 'domain' architectural layer are "
+            "scanned; infra/adapter/test files are skipped. Blocker: findings with "
+            "ERROR severity (e.g. requests/sqlalchemy imports in domain code) cause "
+            "a retry-with-feedback. Soft-dropped when semgrep is absent or crashes."
+        ),
+    ),
     # Z2 cross-mission lessons — READ side. The expander prepends this
     # kind to the first phase-0 task's post_hooks (workflow_engine
     # expander.py); the coulson consumer renders "Watch out for" from

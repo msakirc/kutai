@@ -9,10 +9,31 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from mr_roboto.generate_intake_todo import generate_intake_todo
 from mr_roboto import run as mr_roboto_run
+
+
+@contextmanager
+def _patch_telegram_available(chat_id: int = 12345):
+    """Make the inline artifact-confirm keyboard path succeed offline.
+
+    The executor resolves chat_id from the blackboard then sends via
+    get_telegram().send_artifact_confirm_keyboard (added in f4013b78). In
+    a unit env neither exists, so keyboard_sent would be False. Mock both
+    so the real send path runs and keyboard_sent flips True."""
+    tg = MagicMock()
+    tg.send_artifact_confirm_keyboard = AsyncMock(return_value=None)
+    with patch(
+        "src.app.telegram_bot.get_telegram", return_value=tg,
+    ), patch(
+        "src.collaboration.blackboard.read_blackboard",
+        new=AsyncMock(return_value={"chat_id": chat_id}),
+    ):
+        yield tg
 
 
 def _make_task(tmpdir: str, mission_id: int = 42, **payload_extra) -> dict:
@@ -32,7 +53,8 @@ def _make_task(tmpdir: str, mission_id: int = 42, **payload_extra) -> dict:
 def test_intake_todo_writes_file_and_returns_clarify_shape():
     with tempfile.TemporaryDirectory() as tmp:
         task = _make_task(tmp, mission_id=42)
-        result = asyncio.run(generate_intake_todo(task))
+        with _patch_telegram_available():
+            result = asyncio.run(generate_intake_todo(task))
 
         assert result["status"] == "needs_clarification"
         assert result["keyboard_sent"] is True
@@ -78,7 +100,8 @@ def test_dispatch_via_mr_roboto_run_returns_needs_clarification():
     contract that variant_choice clarify uses)."""
     with tempfile.TemporaryDirectory() as tmp:
         task = _make_task(tmp, mission_id=7)
-        result = asyncio.run(mr_roboto_run(task))
+        with _patch_telegram_available():
+            result = asyncio.run(mr_roboto_run(task))
         assert result.status == "needs_clarification", result
         assert result.result["keyboard_sent"] is True
         assert result.result["todo_path"] == "mission_7/.intake/intake_todo.md"

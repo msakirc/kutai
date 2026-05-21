@@ -527,10 +527,17 @@ class TestMaestroFlowTemplates:
         assert "Sign out" in text or "sign out" in text.lower()
         assert "launchApp" in text
 
-    def test_offline_sync_has_no_flow(self):
-        # mobile_offline_sync intentionally ships no Maestro flow.
+    def test_offline_sync_ships_flow(self):
+        # Z5 P2 (461a90d0): mobile_offline_sync ships its own Maestro smoke
+        # flow so the mobile_smoke post-hook has a flow to run instead of
+        # soft-passing. (Was previously asserted absent — that pre-dated P2.)
         from src.infra.recipes import load_recipe
         recipe = load_recipe(
             str(RECIPES_DIR / "mobile_offline_sync" / "v1" / "recipe.yaml")
         )
-        assert "smoke_flow" not in recipe.templates
+        assert "smoke_flow" in recipe.templates
+        flow_path = (
+            RECIPES_DIR / "mobile_offline_sync" / "v1"
+            / recipe.templates["smoke_flow"]
+        )
+        assert flow_path.exists(), f"{flow_path} missing"

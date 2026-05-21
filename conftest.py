@@ -34,6 +34,7 @@ _PACKAGE_SRCS = [
     _ROOT / "packages" / "c21_paraflow_diff" / "src",
     _ROOT / "packages" / "intersect" / "src",
     _ROOT / "packages" / "yalayut" / "src",
+    _ROOT / "packages" / "safety_guard" / "src",
 ]
 for p in _PACKAGE_SRCS:
     if p.is_dir() and str(p) not in sys.path:
@@ -48,6 +49,6 @@ for _mod in list(sys.modules):
         "fatih_hoca", "nerd_herd", "kuleden_donen_var", "general_beckman",
         "hallederiz_kadir", "dallama", "dogru_mu_samet", "vecihi",
         "yasar_usta", "yazbunu", "mr_roboto", "coulson", "sade_kalsin",
-        "c21_paraflow_diff",
+        "c21_paraflow_diff", "intersect", "yalayut", "safety_guard",
     }:
         del sys.modules[_mod]

@@ -175,6 +175,8 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z8 T5D cost monitor cron ---------------------------------------
     "cost_pull": "full",  # vendor read-only cost API
     "cron_cost_pull": "full",
+    # ---- Z8 P1 synthetic check ------------------------------------------
+    "synthetic_check": "full",  # Lighthouse/k6 read-only probe → advisory founder_action
     # ---- Z7 T3A launch playbook verbs (A2 + A2.r1) -------------------------
     # Draft verbs: fully reversible — produce local draft text only, no publish.
     "launch_drafts/hn": "full",

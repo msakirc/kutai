@@ -305,13 +305,13 @@ async def list_by_mission(
         cursor = await db.execute(
             f"SELECT * FROM founder_actions "
             f"WHERE mission_id = ? AND status IN ({placeholders}) "
-            f"ORDER BY created_at DESC",
+            f"ORDER BY created_at DESC, id DESC",
             (mission_id, *statuses),
         )
     else:
         cursor = await db.execute(
             "SELECT * FROM founder_actions WHERE mission_id = ? "
-            "ORDER BY created_at DESC",
+            "ORDER BY created_at DESC, id DESC",
             (mission_id,),
         )
     rows = await cursor.fetchall()
@@ -325,7 +325,7 @@ async def list_pending() -> list[FounderAction]:
     cursor = await db.execute(
         "SELECT * FROM founder_actions "
         "WHERE status IN ('pending', 'in_progress') "
-        "ORDER BY created_at ASC"
+        "ORDER BY created_at ASC, id ASC"
     )
     rows = await cursor.fetchall()
     return [FounderAction.from_row(r) for r in rows]

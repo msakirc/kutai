@@ -62,6 +62,7 @@ async def execute(profile, task: dict, progress_callback: Callable | None = None
 
     _task_ctx = _parse_task_ctx(task)
 
+    _apply_hint_from_targets_runtime(_task_ctx)
     _apply_tools_hint(profile, _task_ctx)
     _apply_auto_strip(profile, _task_ctx)
 
@@ -222,6 +223,35 @@ async def _load_db_prompt_override(profile) -> None:
             profile._prompt_version_override = db_prompt
     except Exception:
         pass
+
+
+def _apply_hint_from_targets_runtime(task_ctx: dict) -> None:
+    """Strip ``write_file`` from tools_hint at dispatch time when a produce target exists.
+
+    Calls the shared implementation in ``src.workflows.engine.expander`` with
+    the mission workspace resolved from the live filesystem.  By dispatch time
+    the workspace directory exists (earlier steps have already written their
+    files), so the existence check is meaningful — unlike at expansion time
+    when no files have been created yet.
+
+    Safe to call for every task: returns immediately when mission_id is absent,
+    when the workspace directory does not exist yet, or when no tools_hint /
+    no ``write_file`` is present.
+    """
+    import os
+
+    try:
+        mission_id = task_ctx.get("mission_id")
+        if not mission_id:
+            return
+        from src.tools.workspace import WORKSPACE_DIR
+        ws = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+        if not os.path.isdir(ws):
+            return
+        from src.workflows.engine.expander import _apply_hint_from_targets
+        _apply_hint_from_targets(task_ctx, workspace_path=ws)
+    except Exception:
+        pass  # Never break dispatch due to a hint-strip failure
 
 
 def _parse_task_ctx(task: dict) -> dict:

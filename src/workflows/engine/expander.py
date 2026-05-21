@@ -399,22 +399,12 @@ def expand_steps_to_tasks(
         if context.get("produces"):
             _auto_wire_posthooks(context, dial_ctx)
 
-        # Hint-from-targets pass (T1C): if tools_hint includes "write_file"
-        # and any declared produce path already exists in the workspace,
-        # strip "write_file" so the agent is nudged toward patch/edit tools.
-        # Z2 Item-3 followup — thread workspace_path so the pass actually
-        # activates in production (was no-op while workspace_path=None).
-        _ws_path: Optional[str] = None
-        try:
-            if mission_id:
-                from src.tools.workspace import WORKSPACE_DIR
-                import os.path as _osp
-                _candidate = _osp.join(WORKSPACE_DIR, f"mission_{mission_id}")
-                if _osp.isdir(_candidate):
-                    _ws_path = _candidate
-        except Exception:
-            _ws_path = None
-        _apply_hint_from_targets(context, workspace_path=_ws_path)
+        # Hint-from-targets strip moved to coulson.execute (dispatch time):
+        # the mission workspace does not exist at expansion time (all steps are
+        # expanded upfront before any file is written), so the existence check
+        # was always a no-op here. _apply_hint_from_targets_runtime() in
+        # packages/coulson/src/coulson/__init__.py calls _apply_hint_from_targets
+        # just before _apply_tools_hint(), where the workspace already exists.
 
         skip_when = step.get("skip_when")
         if skip_when:

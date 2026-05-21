@@ -1,5 +1,11 @@
 # Handoff — 7 mr_roboto suite reds (post wiring-sweep)
 
+> **RESOLVED 2026-05-21** (commit `ae004547`). All 3 causes fixed: conftest
+> `_PACKAGE_SRCS`/eviction now include `safety_guard` (+ `intersect`/`yalayut`);
+> `synthetic_check` tagged `"full"` in `VERB_REVERSIBILITY`; the stale
+> `test_offline_sync_has_no_flow` flipped to pin smoke-flow presence. Full
+> mr_roboto suite: **732 passed, 0 failed**. Kept for history.
+
 **Date:** 2026-05-20
 **Branch:** `main` (HEAD `a0b83166`)
 **Scope:** new failures in `packages/mr_roboto/tests/` introduced after

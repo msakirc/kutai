@@ -1,5 +1,12 @@
 # Handoff — Wiring-sweep residuals after 2026-05-19 closeout
 
+> **STATUS 2026-05-21:** §1 (13 P0/P1/P2 + 4 P3s) landed pre-this-session.
+> §3 pre-existing main-branch failures — **all CLOSED this session** (commits
+> `27c11d18` lifecycle, `404fc60b` repo ordering, `c8052a8a` intake_todo,
+> `9efea092` reversibility; two were real prod bugs, not test drift).
+> §2 deferred P3s (5 items, A–E) — **still OPEN**, carried into the
+> 2026-05-21 next-session doc. See `docs/handoff/2026-05-21-residual-reanalysis.md`.
+
 **Date:** 2026-05-19
 **Closes:** the open items from the two 2026-05-18 wiring-sweep handoffs
 (`2026-05-18-wiring-sweep-z2-z3-z4-z5-z10.md` and

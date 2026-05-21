@@ -17,6 +17,8 @@ data/chroma.bak.*/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/artifacts/
+data/mission_*/
 
 # Production SQLite at repo root (path overridden via DB_PATH env)
 /kutai.db

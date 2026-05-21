@@ -199,14 +199,29 @@ async def _reinforce_winning_model(
         model: str | None = None
         provider = "local"
         db = await get_db()
-        # Best proxy: the most recent main_work pick logged for this
-        # mission's tasks. model_pick_log has no mission_id column, so we
-        # join via tasks.title = model_pick_log.task_name.
+        # Strategy (three tiers, most-precise first):
+        #
+        # Tier 0 (task_id join) — model_pick_log.task_id = tasks.id, filtered
+        #   by tasks.mission_id. Introduced 2026-05-21 to fix the silent
+        #   wrong-model failure mode: free-form title matching could resolve
+        #   a model from a completely different mission. task_id is populated
+        #   by the dispatcher via the heartbeat ContextVar for all picks made
+        #   since this fix landed.
+        #
+        # Tier 1 (title join, legacy) — kept verbatim for rows that pre-date
+        #   the task_id column (task_id IS NULL). Title is still a useful
+        #   signal when the task_name was set correctly, which it was for all
+        #   picks made by the old path.
+        #
+        # Tier 2 (global fallback) — unchanged safety net for edge cases
+        #   (no tasks row, no matching pick, fresh DB). Still cross-mission
+        #   risk but only reached if both tier-0 and tier-1 find nothing.
         if mission_id is not None:
+            # Tier 0: join by task_id (precise, new rows only).
             cur = await db.execute(
                 "SELECT mpl.picked_model, mpl.provider "
                 "FROM model_pick_log mpl "
-                "JOIN tasks t ON t.title = mpl.task_name "
+                "JOIN tasks t ON mpl.task_id = t.id "
                 "WHERE t.mission_id = ? AND mpl.call_category != 'reinforce' "
                 "ORDER BY mpl.timestamp DESC LIMIT 1",
                 (mission_id,),
@@ -215,8 +230,23 @@ async def _reinforce_winning_model(
             if row:
                 model = row[0]
                 provider = row[1] or "local"
+
+            if not model:
+                # Tier 1: title join for legacy rows where task_id IS NULL.
+                cur = await db.execute(
+                    "SELECT mpl.picked_model, mpl.provider "
+                    "FROM model_pick_log mpl "
+                    "JOIN tasks t ON t.title = mpl.task_name "
+                    "WHERE t.mission_id = ? AND mpl.call_category != 'reinforce' "
+                    "ORDER BY mpl.timestamp DESC LIMIT 1",
+                    (mission_id,),
+                )
+                row = await cur.fetchone()
+                if row:
+                    model = row[0]
+                    provider = row[1] or "local"
         if not model:
-            # Fall back to the most recent non-reinforce pick overall.
+            # Tier 2: fall back to the most recent non-reinforce pick overall.
             cur = await db.execute(
                 "SELECT picked_model, provider FROM model_pick_log "
                 "WHERE call_category != 'reinforce' "

@@ -1493,6 +1493,7 @@ async def init_db():
         ("provider", "TEXT"),
         ("outcome", "TEXT"),
         ("reinforce", "REAL"),
+        ("task_id", "INTEGER"),
     ):
         try:
             await db.execute(f"ALTER TABLE model_pick_log ADD COLUMN {col_name} {col_type}")
@@ -1513,6 +1514,9 @@ async def init_db():
     )
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_pick_log_model ON model_pick_log(picked_model, timestamp DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pick_log_task_id ON model_pick_log(task_id)"
     )
     # ── Admission violations (Q1 forensics) ──────────────────────────────
     # Captures every "Beckman admitted, KDV/dispatcher rejected" event.

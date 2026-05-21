@@ -805,6 +805,16 @@ class LLMDispatcher:
             task_name = task or category.value
             cat_value = category.value if isinstance(category, CallCategory) else str(category)
 
+            # Resolve the active task id from the heartbeat ContextVar —
+            # same pattern used at request() entry (lines 663-664). Defensive:
+            # overhead calls and tests that don't set the ContextVar get None.
+            _active_task_id: int | None = None
+            try:
+                from src.core.heartbeat import current_task_id as _ctid2
+                _active_task_id = _ctid2.get()
+            except Exception:
+                pass
+
             await _pick_log_mod.write_pick_log_row(
                 db_path=db_path,
                 task_name=task_name,
@@ -817,6 +827,7 @@ class LLMDispatcher:
                 provider=("local" if getattr(model, "is_local", False) else (getattr(model, "provider", "local") or "local")),
                 agent_type=agent_type,
                 difficulty=difficulty,
+                task_id=_active_task_id,
             )
         except Exception as e:  # noqa: BLE001 — telemetry must never break dispatch
             logger.debug("pick_log record failed: %s", e)

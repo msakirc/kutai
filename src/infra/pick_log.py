@@ -41,6 +41,7 @@ async def write_pick_log_row(
     provider: str = "local",
     agent_type: str = "",
     difficulty: int | None = None,
+    task_id: int | None = None,
 ) -> None:
     """Fire-and-forget write of a pick outcome.
 
@@ -49,6 +50,10 @@ async def write_pick_log_row(
 
     ``db_path`` is ignored — INSERT goes through the singleton get_db()
     connection. See module docstring for rationale.
+
+    ``task_id`` links this pick to a specific tasks row so the Z9 reinforce
+    loop can join by id instead of free-form task_name string. NULL for
+    legacy rows and overhead calls where no task_id is in context.
     """
     # Derive `outcome` (TEXT semantic label) from success+error_category.
     # success → "success"; failure → error_category if non-empty, else
@@ -62,8 +67,8 @@ async def write_pick_log_row(
             "INSERT INTO model_pick_log "
             "(task_name, agent_type, difficulty, picked_model, picked_score, "
             " call_category, candidates_json, snapshot_summary, success, "
-            " error_category, provider, outcome) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " error_category, provider, outcome, task_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_name,
                 agent_type or None,
@@ -77,6 +82,7 @@ async def write_pick_log_row(
                 error_category,
                 provider,
                 outcome,
+                task_id,
             ),
         )
     except Exception as e:  # noqa: BLE001 — telemetry must never propagate

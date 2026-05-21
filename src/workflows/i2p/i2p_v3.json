@@ -10919,8 +10919,8 @@
       ],
       "read_only": true,
       "context": {},
-      "reversibility": "irreversible",
-      "locked": true
+      "reversibility": "full",
+      "locked": false
     },
     {
       "id": "14.8.gen_ci",
@@ -11080,7 +11080,8 @@
       "instruction": "Z5 mechanical step (no LLM): submit the iOS binary to TestFlight via `fastlane pilot`, triggered through the generated GitHub Actions workflow (14.8.gen_ci output `.github/workflows/mobile.yml`). `eas_submit` is the documented fallback when the GitHub Actions / Fastlane path is unavailable. Irreversible — a binary pushed to a TestFlight track is ingested by Apple immediately. Needs apple_appstore credentials — z6_admission emits a vendor_enroll founder-action if absent. The Android Play-internal upload is the sibling step 14.8.submit_play. Runs only when the mission targets iOS (ios_submission conditional group).",
       "done_when": "the mobile binary is uploaded to the TestFlight / Play internal track.",
       "context": {},
-      "reversibility": "irreversible"
+      "reversibility": "irreversible",
+      "locked": true
     },
     {
       "id": "14.8.review_status",
@@ -11146,7 +11147,8 @@
       "instruction": "Z5 mechanical step (no LLM): submit the Android binary to the Google Play internal track via `fastlane supply`, triggered through the generated GitHub Actions workflow (14.8.gen_ci output). `eas_submit` is the documented fallback. Irreversible — a binary on a Play internal track is ingested immediately. Needs google_play credentials — z6_admission emits a vendor_enroll founder-action if absent. Runs only when the mission targets Android (android_submission conditional group).",
       "done_when": "the Android binary is uploaded to the Play internal track.",
       "context": {},
-      "reversibility": "irreversible"
+      "reversibility": "irreversible",
+      "locked": true
     },
     {
       "id": "14.8.review_status_play",

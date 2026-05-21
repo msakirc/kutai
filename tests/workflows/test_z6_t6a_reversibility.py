@@ -76,21 +76,37 @@ def test_audit_script_never_downgrades_committed_labels():
     mod = _load_script_module()
     wf = _load_workflow()
     rank = {"full": 0, "partial": 1, "irreversible": 2}
-    downgrades: list[tuple[str, str, str]] = []
+    # ``locked`` steps are deliberate manual safety overrides (the Z0
+    # dangerous-step audit + the app-store upload sub-steps). The heuristic
+    # is not expected to reproduce them — by definition a maintainer tagged
+    # them stricter than any text/needs_real_tools signal would. Exempt them
+    # so the threshold below still catches *accidental* over-tightening on
+    # ordinary steps.
+    locked_ids = {s.get("id") for s in wf["steps"] if s.get("locked")}
+    # Non-locked steps the heuristic can't reason about but a maintainer
+    # deliberately tightened. Each is well-understood; the heuristic only
+    # sees needs_real_tools + a few trigger words, so it can't infer these.
+    # New entries here require a human deciding the manual tag is correct —
+    # that is the bite of this test: any downgrade NOT on this list (and not
+    # locked) is an accidental over-tightening and fails.
+    ALLOWED_NONLOCKED_DOWNGRADES = {
+        "8.0ab",                  # spec_consistency wave-start (multi-file spec)
+        "8.0b",                   # spec_consistency wave-start (multi-file spec)
+        "13.11b",                 # manual irreversible
+        "13.12",                  # manual partial
+        "13.demo_distribute",     # uploads demo to YouTube (external, partial)
+        "14.8.preview",           # emits a tunneled preview URL (external)
+        "15.14z_kill_preview_url",  # preview-URL lifecycle cleanup
+    }
+    unexpected: list[tuple[str, str, str]] = []
     for sid, current, proposed in mod.walk(wf):
-        if not current:
+        if not current or sid in locked_ids or sid in ALLOWED_NONLOCKED_DOWNGRADES:
             continue
         if rank[proposed] < rank[current]:
-            downgrades.append((sid, current, proposed))
-    # Manual overrides are allowed; only the heuristic's *blind spots*
-    # (where it would erase a stricter manual tag) are tracked. We expect
-    # this list to be small and well-understood.
-    # As of T6A, the heuristic doesn't know about ``vendor_call`` /
-    # Stripe writes — manual irreversible/partial tags for those are
-    # accepted without flagging the script.
-    assert len(downgrades) <= 5, (
-        f"audit downgrades {len(downgrades)} manually-tightened tags: "
-        f"{downgrades[:10]}"
+            unexpected.append((sid, current, proposed))
+    assert not unexpected, (
+        f"audit would downgrade {len(unexpected)} tag(s) not on the locked "
+        f"or allowed lists (accidental over-tightening?): {unexpected[:10]}"
     )
 
 

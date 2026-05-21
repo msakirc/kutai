@@ -22,7 +22,11 @@ LOCKED_IRREVERSIBLE_IDS = {
     "14.5",  # marketing_site_publish — site goes public on production
     "14.6",  # launch_announcements — public posts on Product Hunt / social media
     "14.7",  # launch_email — email blast sent to subscriber list
-    "14.8",  # app_store_submission — triggers Apple/Google review pipeline
+    # 14.8 (app_store_submission) is the metadata-DRAFTING parent (read_only,
+    # reversibility=full). The actual irreversible binary uploads are the
+    # mechanical sub-steps below — that is where the founder-wait lock belongs.
+    "14.8.submit",       # app_store_submit_binary — TestFlight ingest (iOS)
+    "14.8.submit_play",  # play_internal_submit_binary — Play internal (Android)
 }
 
 

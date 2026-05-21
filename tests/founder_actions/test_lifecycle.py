@@ -16,34 +16,26 @@ async def _setup(tmp_path, monkeypatch):
 
 
 async def _mission_status(db_mod, mid: int) -> str:
+    """Read the mission's lifecycle gate column. Post-Z0 the gate is
+    ``lifecycle_state`` (Z8 T1A migration always adds it on init_db); the
+    legacy ``status`` fallback only applies to installs predating it."""
+    import src.founder_actions as fa
+    col = await fa._missions_lifecycle_column()
     db = await db_mod.get_db()
     cur = await db.execute(
-        "SELECT status FROM missions WHERE id = ?", (mid,),
+        f"SELECT {col} FROM missions WHERE id = ?", (mid,),
     )
     row = await cur.fetchone()
     return row[0]
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_column_falls_back_to_status(tmp_path, monkeypatch):
-    """When missions.lifecycle_state (Z0) does NOT exist on main, the
-    coordinator targets the legacy ``status`` column."""
-    _, _db_mod, fa = await _setup(tmp_path, monkeypatch)
-    col = await fa._missions_lifecycle_column()
-    assert col == "status"
-
-
-@pytest.mark.asyncio
 async def test_lifecycle_column_uses_lifecycle_state_when_present(
     tmp_path, monkeypatch,
 ):
+    """Post-Z0 main: init_db always adds missions.lifecycle_state (Z8 T1A
+    migration), so the coordinator targets it, not legacy ``status``."""
     _, db_mod, fa = await _setup(tmp_path, monkeypatch)
-    db = await db_mod.get_db()
-    await db.execute(
-        "ALTER TABLE missions ADD COLUMN lifecycle_state TEXT DEFAULT 'active'"
-    )
-    await db.commit()
-    fa._reset_lifecycle_cache()
     col = await fa._missions_lifecycle_column()
     assert col == "lifecycle_state"
 
@@ -156,14 +148,9 @@ async def test_unblock_flips_blocked_tasks_back_to_pending(
 
 @pytest.mark.asyncio
 async def test_lifecycle_state_path_when_z0_merged(tmp_path, monkeypatch):
-    """When Z0 ships lifecycle_state, that column is used instead of status."""
+    """Post-Z0: lifecycle_state is the gate; legacy status stays 'active'."""
     _, db_mod, fa = await _setup(tmp_path, monkeypatch)
     db = await db_mod.get_db()
-    await db.execute(
-        "ALTER TABLE missions ADD COLUMN lifecycle_state TEXT DEFAULT 'active'"
-    )
-    await db.commit()
-    fa._reset_lifecycle_cache()
     mid = await db_mod.add_mission("m", "")
     await fa.create(mid, "generic", "t", "w", [], notify_telegram=False)
     cur = await db.execute(

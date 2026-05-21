@@ -4457,6 +4457,22 @@ async def add_mission(title, description, priority=5, context=None,
     )
     await db.commit()
     mission_id = cursor.lastrowid
+    # Z0/Z8: a freshly created mission is running. The lifecycle_state column
+    # (added by the Z8 T1A migration) defaults to 'terminal' — correct for
+    # legacy rows backfilled during the ALTER, WRONG for new inserts. Without
+    # this set, the founder-action gate (_missions_lifecycle_column reads
+    # lifecycle_state post-Z0) sees 'terminal' != 'active' and never blocks
+    # the mission, and the ongoing-resumption query never matches it. Set it
+    # explicitly. Guarded so installs predating the migration don't error.
+    try:
+        if mission_id is not None:
+            await db.execute(
+                "UPDATE missions SET lifecycle_state = 'active' WHERE id = ?",
+                (mission_id,),
+            )
+            await db.commit()
+    except Exception as e:
+        logger.debug(f"lifecycle_state default at add_mission skipped: {e}")
     # Z7 #7: default product_id to the mission's own id. The column was a
     # nullable placeholder no code ever populated, so investor_bullets'
     # product-scoped JOINs (WHERE m.product_id=?) always matched zero rows.

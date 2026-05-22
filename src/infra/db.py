@@ -8506,11 +8506,33 @@ async def record_confidence_claim(task_id: int) -> int | None:
         # No confidence claim to record — bail out quietly.
         return None
 
-    # Pick the most recent model_pick_log row for this task. task_id isn't a
-    # column on model_pick_log so we use task_name=title (best proxy today).
+    # Pick the most recent model_pick_log row for this task.
+    #
+    # Tier-0 (task_id join) — model_pick_log.task_id = tasks.id. Introduced
+    #   to fix the silent wrong-model attribution: free-form title matching
+    #   could resolve a model from a completely different task. task_id is
+    #   populated by the dispatcher for all picks made since commit e922a554.
+    #
+    # Tier-1 (title join, legacy) — kept verbatim for rows that pre-date the
+    #   task_id column (task_id IS NULL). Title is still a useful signal when
+    #   task_name was set correctly, which it was for all picks made by the
+    #   old path.
     picked_model: str | None = None
     picked_at: str | None = None
-    if title:
+
+    # Tier-0: join by task_id (precise, new rows only).
+    cur2 = await db.execute(
+        "SELECT picked_model, timestamp FROM model_pick_log "
+        "WHERE task_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (task_id,),
+    )
+    prow = await cur2.fetchone()
+    await cur2.close()
+    if prow:
+        picked_model, picked_at = prow[0], prow[1]
+
+    # Tier-1: title join for legacy rows where task_id IS NULL.
+    if not picked_model and title:
         cur2 = await db.execute(
             "SELECT picked_model, timestamp FROM model_pick_log "
             "WHERE task_name = ? ORDER BY timestamp DESC LIMIT 1",

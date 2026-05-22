@@ -473,11 +473,15 @@ async def run(task: dict) -> Action:
 
     Z10-T1C: every dispatch lands a row in ``registry_events``
     (scope='action') with verb + reversibility + mission/task ids. When
-    ``payload['require_confirmation']`` is True AND the resolved
-    reversibility is ``partial`` / ``irreversible``, the dispatcher opens
-    a confirmation row and polls until the founder responds (or the 60s
-    skeleton timeout fires — T2B will replace polling with the Telegram
-    reactor).
+    ``payload['require_confirmation']`` is True (or ``confirm_policy``
+    auto-arms) AND the resolved reversibility is ``partial`` /
+    ``irreversible``, the founder confirmation gate runs via
+    :func:`_await_confirmation`. The gate parks the task through the
+    existing clarification path (asks on Telegram, marks the task
+    ``waiting_human``, returns ``needs_clarification``) and resumes when
+    the founder's typed reply re-dispatches the task with
+    ``context['user_clarification']`` set — no busy-poll, no worker-slot
+    hold, no 60s hard-fail.
     """
     # Z0: safety guard pre-action check for shell-executing actions.
     guard_result = await _safety_guard_check(task)
@@ -540,7 +544,7 @@ async def run(task: dict) -> Action:
         "partial", "irreversible"
     ):
         gate_action = await _await_confirmation(
-            task_id=task.get("id"),
+            task=task,
             verb=str(verb),
             reversibility=resolved_reversibility,
             payload=payload,
@@ -626,69 +630,145 @@ async def _log_action_event(
         )
 
 
+# Tokens the founder can type to approve / reject a gated action. Exact
+# match against the lower-cased, stripped reply. Anything else is treated
+# as ambiguous → fail-closed (an irreversible action must never proceed on
+# an unclear answer).
+_CONFIRM_APPROVE_TOKENS = frozenset({
+    "yes", "y", "evet", "e", "onay", "onayla", "onaylıyorum",
+    "approve", "approved", "ok", "tamam", "✅",
+})
+_CONFIRM_REJECT_TOKENS = frozenset({
+    "no", "n", "hayır", "hayir", "h", "reddet", "iptal",
+    "reject", "rejected", "❌",
+})
+
+
 async def _await_confirmation(
     *,
-    task_id,
+    task: dict,
     verb: str,
     reversibility: str,
     payload: dict,
-    max_wait_s: float = 60.0,
-    poll_interval_s: float = 0.5,
 ) -> Action | None:
-    """Open a confirmation request and poll for verdict.
+    """Founder confirmation gate via the clarification park/resume path.
+
+    This is NOT a busy-poll. The gate reuses the existing clarification
+    machinery — the same mechanism ``mr_roboto.clarify`` uses — so a slow
+    founder never holds a worker slot or hard-fails on a timeout:
+
+    * **First entry** (``context["user_clarification"]`` absent): send a
+      Telegram question, mark the task ``waiting_human``, and return
+      ``Action(status="needs_clarification")``. The orchestrator
+      special-cases that status for mechanical tasks and skips
+      ``on_task_finished`` (orchestrator.py:316-446), leaving the row
+      parked. The founder's typed reply →
+      ``telegram_bot._resume_with_clarification`` injects
+      ``context["user_clarification"]`` and resets the task to ``pending``
+      → Beckman re-dispatches → ``mr_roboto.run`` re-runs → this gate runs
+      again, now on the resume path.
+    * **Resume** (``user_clarification`` present): approve tokens → return
+      ``None`` (caller proceeds with dispatch); reject tokens → return
+      ``Action(status="rejected")``; anything else (ambiguous) →
+      fail-closed ``Action(status="rejected")`` — an irreversible action
+      must never proceed on an answer we cannot parse.
+
+    A human gate that cannot reach the human is never silently skipped:
+    if Telegram is unavailable (or the park fails), we return
+    ``Action(status="failed")`` so the mission halts at the gate.
+
+    NOTE: the old ``action_confirmations`` skeleton (request_confirmation /
+    check_confirmation / resolve_confirmation + mission_event_drain +
+    confirm:approve/reject callback) is superseded by this clarify-reuse
+    path and is now unused by the gate; it is left in place for a separate
+    cleanup rather than removed here.
 
     Returns:
-        ``None`` when verdict='approved' — caller proceeds with dispatch.
-        ``Action(status='rejected')`` when verdict='rejected'.
-        ``Action(status='failed', error='confirmation_timeout')`` when the
-        skeleton timeout fires (T2B replaces this with reactor delivery).
+        ``None`` — founder approved, caller proceeds with dispatch.
+        ``Action(status="needs_clarification")`` — first entry, parked.
+        ``Action(status="rejected")`` — founder rejected or answer ambiguous.
+        ``Action(status="failed")`` — gate could not reach the founder.
     """
-    import asyncio
-    try:
-        from src.infra.db import (
-            request_confirmation,
-            check_confirmation,
-        )
-    except Exception as e:
-        # If the DB isn't available we can't gate — fail closed.
-        return Action(
-            status="failed",
-            error=f"confirmation_unavailable: {e}",
-        )
+    context = task.get("context") or {}
+    clar = context.get("user_clarification") if isinstance(context, dict) else None
 
-    try:
-        summary = payload.get("payload_summary") or payload.get("message") or ""
-        summary = str(summary)[:500]
-        confirmation_id = await request_confirmation(
-            task_id=int(task_id) if task_id is not None else 0,
-            verb=verb,
-            reversibility=reversibility,
-            payload_summary=summary,
-        )
-    except Exception as e:
-        return Action(
-            status="failed", error=f"confirmation_open_failed: {e}"
-        )
-
-    elapsed = 0.0
-    while elapsed < max_wait_s:
-        res = await check_confirmation(confirmation_id)
-        verdict = res.get("verdict")
-        if verdict == "approved":
+    # ── Resume path: a founder reply was injected into the context. ──
+    if clar:
+        ans = str(clar).strip().lower()
+        if ans in _CONFIRM_APPROVE_TOKENS:
             return None
-        if verdict == "rejected":
+        if ans in _CONFIRM_REJECT_TOKENS:
             return Action(
                 status="rejected",
-                error="action rejected by confirmation gate",
-                result={"confirmation_id": confirmation_id},
+                error="action rejected by founder confirmation",
+                result={"verb": verb},
             )
-        await asyncio.sleep(poll_interval_s)
-        elapsed += poll_interval_s
+        # Ambiguous — fail closed. Irreversible/partial actions must never
+        # proceed on an answer we cannot interpret.
+        return Action(
+            status="rejected",
+            error=(
+                f"confirmation answer not understood ({clar!r}); "
+                f"fail-closed for {reversibility} action"
+            ),
+            result={"verb": verb},
+        )
+
+    # ── First entry: ask the founder, park the task, return parked. ──
+    task_id = task.get("id")
+    title = task.get("title", "")
+    question = (
+        f"⚠️ Onay gerekiyor — `{verb}` ({reversibility}). "
+        f"Bu işlem geri alınamaz / kısmen geri alınabilir. "
+        f"Çalıştırılsın mı? *Evet* / *Hayır* ile yanıtla.\n"
+        f"(Confirmation required for `{verb}` — reply *Evet*/*Yes* to run, "
+        f"*Hayır*/*No* to cancel.)"
+    )
+
+    try:
+        from src.app.telegram_bot import get_telegram
+        tg = get_telegram()
+    except Exception as e:
+        tg = None
+        _tg_err = e
+    else:
+        _tg_err = None
+
+    if tg is None:
+        # A human gate that cannot reach the human must NOT be skippable.
+        suffix = f" ({_tg_err})" if _tg_err else ""
+        return Action(
+            status="failed",
+            error=(
+                f"confirmation gate cannot reach founder (telegram "
+                f"unavailable) for {verb}; human approval cannot be "
+                f"skipped{suffix}"
+            ),
+            result={"verb": verb},
+        )
+
+    try:
+        await tg.request_clarification(int(task_id), title, question)
+        from src.infra.db import update_task
+        await update_task(int(task_id), status="waiting_human")
+    except Exception as e:
+        # Park failed — fail closed rather than silently proceeding.
+        return Action(
+            status="failed",
+            error=(
+                f"confirmation gate failed to park task for {verb}: {e}"
+            ),
+            result={"verb": verb},
+        )
 
     return Action(
-        status="failed",
-        error="confirmation_timeout",
-        result={"confirmation_id": confirmation_id},
+        status="needs_clarification",
+        result={
+            "awaiting_confirmation": True,
+            "verb": verb,
+            "reversibility": reversibility,
+            "question": question,
+        },
     )
 
 

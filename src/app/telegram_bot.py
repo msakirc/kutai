@@ -4905,6 +4905,12 @@ class TelegramInterface:
         except Exception as e:
             await self._reply(update, f"Preview emit failed: {e}")
             return
+        _durable_btn = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "🌐 Durable link",
+                callback_data=f"preview:pages:{mission_id}",
+            )
+        ]])
         if res.get("pending"):
             await self._reply(
                 update,
@@ -4912,12 +4918,14 @@ class TelegramInterface:
                 f"Hosting deferred to Z2 — surface written to "
                 f"`{res.get('path')}`",
                 parse_mode="Markdown",
+                reply_markup=_durable_btn,
             )
             return
         url = res.get("url") or "(no url)"
         await self._reply(
             update,
             f"📡 Preview ready for mission #{mission_id}\n{url}",
+            reply_markup=_durable_btn,
         )
 
     async def cmd_preview_off(
@@ -8855,15 +8863,46 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             except Exception as e:
                 await query.message.reply_text(f"Preview emit failed: {e}")
                 return
+            _durable_btn = InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "🌐 Durable link",
+                    callback_data=f"preview:pages:{mission_id}",
+                )
+            ]])
             if res.get("pending"):
                 await query.message.reply_text(
                     f"Preview pending for mission #{mission_id} — hosting "
-                    f"deferred to Z2 (path: {res.get('path')})"
+                    f"deferred to Z2 (path: {res.get('path')})",
+                    reply_markup=_durable_btn,
                 )
             else:
                 await query.message.reply_text(
                     f"📡 Preview ready for mission #{mission_id}\n"
-                    f"{res.get('url')}"
+                    f"{res.get('url')}",
+                    reply_markup=_durable_btn,
+                )
+            return
+
+        # ── Unit C — Durable Link (GitHub Pages) ──────────────────
+        if data.startswith("preview:pages:"):
+            try:
+                mission_id = int(data.split(":")[-1])
+            except (ValueError, IndexError):
+                await query.message.reply_text("Bad mission id in preview pages.")
+                return
+            try:
+                from mr_roboto.publish_preview_pages import publish_preview_pages
+                res = await publish_preview_pages(mission_id=mission_id)
+            except Exception as e:
+                await query.message.reply_text(f"Pages publish failed: {e}")
+                return
+            if res.get("pending"):
+                await query.message.reply_text(
+                    f"Durable link pending for mission #{mission_id} — {res.get('reason', '')}"
+                )
+            else:
+                await query.message.reply_text(
+                    f"🌐 Durable link for mission #{mission_id}\n{res.get('url')}"
                 )
             return
 

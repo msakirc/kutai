@@ -38,6 +38,7 @@ from mr_roboto.parse_og_tags import parse_og_tags
 from mr_roboto.http_check import http_check
 from mr_roboto.emit_preview_url import emit_preview_url
 from mr_roboto.kill_preview_url import kill_preview_url
+from mr_roboto.publish_preview_pages import publish_preview_pages
 from mr_roboto.compliance_fingerprint_collection import (
     compliance_fingerprint_collection,
 )
@@ -145,6 +146,7 @@ __all__ = [
     "http_check",
     "emit_preview_url",
     "kill_preview_url",
+    "publish_preview_pages",
     "compliance_fingerprint_collection",
     "compliance_template_present",
     "compliance_blocker_check",
@@ -1701,6 +1703,19 @@ async def _run_dispatch(task: dict) -> Action:
                     error=f"kill_preview_url: {res.get('error') or 'failed'}",
                     result=res,
                 )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "publish_preview_pages":
+        # Unit B — push preview root to GitHub Pages (gh-pages branch force-push).
+        # Fail-soft: any failure → pending, never DLQ.
+        from mr_roboto.publish_preview_pages import publish_preview_pages as _pub
+        try:
+            res = await _pub(
+                mission_id=task.get("mission_id"),
+                workspace_path=payload.get("workspace_path"),
+            )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

@@ -88,22 +88,23 @@ Two were **real production bugs** masked by test drift, not test-only issues:
    fail-closed. Fixes a real bug (founder slower than 60s = action hard-failed).
    15 tests; full mr_roboto suite 749 passed.
 
-### 3a-followups (discovered this session)
-- **Orphaned `action_confirmations` machinery** — after 3a.5, the gate no longer
-  opens `action_confirmations` rows, so `request/check/resolve_confirmation`,
-  `mission_event_drain`'s confirmation branch, and the `confirm:approve/reject`
-  Telegram callback are now **unused** (left in place, flagged in code). Cleanup:
-  delete or repoint. Low priority.
-- **Z10 confidence-resolver join** (`db.py:~8505`) — same title-join now trivially
-  fixable via the new `model_pick_log.task_id`.
-- **5 pre-existing `test_pick_log*` failures** — `tests/infra/test_pick_log.py`
-  (3) + `test_pick_log_provider.py` (2) fail on BOTH parent and HEAD (stale
-  inline DDL missing `outcome`/`provider` columns; AssertionErrors, NOT related
-  to the task_id change — verified by parent-vs-HEAD diff). Separate test-fix.
-- **DB-lock hazard** — `tests/infra/test_pick_log*` use the singleton `get_db()`
-  against the live `kutai.db`; they HANG on the running orchestrator's WAL lock
-  (cost ~hours of zombie pytest this session). Either isolate them onto a temp
-  DB or only run when the orchestrator is down.
+### 3a-followups — ALL RESOLVED 2026-05-22
+
+- **Z10 confidence-resolver join** ✅ `073378cb` — `record_confidence_claim`
+  now attributes via `model_pick_log.task_id` first (tier-0), title-join kept
+  as legacy fallback. Mirrors the Z9 reinforce fix.
+- **5 `test_pick_log*` failures + DB-lock hazard** ✅ `1607474b` — REAL root
+  cause was NOT "missing column": `write_pick_log_row` ignores its `db_path`
+  arg and writes through the singleton `get_db()` (live `kutai.db`), so the
+  tests asserted against an empty temp DB AND hung on the orchestrator's WAL
+  lock. Rewrote `test_pick_log.py` + `test_pick_log_provider.py` to isolate
+  onto a temp DB via `init_db` + singleton patch (the `test_pick_log_task_id.py`
+  pattern). 14 passed, no hang, no live-DB writes.
+- **`action_confirmations` is NOT orphaned** (corrected) — the 3a.5 gate stopped
+  using it, but `src/infra/cost_wiring.py:129` opens rows for the cost-decision
+  gate, `mr_roboto.audit_log.pending_audit_gaps` joins it for the Z7 B9 audit
+  trail, and the seeded drain cron surfaces pending rows. Nothing to clean up;
+  misleading "superseded/cleanup" comment fixed in `_await_confirmation`.
 
 ### 3b. Scoped-but-unbuilt (from 2026-05-18 z0-backlog §2b)
 

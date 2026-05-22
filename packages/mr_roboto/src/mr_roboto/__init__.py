@@ -677,11 +677,13 @@ async def _await_confirmation(
     if Telegram is unavailable (or the park fails), we return
     ``Action(status="failed")`` so the mission halts at the gate.
 
-    NOTE: the old ``action_confirmations`` skeleton (request_confirmation /
-    check_confirmation / resolve_confirmation + mission_event_drain +
-    confirm:approve/reject callback) is superseded by this clarify-reuse
-    path and is now unused by the gate; it is left in place for a separate
-    cleanup rather than removed here.
+    NOTE: this gate no longer uses ``action_confirmations``
+    (request_confirmation / check_confirmation / resolve_confirmation) —
+    it parks via the clarify path instead. That table is NOT orphaned,
+    though: ``src/infra/cost_wiring.py`` still opens rows for the
+    cost-decision gate, ``mr_roboto.audit_log.pending_audit_gaps`` joins it
+    for the Z7 B9 external-comms audit trail, and the seeded drain cron
+    surfaces pending rows. Leave it intact.
 
     Returns:
         ``None`` — founder approved, caller proceeds with dispatch.

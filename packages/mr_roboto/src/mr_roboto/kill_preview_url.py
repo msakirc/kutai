@@ -1,7 +1,9 @@
 """Z1 Tier 4 (C10) — companion to emit_preview_url.
 
-Reads ``mission_{mission_id}/.tunnel.pid``, terminates the subprocess
-(Windows-aware), removes the pidfile and the ``preview_url.txt`` surface.
+Reads ``mission_{mission_id}/.tunnel.pid`` and ``.httpserver.pid``, terminates
+both subprocesses (Windows-aware), removes their pidfiles and the
+``preview_url.txt`` surface. Both kills are best-effort and idempotent —
+a missing pidfile is a no-op.
 """
 from __future__ import annotations
 
@@ -43,33 +45,59 @@ def _terminate(pid: int) -> int:
         return 1
 
 
+def _kill_pidfile(pid_file: str) -> tuple[int | None, int | None]:
+    """Read pid from *pid_file*, terminate it, remove the file.
+
+    Returns ``(killed_pid, exit_code)`` — both None if the file did not exist.
+    """
+    if not os.path.exists(pid_file):
+        return None, None
+
+    killed_pid: int | None = None
+    exit_code: int | None = None
+
+    try:
+        raw = open(pid_file, encoding="utf-8").read().strip()
+        killed_pid = int(raw) if raw else None
+    except Exception:
+        killed_pid = None
+
+    if killed_pid:
+        exit_code = _terminate(killed_pid)
+
+    try:
+        os.remove(pid_file)
+    except OSError:
+        pass
+
+    return killed_pid, exit_code
+
+
 async def kill_preview_url(
     mission_id: int,
     workspace_path: str | None = None,
     *,
     _silent: bool = False,
 ) -> dict[str, Any]:
-    """Stop any preview tunnel for ``mission_id`` and clean up surface files."""
+    """Stop any preview tunnel + static server for ``mission_id``.
+
+    Terminates both ``.tunnel.pid`` (cloudflared) and ``.httpserver.pid``
+    (python -m http.server). Cleans up both pidfiles and ``preview_url.txt``.
+    Both kills are best-effort and idempotent.
+    """
     workspace_path = _resolve_workspace(mission_id, workspace_path)
-    pid_file = os.path.join(workspace_path, ".tunnel.pid")
+
+    tunnel_pid_file = os.path.join(workspace_path, ".tunnel.pid")
+    server_pid_file = os.path.join(workspace_path, ".httpserver.pid")
     url_file = os.path.join(workspace_path, "preview_url.txt")
 
-    killed_pid: int | None = None
-    exit_code: int | None = None
+    # Kill cloudflared tunnel.
+    killed_pid, exit_code = _kill_pidfile(tunnel_pid_file)
 
-    if os.path.exists(pid_file):
-        try:
-            raw = open(pid_file, encoding="utf-8").read().strip()
-            killed_pid = int(raw) if raw else None
-        except Exception:
-            killed_pid = None
-        if killed_pid:
-            exit_code = _terminate(killed_pid)
-        try:
-            os.remove(pid_file)
-        except OSError:
-            pass
+    # Kill local static HTTP server (best-effort, idempotent).
+    _kill_pidfile(server_pid_file)
 
+    # Remove the URL surface file.
     if os.path.exists(url_file):
         try:
             os.remove(url_file)

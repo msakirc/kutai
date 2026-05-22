@@ -48,30 +48,62 @@ Two were **real production bugs** masked by test drift, not test-only issues:
 
 ## §3 — OPEN work, carried to next session
 
-### 3a. Deferred P3 queue (from 2026-05-19 §2) — 5 items, ~12-18h
+### 3a. Deferred P3 queue (from 2026-05-19 §2) — ALL 5 RESOLVED 2026-05-22
 
-Suggested order (from that handoff §4, cheapest blast radius first):
+> **STATUS 2026-05-22:** all five P3s shipped on `main`, each with host-path
+> tests (red→before / green→after) and individual scope verification. Two of
+> the five had **stale handoff premises** — corrected in-session (audit-call-
+> sites lesson again). Combined import-check across all touched modules: clean.
 
-1. **§2.D Z3** — `run_semgrep_layer_filtered` has no trigger. Add a
-   `domain_layer_check` posthook kind (`auto_wire_triggers=["**/domain/*.py"]`)
-   dispatching it with `forbidden_in_domain.yml`. ~2-3h.
-2. **§2.E Z2** — `_apply_hint_from_targets` no-ops on fresh missions (workspace
-   dir doesn't exist at expansion time). Move call to per-step dispatch, OR
-   document re-expansion-only. 30min–2h.
-3. **§2.B Z9** — reinforce model-resolver joins `tasks.title =
-   model_pick_log.task_name` (fragile). Add `task_id` column + join by id;
-   keep title fallback for old rows. ~2-3h (incl. backfill migration).
-4. **§2.A Z1** — `propose_spec_patch_from_html_diff` has no caller. Add a
-   `[Propose spec patch]` Telegram inline button on `annotate_html_oids` /
-   `regen_artifact` results → enqueue the verb → founder review. ~2-4h.
-5. **§2.C Z10** — confirmation gate is a 60s busy-poll holding the worker slot.
-   Replace with `asyncio.Event` keyed by `confirmation_id` + a
-   `confirmation_resolved` continuation. ~4-6h; do last — changes worker-slot
-   semantics, land after a release window.
+1. **§2.D Z3** ✅ `545bc4c6` — `domain_layer_check` posthook kind registered
+   (verb=`run_semgrep_layer_filtered`, blocker, `auto_wire_triggers=["**/domain/*.py",
+   "src/domain/**/*.py"]`) + payload builder + DLQ soft-drop + full verdict
+   round-trip (`_apply_domain_layer_check_verdict` reached from
+   `_apply_posthook_verdict`). 21 tests.
+2. **§2.E Z2** ✅ `fc4a6593` — moved `_apply_hint_from_targets` from expander
+   (where the `mission_<id>` workspace never exists yet → permanent no-op) to
+   `coulson.execute()` dispatch time, just before `_apply_tools_hint`. Dead
+   expander call site removed. 6 tests.
+3. **§2.B Z9** ✅ `e922a554` — added `model_pick_log.task_id` (idempotent ALTER
+   loop) + dispatcher writes it from the `current_task_id` ContextVar (no
+   plumbing change) + `_reinforce_winning_model` joins by `task_id` first
+   (tier-0), title-join kept as tier-1 for legacy NULL rows, global tier-2.
+   6 tests. NOTE: the **identical** fragile title-join at `db.py:~8505`
+   (`_record_and_resolve_confidence`, Z10) was left untouched (scope) — now a
+   trivial follow-up since the column exists.
+4. **§2.A Z1** ✅ `c3a0a8f0` — **handoff premise was STALE**: the verb already
+   had a production caller (`/edit_html` → upload → `handle_document` → Beckman),
+   and a button can't drive it (founder must edit HTML offline first). Built the
+   real missing half instead: surface the proposal into Telegram (notify_user +
+   `sp_apply`/`sp_rej` short-token buttons) → accept enqueues a `coder` apply
+   task (LLM judgment — no mechanical DOM-diff→spec-doc primitive exists) →
+   reject discards. 8 tests.
+5. **§2.C Z10** ✅ `d56cf6fd` — **NOT** the handoff's `asyncio.Event`/new-
+   lifecycle design (founder steer: reuse the existing `needs_clarification`
+   park state). Rewrote `_await_confirmation` to reuse the clarify park/resume
+   path: first entry → `tg.request_clarification` + `update_task(waiting_human)`
+   + return `Action(needs_clarification)` (orchestrator.py:316-446 already parks
+   that for mechanical tasks, no orchestrator change); resume → founder reply
+   sets `context.user_clarification` → approve proceeds, reject/ambiguous
+   fail-closed. Fixes a real bug (founder slower than 60s = action hard-failed).
+   15 tests; full mr_roboto suite 749 passed.
 
-All five are "connect existing correct code" except §2.B (one migration) and
-§2.C (event machinery). Each needs a host-path test (the unit suites passed
-*with* the original bugs — that is the recurring lesson).
+### 3a-followups (discovered this session)
+- **Orphaned `action_confirmations` machinery** — after 3a.5, the gate no longer
+  opens `action_confirmations` rows, so `request/check/resolve_confirmation`,
+  `mission_event_drain`'s confirmation branch, and the `confirm:approve/reject`
+  Telegram callback are now **unused** (left in place, flagged in code). Cleanup:
+  delete or repoint. Low priority.
+- **Z10 confidence-resolver join** (`db.py:~8505`) — same title-join now trivially
+  fixable via the new `model_pick_log.task_id`.
+- **5 pre-existing `test_pick_log*` failures** — `tests/infra/test_pick_log.py`
+  (3) + `test_pick_log_provider.py` (2) fail on BOTH parent and HEAD (stale
+  inline DDL missing `outcome`/`provider` columns; AssertionErrors, NOT related
+  to the task_id change — verified by parent-vs-HEAD diff). Separate test-fix.
+- **DB-lock hazard** — `tests/infra/test_pick_log*` use the singleton `get_db()`
+  against the live `kutai.db`; they HANG on the running orchestrator's WAL lock
+  (cost ~hours of zombie pytest this session). Either isolate them onto a temp
+  DB or only run when the orchestrator is down.
 
 ### 3b. Scoped-but-unbuilt (from 2026-05-18 z0-backlog §2b)
 

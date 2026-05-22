@@ -4138,6 +4138,11 @@ class TelegramInterface:
                         "html_path": original_path,
                         "edited_html_path": str(edited_path),
                         "out_path": str(proposal_path),
+                        # Carried so the dispatch branch can build short
+                        # sp_apply/sp_rej callback tokens (mid+ts); the
+                        # proposal path is reconstructable from these.
+                        "mission_id": mission_id,
+                        "ts": ts,
                     },
                 },
             })
@@ -8729,6 +8734,69 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 f"(mission #{mid}):",
                 parse_mode="Markdown",
             )
+            return
+
+        # ── Z1: spec-patch Apply inline button ──────────────────────
+        # Format: `sp_apply:<mission_id>:<ts>`. Reconstruct the proposal
+        # path from mid+ts and enqueue a `coder` task to apply each
+        # reviewed change to the upstream spec docs.
+        if data.startswith("sp_apply:"):
+            try:
+                _, mid_s, ts_s = data.split(":", 2)
+                mid = int(mid_s)
+            except (ValueError, IndexError):
+                await query.message.reply_text("❌ Bozuk spec-patch butonu.")
+                return
+            from src.tools.workspace import get_mission_workspace
+            ws = Path(get_mission_workspace(mid))
+            proposal_path = ws / ".propagation" / f"spec_patch_proposal_{ts_s}.md"
+            try:
+                import general_beckman
+                await general_beckman.enqueue({
+                    "title": f"apply_spec_patch:{mid}:{ts_s}",
+                    "description": (
+                        "Apply a founder-reviewed spec-patch proposal to the "
+                        "upstream spec documents. Read the proposal markdown "
+                        f"at `{proposal_path}`. For each reviewed change, edit "
+                        "the corresponding UPSTREAM spec document inside the "
+                        "mission workspace — the proposal's 'Suggested target' "
+                        "line names the category (e.g. design_tokens.json for "
+                        "color/style, the screen plan for copy/structure). Use "
+                        "read_file to locate the target and edit_file to patch "
+                        "it. Do NOT create new files unless the target "
+                        "genuinely does not exist."
+                    ),
+                    "agent_type": "coder",
+                    "kind": "main_work",
+                    "priority": 5,
+                    "mission_id": mid,
+                    "context": {
+                        "mission_id": mid,
+                        "tools_hint": ["file_tree", "read_file", "edit_file"],
+                        "input_artifacts": [str(proposal_path)],
+                    },
+                })
+            except Exception as exc:
+                await query.message.reply_text(
+                    f"❌ Spec-patch uygulama enqueue başarısız: "
+                    f"{_friendly_error(str(exc))}")
+                return
+            await query.message.reply_text(
+                f"🛠 Mission #{mid} için spec-patch uygulanıyor…")
+            return
+
+        # ── Z1: spec-patch Reject inline button ─────────────────────
+        # Format: `sp_rej:<mission_id>:<ts>`. Ack only; leave the proposal
+        # file on disk (harmless) and enqueue nothing.
+        if data.startswith("sp_rej:"):
+            try:
+                _, mid_s, _ts_s = data.split(":", 2)
+                mid = int(mid_s)
+            except (ValueError, IndexError):
+                await query.message.reply_text("❌ Bozuk spec-patch butonu.")
+                return
+            await query.message.reply_text(
+                f"❌ Spec-patch reddedildi (mission #{mid}).")
             return
 
         # ── Z1 Tier 4A: regen inline button ─────────────────────────

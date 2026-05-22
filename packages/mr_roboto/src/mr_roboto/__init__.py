@@ -384,6 +384,78 @@ async def _emit_bisect_lesson(
     )
 
 
+async def _surface_spec_patch_proposal(payload: dict, res: dict) -> None:
+    """Z1 — surface a written spec-patch proposal back into Telegram.
+
+    Side-effect of the ``propose_spec_patch_from_html_diff`` dispatch
+    branch: enqueue a ``notify_user`` follow-up carrying the proposal body
+    and Apply/Reject inline buttons so the founder can review→apply without
+    leaving the chat.
+
+    Callback tokens are kept short (``sp_apply:<mid>:<ts>`` /
+    ``sp_rej:<mid>:<ts>``) — Telegram caps callback_data at 64 bytes and
+    silently drops longer entries. The proposal path is deterministically
+    reconstructable from mid+ts on the Apply side, so we never put a path
+    in the token.
+
+    Fail-soft: missing mid/ts → skip silently; any enqueue error is logged
+    and swallowed so a notify failure never fails the proposer.
+    """
+    mid = payload.get("mission_id")
+    ts = payload.get("ts")
+    if mid is None or ts is None:
+        return  # nothing to address the notify to — skip gracefully
+
+    changes = res.get("changes") or []
+    proposal_md = res.get("proposal_md") or ""
+    # Telegram hard limit is 4096; leave headroom for the header + ellipsis.
+    body = proposal_md[:3500]
+    if len(proposal_md) > 3500:
+        body += "\n…(truncated)"
+    header = (
+        f"📋 Spec patch proposal for mission #{mid} — "
+        f"{len(changes)} change(s)\n\n"
+    )
+    message = header + body
+
+    inline_buttons = []
+    if changes:
+        # Only offer Apply when there is something to apply; a lone Reject
+        # button with nothing to reject is noise.
+        inline_buttons = [
+            {"label": "✅ Apply to spec",
+             "callback_data": f"sp_apply:{mid}:{ts}"},
+            {"label": "❌ Reject",
+             "callback_data": f"sp_rej:{mid}:{ts}"},
+        ]
+
+    try:
+        import general_beckman
+        await general_beckman.enqueue({
+            "title": f"notify_spec_patch:{mid}:{ts}",
+            "description": f"Surface spec-patch proposal for mission #{mid}.",
+            "agent_type": "mechanical",
+            "kind": "main_work",
+            "priority": 5,
+            "mission_id": mid,
+            "context": {
+                "executor": "mechanical",
+                "payload": {
+                    "action": "notify_user",
+                    "message": message,
+                    "inline_buttons": inline_buttons,
+                },
+            },
+        })
+    except Exception as exc:  # pragma: no cover - logged, never fatal
+        try:
+            from src.infra.logging_config import get_logger as _gl
+            _gl("mr_roboto.spec_patch").warning(
+                "spec-patch notify enqueue failed", error=str(exc))
+        except Exception:
+            pass
+
+
 async def run(task: dict) -> Action:
     """Route a mechanical task to the appropriate executor.
 
@@ -1503,6 +1575,9 @@ async def _run_dispatch(task: dict) -> Action:
                     error=f"propose_spec_patch_from_html_diff: {res.get('error')}",
                     result=res,
                 )
+            # Side-effect: surface the proposal to Telegram with Apply/Reject
+            # buttons. Never let a notify failure fail the proposer.
+            await _surface_spec_patch_proposal(payload, res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

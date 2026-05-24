@@ -6970,13 +6970,15 @@
       ],
       "depends_on": [
         "7.5",
-        "7.5m"
+        "7.5m",
+        "5.20a",
+        "5.20b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "design_tokens",
-        "layout_system_spec",
-        "navigation_design"
+        "per_screen_plans_chunk_a",
+        "per_screen_plans_chunk_b"
       ],
       "output_artifacts": [
         "design_tokens_code",
@@ -6989,7 +6991,7 @@
         "verify_artifacts",
         "code_review"
       ],
-      "instruction": "Implement design tokens as CSS variables/theme configuration and the base layout system. Convert all design tokens to code (CSS custom properties, Tailwind theme, or styled-system). Implement the app shell layout, responsive grid system, and base navigation components. Verify all tokens render correctly at all breakpoints.",
+      "instruction": "Implement design tokens as CSS variables/theme configuration and the base layout system. Convert all design tokens to code (CSS custom properties, Tailwind theme, or styled-system). Implement the app shell layout, responsive grid system, and base navigation components using the layout, app-shell and navigation described across the per-screen plans. Verify all tokens render correctly at all breakpoints.",
       "done_when": "design_tokens_code and layout_components exist with verified rendering.",
       "artifact_schema": {
         "design_tokens_code": {
@@ -7027,11 +7029,12 @@
         "git_commit"
       ],
       "depends_on": [
-        "7.9"
+        "7.9",
+        "5.30a"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "component_spec_primitives",
+        "html_prototypes_chunk_a",
         "design_tokens_code"
       ],
       "output_artifacts": [
@@ -7044,7 +7047,7 @@
         "verify_artifacts",
         "code_review"
       ],
-      "instruction": "Implement all primitive components from component_spec_primitives: Button, Input, Textarea, Select, Checkbox, Radio, Toggle, Label, Badge, Avatar, Icon, Divider, Spinner, Skeleton, Link, Tag. Each with all variants, sizes, states, and accessibility attributes. Use design tokens for all styling.",
+      "instruction": "Extract and implement the primitive components used across the HTML prototypes (html_prototypes_chunk_a) — Button, Input, Textarea, Select, Checkbox, Radio, Toggle, Label, Badge, Avatar, Icon, Divider, Spinner, Skeleton, Link, Tag — each with all variants, sizes, states, and accessibility attributes. Use design tokens for all styling.",
       "done_when": "primitive_components_code exists with all primitives implemented.",
       "artifact_schema": {
         "primitive_components_code": {
@@ -7075,13 +7078,14 @@
         "git_commit"
       ],
       "depends_on": [
-        "7.10"
+        "7.10",
+        "5.30b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "component_spec_composite",
-        "design_tokens_code",
-        "interaction_spec"
+        "html_prototypes_chunk_a",
+        "html_prototypes_chunk_b",
+        "design_tokens_code"
       ],
       "output_artifacts": [
         "composite_components_code"
@@ -7093,7 +7097,7 @@
         "verify_artifacts",
         "code_review"
       ],
-      "instruction": "Implement all composite components from component_spec_composite: Card, Modal, Toast, Alert, Dropdown, Tooltip, Popover, Tabs, Accordion, Table, Pagination, Breadcrumb, EmptyState, Sidebar, Navbar, Footer. Compose from primitive components. Include animations per interaction_spec.",
+      "instruction": "Implement the composite components observed in the HTML prototypes (html_prototypes_chunk_a/b): Card, Modal, Toast, Alert, Dropdown, Tooltip, Popover, Tabs, Accordion, Table, Pagination, Breadcrumb, EmptyState, Sidebar, Navbar, Footer — composed from primitive components, with interaction behavior as shown in the prototypes.",
       "done_when": "composite_components_code exists with all composites implemented.",
       "artifact_schema": {
         "composite_components_code": {
@@ -7127,13 +7131,13 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "component_spec_primitives",
-        "component_spec_composite"
+        "primitive_components_code",
+        "composite_components_code"
       ],
       "output_artifacts": [
         "storybook_setup"
       ],
-      "instruction": "Set up a component playground (Storybook, Ladle, or equivalent) with stories for every primitive and composite component. Each story should show all variants, sizes, and states.",
+      "instruction": "Set up a component playground (Storybook, Ladle, or equivalent) with stories drawn from the implemented primitive_components_code and composite_components_code. Each story should show all variants, sizes, and states.",
       "done_when": "storybook_setup exists with stories for all components.",
       "artifact_schema": {
         "storybook_setup": {

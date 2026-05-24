@@ -1,0 +1,1 @@
+Phase 2 rewired phase-7/11/13 frontend+docs consumers from the deleted design-spec artifacts to paraflow outputs. Structural gate (dep-integrity) passes; SEMANTIC correctness (do the implementers produce good components from html_prototypes?) is UNVALIDATED — must be confirmed by a real i2p mission reaching phase 7. Flag to founder.

@@ -1215,7 +1215,7 @@
       "agent": "mechanical",
       "executor": "mechanical",
       "depends_on": [
-        "0.4"
+        "0.1"
       ],
       "may_need_clarification": true,
       "input_artifacts": [],
@@ -1286,17 +1286,14 @@
       "input_artifacts": [
         "raw_idea_document",
         "product_charter",
-        "problem_statement",
         "assumption_list",
-        "clarification_request",
-        "clarification_answers",
         "intake_todo",
         "compliance_fingerprint"
       ],
       "output_artifacts": [
         "idea_brief_final"
       ],
-      "instruction": "Compile inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph), 2) Problem Statement, 3) Target Audience, 4) Proposed Solution, 5) Key Constraints, 6) Initial Scope Boundaries, 7) Assumptions, 8) Open Risks. PREFERENCE ORDER for source data: when `product_charter` is present (modern Z1 missions), distill its Positioning + JTBD + Solutions into the brief and treat the charter as canonical. When the charter is absent (legacy missions), fall back to `problem_statement` + `clarification_answers` (the old phase-0 micro-artifacts). Write in clear, professional prose. Self-review: check for internal contradictions, anything from charter or clarifications not reflected, vague language. Output the final versioned document as idea_brief_final with a version number and date.",
+      "instruction": "Compile inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph), 2) Problem Statement, 3) Target Audience, 4) Proposed Solution, 5) Key Constraints, 6) Initial Scope Boundaries, 7) Assumptions, 8) Open Risks. PREFERENCE ORDER for source data: when `product_charter` is present (modern Z1 missions), distill its Positioning + JTBD + Solutions into the brief and treat the charter as canonical. Write in clear, professional prose. Self-review: check for internal contradictions, anything from charter or clarifications not reflected, vague language. Output the final versioned document as idea_brief_final with a version number and date.",
       "done_when": "idea_brief_final exists as a clean, self-reviewed, internally consistent document with all 8 sections.",
       "artifact_schema": {
         "idea_brief_final": {

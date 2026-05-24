@@ -4937,7 +4937,6 @@
       "produces": [
         "mission_{mission_id}/.screens/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -4956,7 +4955,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every plan produced by 5.20a. Caller wires `plan_paths` from the 5.20a artifact's `plans[].path` list.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5003,7 +5001,6 @@
       "produces": [
         "mission_{mission_id}/.screens/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5022,7 +5019,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every plan produced by 5.20b.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5042,7 +5038,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — cross-screen `inherits_shell` consistency check across both chunks (B8/C18). Caller wires `screen_plan_paths` (union of both chunks' plans) and `shared_shell_components` from shared_shell.md.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5087,7 +5082,6 @@
       "produces": [
         "mission_{mission_id}/.web/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5106,7 +5100,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every HTML produced by 5.30a. Caller wires `html_paths` and `design_tokens` (parsed JSON) from the artifact store.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5153,7 +5146,6 @@
       "produces": [
         "mission_{mission_id}/.web/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5172,7 +5164,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every HTML produced by 5.30b.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {

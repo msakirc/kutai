@@ -233,8 +233,12 @@ def test_dispatch_check_against_non_goals_completes_on_overlap():
     assert res.result["matches"]
 
 
-def test_workflow_step_0_6a_present():
-    """i2p_v3.json must define 0.6a non_goals_lock + 0.6a.verify."""
+def test_workflow_step_0_6a_draft_confirm_split():
+    """0.6a is a draft -> verify -> confirm chain: an analyst DRAFTS the
+    non_goals document and the founder only CONFIRMS it (never authors the
+    schema). Regression guard for the bug where 0.6a fired an LLM-style
+    generation prompt (with `_schema_version`/`<id>` frontmatter) at the
+    human instead of asking them to confirm a draft."""
     import json
     from pathlib import Path
 
@@ -248,16 +252,37 @@ def test_workflow_step_0_6a_present():
     wf = json.loads(wf_path.read_text(encoding="utf-8"))
     by_id = {s["id"]: s for s in wf["steps"]}
 
-    assert "0.6a" in by_id
-    assert by_id["0.6a"]["agent"] == "mechanical"
-    assert "non_goals_lock" == by_id["0.6a"]["name"]
-    assert "non_goals" in by_id["0.6a"]["output_artifacts"]
-    # legacy_pre_non_goals gate was removed; step is now unconditional
-    sw = by_id["0.6a"].get("skip_when") or ""
-    assert not sw or "legacy_pre_" not in sw
+    # Draft step: an LLM (analyst) produces the non_goals document.
+    assert "0.6a.draft" in by_id
+    draft = by_id["0.6a.draft"]
+    assert draft["agent"] == "analyst"
+    assert draft["name"] == "non_goals_draft"
+    assert "non_goals" in draft["output_artifacts"]
 
+    # Verify step gates on the draft (not the confirm).
     assert "0.6a.verify" in by_id
+    assert by_id["0.6a.verify"]["depends_on"] == ["0.6a.draft"]
     assert by_id["0.6a.verify"]["payload"]["action"] == "verify_non_goals_shape"
+
+    # Confirm step: founder confirms the draft via the artifact-confirm
+    # keyboard (attach + regenerate). Its human-facing question must NOT
+    # leak the artifact schema — that is the whole point of the fix.
+    confirm = by_id["0.6a"]
+    assert confirm["agent"] == "mechanical"
+    assert confirm["name"] == "non_goals_confirm"
+    assert confirm["depends_on"] == ["0.6a.verify"]
+    pay = confirm["payload"]
+    assert pay["action"] == "clarify"
+    assert pay.get("attach_file_paths"), "confirm must inline the draft file"
+    assert pay.get("regenerate_step_id") == "0.6a.draft"
+    q = pay["question"]
+    for leak in ("_schema_version", "<id>", "---", "frontmatter", "markdown matching"):
+        assert leak not in q, f"0.6a confirm question leaks artifact schema: {leak!r}"
+
+    # legacy_pre_non_goals gate was removed; both steps are unconditional.
+    for sid in ("0.6a.draft", "0.6a"):
+        sw = by_id[sid].get("skip_when") or ""
+        assert not sw or "legacy_pre_" not in sw
 
 
 def test_schema_version_carried_on_artifacts():
@@ -276,7 +301,7 @@ def test_schema_version_carried_on_artifacts():
     by_id = {s["id"]: s for s in wf["steps"]}
 
     for sid, art in (
-        ("0.6a", "non_goals"),
+        ("0.6a.draft", "non_goals"),
         ("0.6a.verify", "non_goals_shape_result"),
         ("3.1.verify", "functional_requirements_falsification_result"),
         ("3.7.verify", "business_rules_falsification_result"),

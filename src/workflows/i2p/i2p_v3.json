@@ -1195,17 +1195,18 @@
       "reversibility": "full"
     },
     {
-      "id": "0.6a",
+      "id": "0.6a.draft",
       "phase": "phase_0",
-      "name": "non_goals_lock",
-      "agent": "mechanical",
-      "executor": "mechanical",
+      "name": "non_goals_draft",
+      "agent": "analyst",
       "difficulty": "easy",
-      "tools_hint": [],
+      "tools_hint": [
+        "write_file"
+      ],
       "depends_on": [
         "0.1"
       ],
-      "may_need_clarification": true,
+      "may_need_clarification": false,
       "input_artifacts": [
         "product_charter",
         "raw_idea",
@@ -1217,12 +1218,7 @@
       "produces": [
         "mission_{mission_id}/.charter/non_goals.md"
       ],
-      "payload": {
-        "action": "clarify",
-        "kind": "non_goals_request",
-        "question": "List 3-7 mission-wide non-goals — explicit refusals that downstream phases must respect. Each one-line. Examples: 'No real-time multiplayer features.' / 'No mobile-app version (web-only at launch).' / 'No support for under-13 users.' / 'No vendor onboarding workflow this iteration.' Charter has per-solution boundaries; this is the higher-level cross-mission refusal set. Reply with markdown matching: `---\\n_schema_version: \"1\"\\nmission_id: <id>\\nnon_goals:\\n  - \"...\"\\n---\\n\\n# Non-goals\\n\\n- ...`"
-      },
-      "instruction": "Mission-wide non-goals lock (Z1 A2). Founder authors OR confirms an analyst-suggested list of 3-7 explicit refusals. Output is `mission_{mission_id}/.charter/non_goals.md` with YAML frontmatter (`_schema_version: \"1\"` + `non_goals:` array) and a `# Non-goals` body section mirroring the bullets. The charter (0.1) carries per-solution `boundaries`; this artifact captures the cross-mission refusals at the higher level. Reviewers at 3.11 / 4.16 / 5.10 reject any FR / architectural choice / feature design that maps to these non-goals.",
+      "instruction": "Draft 3-7 mission-wide non-goals (Z1 A2) — explicit cross-mission refusals downstream phases must respect — from the product_charter, raw_idea, and strategic_context. Each is one line. Examples: 'No real-time multiplayer features.' / 'No mobile-app version (web-only at launch).' / 'No support for under-13 users.' / 'No vendor onboarding workflow this iteration.' The charter (0.1) carries per-solution `boundaries`; this captures the higher-level cross-mission refusal set. Write `mission_{mission_id}/.charter/non_goals.md` with YAML frontmatter (`_schema_version: \"1\"`, `mission_id: {mission_id}`, `non_goals:` array of 3-7 entries) and a `# Non-goals` body section mirroring the bullets. No placeholder text. The founder confirms or edits this draft at 0.6a — you produce the full document so the founder only has to approve. Reviewers at 3.11 / 4.16 / 5.10 reject any FR / architectural choice / feature design that maps to these non-goals.",
       "done_when": "non_goals.md exists with YAML frontmatter (_schema_version=1, non_goals array of 3-7 entries), '# Non-goals' heading, and 3-7 body bullets. No placeholder text.",
       "artifact_schema": {
         "non_goals": {
@@ -1237,6 +1233,38 @@
       "reversibility": "full"
     },
     {
+      "id": "0.6a",
+      "phase": "phase_0",
+      "name": "non_goals_confirm",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "0.6a.verify"
+      ],
+      "may_need_clarification": true,
+      "input_artifacts": [
+        "non_goals"
+      ],
+      "output_artifacts": [
+        "non_goals_confirmed"
+      ],
+      "payload": {
+        "action": "clarify",
+        "kind": "non_goals_confirm",
+        "attach_file_paths": [
+          "mission_{mission_id}/.charter/non_goals.md"
+        ],
+        "regenerate_step_id": "0.6a.draft",
+        "question": "Mission-wide non-goals draft below — the things this product explicitly will NOT do. Tap a button to confirm, regenerate, or edit."
+      },
+      "instruction": "Mechanical confirm gate (Z1 A2). Presents the non_goals draft from 0.6a.draft to the founder with confirm / regenerate / edit buttons. The founder confirms or edits in plain language — they never author the document. Regenerate re-runs 0.6a.draft.",
+      "done_when": "Founder has confirmed (or edited) the non_goals draft; non_goals_confirmed recorded.",
+      "context": {},
+      "reversibility": "full"
+    },
+    {
       "id": "0.6a.verify",
       "phase": "phase_0",
       "name": "non_goals_shape_check",
@@ -1245,7 +1273,7 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "0.6a"
+        "0.6a.draft"
       ],
       "input_artifacts": [
         "non_goals"

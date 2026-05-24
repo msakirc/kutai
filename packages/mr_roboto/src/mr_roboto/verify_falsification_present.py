@@ -125,7 +125,6 @@ def _item_id(item: dict) -> str:
 def verify_falsification_present(
     *,
     artifacts: dict[str, Any] | None = None,
-    legacy_pre_falsification: bool = False,
 ) -> dict[str, Any]:
     """Run the falsification-triple check across one or more artifacts.
 
@@ -134,21 +133,8 @@ def verify_falsification_present(
     artifacts
         Mapping of ``artifact_name -> artifact_value``. Each value is
         walked for items via :func:`_extract_items`.
-    legacy_pre_falsification
-        When truthy, missing triples are tolerated (the mission predates
-        the Tier-2 reshape and its blackboard cannot be retroactively
-        upgraded). Returns ``ok=True`` regardless.
     """
     artifacts = artifacts or {}
-    if legacy_pre_falsification:
-        return {
-            "ok": True,
-            "checked": 0,
-            "missing": [],
-            "critical_underspecified": [],
-            "empty": False,
-            "legacy_pre_falsification": True,
-        }
 
     missing: list[dict[str, Any]] = []
     critical_underspecified: list[dict[str, Any]] = []
@@ -194,5 +180,4 @@ def verify_falsification_present(
         "missing": missing[:25],
         "critical_underspecified": critical_underspecified[:10],
         "empty": empty,
-        "legacy_pre_falsification": False,
     }

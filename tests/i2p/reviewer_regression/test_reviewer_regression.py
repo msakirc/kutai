@@ -314,7 +314,6 @@ def test_reviewer_fixture(fixture):
             "action": "verify_schema_version",
             "artifacts": artifacts,
             "expected_versions": expected_versions,
-            "legacy_pre_p7": False,
         },
     }
     result = asyncio.run(mr_roboto_run(task))
@@ -351,30 +350,6 @@ def test_verify_schema_version_flags_mismatch():
     assert res["ok"] is False
     assert res["mismatched"] == [{"name": "foo", "found": "2", "expected": "1"}]
 
-
-def test_verify_schema_version_legacy_tolerates_missing():
-    from mr_roboto.verify_schema_version import verify_schema_version
-
-    res = verify_schema_version(
-        artifacts={"foo": {"data": "x"}},
-        expected_versions={"foo": "1"},
-        legacy_pre_p7=True,
-    )
-    assert res["ok"] is True
-    assert res["missing"] == []
-
-
-def test_verify_schema_version_legacy_still_flags_mismatch():
-    """Even legacy missions must not silently accept a wrong-version artifact."""
-    from mr_roboto.verify_schema_version import verify_schema_version
-
-    res = verify_schema_version(
-        artifacts={"foo": {"_schema_version": "9", "data": "x"}},
-        expected_versions={"foo": "1"},
-        legacy_pre_p7=True,
-    )
-    assert res["ok"] is False
-    assert res["mismatched"][0]["name"] == "foo"
 
 
 def test_verify_schema_version_extracts_from_markdown_fence():

@@ -17,10 +17,6 @@ Inputs (via ``payload``):
     expected_versions:
         Dict mapping ``artifact_name -> expected_version_string``. Sourced
         from the workflow step's ``artifact_schema`` block by the expander.
-    legacy_pre_p7:
-        When truthy, missing ``_schema_version`` fields are tolerated (the
-        mission predates P7 and its blackboard cannot be retroactively
-        upgraded). Mismatches still fail.
 
 Returns
 -------
@@ -99,7 +95,6 @@ def verify_schema_version(
     *,
     artifacts: Any,
     expected_versions: dict[str, str] | None = None,
-    legacy_pre_p7: bool = False,
 ) -> dict[str, Any]:
     """Run the schema-version check. Pure function — no I/O.
 
@@ -120,8 +115,7 @@ def verify_schema_version(
         checked += 1
         found = _extract_version(arts[name])
         if found is None:
-            if not legacy_pre_p7:
-                missing.append(name)
+            missing.append(name)
             continue
         if found != exp:
             mismatched.append({"name": name, "found": found, "expected": exp})
@@ -132,5 +126,4 @@ def verify_schema_version(
         "checked": checked,
         "missing": missing,
         "mismatched": mismatched,
-        "legacy_pre_p7": bool(legacy_pre_p7),
     }

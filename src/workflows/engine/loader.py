@@ -216,9 +216,8 @@ def validate_v3_fields(steps: list[dict]) -> list[str]:
 
         skip_when = step.get("skip_when")
         # The expander (expander.py:411-413) evaluates skip_when as EITHER a
-        # list of conditions OR a single string expression
-        # (e.g. "mission.legacy_pre_charter == '1'"). The i2p_v3 workflow uses
-        # both forms (97 string, 37 list). Accept both — a string is not an error.
+        # list of conditions OR a single string expression. The i2p_v3 workflow
+        # uses both forms (97 string, 37 list). Accept both — a string is not an error.
         if skip_when is not None and not isinstance(skip_when, (list, str)):
             errors.append(f"Step '{sid}': skip_when must be a list or string")
 

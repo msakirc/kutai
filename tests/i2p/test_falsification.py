@@ -122,14 +122,6 @@ def test_empty_signals_wiring_bug():
     assert res["empty"] is True
 
 
-def test_legacy_pre_falsification_short_circuits():
-    res = verify_falsification_present(
-        artifacts={"functional_requirements": [_good_item()]},
-        legacy_pre_falsification=True,
-    )
-    assert res["ok"] is True
-    assert res["legacy_pre_falsification"] is True
-
 
 # ────────────────────────────────────────────────────────────────────────────
 # Mechanical dispatch tests

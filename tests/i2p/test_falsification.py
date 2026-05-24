@@ -197,9 +197,12 @@ def test_workflow_step_carries_falsification_post_hook():
             f"step {sid} missing verify_falsification_present post_hook"
         )
 
-    # Sibling verify steps exist and gate on legacy_pre_falsification.
+    # Sibling verify steps exist; legacy_pre_falsification gate removed — now unconditional.
     for sid in ("3.1.verify", "3.2.verify", "3.3.verify", "3.7.verify"):
         step = by_id[sid]
         assert step["agent"] == "mechanical"
-        assert "legacy_pre_falsification" in step.get("skip_when", "")
+        sw = step.get("skip_when") or ""
+        assert not sw or "legacy_pre_" not in sw, (
+            f"step {sid} still has a legacy_pre_ gate: {sw!r}"
+        )
         assert step["payload"]["action"] == "verify_falsification_present"

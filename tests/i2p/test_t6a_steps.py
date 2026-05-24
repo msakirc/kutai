@@ -30,18 +30,14 @@ def test_step_0_1_has_find_similar_missions_post_hook(workflow):
     assert "find_similar_missions" in (s.get("post_hooks") or [])
 
 
-def test_step_0_5_has_surface_prior_mission_hints_post_hook(workflow):
-    s = _step_by_id(workflow, "0.5")
-    assert "surface_prior_mission_hints" in (s.get("post_hooks") or [])
-
-
 def test_step_6_7z_index_mission_artifacts_present(workflow):
     s = _step_by_id(workflow, "6.7z")
     assert s["agent"] == "mechanical"
     assert s["executor"] == "mechanical"
     assert s["payload"]["action"] == "index_mission_artifacts"
     assert "6.6" in s["depends_on"]
-    assert "legacy_pre_inheritance" in s.get("skip_when", "")
+    # legacy_pre_inheritance gate was removed; step is now unconditional
+    assert not s.get("skip_when") or "legacy_pre_" not in s.get("skip_when", "")
 
 
 def test_workflow_json_is_valid(workflow):

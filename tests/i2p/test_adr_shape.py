@@ -419,12 +419,16 @@ def test_i2p_v3_4_16_reviewer_instruction_extended():
         assert needle in instr, f"reviewer instruction missing: {needle!r}"
 
 
-def test_i2p_v3_adr_steps_have_skip_when_legacy():
+def test_i2p_v3_adr_steps_have_no_legacy_gate():
+    # legacy_pre_adr gate was removed; ADR steps are now unconditional
     wf = _load_wf()
     for sid in ("4.1", "4.2", "4.2a", "4.4", "4.6", "4.8", "4.9", "4.10", "4.14"):
         s = _step(wf, sid)
         assert s is not None, sid
-        assert s.get("skip_when") == "mission.legacy_pre_adr == '1'", sid
+        sw = s.get("skip_when") or ""
+        assert not sw or "legacy_pre_" not in sw, (
+            f"step {sid} still has a legacy_pre_ gate: {sw!r}"
+        )
 
 
 def test_i2p_v3_adr_artifact_schema_carries_universal_fields():

@@ -41,7 +41,8 @@ def test_step_1_0_present(workflow):
         for p in s.get("produces", [])
     )
     assert "prior_art_min_coverage" in (s.get("post_hooks") or [])
-    assert "legacy_pre_prior_art" in s.get("skip_when", "")
+    # legacy_pre_prior_art gate was removed; step is now unconditional
+    assert not s.get("skip_when") or "legacy_pre_" not in s.get("skip_when", "")
 
 
 def test_step_1_14_consumes_prior_art(workflow):

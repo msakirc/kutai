@@ -36,8 +36,7 @@ positives):
 
 When the spec artifact is missing on disk (mission predates B5 / phase 6
 incomplete), we fail-soft: emit a "spec_artifact_missing" warning and
-return ok=True (no drift to detect). The wave-start step in i2p_v3.json
-gates with skip_when=legacy_pre_spec_alive=='1'.
+return ok=True (no drift to detect).
 
 Output: ``mission_<id>/spec_drift_report.md`` containing both the JSON
 envelope and a human-readable bullet list. Schema:
@@ -601,8 +600,7 @@ def spec_consistency_check(
     spec_present = [k for k, v in spec.items() if v]
 
     # Fail-soft: charter is the minimum spec. If absent, treat as no drift
-    # and warn; the wave-start step's skip_when (legacy_pre_spec_alive)
-    # already guards old missions.
+    # and warn.
     if not spec["charter"]:
         warnings.append("spec_artifact_missing:charter")
 

@@ -27,10 +27,11 @@ def test_step_6_7_depends_on_6_6():
     )
 
 
-def test_step_6_7_skip_when_legacy():
+def test_step_6_7_no_legacy_gate():
+    # legacy_pre_github_init gate was removed; step is now unconditional
     s = _step("6.7")
     sw = s.get("skip_when") or ""
-    assert "legacy_pre_github_init" in sw
+    assert not sw or "legacy_pre_" not in sw
 
 
 def test_step_6_7_produces_status_file():

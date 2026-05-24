@@ -1546,8 +1546,6 @@ def _posthook_agent_and_payload(
         # Resolve artifacts from source.result. Most phase-3 steps emit a
         # single output artifact (functional_requirements, etc.); we wrap
         # the parsed result under its declared output_artifacts[0] name.
-        # legacy_pre_falsification flag flows through source_ctx when the
-        # mission predates the Z1 P4 reshape.
         source_result = source.get("result") or ""
         parsed: object = {}
         if isinstance(source_result, str) and source_result.strip():
@@ -1571,9 +1569,6 @@ def _posthook_agent_and_payload(
             "payload": {
                 "action": "verify_falsification_present",
                 "artifacts": artifacts,
-                "legacy_pre_falsification": bool(
-                    source_ctx.get("legacy_pre_falsification", False)
-                ),
             },
         })
     if a.kind == "critic_gate":

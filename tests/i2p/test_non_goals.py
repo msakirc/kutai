@@ -252,7 +252,9 @@ def test_workflow_step_0_6a_present():
     assert by_id["0.6a"]["agent"] == "mechanical"
     assert "non_goals_lock" == by_id["0.6a"]["name"]
     assert "non_goals" in by_id["0.6a"]["output_artifacts"]
-    assert "mission.legacy_pre_non_goals" in by_id["0.6a"].get("skip_when", "")
+    # legacy_pre_non_goals gate was removed; step is now unconditional
+    sw = by_id["0.6a"].get("skip_when") or ""
+    assert not sw or "legacy_pre_" not in sw
 
     assert "0.6a.verify" in by_id
     assert by_id["0.6a.verify"]["payload"]["action"] == "verify_non_goals_shape"

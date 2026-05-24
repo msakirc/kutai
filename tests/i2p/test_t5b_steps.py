@@ -21,8 +21,8 @@ def test_premortem_step_exists_and_depends_on_6_5():
     s = _step("6.5z")
     assert s["agent"] == "analyst"
     assert "6.5" in s["depends_on"]
-    assert s.get("skip_when", "").endswith("'1'")
-    assert "legacy_pre_premortem" in s.get("skip_when", "")
+    # legacy_pre_premortem gate was removed; step is now unconditional
+    assert not s.get("skip_when") or "legacy_pre_" not in s.get("skip_when", "")
     produces = s.get("produces") or []
     assert any("premortem.md" in p for p in produces)
 
@@ -53,7 +53,8 @@ def test_6_6_reviewer_depends_on_premortem_and_mentions_check():
 WAVE_PHASES = (
     ("7.0z", "phase_7", "6.6"),
     ("8.0z", "phase_8", "7.17"),
-    ("9.0z", "phase_9", "8.arch_check"),
+    # 9.0z was updated to depend on 8.spike.git_commit (not 8.arch_check which is recurring)
+    ("9.0z", "phase_9", "8.spike.git_commit"),
     ("10.0z", "phase_10", "9.11"),
     ("11.0z", "phase_11", "10.9"),
     ("12.0z", "phase_12", "11.5"),
@@ -70,8 +71,9 @@ def test_wave_start_step_exists_and_correct_shape(step_id, phase, prev_step):
     )
     assert s["payload"]["action"] == "spec_consistency_check"
     assert s["payload"].get("current_phase") == phase
+    # legacy_pre_spec_alive gate was removed; step is now unconditional
     sw = s.get("skip_when", "")
-    assert "legacy_pre_spec_alive" in sw
+    assert not sw or "legacy_pre_" not in sw
     produces = s.get("produces") or []
     assert any("spec_drift_report.md" in p for p in produces)
 

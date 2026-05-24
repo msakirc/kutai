@@ -736,7 +736,6 @@
       ],
       "depends_on": [],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "raw_idea",
         "strategic_context"
@@ -779,7 +778,6 @@
       "depends_on": [
         "0.0z"
       ],
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "reverse_pitch"
       ],
@@ -809,7 +807,6 @@
         "0.0z.verify"
       ],
       "may_need_clarification": true,
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "reverse_pitch"
       ],
@@ -843,7 +840,6 @@
         "0.0z.confirm"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "raw_idea",
         "strategic_context",
@@ -883,7 +879,6 @@
         "0.0a.draft"
       ],
       "may_need_clarification": true,
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "raw_idea",
         "strategic_context",
@@ -926,7 +921,6 @@
         "0.0a"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_idea_dedup == '1'",
       "input_artifacts": [
         "raw_idea",
         "strategic_context",
@@ -974,7 +968,6 @@
       "depends_on": [
         "0.1"
       ],
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "product_charter"
       ],
@@ -992,42 +985,6 @@
       },
       "instruction": "Mechanical post-check that 0.1 produced a paraflow-shape product charter (Z1 C1+A9+C6+A14). No LLM. Asserts 5 sections + 3-7 solutions each with full sub-shape (boundaries + guiding-principles required) + no placeholder text. Failure forces 0.1 to regenerate.",
       "done_when": "verify_charter_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "0.2",
-      "phase": "phase_0",
-      "name": "problem_statement_extraction",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "0.1"
-      ],
-      "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter != '1'",
-      "input_artifacts": [
-        "raw_idea_document"
-      ],
-      "output_artifacts": [
-        "problem_statement"
-      ],
-      "instruction": "From the raw_idea_document, extract and articulate the core problem being solved. Output a structured problem statement with these fields: problem_description (1-3 sentences describing the pain), affected_audience (who has this problem), current_alternatives (how they cope today, if inferable), severity (how painful this is, if inferable), frequency (how often they encounter it, if inferable). Mark any field as 'Needs validation' if it cannot be confidently inferred from the raw idea.",
-      "done_when": "A structured problem_statement exists with all fields populated or explicitly marked as needing validation.",
-      "artifact_schema": {
-        "problem_statement": {
-          "type": "object",
-          "required_fields": [
-            "problem_description",
-            "affected_audience",
-            "current_alternatives",
-            "severity",
-            "frequency"
-          ],
-          "_schema_version": "1"
-        }
-      },
       "context": {},
       "reversibility": "full"
     },
@@ -1080,7 +1037,6 @@
         "0.3"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "assumption_list",
         "product_charter",
@@ -1120,7 +1076,6 @@
       "depends_on": [
         "0.0c"
       ],
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "interview_script"
       ],
@@ -1152,7 +1107,6 @@
         "0.0c.verify"
       ],
       "may_need_clarification": true,
-      "skip_when": "mission.legacy_pre_charter == '1'",
       "input_artifacts": [
         "interview_script"
       ],
@@ -1169,53 +1123,13 @@
       "reversibility": "full"
     },
     {
-      "id": "0.4",
-      "phase": "phase_0",
-      "name": "scope_ambiguity_detection",
-      "agent": "analyst",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "0.1",
-        "0.2",
-        "0.3"
-      ],
-      "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter != '1'",
-      "input_artifacts": [
-        "raw_idea_document",
-        "problem_statement",
-        "assumption_list"
-      ],
-      "output_artifacts": [
-        "open_questions_list"
-      ],
-      "instruction": "Review all input artifacts. Identify every ambiguity, undefined term, or scope question that must be resolved before proceeding. Generate a numbered list of open questions organized by category: Audience (who exactly?), Scope (what's in/out?), Business Model (how does this make money?), Constraints (budget, timeline, tech, team?), Platform (web, mobile, desktop?), Differentiation (why us over competitors?), Priority (what matters most: speed, quality, features, cost?). Each question should be specific enough that a yes/no or short answer resolves it.",
-      "done_when": "An open_questions_list exists with all identified ambiguities as clear, answerable questions.",
-      "artifact_schema": {
-        "open_questions_list": {
-          "type": "array",
-          "min_items": 1,
-          "item_fields": [
-            "question_id",
-            "category",
-            "question",
-            "why_it_matters"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
       "id": "0.4a",
       "phase": "phase_0",
       "name": "compliance_fingerprint_collection",
       "agent": "mechanical",
       "executor": "mechanical",
       "depends_on": [
-        "0.4"
+        "0.1"
       ],
       "may_need_clarification": true,
       "input_artifacts": [],
@@ -1230,45 +1144,9 @@
       },
       "instruction": "Z1 Tier 5A (P6) — collect compliance fingerprint. Reads `mission_<id>/.preflight/compliance_fingerprint.json` from z0 when present and writes the merged fingerprint to `mission_<id>/compliance_fingerprint.json`. Telegram clarify deltas are fired only for fields the founder did not pre-declare at z0.",
       "done_when": "compliance_fingerprint.json exists with _schema_version, jurisdictions, user_classes, data_categories_coarse fields populated (or empty arrays at prototype tier).",
-      "skip_when": "mission.legacy_pre_compliance == '1'",
       "context": {
         "estimated_output_tokens": 0
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "0.5",
-      "phase": "phase_0",
-      "name": "human_clarification_request",
-      "agent": "analyst",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "triggers_clarification": true,
-      "depends_on": [
-        "0.4"
-      ],
-      "may_need_clarification": true,
-      "skip_when": "mission.legacy_pre_charter != '1'",
-      "input_artifacts": [
-        "open_questions_list",
-        "assumption_list"
-      ],
-      "output_artifacts": [
-        "clarification_request"
-      ],
-      "instruction": "Review the open_questions_list and assumption_list. Pick only the TOP 5 most impactful questions â€” the ones whose answers most change the project direction. Keep each question short (1-2 sentences max). For each, suggest 2-3 concrete answer options the human can pick from (e.g. 'A) Families B) Roommates C) Both'). Do NOT ask more than 5 questions â€” if in doubt, cut the less important ones. You MUST use the clarify action to send these questions to the human.",
-      "done_when": "clarification_request has been sent to the human via the clarify action.",
-      "artifact_schema": {
-        "clarification_request": {
-          "type": "array",
-          "min_items": 3,
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "post_hooks": [
-        "surface_prior_mission_hints"
-      ],
       "reversibility": "full"
     },
     {
@@ -1286,17 +1164,14 @@
       "input_artifacts": [
         "raw_idea_document",
         "product_charter",
-        "problem_statement",
         "assumption_list",
-        "clarification_request",
-        "clarification_answers",
         "intake_todo",
         "compliance_fingerprint"
       ],
       "output_artifacts": [
         "idea_brief_final"
       ],
-      "instruction": "Compile inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph), 2) Problem Statement, 3) Target Audience, 4) Proposed Solution, 5) Key Constraints, 6) Initial Scope Boundaries, 7) Assumptions, 8) Open Risks. PREFERENCE ORDER for source data: when `product_charter` is present (modern Z1 missions), distill its Positioning + JTBD + Solutions into the brief and treat the charter as canonical. When the charter is absent (legacy missions), fall back to `problem_statement` + `clarification_answers` (the old phase-0 micro-artifacts). Write in clear, professional prose. Self-review: check for internal contradictions, anything from charter or clarifications not reflected, vague language. Output the final versioned document as idea_brief_final with a version number and date.",
+      "instruction": "Compile inputs into a clean Idea Brief document with these sections: 1) Vision (one paragraph), 2) Problem Statement, 3) Target Audience, 4) Proposed Solution, 5) Key Constraints, 6) Initial Scope Boundaries, 7) Assumptions, 8) Open Risks. PREFERENCE ORDER for source data: when `product_charter` is present (modern Z1 missions), distill its Positioning + JTBD + Solutions into the brief and treat the charter as canonical. Write in clear, professional prose. Self-review: check for internal contradictions, anything from charter or clarifications not reflected, vague language. Output the final versioned document as idea_brief_final with a version number and date.",
       "done_when": "idea_brief_final exists as a clean, self-reviewed, internally consistent document with all 8 sections.",
       "artifact_schema": {
         "idea_brief_final": {
@@ -1331,7 +1206,6 @@
         "0.1"
       ],
       "may_need_clarification": true,
-      "skip_when": "mission.legacy_pre_non_goals == '1'",
       "input_artifacts": [
         "product_charter",
         "raw_idea",
@@ -1373,7 +1247,6 @@
       "depends_on": [
         "0.6a"
       ],
-      "skip_when": "mission.legacy_pre_non_goals == '1'",
       "input_artifacts": [
         "non_goals"
       ],
@@ -1417,7 +1290,6 @@
         "0.6"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_prior_art == '1'",
       "input_artifacts": [
         "idea_brief_final"
       ],
@@ -1629,7 +1501,6 @@
         "1.4"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_competitive_positioning == '1'",
       "input_artifacts": [
         "direct_competitors_list",
         "indirect_competitors_list",
@@ -1673,7 +1544,6 @@
       "depends_on": [
         "1.4a"
       ],
-      "skip_when": "mission.legacy_pre_competitive_positioning == '1'",
       "input_artifacts": [
         "competitive_positioning"
       ],
@@ -2033,7 +1903,6 @@
       "post_hooks": [
         "compliance_template_present"
       ],
-      "skip_when": "mission.legacy_pre_compliance == '1'",
       "instruction": "Z1 Tier 5A (P6) — for each <jurisdiction × data_category> combination in compliance_fingerprint, identify required_documents (privacy_policy, cookie_banner, dpa, tos, retention_policy, age_gate, accessibility_statement, data_processing_record). Call `compliance_template_render(fingerprint, doc_type, lang)` for each. Save rendered output to `generated_template_path` under `mission_<id>/.compliance/legal/<doc>.md`. Surface cross_jurisdiction_conflicts when present. Set requires_legal_review=true on every doc; founder_review_required=true on privacy_policy, dpa, tos. Emit the `compliance_overlay` JSON to `mission_<id>/compliance_overlay.json`.",
       "done_when": "compliance_overlay.required_documents non-empty (or fingerprint declares jurisdictions=[]) and every generated_template_path file exists.",
       "artifact_schema": {
@@ -2848,7 +2717,6 @@
       "depends_on": [
         "3.1"
       ],
-      "skip_when": "mission.legacy_pre_falsification == '1'",
       "input_artifacts": [
         "functional_requirements"
       ],
@@ -2936,7 +2804,6 @@
       "depends_on": [
         "3.2"
       ],
-      "skip_when": "mission.legacy_pre_falsification == '1'",
       "input_artifacts": [
         "nfr_performance",
         "nfr_scalability"
@@ -3028,7 +2895,6 @@
       "depends_on": [
         "3.3"
       ],
-      "skip_when": "mission.legacy_pre_falsification == '1'",
       "input_artifacts": [
         "nfr_availability",
         "security_requirements"
@@ -3305,7 +3171,6 @@
       "depends_on": [
         "3.7"
       ],
-      "skip_when": "mission.legacy_pre_falsification == '1'",
       "input_artifacts": [
         "business_rules"
       ],
@@ -3633,7 +3498,6 @@
         "mission_{mission_id}/.adr/architecture_pattern_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -3694,7 +3558,6 @@
         "mission_{mission_id}/.adr/tech_stack_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -3798,7 +3661,6 @@
         "mission_{mission_id}/.adr/database_schema_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -3973,7 +3835,6 @@
         "mission_{mission_id}/.adr/auth_design_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4097,7 +3958,6 @@
         "mission_{mission_id}/.adr/third_party_selections_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4178,7 +4038,6 @@
         "mission_{mission_id}/.adr/infrastructure_designs_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4255,7 +4114,6 @@
         "mission_{mission_id}/.adr/communication_designs_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4429,7 +4287,6 @@
       "produces": [
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4729,7 +4586,6 @@
         "5.0.verify"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_design_tokens == '1'",
       "input_artifacts": [
         "taste_emphasis",
         "product_charter"
@@ -4854,7 +4710,6 @@
         "5.0b.verify"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_user_flow == '1'",
       "input_artifacts": [
         "surfaces_config",
         "product_charter",
@@ -5016,586 +4871,6 @@
       "reversibility": "full"
     },
     {
-      "id": "5.1",
-      "phase": "phase_5",
-      "name": "information_architecture",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "2.11b"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "prd_final_summary",
-        "user_stories_refined_summary"
-      ],
-      "output_artifacts": [
-        "information_architecture"
-      ],
-      "instruction": "Define app's information architecture: sitemap, content grouping, navigation model, page types.",
-      "done_when": "information_architecture exists.",
-      "artifact_schema": {
-        "information_architecture": {
-          "type": "object",
-          "required_fields": [
-            "sitemap",
-            "navigation_model",
-            "page_types"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.2",
-      "phase": "phase_5",
-      "name": "navigation_design",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.1"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "information_architecture"
-      ],
-      "output_artifacts": [
-        "navigation_design"
-      ],
-      "instruction": "Design navigation: primary, secondary, user menu, notifications, search, breadcrumbs, mobile, keyboard shortcuts, deep linking, back behavior.",
-      "done_when": "navigation_design exists.",
-      "artifact_schema": {
-        "navigation_design": {
-          "type": "object",
-          "required_fields": [
-            "primary_nav",
-            "secondary_nav",
-            "mobile_nav"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.3",
-      "phase": "phase_5",
-      "name": "user_flows",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.1",
-        "2.4",
-        "2.8"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "information_architecture",
-        "user_journey_map",
-        "user_stories_refined_summary",
-        "auth_design"
-      ],
-      "output_artifacts": [
-        "user_flow_auth",
-        "user_flow_onboarding",
-        "user_flow_core_features",
-        "user_flow_settings"
-      ],
-      "instruction": "Diagram all user flows screen-by-screen. Auth flows: signup email, signup oauth, login email, login oauth, password reset, logout. Onboarding: account creation to first value moment, under 2 minutes, including abandonment handling and progressive disclosure. Core features: for each core feature, diagram complete user flow with all screens, transitions, success/error/loading/empty states, confirmations, undo support. Settings: profile, password change, email change, notifications, billing, payment, account deletion, connected accounts.",
-      "done_when": "All four user flow artifacts exist with screen-by-screen diagrams.",
-      "artifact_schema": {
-        "user_flow_auth": {
-          "type": "object",
-          "required_fields": [
-            "flows"
-          ],
-          "_schema_version": "1"
-        },
-        "user_flow_onboarding": {
-          "type": "object",
-          "required_fields": [
-            "steps",
-            "time_to_value"
-          ],
-          "_schema_version": "1"
-        },
-        "user_flow_core_features": {
-          "type": "object",
-          "required_fields": [
-            "features"
-          ],
-          "_schema_version": "1"
-        },
-        "user_flow_settings": {
-          "type": "object",
-          "required_fields": [
-            "flows"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.4a",
-      "phase": "phase_5",
-      "name": "layout_and_wireframes",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.2",
-        "5.3"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "navigation_design",
-        "user_flow_core_features",
-        "functional_requirements"
-      ],
-      "output_artifacts": [
-        "layout_system_spec",
-        "wireframe_specs"
-      ],
-      "instruction": "Define page layout system: app shell, layout templates, grid system, spacing scale, responsive breakpoints, per-breakpoint changes. Then create wireframe specifications for every unique screen in the MVP: content zones, element hierarchy, interactive elements, conditional elements.",
-      "done_when": "layout_system_spec and wireframe_specs exist.",
-      "artifact_schema": {
-        "layout_system_spec": {
-          "type": "object",
-          "required_fields": [
-            "grid_system",
-            "breakpoints",
-            "spacing_scale"
-          ],
-          "_schema_version": "1"
-        },
-        "wireframe_specs": {
-          "type": "object",
-          "required_fields": [
-            "screens"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.4b",
-      "phase": "phase_5",
-      "name": "forms_and_states",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.4a"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "wireframe_specs",
-        "functional_requirements",
-        "business_rules"
-      ],
-      "output_artifacts": [
-        "form_specs",
-        "empty_error_state_specs"
-      ],
-      "instruction": "Based on wireframe_specs, define every form in the app: fields with validation rules, field grouping, multi-step config if applicable, submit/cancel behavior, auto-save, keyboard behavior. Then define all empty states (first-time, search no results, filtered no results, list empty, offline) and error states (404, 403, 500, maintenance, session expired, rate limited).",
-      "done_when": "form_specs and empty_error_state_specs exist.",
-      "artifact_schema": {
-        "form_specs": {
-          "type": "object",
-          "required_fields": [
-            "forms"
-          ],
-          "_schema_version": "1"
-        },
-        "empty_error_state_specs": {
-          "type": "object",
-          "required_fields": [
-            "empty_states",
-            "error_states"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {
-        "estimated_output_tokens": 12000
-      },
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.5",
-      "phase": "phase_5",
-      "name": "wireframe_review",
-      "agent": "reviewer",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.4b"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "wireframe_specs",
-        "form_specs",
-        "empty_error_state_specs",
-        "user_stories_refined_summary",
-        "user_flow_core_features"
-      ],
-      "output_artifacts": [
-        "wireframe_review_result"
-      ],
-      "instruction": "Review wireframes against user stories and flows: coverage, dead ends, pattern consistency, form validation, empty/error states, navigation reachability.",
-      "done_when": "wireframe_review_result exists.",
-      "artifact_schema": {
-        "wireframe_review_result": {
-          "type": "object",
-          "fields": {
-            "status": {
-              "type": "string",
-              "equals": [
-                "pass",
-                "approved"
-              ]
-            },
-            "issues": {}
-          },
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.6",
-      "phase": "phase_5",
-      "name": "brand_and_design_tokens",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "2.1",
-        "2.4"
-      ],
-      "may_need_clarification": true,
-      "input_artifacts": [
-        "product_vision",
-        "user_personas",
-        "competitor_ux_evaluation_summary"
-      ],
-      "output_artifacts": [
-        "brand_identity",
-        "design_tokens"
-      ],
-      "instruction": "Define brand identity: personality, tone of voice, color psychology, typography personality, visual style direction. If multiple valid directions, trigger needs_clarification. Then define all design tokens as exact values: colors (primary 50-950, semantic, background, text, border), typography, spacing, borders, shadows, transitions, z-index. All in hex/px/rem.",
-      "done_when": "brand_identity and design_tokens exist with complete specifications.",
-      "artifact_schema": {
-        "brand_identity": {
-          "type": "object",
-          "required_fields": [
-            "personality",
-            "tone_of_voice",
-            "color_direction",
-            "typography_direction"
-          ],
-          "_schema_version": "1"
-        },
-        "design_tokens": {
-          "type": "object",
-          "required_fields": [
-            "colors",
-            "typography",
-            "spacing",
-            "borders",
-            "shadows"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.7",
-      "phase": "phase_5",
-      "name": "component_specs",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.6"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "design_tokens"
-      ],
-      "output_artifacts": [
-        "component_spec_primitives",
-        "component_spec_composite"
-      ],
-      "instruction": "Specify every primitive component: Button, Input, Textarea, Select, Checkbox, Radio, Toggle, Label, Badge, Avatar, Icon, Divider, Spinner, Skeleton, Link, Tag. Each with variants, sizes, states, props, accessibility, responsive behavior. Then specify composite components: Card, Modal, Toast, Alert, Dropdown, Tooltip, Popover, Tabs, Accordion, Table, Pagination, Breadcrumb, EmptyState, Sidebar, Navbar, Footer. Each with composition from primitives, variants, sizes, states, props.",
-      "done_when": "component_spec_primitives and component_spec_composite exist with all component specifications.",
-      "artifact_schema": {
-        "component_spec_primitives": {
-          "type": "object",
-          "required_fields": [
-            "components"
-          ],
-          "_schema_version": "1"
-        },
-        "component_spec_composite": {
-          "type": "object",
-          "required_fields": [
-            "components"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.8",
-      "phase": "phase_5",
-      "name": "screen_specifications",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.4b",
-        "5.7"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "wireframe_specs",
-        "component_spec_primitives",
-        "component_spec_composite",
-        "design_tokens"
-      ],
-      "output_artifacts": [
-        "screen_specifications"
-      ],
-      "instruction": "For every screen: component tree, data bindings, action handlers, conditional rendering, loading/error states, responsive overrides.",
-      "done_when": "screen_specifications exists.",
-      "artifact_schema": {
-        "screen_specifications": {
-          "type": "object",
-          "required_fields": [
-            "screens"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.9",
-      "phase": "phase_5",
-      "name": "interaction_responsive_accessibility_specs",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.8",
-        "3.6"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "screen_specifications",
-        "design_tokens",
-        "layout_system_spec",
-        "accessibility_requirements"
-      ],
-      "output_artifacts": [
-        "interaction_spec",
-        "responsive_spec",
-        "accessibility_spec"
-      ],
-      "instruction": "Define all micro-interactions: transitions, feedback, loading behavior, scroll behavior, drag behavior. Include reduced-motion behavior. For each screen at every breakpoint: layout changes, hidden elements, navigation changes, component swaps, touch adaptations, font adjustments, image handling. Per-screen accessibility: focus order, ARIA labels, live regions, keyboard shortcuts, skip links, landmarks, heading hierarchy, form accessibility, color independence.",
-      "done_when": "interaction_spec, responsive_spec, and accessibility_spec exist.",
-      "artifact_schema": {
-        "interaction_spec": {
-          "type": "object",
-          "required_fields": [
-            "transitions",
-            "feedback",
-            "reduced_motion"
-          ],
-          "_schema_version": "1"
-        },
-        "responsive_spec": {
-          "type": "object",
-          "required_fields": [
-            "breakpoints",
-            "per_screen"
-          ],
-          "_schema_version": "1"
-        },
-        "accessibility_spec": {
-          "type": "object",
-          "required_fields": [
-            "per_screen"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.10",
-      "phase": "phase_5",
-      "name": "design_review",
-      "agent": "reviewer",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "5.8",
-        "5.9"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "screen_specifications",
-        "interaction_spec",
-        "responsive_spec",
-        "accessibility_spec",
-        "prd_final_summary",
-        "design_tokens",
-        "competitor_ux_evaluation_summary"
-      ],
-      "output_artifacts": [
-        "design_review_result"
-      ],
-      "instruction": "Review design specs for coverage, consistency, component reuse, accessibility completeness, responsive completeness, implementability, token compliance. Evaluate design token choices for color harmony, typography hierarchy, spacing consistency, competitive positioning, visual coherence. ALSO verify the Z1 Tier 3 design-tokens cluster: (a) mission_{mission_id}/.style/taste_emphasis.json exists and primary_content_type is populated (and if 'other', secondary_emphasis is non-empty); (b) mission_{mission_id}/.style/design_tokens.json exists with BOTH light and dark variants; (c) all token values reference real concrete values — reject any 'TBD', '#XXXXXX', or placeholder strings; (d) tag_signature field is present in design_tokens.json and matches taste_emphasis.primary_content_type. Reject if any of (a)-(d) fail.\n\nZ1 Tier 2 (A2) — non-goals contradiction check:\n- Read mission_{mission_id}/.charter/non_goals.md if present.\n- REJECT (status=fail) any feature design that maps to a listed non-goal (e.g., non-goal='No mobile-app version' → reject mobile-only screen specs; non-goal='No support for under-13 users' → reject child-flavored UI patterns).\n- Surface the matching non-goal text in the issue description so the designer can revise.\n\nZ1 Tier 3 (C3+A10+C9+A11+C14+C18) — per-screen plan + HTML prototype review (applies when legacy_pre_per_screen_plans is 0):\n- REJECT (status=fail) when any screen in `screen_inventory.md` lacks a corresponding `mission_{mission_id}/.screens/<slug>/screen_plan.md` AND `mission_{mission_id}/.web/<slug>.html` on disk.\n- REJECT when a screen plan does not declare ALL FOUR `## States` H3 sub-sections (Default / Empty / Loading / Error).\n- REJECT when an HTML prototype omits `<!DOCTYPE html>`, the 390x844 viewport, the Tailwind script tag, an Iconify script tag, or any `<img>` lacks a non-empty descriptive `alt`.\n- REJECT when an HTML uses a color value not present in `design_tokens.json`.\n- REJECT when chunk's screens declare inconsistent `inherits_shell` without an explicit `<!-- inherits_shell_override: <reason> -->` comment.\nSurface the offending screen_id + path + concrete failure in the issue list.",
-      "done_when": "design_review_result exists.",
-      "artifact_schema": {
-        "design_review_result": {
-          "type": "object",
-          "fields": {
-            "status": {
-              "type": "string",
-              "equals": [
-                "pass",
-                "approved"
-              ]
-            },
-            "issues": {}
-          },
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.11a",
-      "phase": "phase_5",
-      "name": "design_system_handoff",
-      "agent": "analyst",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "5.6",
-        "5.7",
-        "5.10"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "design_tokens",
-        "component_spec_primitives",
-        "component_spec_composite",
-        "design_review_result"
-      ],
-      "output_artifacts": [
-        "design_system_compilation"
-      ],
-      "context": {
-        "estimated_output_tokens": 12000
-      },
-      "instruction": "Compile the design system handoff as a single Markdown document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these three top-level sections in order, each as a `##` heading:\n\n## Design Tokens\nColors, typography, spacing, borders, shadows, transitions, z-index. List token names with values.\n\n## Primitive Components\nButton, Input, Textarea, Select, Checkbox, Radio, Toggle, Label, Badge, Avatar, Icon, Divider, Spinner, Skeleton, Link, Tag. For each: variants, states, props, accessibility notes.\n\n## Composite Components\nCard, Modal, Toast, Alert, Dropdown, Tooltip, Popover, Tabs, Accordion, Table, Pagination, Breadcrumb, EmptyState, Sidebar, Navbar, Footer. For each: composition, behavior, accessibility notes.\n\nThen a short `## Review Notes` section pulling key findings from design_review_result.",
-      "done_when": "design_system_compilation is a Markdown document with `## Design Tokens`, `## Primitive Components`, `## Composite Components` headings present.",
-      "artifact_schema": {
-        "design_system_compilation": {
-          "type": "markdown",
-          "required_sections": [
-            "Design Tokens",
-            "Primitive Components",
-            "Composite Components"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
-      "id": "5.11b",
-      "phase": "phase_5",
-      "name": "design_handoff_document",
-      "agent": "analyst",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "5.11a",
-        "5.8",
-        "5.9"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "design_system_compilation",
-        "screen_specifications",
-        "interaction_spec",
-        "responsive_spec",
-        "accessibility_spec",
-        "user_flow_auth",
-        "user_flow_settings",
-        "brand_identity"
-      ],
-      "output_artifacts": [
-        "design_handoff"
-      ],
-      "context": {
-        "estimated_output_tokens": 5000
-      },
-      "instruction": "Merge design_system_compilation with screen specs, interaction patterns, responsive rules, and accessibility requirements into the final Design Handoff Document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Design Tokens\nKey tokens from design_system_compilation.\n\n## Component Library\nPrimitive + composite component summaries from design_system_compilation.\n\n## Screen Specifications\nKey screens from screen_specifications.\n\n## Interaction Guide\nMicro-interaction + animation rules from interaction_spec.\n\n## Responsive Guide\nBreakpoint behavior from responsive_spec.\n\n## Accessibility Guide\nWCAG-aligned guidelines from accessibility_spec.",
-      "done_when": "design_handoff is a Markdown document with `## Design Tokens`, `## Component Library`, `## Screen Specifications`, `## Interaction Guide`, `## Responsive Guide`, `## Accessibility Guide` headings present.",
-      "artifact_schema": {
-        "design_handoff": {
-          "type": "markdown",
-          "required_sections": [
-            "Design Tokens",
-            "Component Library",
-            "Screen Specifications",
-            "Interaction Guide",
-            "Responsive Guide",
-            "Accessibility Guide"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "skip_when": "mission.legacy_pre_per_screen_plans == '0'",
-      "reversibility": "full"
-    },
-    {
       "id": "5.20a",
       "phase": "phase_5",
       "name": "generate_per_screen_plans_chunk_a",
@@ -5640,7 +4915,6 @@
       "produces": [
         "mission_{mission_id}/.screens/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5659,7 +4933,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every plan produced by 5.20a. Caller wires `plan_paths` from the 5.20a artifact's `plans[].path` list.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5706,7 +4979,6 @@
       "produces": [
         "mission_{mission_id}/.screens/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5725,7 +4997,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every plan produced by 5.20b.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5745,7 +5016,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — cross-screen `inherits_shell` consistency check across both chunks (B8/C18). Caller wires `screen_plan_paths` (union of both chunks' plans) and `shared_shell_components` from shared_shell.md.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5790,7 +5060,6 @@
       "produces": [
         "mission_{mission_id}/.web/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5809,7 +5078,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every HTML produced by 5.30a. Caller wires `html_paths` and `design_tokens` (parsed JSON) from the artifact store.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5856,7 +5124,6 @@
       "produces": [
         "mission_{mission_id}/.web/"
       ],
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5875,7 +5142,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical sibling — assert paraflow shape on every HTML produced by 5.30b.",
-      "skip_when": "mission.legacy_pre_per_screen_plans == '1'",
       "reversibility": "full"
     },
     {
@@ -5895,7 +5161,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Z1 Tier 4 (T4B / C17+A20): post-process every HTML emitted by 5.30a/b — walk the DOM via BeautifulSoup and assign `data-oid=\"<artifact_slug>:<section>\"` to semantic blocks (header/main/nav/footer/aside/section/article + role-classed divs: hero/cta/card/form/etc.). Anchor for `propose_spec_patch_from_html_diff`. Caller wires `html_paths` (union of both chunks) and `artifact_slug` derived per file. Idempotent: existing `data-oid` values are preserved.",
-      "skip_when": "mission.legacy_pre_html_oids == '1'",
       "reversibility": "full"
     },
     {
@@ -5917,7 +5182,6 @@
         "mission_{mission_id}/preview_url.txt"
       ],
       "instruction": "Z1 T4C (C10+A19) — emit a tunneled preview URL surface for the per-screen HTML prototypes. EMIT-ONLY: writes preview_url.txt with a live cloudflared URL when KUTAI_PREVIEW_PROVIDER=cloudflared and the binary is on PATH; otherwise writes a 'pending: hosting deferred to Z2' placeholder. Idempotent: any prior tunnel is terminated before re-emitting.",
-      "skip_when": "mission.legacy_pre_preview_url == '1'",
       "reversibility": "full"
     },
     {
@@ -5929,14 +5193,13 @@
       "tools_hint": [],
       "depends_on": [
         "4.16",
-        "5.11b"
+        "5.30b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "prd_final_summary",
         "user_stories_refined_summary",
-        "technical_design_document_summary",
-        "design_handoff_summary"
+        "technical_design_document_summary"
       ],
       "output_artifacts": [
         "epics",
@@ -6300,7 +5563,6 @@
           "_schema_version": "1"
         }
       },
-      "skip_when": "mission.legacy_pre_premortem == '1'",
       "reversibility": "full"
     },
     {
@@ -6319,7 +5581,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical post-hook on 6.5z. Caller wires `premortem_path` (default `mission_{mission_id}/premortem.md`) or `premortem_text`. Asserts the JSON envelope: _schema_version=='1', scenarios>=3, kinds {technical, market, founder} each present, plausibility ∈ [1,5], obituary + cause non-empty.",
-      "skip_when": "mission.legacy_pre_premortem == '1'",
       "reversibility": "full"
     },
     {
@@ -6395,7 +5656,6 @@
         "mission_{mission_id}/github_init_status.md"
       ],
       "instruction": "Z1 Tier 6 (C18) — at the end of phase 6 (after compliance_blocker_check on 6.6 has passed) initialise a GitHub repository for the mission via gh-cli and push the locked phase-≤6 spec artifacts as the initial commit. Fail-soft when gh-cli is missing or unauthenticated: writes `mission_{mission_id}/github_init_status.md` with `pending: <reason>` and the workflow continues — founder retries via Telegram `/github init <mission_id>`. Repo name: `kutai-mission-<id>-<charter_slug>` (kebab-case, ≤30 chars from charter title). Visibility default `public` (overridable via `KUTAI_GITHUB_DEFAULT_VISIBILITY`). Owner default = current `gh` user (overridable via `KUTAI_GITHUB_ORG`). The export uses a separate `mission_{mission_id}/.git_export/` repo so any mission-internal git history (created later in phase 7+) is not clobbered. Set `payload.skip_github=true` to opt out (still emits the status file). Persists `missions.github_repo_url`.",
-      "skip_when": "mission.legacy_pre_github_init == '1'",
       "reversibility": "partial"
     },
     {
@@ -6416,7 +5676,6 @@
       },
       "instruction": "Z1 Tier 6A (P9) — walk phase-≤6 artifacts (charter, compliance_fingerprint, compliance_overlay, ADR register + .adrs/*.json, non_goals.md, reverse_pitch.md), read each `_schema_version` envelope, derive domain_keywords from the charter brand keywords, and insert/upsert one row per artifact into `mission_artifacts_index`. Cross-mission inheritance hints at step 0.5 of future missions read from this index.",
       "done_when": "mission_artifacts_index has rows for the in-flight mission's available phase-≤6 artifacts.",
-      "skip_when": "mission.legacy_pre_inheritance == '1'",
       "context": {
         "estimated_output_tokens": 0
       },
@@ -6442,7 +5701,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — Augment Intent's `specs stay alive`. Wave-start mechanical step before phase-7 execution. Re-reads phase-≤6 locked spec artifacts (charter, ADRs, design_tokens, screen_plans, surfaces, non_goals, premortem, compliance_overlay if present) + any phase-7 artifacts on disk; rule-based drift scan (R1 stack drift / R2 token drift / R3 surface drift / R4 non-goal drift). On drift, returns needs_review + drift report path; reviewer / source has to acknowledge before downstream waves continue.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -7093,13 +6351,15 @@
       ],
       "depends_on": [
         "7.5",
-        "7.5m"
+        "7.5m",
+        "5.20a",
+        "5.20b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "design_tokens",
-        "layout_system_spec",
-        "navigation_design"
+        "per_screen_plans_chunk_a",
+        "per_screen_plans_chunk_b"
       ],
       "output_artifacts": [
         "design_tokens_code",
@@ -7112,7 +6372,7 @@
         "verify_artifacts",
         "code_review"
       ],
-      "instruction": "Implement design tokens as CSS variables/theme configuration and the base layout system. Convert all design tokens to code (CSS custom properties, Tailwind theme, or styled-system). Implement the app shell layout, responsive grid system, and base navigation components. Verify all tokens render correctly at all breakpoints.",
+      "instruction": "Implement design tokens as CSS variables/theme configuration and the base layout system. Convert all design tokens to code (CSS custom properties, Tailwind theme, or styled-system). Implement the app shell layout, responsive grid system, and base navigation components using the layout, app-shell and navigation described across the per-screen plans. Verify all tokens render correctly at all breakpoints.",
       "done_when": "design_tokens_code and layout_components exist with verified rendering.",
       "artifact_schema": {
         "design_tokens_code": {
@@ -7150,11 +6410,12 @@
         "git_commit"
       ],
       "depends_on": [
-        "7.9"
+        "7.9",
+        "5.30a"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "component_spec_primitives",
+        "html_prototypes_chunk_a",
         "design_tokens_code"
       ],
       "output_artifacts": [
@@ -7167,7 +6428,7 @@
         "verify_artifacts",
         "code_review"
       ],
-      "instruction": "Implement all primitive components from component_spec_primitives: Button, Input, Textarea, Select, Checkbox, Radio, Toggle, Label, Badge, Avatar, Icon, Divider, Spinner, Skeleton, Link, Tag. Each with all variants, sizes, states, and accessibility attributes. Use design tokens for all styling.",
+      "instruction": "Extract and implement the primitive components used across the HTML prototypes (html_prototypes_chunk_a) — Button, Input, Textarea, Select, Checkbox, Radio, Toggle, Label, Badge, Avatar, Icon, Divider, Spinner, Skeleton, Link, Tag — each with all variants, sizes, states, and accessibility attributes. Use design tokens for all styling.",
       "done_when": "primitive_components_code exists with all primitives implemented.",
       "artifact_schema": {
         "primitive_components_code": {
@@ -7198,13 +6459,14 @@
         "git_commit"
       ],
       "depends_on": [
-        "7.10"
+        "7.10",
+        "5.30b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "component_spec_composite",
-        "design_tokens_code",
-        "interaction_spec"
+        "html_prototypes_chunk_a",
+        "html_prototypes_chunk_b",
+        "design_tokens_code"
       ],
       "output_artifacts": [
         "composite_components_code"
@@ -7216,7 +6478,7 @@
         "verify_artifacts",
         "code_review"
       ],
-      "instruction": "Implement all composite components from component_spec_composite: Card, Modal, Toast, Alert, Dropdown, Tooltip, Popover, Tabs, Accordion, Table, Pagination, Breadcrumb, EmptyState, Sidebar, Navbar, Footer. Compose from primitive components. Include animations per interaction_spec.",
+      "instruction": "Implement the composite components observed in the HTML prototypes (html_prototypes_chunk_a/b): Card, Modal, Toast, Alert, Dropdown, Tooltip, Popover, Tabs, Accordion, Table, Pagination, Breadcrumb, EmptyState, Sidebar, Navbar, Footer — composed from primitive components, with interaction behavior as shown in the prototypes.",
       "done_when": "composite_components_code exists with all composites implemented.",
       "artifact_schema": {
         "composite_components_code": {
@@ -7250,13 +6512,13 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "component_spec_primitives",
-        "component_spec_composite"
+        "primitive_components_code",
+        "composite_components_code"
       ],
       "output_artifacts": [
         "storybook_setup"
       ],
-      "instruction": "Set up a component playground (Storybook, Ladle, or equivalent) with stories for every primitive and composite component. Each story should show all variants, sizes, and states.",
+      "instruction": "Set up a component playground (Storybook, Ladle, or equivalent) with stories drawn from the implemented primitive_components_code and composite_components_code. Each story should show all variants, sizes, and states.",
       "done_when": "storybook_setup exists with stories for all components.",
       "artifact_schema": {
         "storybook_setup": {
@@ -7460,13 +6722,13 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "technical_design_document",
-        "design_handoff",
+        "html_prototypes_chunk_a",
         "requirements_spec"
       ],
       "output_artifacts": [
         "implementation_context"
       ],
-      "instruction": "Create a condensed implementation reference. For each major subsystem: the 3-5 most important design decisions, the specific patterns to follow, the key constraints. This document replaces the need for implementer agents to read the full TDD. Target: under 5000 words covering everything an implementer needs for day-to-day coding decisions.",
+      "instruction": "Create a condensed implementation reference. For each major subsystem: the 3-5 most important design decisions, the specific patterns to follow, the key constraints. Reference the HTML prototypes for frontend conventions and patterns. This document replaces the need for implementer agents to read the full TDD. Target: under 5000 words covering everything an implementer needs for day-to-day coding decisions.",
       "done_when": "implementation_context exists as a concise (<5000 words) reference for all implementation work.",
       "artifact_schema": {
         "implementation_context": {
@@ -7504,7 +6766,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 8. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -7880,7 +7141,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 9. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -8412,7 +7672,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 10. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -8979,7 +8238,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 11. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -9046,7 +8304,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "user_flow_onboarding",
+        "user_flow",
         "mvp_scope"
       ],
       "output_artifacts": [
@@ -9054,7 +8312,7 @@
         "feature_docs",
         "faq_doc"
       ],
-      "instruction": "Write a getting-started guide for new users covering signup, initial config, first-time walkthrough, key concepts. Write detailed feature documentation for every MVP feature. Compile a FAQ document (20-30 entries) covering account management, billing, feature capabilities, troubleshooting, privacy/security, and API questions.",
+      "instruction": "Write a getting-started guide for new users covering signup, initial config, first-time walkthrough, key concepts (use the onboarding track of user_flow as the source for the walkthrough sequence). Write detailed feature documentation for every MVP feature. Compile a FAQ document (20-30 entries) covering account management, billing, feature capabilities, troubleshooting, privacy/security, and API questions.",
       "done_when": "user_getting_started, feature_docs, and faq_doc exist.",
       "artifact_schema": {
         "user_getting_started": {
@@ -9095,7 +8353,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "user_flow_onboarding",
+        "user_flow",
         "observability_strategy",
         "email_system_design"
       ],
@@ -9104,7 +8362,7 @@
         "error_copy",
         "notification_copy"
       ],
-      "instruction": "Write all in-app onboarding copy (welcome, tooltips, empty states, progress indicators). Write user-friendly error messages for every error state. Write copy for all notification templates (transactional emails, in-app notifications). Format as structured JSON files keyed by screen/component ID.",
+      "instruction": "Write all in-app onboarding copy (welcome, tooltips, empty states, progress indicators) based on the onboarding track of user_flow. Write user-friendly error messages for every error state. Write copy for all notification templates (transactional emails, in-app notifications). Format as structured JSON files keyed by screen/component ID.",
       "done_when": "onboarding_copy, error_copy, and notification_copy exist.",
       "artifact_schema": {
         "onboarding_copy": {
@@ -9250,7 +8508,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 12. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -10231,12 +9488,12 @@
         "no_public_web"
       ],
       "input_artifacts": [
-        "information_architecture"
+        "per_screen_plans_chunk_a"
       ],
       "output_artifacts": [
         "seo_implementation"
       ],
-      "instruction": "Implement SEO: unique title tags and meta descriptions, Open Graph and Twitter Card tags, structured data (JSON-LD), canonical URLs, XML sitemap, robots.txt, semantic HTML5, descriptive alt text.",
+      "instruction": "Implement SEO using the screen inventory and navigation in the per-screen plans: unique title tags and meta descriptions, Open Graph and Twitter Card tags, structured data (JSON-LD), canonical URLs, XML sitemap, robots.txt, semantic HTML5, descriptive alt text.",
       "done_when": "seo_implementation exists.",
       "artifact_schema": {
         "seo_implementation": {
@@ -11830,7 +11087,6 @@
       ],
       "input_artifacts": [
         "feature_request_backlog",
-        "design_handoff_summary",
         "implementation_context"
       ],
       "output_artifacts": [
@@ -12080,7 +11336,6 @@
       "depends_on": [
         "4.2"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "may_need_clarification": false,
       "input_artifacts": [
         "product_charter",
@@ -12130,7 +11385,6 @@
       "depends_on": [
         "4.1"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "architecture_pattern_decision"
       ],
@@ -12160,7 +11414,6 @@
       "depends_on": [
         "4.2"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "tech_stack_decision"
       ],
@@ -12190,7 +11443,6 @@
       "depends_on": [
         "4.2.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "tech_stack_decision"
       ],
@@ -12219,7 +11471,6 @@
       "depends_on": [
         "4.4"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "database_schema_decision"
       ],
@@ -12249,7 +11500,6 @@
       "depends_on": [
         "4.4.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "database_schema_decision"
       ],
@@ -12278,7 +11528,6 @@
       "depends_on": [
         "4.6"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "auth_design_decision"
       ],
@@ -12308,7 +11557,6 @@
       "depends_on": [
         "4.6.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "auth_design_decision"
       ],
@@ -12337,7 +11585,6 @@
       "depends_on": [
         "4.8"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "third_party_selections_decision"
       ],
@@ -12367,7 +11614,6 @@
       "depends_on": [
         "4.8.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "third_party_selections_decision"
       ],
@@ -12396,7 +11642,6 @@
       "depends_on": [
         "4.9"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "infrastructure_designs_decision"
       ],
@@ -12426,7 +11671,6 @@
       "depends_on": [
         "4.9.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "infrastructure_designs_decision"
       ],
@@ -12455,7 +11699,6 @@
       "depends_on": [
         "4.10"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "communication_designs_decision"
       ],
@@ -12485,7 +11728,6 @@
       "depends_on": [
         "4.10.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "communication_designs_decision"
       ],
@@ -12514,7 +11756,6 @@
       "depends_on": [
         "4.2a"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "component_library_decision"
       ],
@@ -12544,7 +11785,6 @@
       "depends_on": [
         "4.14"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "adrs",
         "adr_register"
@@ -13225,6 +12465,5 @@
         }
       ]
     }
-  ],
-  "_z1_tier3_patched": true
+  ]
 }

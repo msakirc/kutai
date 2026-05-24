@@ -368,36 +368,6 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
-    # Z1 Tier 3 design-tokens migration: gate the new phase 5.0 / 5.0a steps
-    # so existing in-flight missions are not retroactively required to emit
-    # taste_emphasis.json + design_tokens.json. New missions start at 0
-    # (default); legacy rows get backfilled to 1.
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN legacy_pre_design_tokens INTEGER DEFAULT 0"
-        )
-        # Column was just added → every existing row predates the cluster.
-        await db.execute("UPDATE missions SET legacy_pre_design_tokens = 1")
-    except Exception:
-        pass  # Column already exists; skip backfill on subsequent boots.
-    # Z1 T3B migration: gate the new phase-5 user-flow steps for older missions
-    # by tagging existing rows as legacy_pre_user_flow=1; new missions default
-    # to 0 so they receive 5.0b/5.0c/5.0d.
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN legacy_pre_user_flow INTEGER DEFAULT 0"
-        )
-        # Backfill: every mission that existed before this column was added is
-        # legacy. Rows inserted after this point use the column default of 0.
-        await db.execute(
-            "UPDATE missions SET legacy_pre_user_flow = 1 "
-            "WHERE legacy_pre_user_flow IS NULL OR legacy_pre_user_flow = 0"
-        )
-        await db.commit()
-        logger.info("Z1 T3B: added missions.legacy_pre_user_flow column and backfilled")
-    except Exception:
-        pass  # Column already exists
-
     # Migrate project data into missions (if projects table exists)
     try:
         cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
@@ -442,19 +412,7 @@ async def init_db():
             repo_path TEXT DEFAULT '',
             language TEXT DEFAULT '',
             framework TEXT DEFAULT '',
-            legacy_pre_p7 INTEGER DEFAULT 0,
-            legacy_pre_charter INTEGER DEFAULT 0,
-            legacy_pre_adr INTEGER DEFAULT 0,
-            legacy_pre_falsification INTEGER DEFAULT 0,
-            legacy_pre_non_goals INTEGER DEFAULT 0,
-            legacy_pre_competitive_positioning INTEGER DEFAULT 0,
-            legacy_pre_per_screen_plans INTEGER DEFAULT 0,
-            legacy_pre_html_oids INTEGER DEFAULT 0,
-            legacy_pre_compliance INTEGER DEFAULT 0,
             founder_attention_budget_minutes INTEGER,
-            legacy_pre_premortem INTEGER DEFAULT 0,
-            legacy_pre_spec_alive INTEGER DEFAULT 0,
-            legacy_pre_prior_art INTEGER DEFAULT 0,
             interview_skip_reason TEXT,
             phase_7_rework_loops INTEGER DEFAULT 0
         )
@@ -472,154 +430,10 @@ async def init_db():
     except Exception:
         pass  # Column already exists
 
-    # P7 migration: add `legacy_pre_p7` column to existing DBs and backfill
-    # rows that predate P7. Only the ALTER-succeeded branch backfills —
-    # subsequent runs see the column already exists and skip the UPDATE so
-    # missions created post-P7 keep their default 0.
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN legacy_pre_p7 INTEGER DEFAULT 0"
-        )
-        # Every mission that exists at migration time predates P7 (its
-        # blackboard artifacts have no `_schema_version` field).
-        await db.execute("UPDATE missions SET legacy_pre_p7 = 1")
-        logger.info("P7 migration: legacy_pre_p7 added + existing rows backfilled to 1")
-    except Exception:
-        # Column already exists — no-op; new missions default to 0.
-        pass
-
-    # Z1 Tier 1 migration: add `legacy_pre_charter` column to existing DBs
-    # and backfill rows that predate the charter consolidation (steps
-    # 0.0z / 0.0a / 0.1 product_charter). Same idempotent pattern as P7.
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN legacy_pre_charter INTEGER DEFAULT 0"
-        )
-        # Every mission existing at migration time predates the charter
-        # reshape — its phase-0 produced the old micro-artifacts (idea_brief,
-        # problem_statement, target_users, value_proposition).
-        await db.execute("UPDATE missions SET legacy_pre_charter = 1")
-        logger.info(
-            "Z1 migration: legacy_pre_charter added + existing rows backfilled to 1"
-        )
-    except Exception:
-        # Column already exists — no-op; new missions default to 0.
-        pass
-
-    # Z1 Tier 2 migration: add `legacy_pre_adr` column. Tier 2 reshapes
-    # phase 4 around universal-shape ADRs (P3 + C7 + A8); pre-existing
-    # missions emitted Nygard-5-field artifacts only and cannot be
-    # retroactively upgraded. Same idempotent pattern as P7/charter.
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN legacy_pre_adr INTEGER DEFAULT 0"
-        )
-        await db.execute("UPDATE missions SET legacy_pre_adr = 1")
-        logger.info(
-            "Z1 Tier 2 migration: legacy_pre_adr added + existing rows backfilled to 1"
-        )
-    except Exception:
-        # Column already exists — no-op; new missions default to 0.
-        pass
-
-    # Z1 Tier 2 migration (P4): add `legacy_pre_falsification` column.
-    # Backfilled to 1 for existing missions — they predate the falsification
-    # triple (risk_if_wrong / validation_method / falsification_signal) on
-    # phase-3 requirement-emitting steps (3.1 / 3.2 / 3.3 / 3.7).
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_falsification INTEGER DEFAULT 0"
-        )
-        await db.execute("UPDATE missions SET legacy_pre_falsification = 1")
-        logger.info(
-            "Z1 Tier 2 migration: legacy_pre_falsification added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        # Column already exists — no-op; new missions default to 0.
-        pass
-
-    # Z1 Tier 2 migration (A2): add `legacy_pre_non_goals` column.
-    # Backfilled to 1 for existing missions — they predate the 0.6a
-    # non_goals_lock mission-wide refusal artifact.
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_non_goals INTEGER DEFAULT 0"
-        )
-        await db.execute("UPDATE missions SET legacy_pre_non_goals = 1")
-        logger.info(
-            "Z1 Tier 2 migration: legacy_pre_non_goals added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        # Column already exists — no-op; new missions default to 0.
-        pass
-
-    # Z1 Tier 2 migration (C2): legacy_pre_competitive_positioning column.
-    # Backfilled to 1 for existing missions — they predate the
-    # 1.4a competitive_positioning_lock step.
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_competitive_positioning INTEGER DEFAULT 0"
-        )
-        await db.execute(
-            "UPDATE missions SET legacy_pre_competitive_positioning = 1"
-        )
-        logger.info(
-            "Z1 Tier 2 migration: legacy_pre_competitive_positioning added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        pass
-
-    # Z1 Tier 3 migration (C3+A10+C9+A11+C14): add
-    # `legacy_pre_per_screen_plans` column. Backfilled to 1 for existing
-    # missions — they predate the per-screen plan + HTML prototype reshape
-    # of phase 5 (steps `5.1 generate_per_screen_plans` and
-    # `5.2 generate_html_prototypes`).
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_per_screen_plans INTEGER DEFAULT 0"
-        )
-        await db.execute(
-            "UPDATE missions SET legacy_pre_per_screen_plans = 1"
-        )
-        logger.info(
-            "Z1 Tier 3 migration: legacy_pre_per_screen_plans added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        pass
-
-    # Z1 Tier 4 migration (T4B / C17+A20): add `legacy_pre_html_oids`
-    # column. Backfilled to 1 for existing missions — they predate the
-    # `annotate_html_oids` post-processor (step `5.30c`) that tags
-    # semantic blocks with `data-oid` for the spec-patch proposer.
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_html_oids INTEGER DEFAULT 0"
-        )
-        await db.execute(
-            "UPDATE missions SET legacy_pre_html_oids = 1"
-        )
-        logger.info(
-            "Z1 Tier 4 migration: legacy_pre_html_oids added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        pass
-
-    # Z1 Tier 4 migration (T4C / C10+A19): preview-URL surface columns +
-    # legacy gate. `preview_url` holds the most recent tunnel URL (NULL when
-    # no tunnel is active or hosting is deferred to Z2). `preview_started_at`
-    # is a CURRENT_TIMESTAMP marker. `legacy_pre_preview_url` gates the new
-    # phase-5 `5.40 emit_preview_url` step so existing missions don't
-    # retroactively require a preview surface; backfilled to 1 for them.
+    # Z1 Tier 4 migration (T4C / C10+A19): preview-URL surface columns.
+    # `preview_url` holds the most recent tunnel URL (NULL when no tunnel is
+    # active or hosting is deferred to Z2). `preview_started_at` is a
+    # CURRENT_TIMESTAMP marker.
     try:
         await db.execute(
             "ALTER TABLE missions ADD COLUMN preview_url TEXT"
@@ -632,59 +446,6 @@ async def init_db():
         )
     except Exception:
         pass  # Column already exists
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_preview_url INTEGER DEFAULT 0"
-        )
-        await db.execute(
-            "UPDATE missions SET legacy_pre_preview_url = 1"
-        )
-        logger.info(
-            "Z1 Tier 4 migration: legacy_pre_preview_url added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        pass  # Column already exists
-
-    # Z1 Tier 5B migration (A6 / premortem): gate the new `6.5z
-    # failure_premortem` step so existing missions don't retroactively
-    # require a premortem.md. Backfilled to 1 for older rows; new
-    # missions default to 0.
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_premortem INTEGER DEFAULT 0"
-        )
-        await db.execute(
-            "UPDATE missions SET legacy_pre_premortem = 1"
-        )
-        logger.info(
-            "Z1 Tier 5B migration: legacy_pre_premortem added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        pass  # Column already exists
-
-    # Z1 Tier 5B migration (B5 / spec_consistency_check): gate the new
-    # phase-7+ wave-start `<N>.0z` mechanical steps so existing missions
-    # don't retroactively run drift checks against an absent phase-≤6
-    # spec. Backfilled to 1 for older rows; new missions default to 0.
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_spec_alive INTEGER DEFAULT 0"
-        )
-        await db.execute(
-            "UPDATE missions SET legacy_pre_spec_alive = 1"
-        )
-        logger.info(
-            "Z1 Tier 5B migration: legacy_pre_spec_alive added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        pass  # Column already exists
-
     # Z1 Tier 4 (T4C / C10): preview_log audit trail — one row per
     # emit/kill action so we can correlate Telegram /preview commands
     # with mission lifecycle state.
@@ -701,17 +462,6 @@ async def init_db():
             )
             """
         )
-    except Exception:
-        pass
-
-    # Z1 Tier 2 migration (A4): interview_skip_reason column. NULL for
-    # all existing rows — only set by request_interview_data when the
-    # founder explicitly opts SKIP.
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN interview_skip_reason TEXT"
-        )
-        logger.info("Z1 Tier 2 migration: interview_skip_reason column added")
     except Exception:
         pass
 
@@ -738,25 +488,6 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_regen_log_mission_artifact "
         "ON regen_log (mission_id, artifact_path, created_at)"
     )
-
-    # Z1 Tier 5A migration (P6): legacy_pre_compliance column. Backfilled
-    # to 1 for existing missions — they predate the compliance fingerprint
-    # collection step (0.4a) and overlay (1.11a), so skip_when on those
-    # new steps reads this flag and lets old missions short-circuit.
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_compliance INTEGER DEFAULT 0"
-        )
-        await db.execute(
-            "UPDATE missions SET legacy_pre_compliance = 1"
-        )
-        logger.info(
-            "Z1 Tier 5A migration: legacy_pre_compliance added "
-            "+ existing rows backfilled to 1"
-        )
-    except Exception:
-        pass  # Column already exists
 
     # Z1 Tier 5A migration (A5): founder_attention_budget_minutes column.
     # NULL for existing rows = unbounded (treated as ok=True by
@@ -889,41 +620,14 @@ async def init_db():
         "ON critic_log (mission_id, created_at)"
     )
 
-    # Z1 Tier 5C (B4) — legacy_pre_critic_gate column on missions.
-    # Backfilled to 1 for existing rows so critic-gate post-hooks know
-    # the mission predates the gate (treat as legacy = no veto attempt).
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN legacy_pre_critic_gate INTEGER DEFAULT 0"
-        )
-        await db.execute("UPDATE missions SET legacy_pre_critic_gate = 1")
-        logger.info(
-            "Z1 T5C migration: legacy_pre_critic_gate added + backfilled"
-        )
-    except Exception:
-        pass
-
-    # Z1 Tier 6 (C18) — github_repo_url + legacy_pre_github_init on missions.
+    # Z1 Tier 6 (C18) — github_repo_url on missions.
     # `github_repo_url` holds the live GitHub URL (NULL when not yet initialised
-    # or hosting deferred via fail-soft pending status). `legacy_pre_github_init`
-    # gates the new phase-6 `6.7 init_github_repo` step so existing missions
-    # don't retroactively try to push a repo for already-shipped specs.
+    # or hosting deferred via fail-soft pending status).
     try:
         await db.execute(
             "ALTER TABLE missions ADD COLUMN github_repo_url TEXT"
         )
         logger.info("Z1 T6C migration: github_repo_url column added")
-    except Exception:
-        pass
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_github_init INTEGER DEFAULT 0"
-        )
-        await db.execute("UPDATE missions SET legacy_pre_github_init = 1")
-        logger.info(
-            "Z1 T6C migration: legacy_pre_github_init added + backfilled"
-        )
     except Exception:
         pass
 
@@ -945,30 +649,6 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_streaming_guard_log_task "
         "ON streaming_guard_log (task_id, created_at)"
     )
-
-    # Z1 Tier 6A (A7) — legacy_pre_idea_dedup column.
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN legacy_pre_idea_dedup INTEGER DEFAULT 0"
-        )
-        await db.execute("UPDATE missions SET legacy_pre_idea_dedup = 1")
-        logger.info(
-            "Z1 T6A migration: legacy_pre_idea_dedup added + backfilled"
-        )
-    except Exception:
-        pass
-
-    # Z1 Tier 6A (P9) — legacy_pre_inheritance column.
-    try:
-        await db.execute(
-            "ALTER TABLE missions ADD COLUMN legacy_pre_inheritance INTEGER DEFAULT 0"
-        )
-        await db.execute("UPDATE missions SET legacy_pre_inheritance = 1")
-        logger.info(
-            "Z1 T6A migration: legacy_pre_inheritance added + backfilled"
-        )
-    except Exception:
-        pass
 
     # Z1 Tier 6A (P9) — cross-mission artifact index.
     await db.execute("""
@@ -1005,19 +685,6 @@ async def init_db():
         """
     )
 
-    # Z1 Tier 6B (P5) — legacy_pre_prior_art column.
-    try:
-        await db.execute(
-            "ALTER TABLE missions "
-            "ADD COLUMN legacy_pre_prior_art INTEGER DEFAULT 0"
-        )
-        await db.execute("UPDATE missions SET legacy_pre_prior_art = 1")
-        logger.info(
-            "Z1 Tier 6B migration: legacy_pre_prior_art added + backfilled"
-        )
-    except Exception:
-        pass  # Column already exists
-
     # Z1 Tier 7B (C21) — paraflow bundle-quality regression log.
     await db.execute(
         """
@@ -1039,6 +706,32 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_paraflow_diff_log_mission "
         "ON paraflow_diff_log (mission_id, created_at DESC)"
     )
+
+    # Legacy removal (2026-05-25): drop the legacy_pre_* gate columns + dead
+    # diagnostics. SQLite >= 3.35 supports DROP COLUMN; guard per-column on the
+    # live PRAGMA so this is idempotent and safe to re-run.
+    # NOTE: interview_skip_reason is intentionally excluded — mr_roboto's
+    # request_interview_data still writes to it; it is kept as a live column.
+    _LEGACY_DROP_COLS = [
+        "legacy_pre_charter", "legacy_pre_adr", "legacy_pre_falsification",
+        "legacy_pre_non_goals", "legacy_pre_competitive_positioning",
+        "legacy_pre_per_screen_plans", "legacy_pre_html_oids",
+        "legacy_pre_preview_url", "legacy_pre_premortem", "legacy_pre_spec_alive",
+        "legacy_pre_compliance", "legacy_pre_critic_gate", "legacy_pre_github_init",
+        "legacy_pre_idea_dedup", "legacy_pre_inheritance", "legacy_pre_prior_art",
+        "legacy_pre_design_tokens", "legacy_pre_user_flow", "legacy_pre_p7",
+    ]
+    try:
+        _cur = await db.execute("PRAGMA table_info(missions)")
+        _existing = {r[1] for r in await _cur.fetchall()}
+        await _cur.close()
+        for _c in _LEGACY_DROP_COLS:
+            if _c in _existing:
+                await db.execute(f"ALTER TABLE missions DROP COLUMN {_c}")
+        await db.commit()
+        logger.info("Legacy-removal migration: dropped legacy_pre_* columns")
+    except Exception as _e:
+        logger.warning(f"Legacy-removal column drop skipped: {_e}")
 
     # Tasks
     await db.execute("""

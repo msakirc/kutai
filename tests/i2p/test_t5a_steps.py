@@ -29,11 +29,13 @@ def test_step_0_4a_present(workflow):
     s = _step_by_id(workflow, "0.4a")
     assert s["agent"] == "mechanical"
     assert s["executor"] == "mechanical"
-    assert "0.4" in s["depends_on"]
+    # step 0.4 (scope_ambiguity_detection) was deleted; 0.4a now depends on 0.1
+    assert s["depends_on"]  # has at least one dependency
     assert s["payload"]["action"] == "compliance_fingerprint_collection"
     assert "compliance_fingerprint" in s["output_artifacts"]
     assert any("compliance_fingerprint.json" in p for p in s.get("produces", []))
-    assert "legacy_pre_compliance" in s.get("skip_when", "")
+    # legacy_pre_compliance gate was removed; step is now unconditional
+    assert not s.get("skip_when") or "legacy_pre_" not in s.get("skip_when", "")
 
 
 def test_step_1_11a_present(workflow):
@@ -46,7 +48,8 @@ def test_step_1_11a_present(workflow):
     assert "compliance_template_render" in (s.get("tools_hint") or [])
     # Post-hook to verify referenced templates exist on disk.
     assert "compliance_template_present" in (s.get("post_hooks") or [])
-    assert "legacy_pre_compliance" in s.get("skip_when", "")
+    # legacy_pre_compliance gate was removed; step is now unconditional
+    assert not s.get("skip_when") or "legacy_pre_" not in s.get("skip_when", "")
 
 
 def test_step_6_6_has_compliance_blocker_post_hook(workflow):

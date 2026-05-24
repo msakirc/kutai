@@ -45,7 +45,8 @@ _FIXTURES_ROOT = _HERE / "fixtures"
 _REPO_ROOT = _HERE.parent.parent.parent
 _WORKFLOW = _REPO_ROOT / "src" / "workflows" / "i2p" / "i2p_v3.json"
 
-REVIEWER_STEP_IDS = ("1.13", "3.11", "4.16", "5.10", "6.6")
+# 5.10 (design_review) was deleted during legacy removal; only 4 reviewer steps remain
+REVIEWER_STEP_IDS = ("1.13", "3.11", "4.16", "6.6")
 
 
 def _load_workflow() -> dict:
@@ -98,6 +99,10 @@ def _discover_fixtures() -> list[tuple[str, str, Path]]:
         "good_screen_consistency",
         "bad_screen_consistency",
     }
+    # Steps deleted during legacy removal — their fixture dirs remain on disk
+    # but the steps no longer exist in the workflow JSON.
+    deleted_step_ids = {"5.10"}
+
     for vdir in sorted(_FIXTURES_ROOT.iterdir()):
         if not vdir.is_dir() or not vdir.name.startswith("v"):
             continue
@@ -107,6 +112,8 @@ def _discover_fixtures() -> list[tuple[str, str, Path]]:
                 continue
             # dir name is step id with `.` → `_`
             step_id = step_dir.name.replace("_", ".")
+            if step_id in deleted_step_ids:
+                continue
             for fx in sorted(step_dir.glob("*.json")):
                 if fx.stem in skip_stems:
                     continue
@@ -159,8 +166,9 @@ def test_fixtures_cover_every_reviewer_step():
 
 
 def test_fixture_count_meets_minimum():
-    """Acceptance criterion: at least 5 reviewer steps × 2 fixtures = 10."""
-    assert len(_FIXTURES) >= 10, f"fixture count {len(_FIXTURES)} below 10"
+    """Acceptance criterion: at least 4 reviewer steps × 2 fixtures = 8.
+    (5.10 design_review was deleted during legacy removal.)"""
+    assert len(_FIXTURES) >= 8, f"fixture count {len(_FIXTURES)} below 8"
 
 
 def test_z1_tier2_adr_companion_fixtures_present():
@@ -306,7 +314,6 @@ def test_reviewer_fixture(fixture):
             "action": "verify_schema_version",
             "artifacts": artifacts,
             "expected_versions": expected_versions,
-            "legacy_pre_p7": False,
         },
     }
     result = asyncio.run(mr_roboto_run(task))
@@ -343,30 +350,6 @@ def test_verify_schema_version_flags_mismatch():
     assert res["ok"] is False
     assert res["mismatched"] == [{"name": "foo", "found": "2", "expected": "1"}]
 
-
-def test_verify_schema_version_legacy_tolerates_missing():
-    from mr_roboto.verify_schema_version import verify_schema_version
-
-    res = verify_schema_version(
-        artifacts={"foo": {"data": "x"}},
-        expected_versions={"foo": "1"},
-        legacy_pre_p7=True,
-    )
-    assert res["ok"] is True
-    assert res["missing"] == []
-
-
-def test_verify_schema_version_legacy_still_flags_mismatch():
-    """Even legacy missions must not silently accept a wrong-version artifact."""
-    from mr_roboto.verify_schema_version import verify_schema_version
-
-    res = verify_schema_version(
-        artifacts={"foo": {"_schema_version": "9", "data": "x"}},
-        expected_versions={"foo": "1"},
-        legacy_pre_p7=True,
-    )
-    assert res["ok"] is False
-    assert res["mismatched"][0]["name"] == "foo"
 
 
 def test_verify_schema_version_extracts_from_markdown_fence():

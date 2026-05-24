@@ -707,6 +707,32 @@ async def init_db():
         "ON paraflow_diff_log (mission_id, created_at DESC)"
     )
 
+    # Legacy removal (2026-05-25): drop the legacy_pre_* gate columns + dead
+    # diagnostics. SQLite >= 3.35 supports DROP COLUMN; guard per-column on the
+    # live PRAGMA so this is idempotent and safe to re-run.
+    # NOTE: interview_skip_reason is intentionally excluded — mr_roboto's
+    # request_interview_data still writes to it; it is kept as a live column.
+    _LEGACY_DROP_COLS = [
+        "legacy_pre_charter", "legacy_pre_adr", "legacy_pre_falsification",
+        "legacy_pre_non_goals", "legacy_pre_competitive_positioning",
+        "legacy_pre_per_screen_plans", "legacy_pre_html_oids",
+        "legacy_pre_preview_url", "legacy_pre_premortem", "legacy_pre_spec_alive",
+        "legacy_pre_compliance", "legacy_pre_critic_gate", "legacy_pre_github_init",
+        "legacy_pre_idea_dedup", "legacy_pre_inheritance", "legacy_pre_prior_art",
+        "legacy_pre_design_tokens", "legacy_pre_user_flow", "legacy_pre_p7",
+    ]
+    try:
+        _cur = await db.execute("PRAGMA table_info(missions)")
+        _existing = {r[1] for r in await _cur.fetchall()}
+        await _cur.close()
+        for _c in _LEGACY_DROP_COLS:
+            if _c in _existing:
+                await db.execute(f"ALTER TABLE missions DROP COLUMN {_c}")
+        await db.commit()
+        logger.info("Legacy-removal migration: dropped legacy_pre_* columns")
+    except Exception as _e:
+        logger.warning(f"Legacy-removal column drop skipped: {_e}")
+
     # Tasks
     await db.execute("""
         CREATE TABLE IF NOT EXISTS tasks (

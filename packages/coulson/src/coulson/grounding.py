@@ -127,6 +127,64 @@ def unmatched_produces(produces: list, written: set[str]) -> list:
     return [e for e in produces if not match_produces_entry(e, written)]
 
 
+# Text-artifact kinds eligible for inline auto-persist recovery — when the
+# agent dumps the artifact in final_answer.result instead of calling
+# write_file. Binary / non-text produces are never auto-persisted.
+_AUTOPERSIST_EXTENSIONS: tuple[str, ...] = (".md", ".json")
+_AUTOPERSIST_MD_MIN_CHARS = 500
+
+
+def autopersist_candidate(produces: list, written: set[str], result):
+    """Decide whether to auto-persist an inline ``final_answer`` artifact.
+
+    Returns ``(relative_path, content_to_write)`` when the step declared a
+    single still-unwritten text artifact (``.md`` / ``.json``) and the agent
+    dumped substantive content inline in ``final_answer.result``. Returns
+    ``None`` otherwise — "don't persist; let the grounding guard re-prompt".
+
+    Why: some i2p steps (e.g. 0.0a.draft intake_todo_draft) use the
+    "return the artifact as final_answer, the engine persists it to the
+    produces path" contract with write_file intentionally disabled. Without
+    this recovery the produces-grounding guard — which only clears on a
+    write_file call — loops the agent to max_iterations → DLQ (mission 75).
+
+    Per kind:
+      - ``.md``  : ``result`` is a string with >= 500 non-blank chars.
+      - ``.json``: ``result`` is a JSON string that parses, OR a dict/list
+                   (serialized here). Invalid/empty JSON is rejected so a
+                   malformed artifact never lands on disk for a downstream
+                   step to choke on.
+    """
+    if not isinstance(produces, list) or len(produces) != 1:
+        return None
+    path = produces[0]
+    if not isinstance(path, str) or not path.endswith(_AUTOPERSIST_EXTENSIONS):
+        return None
+    # Only when the single declared path is still entirely unwritten.
+    if unmatched_produces(produces, written) != produces:
+        return None
+
+    if path.endswith(".json"):
+        import json
+        if isinstance(result, (dict, list)):
+            try:
+                result = json.dumps(result, ensure_ascii=False, indent=2)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(result, str) or not result.strip():
+            return None
+        try:
+            json.loads(result)
+        except (ValueError, TypeError):
+            return None
+        return (path, result)
+
+    # .md — substantive markdown heuristic
+    if isinstance(result, str) and len(result.strip()) >= _AUTOPERSIST_MD_MIN_CHARS:
+        return (path, result)
+    return None
+
+
 def build_grounding_message(
     *, missing: list, written: set[str], task_title: str = "",
 ) -> str:

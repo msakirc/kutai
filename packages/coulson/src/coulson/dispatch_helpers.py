@@ -28,27 +28,40 @@ def pick_for_iter(
 ) -> Pick | None:
     """Select the model for the current ReAct iteration.
 
-    Iter 0 with no accumulated failures reuses ``task.preselected_pick``
-    (set by Beckman admission) when present. Otherwise — including all
-    later iters and any transport-failure retry within an iter — calls
-    ``fatih_hoca.select`` fresh with the current ``failures`` list so
-    Hoca's failure-adaptation can exclude flaky models.
+    RC-A (mission 74): reuse the model Beckman reserved for this task
+    across EVERY no-failure iteration — not just iteration 0 — as long as
+    it is still servable *right now*. Re-selecting fresh each turn re-races
+    the live pool (the GPU is often busy with a sibling task seconds after
+    admission, and a cloud model that fit at admission may have hit its TPM
+    / daily cap since), which is the ``no_candidates`` mechanism: admission
+    keeps passing while the worker keeps failing into the same wall → DLQ.
+
+    The held pick is ``task["_held_pick"]`` (the model actually running
+    after any earlier re-select) or, on the first iteration, the admission
+    ``task["preselected_pick"]``. Re-select only when:
+      (a) ``failures`` are present — failure-adaptation excludes flaky
+          models / escalates; or
+      (b) the held model is no longer servable (unloaded / swapped-out /
+          rate-limited / daily-exhausted), per ``fatih_hoca.is_servable``.
+
+    Every fresh selection is stamped onto ``task["_held_pick"]`` so the
+    next no-failure iter reuses the live model, not the stale preselect.
 
     Mid-task urgency bump (+0.1, capped at 1.0) when failures present —
     mirrors the policy from the dispatcher's pre-C.2 retry recursion
     (user design 2026-05-03: "mid task urgency of the task can be a
     little higher than pre dispatch urgency to help react loops finish").
     """
-    if iteration == 0 and not failures:
-        pre = task.get("preselected_pick")
-        if pre is not None:
-            return pre
+    if not failures:
+        held = task.get("_held_pick") or task.get("preselected_pick")
+        if held is not None and fatih_hoca.is_servable(model=held.model, reqs=reqs):
+            return held
 
     urgency = 0.5
     if failures:
         urgency = min(1.0, urgency + 0.1)
 
-    return fatih_hoca.select(
+    pick = fatih_hoca.select(
         task=reqs.effective_task or reqs.primary_capability,
         agent_type=reqs.agent_type,
         difficulty=reqs.difficulty,
@@ -68,6 +81,11 @@ def pick_for_iter(
         call_category="main_work",
         urgency=urgency,
     )
+    # Track the live model so the next no-failure iter reuses THIS pick
+    # (the one actually running) rather than re-racing the pool again.
+    if pick is not None:
+        task["_held_pick"] = pick
+    return pick
 
 
 def result_to_response_dict(result: Any, model: Any) -> dict:

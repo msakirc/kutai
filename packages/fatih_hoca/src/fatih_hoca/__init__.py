@@ -10,7 +10,7 @@ from fatih_hoca.ranking import ScoredModel
 from fatih_hoca.selector import Selector
 
 __all__ = [
-    "init", "select", "all_models", "requirements_for",
+    "init", "select", "is_servable", "all_models", "requirements_for",
     "Pick", "Failure", "SelectionFailure", "ModelInfo", "ModelRequirements", "ScoredModel",
     "AGENT_REQUIREMENTS", "CAPABILITY_TO_TASK",
     "Cap", "ALL_CAPABILITIES", "TASK_PROFILES",
@@ -449,6 +449,19 @@ def select(**kwargs) -> Pick | None:
     if _selector is None:
         return None
     return _selector.select(**kwargs)
+
+
+def is_servable(*, model, reqs) -> bool:
+    """Per-model continuation gate (RC-A, mission 74).
+
+    True when ``model`` would still pass hard-eligibility for ``reqs``
+    against the current snapshot — the "can I keep running on what I
+    already hold" check, with no pool-pressure gate. Fail-closed (False)
+    before init() so the caller re-selects rather than reusing a stale pick.
+    """
+    if _selector is None:
+        return False
+    return _selector.is_servable(model=model, reqs=reqs)
 
 
 def all_models() -> list[ModelInfo]:

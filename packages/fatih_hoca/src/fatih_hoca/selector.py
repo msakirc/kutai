@@ -589,6 +589,35 @@ class Selector:
 
         return None
 
+    # ─── Continuation gate (RC-A, mission 74) ────────────────────────────────
+
+    def is_servable(self, *, model: ModelInfo, reqs: ModelRequirements) -> bool:
+        """Can a task CONTINUE on the model it already holds, right now?
+
+        Runs the hard-eligibility chain for this ONE model against the
+        current snapshot — WITHOUT the pool-pressure scalar/threshold gate.
+        Pressure decides whether to start *new* load; it must not evict a
+        model a task already reserved (that race is the no_candidates
+        mechanism). Used by coulson's ``pick_for_iter`` to reuse the
+        admitted pick across no-failure iterations instead of re-racing
+        the live pool every turn.
+
+        A held local model that's already loaded survives
+        ``vram_available_mb == 0``: its own residency consumed the VRAM —
+        that is continuation, not contention.
+        """
+        snapshot = self._nerd_herd.snapshot()
+        reason = self._check_eligibility(
+            model=model, reqs=reqs, failed_models=set(), snapshot=snapshot,
+        )
+        if reason is None:
+            return True
+        if (reason == "no_vram_available"
+                and getattr(model, "is_local", False)
+                and getattr(model, "is_loaded", False)):
+            return True
+        return False
+
     # ─── Helpers ─────────────────────────────────────────────────────────────
 
     def _find_no_swap_alternative(self, scored: list) -> object | None:

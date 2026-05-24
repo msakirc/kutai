@@ -127,16 +127,34 @@ async def requirements_for(
         if difficulty_bump > 0:
             reqs.difficulty = min(10, reqs.difficulty + difficulty_bump)
 
-    # ── Estimate context size ──
-    desc_len = len(task.get("description", ""))
-    context_json = task.get("context", "{}")
-    if isinstance(context_json, str):
-        ctx_len = len(context_json)
-    else:
-        ctx_len = len(json.dumps(context_json))
+    # ── Input token estimate (RC-A change B, mission 74) ──
+    # Use the SAME source as Beckman admission — estimate_for (the btable
+    # chain: learned step p90 → static override → agent default) — instead
+    # of a char-based (desc+ctx)//4 heuristic. Ground-truth telemetry over
+    # 9998 calls showed char-based floored to 1000 while the real assembled
+    # prompt (RAG + system + tools, added at call time) ran ~9k tokens, so
+    # the worker under-estimated input by ~9000 and the per-call/per-request
+    # gates were toothless. Worse, admission (already on estimate_for) and
+    # the worker disagreed → admission admitted models the worker's select()
+    # then rejected → the `no_candidates` DLQ loop. Both now agree.
+    #
+    # Lazy import: btable_cache lives in general_beckman (which imports
+    # fatih_hoca), so a module-level import here would be circular. Fall
+    # back to an empty btable → estimate_for resolves the agent default.
+    try:
+        from general_beckman.btable_cache import get_btable
+        _bt = get_btable()
+    except Exception:
+        _bt = {}
+    from fatih_hoca.estimates import estimate_for
 
-    estimated_input = (desc_len + ctx_len) // 4  # rough char-to-token
-    reqs.estimated_input_tokens = max(estimated_input, 1000)
+    class _EstShim:
+        __slots__ = ("agent_type", "context")
+
+    _shim = _EstShim()
+    _shim.agent_type = reqs.agent_type
+    _shim.context = task_ctx if isinstance(task_ctx, dict) else {}
+    reqs.estimated_input_tokens = estimate_for(_shim, btable=_bt).in_tokens
 
     # Template's estimated_output_tokens is a per-agent default (e.g.
     # analyst=3000, coder=4000). List-heavy workflow steps like

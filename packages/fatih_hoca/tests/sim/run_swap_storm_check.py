@@ -87,9 +87,16 @@ def _make_candidate(model_info, is_loaded: bool):
     return c
 
 
-def _snapshot(loaded_name: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        local=SimpleNamespace(
+def _snapshot(loaded_name: str):
+    # Real SystemSnapshot — ranking._apply_utilization_layer calls
+    # snapshot.pressure_for(...), which only the real type provides. The
+    # prior bare SimpleNamespace pre-dated that contract and AttributeError'd
+    # (stale harness; unrelated to the RC-A / mission-74 selection change).
+    # Imported lazily: sys.path is wired by _setup_paths() in main() first.
+    from nerd_herd.types import SystemSnapshot, LocalModelState
+    return SystemSnapshot(
+        vram_available_mb=8192,
+        local=LocalModelState(
             model_name=loaded_name,
             idle_seconds=300.0,
             measured_tps=15.0,

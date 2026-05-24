@@ -156,6 +156,36 @@ def test_missing_mission_dir_returns_ok(tmp_path):
     assert any("mission_dir_missing" in w for w in res["warnings"])
 
 
+def test_resolver_falls_back_to_workspace_dir_not_cwd(tmp_path, monkeypatch):
+    """Bug A (mission #71): the resolver fallback must be the canonical
+    WORKSPACE_DIR base, not the process cwd. Direct red->green on the changed
+    line — old code returned Path.cwd() and ignored WORKSPACE_DIR entirely."""
+    from mr_roboto.spec_consistency_check import _resolve_workspace_root
+    import src.tools.workspace as ws_mod
+
+    monkeypatch.setattr(ws_mod, "WORKSPACE_DIR", str(tmp_path))
+    root = _resolve_workspace_root(None, 71)
+    assert root == Path(str(tmp_path)), root  # would be Path.cwd() pre-fix
+
+
+def test_check_resolves_workspace_when_payload_omits_path(tmp_path, monkeypatch):
+    """Bug A end-to-end: with no workspace_path in the payload (the production
+    case — the expander never wires it), the check must still find
+    WORKSPACE_DIR/mission_<id> and read its spec, not pass vacuously."""
+    import src.tools.workspace as ws_mod
+
+    monkeypatch.setattr(ws_mod, "WORKSPACE_DIR", str(tmp_path))
+    _seed_minimal_spec(tmp_path, mission_id=71)
+    res = spec_consistency_check(
+        mission_id=71,
+        current_phase="phase_9",
+        workspace_path=None,
+    )
+    assert res["ok"] is True, res
+    assert not any("mission_dir_missing" in w for w in res["warnings"]), res
+    assert "charter" in res["spec_artifacts_present"], res
+
+
 @pytest.mark.asyncio
 async def test_dispatch_via_mr_roboto_run_no_drift(tmp_path):
     import mr_roboto

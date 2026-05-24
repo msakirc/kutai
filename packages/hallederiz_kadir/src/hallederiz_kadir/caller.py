@@ -36,6 +36,24 @@ logging.getLogger("LiteLLM Proxy").setLevel(logging.WARNING)
 # calls capped to 120s).
 
 
+def _http_timeout(timeout: float) -> float | None:
+    """Resolve the HTTP timeout handed to litellm for one call.
+
+    A non-positive ``timeout`` is the dispatcher's "no wall-clock cap" sentinel
+    for local models (``llm_dispatcher.execute`` passes 0.0 for ``is_local``):
+    slow CPU-offloaded / thinking generation must NOT be aborted by a fixed HTTP
+    deadline — the stream-inactivity watchdog (INITIAL/INTER_CHUNK_TIMEOUT) is
+    what governs genuine hangs. Return ``None`` so litellm imposes no request
+    timeout. The old ``max(10.0, timeout - 5.0)`` collapsed the 0.0 sentinel into
+    a 10s HTTP timeout and killed legitimate slow local calls (intake #73: a
+    model the selector itself estimated at ~100s got a 10s deadline →
+    APITimeoutError). For a positive budget, leave 5s headroom (floored at 10s).
+    """
+    if timeout <= 0:
+        return None
+    return max(10.0, float(timeout) - 5.0)
+
+
 def _gemini_sanitize_schema(schema):
     """Recursively rewrite a JSON Schema dict for Gemini compatibility.
 
@@ -577,7 +595,7 @@ async def call(
     )
 
     # ── HTTP timeout ──
-    http_timeout = max(10.0, float(timeout) - 5.0)
+    http_timeout = _http_timeout(timeout)
 
     # ── Build completion kwargs ──
     completion_kwargs = dict(

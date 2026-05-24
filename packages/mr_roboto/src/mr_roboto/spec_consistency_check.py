@@ -70,8 +70,17 @@ def _resolve_workspace_root(workspace_path: str | None, mission_id: str | int) -
     """Return the workspace root that contains ``mission_<id>/``."""
     if workspace_path:
         return Path(workspace_path)
-    # Default to current working directory; production wires workspace_path.
-    return Path.cwd()
+    # The expander does NOT wire workspace_path into the mechanical payload
+    # (the writer/coulson path resolves WORKSPACE_DIR itself), so fall back to
+    # the canonical WORKSPACE_DIR base — the same root used to build
+    # ``mission_<id>/``. The old ``Path.cwd()`` default pointed at the server's
+    # arbitrary working dir, so every consistency check found no mission dir and
+    # passed vacuously (mission #71, first e2e run, 2026-05-22).
+    try:
+        from src.tools.workspace import WORKSPACE_DIR
+        return Path(WORKSPACE_DIR)
+    except Exception:
+        return Path.cwd()
 
 
 def _read_text(p: Path) -> str | None:

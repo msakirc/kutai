@@ -1478,6 +1478,36 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
         except Exception as e:
             logger.debug(f"[Workflow Hook] Could not write artifact to disk: {e}")
 
+    # ── Persist to the DECLARED `produces` paths (real subdir + extension) ──
+    # The block above only writes `<name>.md` at the mission root, which misses
+    # any step that declares a produces path with a subdir/extension (e.g.
+    # `.intake/intake_todo_draft.json`). Schema'd agent steps have write_file
+    # auto-stripped (the result IS the artifact), so without this the declared
+    # produces file never lands on disk → grounding DLQs and downstream
+    # consumers can't find it (intake #73: produces `.intake/...json` but the
+    # engine wrote `intake_todo_draft.md` at the root). Only FILL missing files
+    # — never clobber a file the agent wrote itself (its full content may be
+    # richer than the result summary).
+    if output_value and mission_id:
+        try:
+            from ...tools.workspace import WORKSPACE_DIR as _WS_DIR
+            import os as _os
+            for _entry in (ctx.get("produces") or []):
+                if not (isinstance(_entry, str) and _entry):
+                    continue
+                _fp = _entry if _os.path.isabs(_entry) else _os.path.join(_WS_DIR, _entry)
+                if _os.path.isfile(_fp):
+                    continue  # agent / prior step already wrote it — preserve
+                _os.makedirs(_os.path.dirname(_fp), exist_ok=True)
+                with open(_fp, "w", encoding="utf-8") as _f:
+                    _f.write(output_value)
+                logger.info(
+                    f"[Workflow Hook] Persisted produces artifact -> {_fp} "
+                    f"({len(output_value)} chars)"
+                )
+        except Exception as _e:
+            logger.debug(f"[Workflow Hook] produces-path persist failed: {_e}")
+
     # ── Validate artifact schema ──
     # Gate is on `artifact_schema` AND "this task is the LLM-driven worker
     # that's supposed to produce the artifact". Mechanical sibling tasks

@@ -19,6 +19,13 @@ from typing import Optional
 
 logger = logging.getLogger("models.local_model_manager")
 
+# Floor for dynamically-sized local context windows (intake #73). The dynamic
+# calc can collapse to a few-thousand-token window when free system RAM is
+# transiently tight; every local load is floored to this (capped by the model's
+# registry ceiling) so common agent prompts fit on first load and mid-mission
+# context-expansion reloads stay rare. Overridable via env for tight hosts.
+BASELINE_LOCAL_CTX = int(os.environ.get("LLAMA_BASELINE_CTX", "16384"))
+
 # Strong-reference sets so fire-and-forget tasks are not GC'd.
 _pending_swap_notification_tasks: set[asyncio.Task] = set()
 _pending_push_tasks: set[asyncio.Task] = set()
@@ -312,6 +319,24 @@ class LocalModelManager:
             )
             context_length = min_context
 
+        # Hardening (intake #73): calculate_dynamic_context bounds context by
+        # *instantaneous* free system RAM (CPU-offloaded KV layers), so the same
+        # model swings wildly across loads with transient RAM pressure (observed
+        # Qwen3.5-9B: 5786 one load, 48293 another). A load that lands below the
+        # common agent-prompt size forces a context-expansion reload mid-mission.
+        # Floor every local load at a generous baseline — capped by the model's
+        # registry/family ceiling so we never exceed its trained window — so
+        # ordinary prompts fit on first load and reloads stay rare. Same OOM
+        # contract as the min_context floor above: if the floored window truly
+        # won't fit, llama-server's --fit + the circuit breaker handle it.
+        baseline_ctx = min(BASELINE_LOCAL_CTX, info.context_length)
+        if context_length < baseline_ctx:
+            logger.info(
+                "Flooring context %d -> %d (baseline; dynamic calc was RAM-starved)",
+                context_length, baseline_ctx,
+            )
+            context_length = baseline_ctx
+
         # gpu_layers: explicit models.yaml override wins and is forced
         # on the first attempt; otherwise we let llama-server's --fit
         # decide layer count, and use our calculated value as a fallback
@@ -521,6 +546,20 @@ class LocalModelManager:
     def is_loaded(self) -> bool:
         s = self._dallama.status
         return s.model_name is not None and s.healthy
+
+    @property
+    def loaded_context_length(self) -> int:
+        """n_ctx the currently-loaded model was started with (0 if none).
+
+        llama-server fixes n_ctx at load and cannot grow it at runtime, so the
+        dispatcher uses this to decide whether an already-loaded model must be
+        reloaded to fit a task's context (intake #73: a model loaded small
+        under RAM pressure was reused and overflowed).
+        """
+        s = self._dallama.status
+        if s.model_name is None or not s.healthy:
+            return 0
+        return int(getattr(s, "context_length", 0) or 0)
 
     @property
     def idle_seconds(self) -> float:

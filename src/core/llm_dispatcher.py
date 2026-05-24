@@ -870,10 +870,24 @@ class LLMDispatcher:
         this_actually_loaded = (
             manager.is_loaded and manager.current_model == model.name
         )
+        # llama-server fixes n_ctx at load and cannot grow it at runtime. If the
+        # already-loaded instance was started with a smaller context than this
+        # task needs, reusing it silently overflows the prompt (intake #73:
+        # Qwen3.5-9B loaded at ctx 5786 under transient RAM pressure, then reused
+        # for a ~14k-token analyst prompt -> context_overflow). Force a reload so
+        # ensure_model re-sizes the window via the min_context floor. Without this
+        # the ctx-aware guard inside ensure_model is unreachable on the
+        # already-loaded path because we short-circuit before calling it.
+        loaded_ctx_insufficient = (
+            this_actually_loaded
+            and estimated_context > 0
+            and manager.loaded_context_length < estimated_context
+        )
         needs_reload = (
             not this_actually_loaded
             or needs_thinking_reload
             or (needs_vision_load and not manager._vision_enabled)
+            or loaded_ctx_insufficient
         )
         if not needs_reload:
             manager.keep_alive()

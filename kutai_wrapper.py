@@ -142,7 +142,7 @@ config = GuardConfig(
             name="nerd_herd",
             command=[venv_python, "-m", "nerd_herd",
                      "--port", "9881",
-                     "--llama-url", "http://127.0.0.1:8080",
+                     "--llama-url", f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}",
                      "--pid-file", str(PROJECT_ROOT / "logs" / "nerd_herd.pid"),
                      "--db-path", os.getenv("DB_PATH", str(PROJECT_ROOT / "data" / "kutai.db"))],
             health_url="http://127.0.0.1:9881/health",

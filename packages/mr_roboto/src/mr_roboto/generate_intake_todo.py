@@ -4,22 +4,28 @@ Replaces phase-0's interrogation-by-many-questions pattern with a single
 generated todo list the founder confirms before charter generation begins.
 
 Behaviour:
-  1. Read founder pitch + Z0 outputs + ``reverse_pitch.md`` (from 0.0z)
-     from ``payload`` (or from disk via ``payload['paths']``).
-  2. Either invoke an analyst LLM (when wired) or fall back to a
-     deterministic structural builder so the action is testable in CI
-     without any model loaded.
-  3. Write ``mission_{mission_id}/.intake/intake_todo.md`` (10-15 items).
-  4. Return ``status="needs_clarification"`` with ``keyboard_sent=True``
-     so :mod:`general_beckman.result_router` keeps the row as
-     ``waiting_human`` (per its 148-180 branch). The founder confirms via
-     Telegram → step completes; founder edits → todo regenerates on the
-     next pass.
+  1. Read the optional analyst draft (step ``0.0a.draft``) from
+     ``mission_{mission_id}/.intake/intake_todo_draft.json`` — a list of
+     ``{n, category, question}`` items where the analyst has reworded each
+     canonical question for THIS product.
+  2. Merge the draft onto the fixed 14-slot canonical skeleton: each slot
+     uses the analyst wording only when its declared category matches the
+     canonical category for that slot, else the canonical question. This
+     guarantees coverage + ordering regardless of model quality — a weak
+     model can specialise wording but can never drop a dimension, reorder,
+     or hallucinate extra slots.
+  3. Write ``mission_{mission_id}/.intake/intake_todo.md`` (always the 14
+     canonical items, optionally specialised).
+  4. Return ``status="needs_clarification"`` with ``keyboard_sent=True`` so
+     :mod:`general_beckman.result_router` keeps the row as ``waiting_human``
+     (per its 148-180 branch). Founder confirms via Telegram → step
+     completes; founder edits → todo regenerates on the next pass.
 
-The LLM hook is opportunistic: when ``payload.get("use_llm")`` is true
-AND ``hallederiz_kadir`` is importable, we delegate text-generation; the
-caller controls cost. Default is the deterministic builder, which keeps
-unit tests fast and offline.
+This step makes NO LLM call itself — generation lives in the upstream
+analyst step ``0.0a.draft`` (per ``feedback_no_direct_dispatcher``: a
+mechanical must never call HaLLederiz Kadir / the dispatcher directly). If
+no draft is present (offline / analyst skipped), the canonical wording is
+used verbatim, so the action stays testable without any model loaded.
 """
 from __future__ import annotations
 
@@ -83,15 +89,17 @@ def _gather_inputs(payload: dict) -> dict[str, str]:
     return bag
 
 
-def _deterministic_builder(inputs: dict[str, str]) -> str:
-    """Build a baseline intake todo without any LLM call.
+def _build_intake(
+    inputs: dict[str, str], draft: dict[int, str] | None = None
+) -> str:
+    """Build the intake todo over the fixed 14-slot canonical skeleton.
 
-    The list is structural — every charter+PRD field downstream needs an
-    answer for. The LLM-driven path (when wired) will reword each item
-    against the actual founder pitch + reverse pitch; the deterministic
-    path keeps the same 10-15 item shape so callers can rely on the
-    contract in tests.
+    ``draft`` (slot ``n`` → analyst-reworded question, from ``0.0a.draft``)
+    specialises the wording per slot; any slot the analyst omitted or
+    mis-categorised falls back to the canonical question, so coverage and
+    ordering never regress whatever the model quality.
     """
+    draft = draft or {}
     pitch = (inputs.get("founder_pitch") or "").strip()
     rp = (inputs.get("reverse_pitch") or "").strip()
     z0 = (inputs.get("z0_outputs") or "").strip()
@@ -110,6 +118,10 @@ def _deterministic_builder(inputs: dict[str, str]) -> str:
             head_lines.append(f"_Reverse pitch headline:_ {rp_head[:200]}")
     if z0:
         head_lines.append("_Z0 outputs ingested._")
+    if draft:
+        head_lines.append(
+            f"_Specialised {len(draft)}/{len(_CANONICAL_TOPICS)} items to this product._"
+        )
     head_lines.append("")
     head_lines.append(
         "Confirm or edit any item. Reply **OK** to proceed; reply with edits to "
@@ -120,49 +132,61 @@ def _deterministic_builder(inputs: dict[str, str]) -> str:
 
     items: list[str] = []
     for idx, (cat, q) in enumerate(_CANONICAL_TOPICS, start=1):
-        items.append(f"- [ ] **{idx}. {cat}** — {q}")
+        question = draft.get(idx, q)
+        items.append(f"- [ ] **{idx}. {cat}** — {question}")
     body = head_lines + items
     return "\n".join(body) + "\n"
 
 
-def _llm_builder(inputs: dict[str, str]) -> str | None:
-    """Optional: delegate generation to hallederiz_kadir analyst call.
+def _deterministic_builder(inputs: dict[str, str]) -> str:
+    """Back-compat alias: canonical skeleton, no analyst specialisation."""
+    return _build_intake(inputs, None)
 
-    Returns ``None`` on any error so the caller falls back to the
-    deterministic builder.
+
+_DRAFT_REL = os.path.join(".intake", "intake_todo_draft.json")
+
+
+def _load_analyst_draft(workspace_root: str, mission_id: Any) -> dict[int, str]:
+    """Read the upstream analyst draft (``0.0a.draft``) and return
+    ``{slot_n: question}`` for slots whose declared category matches the
+    canonical category for that slot.
+
+    Lenient by design: a missing file, JSON error, bad slot index, or
+    category mismatch is silently dropped so the caller fills that slot from
+    the canonical wording. A weak model can specialise wording but cannot
+    drop, reorder, or invent dimensions. NO LLM call lives here — generation
+    is the analyst step's job (``feedback_no_direct_dispatcher``).
     """
-    try:  # pragma: no cover - optional path
-        from hallederiz_kadir import call as _hk_call  # type: ignore
-    except Exception:
-        return None
-    prompt_parts = [
-        "Generate a 10-15 item intake todo for an early-product founder. "
-        "Each item is one bullet, prefixed by a category tag. Categories: "
-        "Audience, Problem, Outcome, Scope, Differentiation, Channel, "
-        "Constraints, Surfaces, Brand, Risk. End with a Confirmation item.",
-        "",
-        "Founder pitch:",
-        inputs.get("founder_pitch", "(none)"),
-        "",
-        "Reverse pitch:",
-        inputs.get("reverse_pitch", "(none)"),
-        "",
-        "Z0 outputs:",
-        inputs.get("z0_outputs", "(none)"),
-    ]
+    import json
+
+    path = os.path.join(workspace_root, f"mission_{mission_id}", _DRAFT_REL)
+    raw = _read_text(path)
+    if not raw:
+        return {}
     try:
-        resp = _hk_call(  # type: ignore[call-arg]
-            messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
-            max_tokens=2000,
-            profile="overhead",
-        )
-    except Exception as exc:
-        logger.warning("intake_todo: LLM path failed (%s) — using deterministic builder", exc)
-        return None
-    text = (resp or {}).get("text") if isinstance(resp, dict) else None
-    if not text or not isinstance(text, str):
-        return None
-    return text
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        logger.warning("intake_todo: analyst draft at %s is not valid JSON", path)
+        return {}
+    items = data.get("items") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return {}
+    out: dict[int, str] = {}
+    n_slots = len(_CANONICAL_TOPICS)
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            n = int(it.get("n"))
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= n <= n_slots:
+            continue
+        cat = str(it.get("category") or "").strip().lower()
+        q = str(it.get("question") or "").strip()
+        if q and cat == _CANONICAL_TOPICS[n - 1][0].lower():
+            out[n] = q
+    return out
 
 
 def _resolve_workspace_dir(workspace_path: str | None) -> str:
@@ -183,8 +207,10 @@ async def generate_intake_todo(task: dict) -> dict[str, Any]:
             Same keys, but absolute paths to read on disk.
         workspace_path (str, optional):
             Override for the WORKSPACE_DIR root.
-        use_llm (bool, optional):
-            When True + hallederiz_kadir available, delegate text gen.
+
+    The product-specific wording, when present, comes from the upstream
+    analyst draft on disk (see :func:`_load_analyst_draft`), never an LLM
+    call made here.
 
     Output ``intake_todo.md`` lives at
     ``{workspace_root}/mission_{mission_id}/.intake/intake_todo.md``
@@ -200,13 +226,10 @@ async def generate_intake_todo(task: dict) -> dict[str, Any]:
         }
 
     inputs = _gather_inputs(payload)
-    body: str | None = None
-    if payload.get("use_llm"):
-        body = _llm_builder(inputs)
-    if not body:
-        body = _deterministic_builder(inputs)
-
     workspace_root = _resolve_workspace_dir(payload.get("workspace_path"))
+    draft = _load_analyst_draft(workspace_root, mission_id)
+    body = _build_intake(inputs, draft)
+
     intake_dir = os.path.join(
         workspace_root, f"mission_{mission_id}", ".intake"
     )

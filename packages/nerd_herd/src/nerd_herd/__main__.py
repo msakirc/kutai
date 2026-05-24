@@ -25,8 +25,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=9881, help="Metrics HTTP port (default: 9881)")
     parser.add_argument(
         "--llama-url",
-        default="http://127.0.0.1:8080",
-        help="llama-server base URL (default: http://127.0.0.1:8080)",
+        default=f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}",
+        help="llama-server base URL (default: env LLAMA_SERVER_PORT, else 8080)",
     )
     parser.add_argument("--pid-file", default=None, help="Write PID to this file after startup")
     parser.add_argument(

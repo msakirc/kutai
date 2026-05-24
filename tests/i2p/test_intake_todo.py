@@ -94,6 +94,78 @@ def test_intake_todo_missing_mission_id_fails():
     assert "mission_id" in result["error"]
 
 
+def _seed_draft(tmpdir: str, mission_id: int, items: list[dict]) -> str:
+    """Write an analyst draft (0.0a.draft output) to disk and return its path."""
+    import json
+    d = os.path.join(tmpdir, f"mission_{mission_id}", ".intake")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "intake_todo_draft.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"_schema_version": "1", "items": items}, fh)
+    return path
+
+
+def test_analyst_draft_specialises_matching_slots():
+    """A valid draft slot whose category matches is used verbatim; the
+    canonical wording is replaced."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _seed_draft(tmp, 42, [
+            {"n": 1, "category": "Audience", "question": "Who is the core HabitLoop user?"},
+            {"n": 3, "category": "Problem", "question": "What HabitLoop pain bites daily?"},
+        ])
+        task = _make_task(tmp, mission_id=42)
+        with _patch_telegram_available():
+            r = asyncio.run(generate_intake_todo(task))
+        body = Path(r["todo_path_abs"]).read_text(encoding="utf-8")
+        assert "Who is the core HabitLoop user?" in body
+        assert "What HabitLoop pain bites daily?" in body
+        assert "Specialised 2/15" in body
+        # Always the full canonical coverage — never fewer than 14 question slots.
+        assert r["item_count"] >= 14
+
+
+def test_draft_category_mismatch_rejected_falls_back():
+    """Coverage contract: a slot whose declared category != canonical category
+    is dropped, so that slot keeps the generic canonical question."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _seed_draft(tmp, 42, [
+            {"n": 1, "category": "Problem", "question": "WRONG CATEGORY SHOULD BE DROPPED"},
+        ])
+        task = _make_task(tmp, mission_id=42)
+        with _patch_telegram_available():
+            r = asyncio.run(generate_intake_todo(task))
+        body = Path(r["todo_path_abs"]).read_text(encoding="utf-8")
+        assert "WRONG CATEGORY SHOULD BE DROPPED" not in body
+        # Canonical slot-1 wording survives.
+        assert "Who is the primary user" in body
+
+
+def test_draft_invalid_json_falls_back_to_canonical():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = os.path.join(tmp, "mission_42", ".intake")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "intake_todo_draft.json"), "w", encoding="utf-8") as fh:
+            fh.write("{not valid json")
+        task = _make_task(tmp, mission_id=42)
+        with _patch_telegram_available():
+            r = asyncio.run(generate_intake_todo(task))
+        body = Path(r["todo_path_abs"]).read_text(encoding="utf-8")
+        assert "# Intake Todo" in body
+        assert "Specialised" not in body  # no draft applied
+        assert r["item_count"] >= 14
+
+
+def test_no_draft_still_full_canonical():
+    """No analyst draft on disk → pure canonical, no LLM, full coverage."""
+    with tempfile.TemporaryDirectory() as tmp:
+        task = _make_task(tmp, mission_id=77)
+        with _patch_telegram_available():
+            r = asyncio.run(generate_intake_todo(task))
+        body = Path(r["todo_path_abs"]).read_text(encoding="utf-8")
+        assert "Specialised" not in body
+        assert r["item_count"] >= 14
+
+
 def test_dispatch_via_mr_roboto_run_returns_needs_clarification():
     """The wrapper must return Action(status='needs_clarification') so
     general_beckman.result_router keeps the row as waiting_human (the same

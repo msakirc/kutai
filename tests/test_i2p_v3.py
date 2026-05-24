@@ -326,7 +326,10 @@ class TestV3WorkflowLoading:
 
     def test_v3_step_count(self):
         wf = load_workflow("i2p_v3")
-        assert 150 <= len(wf.steps) <= 200
+        # v3 baseline was ~190; it has grown to ~288 across the Z0-Z10 zone
+        # work (verify/confirm siblings, demo + launch steps, etc.). Range
+        # widened to catch a genuine collapse/balloon, not normal growth.
+        assert 150 <= len(wf.steps) <= 350
 
     def test_v3_template_count(self):
         wf = load_workflow("i2p_v3")
@@ -366,6 +369,11 @@ class TestV3WorkflowLoading:
     def test_v3_all_steps_have_difficulty(self):
         wf = load_workflow("i2p_v3")
         for step in wf.steps:
+            # Mechanical steps run via mr_roboto verbs, not the LLM difficulty
+            # router — they carry no difficulty (same carve-out as
+            # test_v3_all_steps_have_artifact_schema).
+            if step.get("agent") == "mechanical" or step.get("executor") == "mechanical":
+                continue
             assert "difficulty" in step, f"Step {step['id']} missing difficulty"
             assert step["difficulty"] in (
                 "easy",
@@ -376,6 +384,9 @@ class TestV3WorkflowLoading:
     def test_v3_all_steps_have_tools_hint(self):
         wf = load_workflow("i2p_v3")
         for step in wf.steps:
+            # Mechanical steps don't drive an LLM tool loop — no tools_hint.
+            if step.get("agent") == "mechanical" or step.get("executor") == "mechanical":
+                continue
             assert "tools_hint" in step, f"Step {step['id']} missing tools_hint"
             assert isinstance(
                 step["tools_hint"], list
@@ -393,20 +404,21 @@ class TestV3WorkflowLoading:
             ), f"Step {step['id']} missing artifact_schema"
 
     def test_v3_step_count_in_expected_range(self):
-        """v3 collapsed v2's 328 steps to ~190; assert the consolidation
-        held and didn't silently regress."""
+        """v3 collapsed v2's 328 steps to ~190, then grew to ~288 across the
+        zone work; assert it didn't silently collapse or balloon."""
         wf = load_workflow("i2p_v3")
         assert wf.plan_id == "i2p_v3"
-        assert 150 <= len(wf.steps) <= 250, (
-            f"step count {len(wf.steps)} outside expected v3 range [150,250]"
+        assert 150 <= len(wf.steps) <= 350, (
+            f"step count {len(wf.steps)} outside expected v3 range [150,350]"
         )
 
     def test_v3_difficulty_distribution(self):
-        """Verify reasonable difficulty distribution."""
+        """Verify reasonable difficulty distribution (LLM steps only —
+        mechanical steps carry no difficulty)."""
         wf = load_workflow("i2p_v3")
         from collections import Counter
 
-        dist = Counter(s["difficulty"] for s in wf.steps)
+        dist = Counter(s["difficulty"] for s in wf.steps if "difficulty" in s)
         total = sum(dist.values())
         # Hard should be < 30%
         assert dist["hard"] / total < 0.30, f"Too many hard steps: {dist}"

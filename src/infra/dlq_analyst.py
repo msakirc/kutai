@@ -8,6 +8,7 @@ No LLM calls — pure Python pattern matching.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from collections import defaultdict
@@ -140,7 +141,8 @@ class DLQAnalyst:
             start = time.time()
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    "http://127.0.0.1:8080/health", timeout=aiohttp.ClientTimeout(total=5)
+                    f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}/health",
+                    timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     elapsed = round(time.time() - start, 1)
                     if resp.status == 200:

@@ -921,7 +921,6 @@
         "0.0a"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_idea_dedup == '1'",
       "input_artifacts": [
         "raw_idea",
         "strategic_context",
@@ -1145,7 +1144,6 @@
       },
       "instruction": "Z1 Tier 5A (P6) — collect compliance fingerprint. Reads `mission_<id>/.preflight/compliance_fingerprint.json` from z0 when present and writes the merged fingerprint to `mission_<id>/compliance_fingerprint.json`. Telegram clarify deltas are fired only for fields the founder did not pre-declare at z0.",
       "done_when": "compliance_fingerprint.json exists with _schema_version, jurisdictions, user_classes, data_categories_coarse fields populated (or empty arrays at prototype tier).",
-      "skip_when": "mission.legacy_pre_compliance == '1'",
       "context": {
         "estimated_output_tokens": 0
       },
@@ -1208,7 +1206,6 @@
         "0.1"
       ],
       "may_need_clarification": true,
-      "skip_when": "mission.legacy_pre_non_goals == '1'",
       "input_artifacts": [
         "product_charter",
         "raw_idea",
@@ -1250,7 +1247,6 @@
       "depends_on": [
         "0.6a"
       ],
-      "skip_when": "mission.legacy_pre_non_goals == '1'",
       "input_artifacts": [
         "non_goals"
       ],
@@ -1294,7 +1290,6 @@
         "0.6"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_prior_art == '1'",
       "input_artifacts": [
         "idea_brief_final"
       ],
@@ -1506,7 +1501,6 @@
         "1.4"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_competitive_positioning == '1'",
       "input_artifacts": [
         "direct_competitors_list",
         "indirect_competitors_list",
@@ -1550,7 +1544,6 @@
       "depends_on": [
         "1.4a"
       ],
-      "skip_when": "mission.legacy_pre_competitive_positioning == '1'",
       "input_artifacts": [
         "competitive_positioning"
       ],
@@ -1910,7 +1903,6 @@
       "post_hooks": [
         "compliance_template_present"
       ],
-      "skip_when": "mission.legacy_pre_compliance == '1'",
       "instruction": "Z1 Tier 5A (P6) — for each <jurisdiction × data_category> combination in compliance_fingerprint, identify required_documents (privacy_policy, cookie_banner, dpa, tos, retention_policy, age_gate, accessibility_statement, data_processing_record). Call `compliance_template_render(fingerprint, doc_type, lang)` for each. Save rendered output to `generated_template_path` under `mission_<id>/.compliance/legal/<doc>.md`. Surface cross_jurisdiction_conflicts when present. Set requires_legal_review=true on every doc; founder_review_required=true on privacy_policy, dpa, tos. Emit the `compliance_overlay` JSON to `mission_<id>/compliance_overlay.json`.",
       "done_when": "compliance_overlay.required_documents non-empty (or fingerprint declares jurisdictions=[]) and every generated_template_path file exists.",
       "artifact_schema": {
@@ -2725,7 +2717,6 @@
       "depends_on": [
         "3.1"
       ],
-      "skip_when": "mission.legacy_pre_falsification == '1'",
       "input_artifacts": [
         "functional_requirements"
       ],
@@ -2813,7 +2804,6 @@
       "depends_on": [
         "3.2"
       ],
-      "skip_when": "mission.legacy_pre_falsification == '1'",
       "input_artifacts": [
         "nfr_performance",
         "nfr_scalability"
@@ -2905,7 +2895,6 @@
       "depends_on": [
         "3.3"
       ],
-      "skip_when": "mission.legacy_pre_falsification == '1'",
       "input_artifacts": [
         "nfr_availability",
         "security_requirements"
@@ -3182,7 +3171,6 @@
       "depends_on": [
         "3.7"
       ],
-      "skip_when": "mission.legacy_pre_falsification == '1'",
       "input_artifacts": [
         "business_rules"
       ],
@@ -3510,7 +3498,6 @@
         "mission_{mission_id}/.adr/architecture_pattern_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -3571,7 +3558,6 @@
         "mission_{mission_id}/.adr/tech_stack_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -3675,7 +3661,6 @@
         "mission_{mission_id}/.adr/database_schema_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -3850,7 +3835,6 @@
         "mission_{mission_id}/.adr/auth_design_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -3974,7 +3958,6 @@
         "mission_{mission_id}/.adr/third_party_selections_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4055,7 +4038,6 @@
         "mission_{mission_id}/.adr/infrastructure_designs_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4132,7 +4114,6 @@
         "mission_{mission_id}/.adr/communication_designs_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4306,7 +4287,6 @@
       "produces": [
         "mission_{mission_id}/.adr/register.md"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "reversibility": "full"
     },
     {
@@ -4606,7 +4586,6 @@
         "5.0.verify"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_design_tokens == '1'",
       "input_artifacts": [
         "taste_emphasis",
         "product_charter"
@@ -4731,7 +4710,6 @@
         "5.0b.verify"
       ],
       "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_user_flow == '1'",
       "input_artifacts": [
         "surfaces_config",
         "product_charter",
@@ -5183,7 +5161,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Z1 Tier 4 (T4B / C17+A20): post-process every HTML emitted by 5.30a/b — walk the DOM via BeautifulSoup and assign `data-oid=\"<artifact_slug>:<section>\"` to semantic blocks (header/main/nav/footer/aside/section/article + role-classed divs: hero/cta/card/form/etc.). Anchor for `propose_spec_patch_from_html_diff`. Caller wires `html_paths` (union of both chunks) and `artifact_slug` derived per file. Idempotent: existing `data-oid` values are preserved.",
-      "skip_when": "mission.legacy_pre_html_oids == '1'",
       "reversibility": "full"
     },
     {
@@ -5205,7 +5182,6 @@
         "mission_{mission_id}/preview_url.txt"
       ],
       "instruction": "Z1 T4C (C10+A19) — emit a tunneled preview URL surface for the per-screen HTML prototypes. EMIT-ONLY: writes preview_url.txt with a live cloudflared URL when KUTAI_PREVIEW_PROVIDER=cloudflared and the binary is on PATH; otherwise writes a 'pending: hosting deferred to Z2' placeholder. Idempotent: any prior tunnel is terminated before re-emitting.",
-      "skip_when": "mission.legacy_pre_preview_url == '1'",
       "reversibility": "full"
     },
     {
@@ -5587,7 +5563,6 @@
           "_schema_version": "1"
         }
       },
-      "skip_when": "mission.legacy_pre_premortem == '1'",
       "reversibility": "full"
     },
     {
@@ -5606,7 +5581,6 @@
         "estimated_output_tokens": 0
       },
       "instruction": "Mechanical post-hook on 6.5z. Caller wires `premortem_path` (default `mission_{mission_id}/premortem.md`) or `premortem_text`. Asserts the JSON envelope: _schema_version=='1', scenarios>=3, kinds {technical, market, founder} each present, plausibility ∈ [1,5], obituary + cause non-empty.",
-      "skip_when": "mission.legacy_pre_premortem == '1'",
       "reversibility": "full"
     },
     {
@@ -5682,7 +5656,6 @@
         "mission_{mission_id}/github_init_status.md"
       ],
       "instruction": "Z1 Tier 6 (C18) — at the end of phase 6 (after compliance_blocker_check on 6.6 has passed) initialise a GitHub repository for the mission via gh-cli and push the locked phase-≤6 spec artifacts as the initial commit. Fail-soft when gh-cli is missing or unauthenticated: writes `mission_{mission_id}/github_init_status.md` with `pending: <reason>` and the workflow continues — founder retries via Telegram `/github init <mission_id>`. Repo name: `kutai-mission-<id>-<charter_slug>` (kebab-case, ≤30 chars from charter title). Visibility default `public` (overridable via `KUTAI_GITHUB_DEFAULT_VISIBILITY`). Owner default = current `gh` user (overridable via `KUTAI_GITHUB_ORG`). The export uses a separate `mission_{mission_id}/.git_export/` repo so any mission-internal git history (created later in phase 7+) is not clobbered. Set `payload.skip_github=true` to opt out (still emits the status file). Persists `missions.github_repo_url`.",
-      "skip_when": "mission.legacy_pre_github_init == '1'",
       "reversibility": "partial"
     },
     {
@@ -5703,7 +5676,6 @@
       },
       "instruction": "Z1 Tier 6A (P9) — walk phase-≤6 artifacts (charter, compliance_fingerprint, compliance_overlay, ADR register + .adrs/*.json, non_goals.md, reverse_pitch.md), read each `_schema_version` envelope, derive domain_keywords from the charter brand keywords, and insert/upsert one row per artifact into `mission_artifacts_index`. Cross-mission inheritance hints at step 0.5 of future missions read from this index.",
       "done_when": "mission_artifacts_index has rows for the in-flight mission's available phase-≤6 artifacts.",
-      "skip_when": "mission.legacy_pre_inheritance == '1'",
       "context": {
         "estimated_output_tokens": 0
       },
@@ -5729,7 +5701,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — Augment Intent's `specs stay alive`. Wave-start mechanical step before phase-7 execution. Re-reads phase-≤6 locked spec artifacts (charter, ADRs, design_tokens, screen_plans, surfaces, non_goals, premortem, compliance_overlay if present) + any phase-7 artifacts on disk; rule-based drift scan (R1 stack drift / R2 token drift / R3 surface drift / R4 non-goal drift). On drift, returns needs_review + drift report path; reviewer / source has to acknowledge before downstream waves continue.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -6795,7 +6766,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 8. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -7171,7 +7141,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 9. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -7703,7 +7672,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 10. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -8270,7 +8238,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 11. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -8541,7 +8508,6 @@
         "mission_{mission_id}/spec_drift_report.md"
       ],
       "instruction": "Z1 Tier 5B (B5) — wave-start spec_consistency_check at the head of phase 12. See 7.0z for full description.",
-      "skip_when": "mission.legacy_pre_spec_alive == '1'",
       "reversibility": "full"
     },
     {
@@ -11370,7 +11336,6 @@
       "depends_on": [
         "4.2"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "may_need_clarification": false,
       "input_artifacts": [
         "product_charter",
@@ -11420,7 +11385,6 @@
       "depends_on": [
         "4.1"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "architecture_pattern_decision"
       ],
@@ -11450,7 +11414,6 @@
       "depends_on": [
         "4.2"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "tech_stack_decision"
       ],
@@ -11480,7 +11443,6 @@
       "depends_on": [
         "4.2.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "tech_stack_decision"
       ],
@@ -11509,7 +11471,6 @@
       "depends_on": [
         "4.4"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "database_schema_decision"
       ],
@@ -11539,7 +11500,6 @@
       "depends_on": [
         "4.4.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "database_schema_decision"
       ],
@@ -11568,7 +11528,6 @@
       "depends_on": [
         "4.6"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "auth_design_decision"
       ],
@@ -11598,7 +11557,6 @@
       "depends_on": [
         "4.6.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "auth_design_decision"
       ],
@@ -11627,7 +11585,6 @@
       "depends_on": [
         "4.8"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "third_party_selections_decision"
       ],
@@ -11657,7 +11614,6 @@
       "depends_on": [
         "4.8.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "third_party_selections_decision"
       ],
@@ -11686,7 +11642,6 @@
       "depends_on": [
         "4.9"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "infrastructure_designs_decision"
       ],
@@ -11716,7 +11671,6 @@
       "depends_on": [
         "4.9.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "infrastructure_designs_decision"
       ],
@@ -11745,7 +11699,6 @@
       "depends_on": [
         "4.10"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "communication_designs_decision"
       ],
@@ -11775,7 +11728,6 @@
       "depends_on": [
         "4.10.verify"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "communication_designs_decision"
       ],
@@ -11804,7 +11756,6 @@
       "depends_on": [
         "4.2a"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "component_library_decision"
       ],
@@ -11834,7 +11785,6 @@
       "depends_on": [
         "4.14"
       ],
-      "skip_when": "mission.legacy_pre_adr == '1'",
       "input_artifacts": [
         "adrs",
         "adr_register"
@@ -12515,6 +12465,5 @@
         }
       ]
     }
-  ],
-  "_z1_tier3_patched": true
+  ]
 }

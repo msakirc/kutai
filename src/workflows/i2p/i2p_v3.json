@@ -5806,14 +5806,13 @@
       "tools_hint": [],
       "depends_on": [
         "4.16",
-        "5.11b"
+        "5.30b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
         "prd_final_summary",
         "user_stories_refined_summary",
-        "technical_design_document_summary",
-        "design_handoff_summary"
+        "technical_design_document_summary"
       ],
       "output_artifacts": [
         "epics",
@@ -7341,13 +7340,13 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "technical_design_document",
-        "design_handoff",
+        "html_prototypes_chunk_a",
         "requirements_spec"
       ],
       "output_artifacts": [
         "implementation_context"
       ],
-      "instruction": "Create a condensed implementation reference. For each major subsystem: the 3-5 most important design decisions, the specific patterns to follow, the key constraints. This document replaces the need for implementer agents to read the full TDD. Target: under 5000 words covering everything an implementer needs for day-to-day coding decisions.",
+      "instruction": "Create a condensed implementation reference. For each major subsystem: the 3-5 most important design decisions, the specific patterns to follow, the key constraints. Reference the HTML prototypes for frontend conventions and patterns. This document replaces the need for implementer agents to read the full TDD. Target: under 5000 words covering everything an implementer needs for day-to-day coding decisions.",
       "done_when": "implementation_context exists as a concise (<5000 words) reference for all implementation work.",
       "artifact_schema": {
         "implementation_context": {
@@ -8927,7 +8926,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "user_flow_onboarding",
+        "user_flow",
         "mvp_scope"
       ],
       "output_artifacts": [
@@ -8935,7 +8934,7 @@
         "feature_docs",
         "faq_doc"
       ],
-      "instruction": "Write a getting-started guide for new users covering signup, initial config, first-time walkthrough, key concepts. Write detailed feature documentation for every MVP feature. Compile a FAQ document (20-30 entries) covering account management, billing, feature capabilities, troubleshooting, privacy/security, and API questions.",
+      "instruction": "Write a getting-started guide for new users covering signup, initial config, first-time walkthrough, key concepts (use the onboarding track of user_flow as the source for the walkthrough sequence). Write detailed feature documentation for every MVP feature. Compile a FAQ document (20-30 entries) covering account management, billing, feature capabilities, troubleshooting, privacy/security, and API questions.",
       "done_when": "user_getting_started, feature_docs, and faq_doc exist.",
       "artifact_schema": {
         "user_getting_started": {
@@ -8976,7 +8975,7 @@
       ],
       "may_need_clarification": false,
       "input_artifacts": [
-        "user_flow_onboarding",
+        "user_flow",
         "observability_strategy",
         "email_system_design"
       ],
@@ -8985,7 +8984,7 @@
         "error_copy",
         "notification_copy"
       ],
-      "instruction": "Write all in-app onboarding copy (welcome, tooltips, empty states, progress indicators). Write user-friendly error messages for every error state. Write copy for all notification templates (transactional emails, in-app notifications). Format as structured JSON files keyed by screen/component ID.",
+      "instruction": "Write all in-app onboarding copy (welcome, tooltips, empty states, progress indicators) based on the onboarding track of user_flow. Write user-friendly error messages for every error state. Write copy for all notification templates (transactional emails, in-app notifications). Format as structured JSON files keyed by screen/component ID.",
       "done_when": "onboarding_copy, error_copy, and notification_copy exist.",
       "artifact_schema": {
         "onboarding_copy": {
@@ -10112,12 +10111,12 @@
         "no_public_web"
       ],
       "input_artifacts": [
-        "information_architecture"
+        "per_screen_plans_chunk_a"
       ],
       "output_artifacts": [
         "seo_implementation"
       ],
-      "instruction": "Implement SEO: unique title tags and meta descriptions, Open Graph and Twitter Card tags, structured data (JSON-LD), canonical URLs, XML sitemap, robots.txt, semantic HTML5, descriptive alt text.",
+      "instruction": "Implement SEO using the screen inventory and navigation in the per-screen plans: unique title tags and meta descriptions, Open Graph and Twitter Card tags, structured data (JSON-LD), canonical URLs, XML sitemap, robots.txt, semantic HTML5, descriptive alt text.",
       "done_when": "seo_implementation exists.",
       "artifact_schema": {
         "seo_implementation": {

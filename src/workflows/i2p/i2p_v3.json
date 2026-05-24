@@ -996,42 +996,6 @@
       "reversibility": "full"
     },
     {
-      "id": "0.2",
-      "phase": "phase_0",
-      "name": "problem_statement_extraction",
-      "agent": "analyst",
-      "difficulty": "medium",
-      "tools_hint": [],
-      "depends_on": [
-        "0.1"
-      ],
-      "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter != '1'",
-      "input_artifacts": [
-        "raw_idea_document"
-      ],
-      "output_artifacts": [
-        "problem_statement"
-      ],
-      "instruction": "From the raw_idea_document, extract and articulate the core problem being solved. Output a structured problem statement with these fields: problem_description (1-3 sentences describing the pain), affected_audience (who has this problem), current_alternatives (how they cope today, if inferable), severity (how painful this is, if inferable), frequency (how often they encounter it, if inferable). Mark any field as 'Needs validation' if it cannot be confidently inferred from the raw idea.",
-      "done_when": "A structured problem_statement exists with all fields populated or explicitly marked as needing validation.",
-      "artifact_schema": {
-        "problem_statement": {
-          "type": "object",
-          "required_fields": [
-            "problem_description",
-            "affected_audience",
-            "current_alternatives",
-            "severity",
-            "frequency"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
       "id": "0.3",
       "phase": "phase_0",
       "name": "assumption_identification",
@@ -1169,46 +1133,6 @@
       "reversibility": "full"
     },
     {
-      "id": "0.4",
-      "phase": "phase_0",
-      "name": "scope_ambiguity_detection",
-      "agent": "analyst",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "0.1",
-        "0.2",
-        "0.3"
-      ],
-      "may_need_clarification": false,
-      "skip_when": "mission.legacy_pre_charter != '1'",
-      "input_artifacts": [
-        "raw_idea_document",
-        "problem_statement",
-        "assumption_list"
-      ],
-      "output_artifacts": [
-        "open_questions_list"
-      ],
-      "instruction": "Review all input artifacts. Identify every ambiguity, undefined term, or scope question that must be resolved before proceeding. Generate a numbered list of open questions organized by category: Audience (who exactly?), Scope (what's in/out?), Business Model (how does this make money?), Constraints (budget, timeline, tech, team?), Platform (web, mobile, desktop?), Differentiation (why us over competitors?), Priority (what matters most: speed, quality, features, cost?). Each question should be specific enough that a yes/no or short answer resolves it.",
-      "done_when": "An open_questions_list exists with all identified ambiguities as clear, answerable questions.",
-      "artifact_schema": {
-        "open_questions_list": {
-          "type": "array",
-          "min_items": 1,
-          "item_fields": [
-            "question_id",
-            "category",
-            "question",
-            "why_it_matters"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
       "id": "0.4a",
       "phase": "phase_0",
       "name": "compliance_fingerprint_collection",
@@ -1234,41 +1158,6 @@
       "context": {
         "estimated_output_tokens": 0
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "0.5",
-      "phase": "phase_0",
-      "name": "human_clarification_request",
-      "agent": "analyst",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "triggers_clarification": true,
-      "depends_on": [
-        "0.4"
-      ],
-      "may_need_clarification": true,
-      "skip_when": "mission.legacy_pre_charter != '1'",
-      "input_artifacts": [
-        "open_questions_list",
-        "assumption_list"
-      ],
-      "output_artifacts": [
-        "clarification_request"
-      ],
-      "instruction": "Review the open_questions_list and assumption_list. Pick only the TOP 5 most impactful questions â€” the ones whose answers most change the project direction. Keep each question short (1-2 sentences max). For each, suggest 2-3 concrete answer options the human can pick from (e.g. 'A) Families B) Roommates C) Both'). Do NOT ask more than 5 questions â€” if in doubt, cut the less important ones. You MUST use the clarify action to send these questions to the human.",
-      "done_when": "clarification_request has been sent to the human via the clarify action.",
-      "artifact_schema": {
-        "clarification_request": {
-          "type": "array",
-          "min_items": 3,
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "post_hooks": [
-        "surface_prior_mission_hints"
-      ],
       "reversibility": "full"
     },
     {

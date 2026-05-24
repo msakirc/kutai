@@ -1008,44 +1008,6 @@ async def should_skip_workflow_step(task: dict) -> tuple[bool, str]:
         return False, ""
 
     expr = ctx.get("skip_when_expr")
-    # Legacy rescue: tasks expanded before the skip_when_expr context
-    # field was added won't have it. Look the step's skip_when up in
-    # the live workflow JSON. Works for the shopping_v2 synth_one /
-    # clarify_variant steps that have DB rows pre-dating the fix.
-    if (not expr or not isinstance(expr, str)) and ctx.get("is_workflow_step"):
-        try:
-            step_id = ctx.get("workflow_step_id")
-            if step_id:
-                from src.infra.db import get_db as _get_db
-                _db = await _get_db()
-                _cur = await _db.execute(
-                    "SELECT context FROM missions WHERE id = ?", (mission_id,),
-                )
-                _row = await _cur.fetchone()
-                await _cur.close()
-                _mctx = {}
-                if _row and _row[0]:
-                    try:
-                        _mctx = json.loads(_row[0])
-                        if isinstance(_mctx, str):
-                            _mctx = json.loads(_mctx)
-                    except (json.JSONDecodeError, TypeError):
-                        _mctx = {}
-                _wf_name = (
-                    _mctx.get("workflow_name")
-                    if isinstance(_mctx, dict) else None
-                ) or "i2p_v3"
-                from src.workflows.engine.loader import load_workflow
-                _wf = load_workflow(_wf_name)
-                _step = _wf.get_step(step_id)
-                if _step:
-                    _sw = _step.get("skip_when")
-                    if isinstance(_sw, str):
-                        expr = _sw
-        except Exception as _e:
-            logger.debug(
-                f"[Workflow Hook] skip_when step lookup failed: {_e}"
-            )
     if not expr or not isinstance(expr, str):
         return False, ""
 
@@ -1064,36 +1026,6 @@ async def should_skip_workflow_step(task: dict) -> tuple[bool, str]:
     path = m.group(2).lstrip(".").split(".")
     op = m.group(3)
     literal = m.group(4)
-
-    # Z1 Tier 1: support ``mission.<column>`` form so legacy-flag gates
-    # (``mission.legacy_pre_charter == '1'``) skip new-shape steps for
-    # missions backfilled by the migration. The column is read directly
-    # off the missions row — no blackboard round-trip.
-    if artifact_name == "mission" and len(path) == 1:
-        col = path[0]
-        try:
-            from src.infra.db import get_db as _get_db
-            _db = await _get_db()
-            _cur = await _db.execute(
-                f"SELECT {col} FROM missions WHERE id = ?", (mission_id,),
-            )
-            _row = await _cur.fetchone()
-            await _cur.close()
-        except Exception as exc:
-            logger.debug(
-                f"[Workflow Hook] skip_when mission.{col} lookup failed: {exc}"
-            )
-            return False, ""
-        current = None if (_row is None) else _row[0]
-        # Coerce both sides to strings so the SQLite int column compares
-        # cleanly against the literal in the workflow JSON.
-        cur_s = "" if current is None else str(current)
-        matched = (op == "==" and cur_s == literal) or (
-            op == "!=" and cur_s != literal
-        )
-        if matched:
-            return True, f"mission.{col} {op} {literal!r}"
-        return False, ""
 
     try:
         store = get_artifact_store()

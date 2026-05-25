@@ -255,7 +255,9 @@ def test_workflow_step_0_6a_draft_confirm_split():
     # Draft step: an LLM (analyst) produces the non_goals document.
     assert "0.6a.draft" in by_id
     draft = by_id["0.6a.draft"]
-    assert draft["agent"] == "analyst"
+    # Must be a file-writing agent — `analyst` narrates instead of writing
+    # the file (mission #73); `writer` writes, mirroring reverse_pitch_draft.
+    assert draft["agent"] == "writer"
     assert draft["name"] == "non_goals_draft"
     assert "non_goals" in draft["output_artifacts"]
 

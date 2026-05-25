@@ -1198,7 +1198,7 @@
       "id": "0.6a.draft",
       "phase": "phase_0",
       "name": "non_goals_draft",
-      "agent": "analyst",
+      "agent": "writer",
       "difficulty": "easy",
       "tools_hint": [
         "write_file"
@@ -1229,38 +1229,6 @@
           "_schema_version": "1"
         }
       },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "0.6a",
-      "phase": "phase_0",
-      "name": "non_goals_confirm",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "0.6a.verify"
-      ],
-      "may_need_clarification": true,
-      "input_artifacts": [
-        "non_goals"
-      ],
-      "output_artifacts": [
-        "non_goals_confirmed"
-      ],
-      "payload": {
-        "action": "clarify",
-        "kind": "non_goals_confirm",
-        "attach_file_paths": [
-          "mission_{mission_id}/.charter/non_goals.md"
-        ],
-        "regenerate_step_id": "0.6a.draft",
-        "question": "Mission-wide non-goals draft below — the things this product explicitly will NOT do. Tap a button to confirm, regenerate, or edit."
-      },
-      "instruction": "Mechanical confirm gate (Z1 A2). Presents the non_goals draft from 0.6a.draft to the founder with confirm / regenerate / edit buttons. The founder confirms or edits in plain language — they never author the document. Regenerate re-runs 0.6a.draft.",
-      "done_when": "Founder has confirmed (or edited) the non_goals draft; non_goals_confirmed recorded.",
       "context": {},
       "reversibility": "full"
     },
@@ -1300,6 +1268,38 @@
           "_schema_version": "1"
         }
       },
+      "context": {},
+      "reversibility": "full"
+    },
+    {
+      "id": "0.6a",
+      "phase": "phase_0",
+      "name": "non_goals_confirm",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "0.6a.verify"
+      ],
+      "may_need_clarification": true,
+      "input_artifacts": [
+        "non_goals"
+      ],
+      "output_artifacts": [
+        "non_goals_confirmed"
+      ],
+      "payload": {
+        "action": "clarify",
+        "kind": "non_goals_confirm",
+        "attach_file_paths": [
+          "mission_{mission_id}/.charter/non_goals.md"
+        ],
+        "regenerate_step_id": "0.6a.draft",
+        "question": "Mission-wide non-goals draft below — the things this product explicitly will NOT do. Tap a button to confirm, regenerate, or edit."
+      },
+      "instruction": "Mechanical confirm gate (Z1 A2). Presents the non_goals draft from 0.6a.draft to the founder with confirm / regenerate / edit buttons. The founder confirms or edits in plain language — they never author the document. Regenerate re-runs 0.6a.draft.",
+      "done_when": "Founder has confirmed (or edited) the non_goals draft; non_goals_confirmed recorded.",
       "context": {},
       "reversibility": "full"
     },

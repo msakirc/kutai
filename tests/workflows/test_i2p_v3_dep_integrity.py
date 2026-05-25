@@ -43,6 +43,31 @@ def test_no_missing_dependency_refs():
     assert not offenders, f"depends_on points at undefined steps: {offenders}"
 
 
+def test_no_forward_reference_dependencies():
+    """Every depends_on must point at an EARLIER step in the list.
+
+    The runner resolves depends_on step-ids to DB task-ids in creation
+    (list) order; a forward reference (depending on a step defined later)
+    resolves against a not-yet-created task, the dep is silently dropped,
+    and the dependent dispatches immediately. Production 2026-05-25 mission
+    76 step 0.6a (non_goals_confirm) was placed before its dependency
+    0.6a.verify → the confirm fired with no draft on disk. The whole
+    workflow must stay topologically ordered.
+    """
+    steps = _load_steps()
+    pos = {s["id"]: i for i, s in enumerate(steps)}
+    offenders = [
+        (s["id"], dep)
+        for s in steps
+        for dep in (s.get("depends_on") or [])
+        if dep in pos and pos[dep] > pos[s["id"]]
+    ]
+    assert not offenders, (
+        f"forward-reference depends_on (dependency defined AFTER the "
+        f"dependent — will dispatch unguarded): {offenders}"
+    )
+
+
 def test_intake_draft_uses_a_file_writing_agent():
     """`0.0a.draft` must produce intake_todo_draft.json on disk. The `analyst`
     agent could not (its toolset/prompt is research/report-oriented → it

@@ -75,6 +75,7 @@ class Selector:
         call_category: str = "main_work",
         urgency: float = 0.5,
         remaining_budget_usd: float | None = None,
+        diag_out: dict | None = None,
     ) -> Pick | SelectionFailure | None:
         """
         Select the best model for a task.
@@ -184,6 +185,27 @@ class Selector:
         from collections import Counter
         filter_reasons: Counter[str] = Counter()
         candidates: list[ModelInfo] = []
+        # WS-1 forensics (handoff 2026-05-25): when the pool comes up empty,
+        # the downstream admission_violations row must say WHICH filter killed
+        # it — not just "no_candidates". Capture the per-reason histogram and,
+        # specifically, every FUNCTION-CALLING-capable model that was rejected
+        # for a NON-FC reason (rate cap / daily-exhausted / pressure / vram).
+        # That is the exact signal the researcher-starvation analysis needs:
+        # "which tool-capable model COULD have served, and why it didn't".
+        fc_rejected: dict[str, str] = {}
+
+        def _emit_diag(stage: str | None, **extra) -> None:
+            """Populate the caller's diag dict in place (no-op when absent).
+            ``stage`` is the empty-pool stage (eligibility/rank/pressure/
+            swap_budget/budget) or None when a Pick was served."""
+            if diag_out is None:
+                return
+            diag_out["empty_stage"] = stage
+            diag_out["filter_reasons"] = dict(filter_reasons)
+            diag_out["eligible_count"] = len(candidates)
+            diag_out["fc_capable_rejected"] = dict(fc_rejected)
+            diag_out.update(extra)
+
         for model in self._registry.all_models():
             reason = self._check_eligibility(
                 model=model,
@@ -193,6 +215,16 @@ class Selector:
             )
             if reason is not None:
                 filter_reasons[reason] += 1
+                # An FC-capable model rejected for something OTHER than
+                # lacking FC is the high-value forensic: it means a tool
+                # agent's pool was emptied by rate/pressure, not by a
+                # structural capability gap. Cap the map so a 300-model
+                # openrouter registry can't blow the 1KB snapshot budget.
+                if (reason != "no_function_calling"
+                        and getattr(model, "supports_function_calling", False)
+                        and len(fc_rejected) < 25):
+                    key = getattr(model, "litellm_name", None) or model.name
+                    fc_rejected[key] = reason
                 logger.debug(
                     "model filtered: name=%s reason=%s task=%s",
                     model.name, reason, task,
@@ -212,6 +244,7 @@ class Selector:
                 "filtered=%d reasons=[%s]",
                 task, local_only, sum(filter_reasons.values()), hist,
             )
+            _emit_diag("eligibility")
             return None
 
         # Visibility: per-provider eligible-candidate count. When a provider
@@ -257,6 +290,8 @@ class Selector:
                 len(candidates), before, remaining_budget_usd,
             )
             if not candidates:
+                _emit_diag("budget",
+                           budget_remaining_usd=remaining_budget_usd)
                 return SelectionFailure(
                     reason="budget",
                     detail=f"no model fits remaining ${remaining_budget_usd:.4f}",
@@ -276,6 +311,7 @@ class Selector:
                 "selector: rank_candidates returned empty: task=%s candidates=%d",
                 task, len(candidates),
             )
+            _emit_diag("rank")
             return None
 
         # ── Pool-pressure gate (single source of truth) ──────────────────────
@@ -313,6 +349,14 @@ class Selector:
                 ", ".join(f"{s.model.name}={getattr(s, 'urgency', 0.0):+.2f}"
                           for s in scored[:5]),
             )
+            _emit_diag(
+                "pressure",
+                pressure_threshold=round(threshold, 3),
+                pressure_scalars={
+                    s.model.name: round(getattr(s, "urgency", 0.0), 3)
+                    for s in scored[:10]
+                },
+            )
             return None
 
         best = scored[0]
@@ -338,6 +382,7 @@ class Selector:
                         "swap budget exhausted and no loaded/cloud alternative: task=%s",
                         task,
                     )
+                    _emit_diag("swap_budget")
                     return None
             else:
                 # Swap will be recorded by the dispatcher after successful execution (Task 4).
@@ -377,6 +422,7 @@ class Selector:
         except Exception as e:
             logger.debug("pick telemetry log failed: %s", e)
 
+        _emit_diag(None, picked=best.model.name)
         return Pick(
             model=best.model,
             min_time_seconds=min_time,

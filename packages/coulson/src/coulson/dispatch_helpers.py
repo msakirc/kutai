@@ -25,6 +25,7 @@ def pick_for_iter(
     failures: list[Failure],
     iteration: int,
     remaining_budget: float,
+    diag_out: dict | None = None,
 ) -> Pick | None:
     """Select the model for the current ReAct iteration.
 
@@ -80,6 +81,7 @@ def pick_for_iter(
         failures=failures,
         call_category="main_work",
         urgency=urgency,
+        diag_out=diag_out,
     )
     # Track the live model so the next no-failure iter reuses THIS pick
     # (the one actually running) rather than re-racing the pool again.
@@ -113,23 +115,77 @@ def result_to_response_dict(result: Any, model: Any) -> dict:
     }
 
 
+def _summarize_diag(diag: dict | None) -> str:
+    """Render the selector's empty-pool diag into a compact one-line
+    snapshot_summary (capped downstream at 1000 chars by the recorder).
+
+    WS-1 (handoff 2026-05-25): the pre-fix forensics wrote a blank
+    snapshot_summary, so the DB could not say WHICH filter emptied the
+    pool. This names the stage, the per-reason histogram, and — the key
+    signal — the FC-capable models that were rejected and why.
+    """
+    if not diag:
+        return ""
+    stage = diag.get("empty_stage")
+    parts = [f"stage={stage}", f"eligible={diag.get('eligible_count')}"]
+    fr = diag.get("filter_reasons") or {}
+    if fr:
+        hist = ", ".join(
+            f"{c}×{r}"
+            for r, c in sorted(fr.items(), key=lambda kv: -kv[1])
+        )
+        parts.append(f"reasons=[{hist}]")
+    fc = diag.get("fc_capable_rejected") or {}
+    if fc:
+        fcs = ", ".join(f"{k}:{v}" for k, v in list(fc.items())[:8])
+        parts.append(f"fc_capable_rejected=[{fcs}]")
+    if stage == "pressure":
+        parts.append(f"threshold={diag.get('pressure_threshold')}")
+        sc = diag.get("pressure_scalars") or {}
+        if sc:
+            scs = ", ".join(f"{k}={v}" for k, v in list(sc.items())[:6])
+            parts.append(f"scalars=[{scs}]")
+    return " ".join(parts)
+
+
 async def record_pool_empty_forensics(
     *,
     task: dict,
     failures: list[Failure],
     difficulty: int,
     iteration_n: int,
+    diag: dict | None = None,
 ) -> None:
     """Pool drained mid-task — capture context for offline tuning.
 
     Ported from ``LLMDispatcher._do_dispatch``'s pool-empty branch. The
     pressure model failed to predict that retry would find no candidates
     after the initial pick admitted; record what was on the table.
+
+    ``diag`` is the selector's per-call empty-pool diagnostic (populated
+    via ``pick_for_iter(diag_out=...)``); it names the filter that emptied
+    the pool so the DB row is actionable instead of blank.
     """
     try:
         from src.infra.admission_forensics import record_admission_violation
         t_id = task.get("id") if isinstance(task, dict) else None
         t_agent = task.get("agent_type") if isinstance(task, dict) else None
+        extra = {
+            "failures_count": len(failures),
+            "failure_models": [getattr(f, "model", "") for f in failures[:10]],
+            "is_overhead": False,
+            "iteration_n": iteration_n,
+        }
+        if diag:
+            extra["diag"] = {
+                k: diag.get(k)
+                for k in (
+                    "empty_stage", "eligible_count", "filter_reasons",
+                    "fc_capable_rejected", "pressure_threshold",
+                    "pressure_scalars",
+                )
+                if k in diag
+            }
         await record_admission_violation(
             site="coulson_pool_empty",
             phase="main_work",
@@ -140,12 +196,8 @@ async def record_pool_empty_forensics(
             reason="no_candidates",
             error_category="availability",
             error_message=f"No model candidates after {len(failures)} failure(s)",
-            extra={
-                "failures_count": len(failures),
-                "failure_models": [getattr(f, "model", "") for f in failures[:10]],
-                "is_overhead": False,
-                "iteration_n": iteration_n,
-            },
+            snapshot_summary=_summarize_diag(diag),
+            extra=extra,
         )
     except Exception:
         pass

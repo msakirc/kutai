@@ -570,12 +570,14 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             try:
                 async with _hb_call.keepalive():
                     for transport_attempt in range(MAX_TRANSPORT_ATTEMPTS + 1):
+                        _diag: dict = {}
                         pick = pick_for_iter(
                             reqs=reqs,
                             task=task,
                             failures=transport_failures,
                             iteration=iteration,
                             remaining_budget=max(0.0, _remaining),
+                            diag_out=_diag,
                         )
                         if pick is None:
                             await record_pool_empty_forensics(
@@ -583,6 +585,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                                 failures=transport_failures,
                                 difficulty=reqs.difficulty,
                                 iteration_n=iteration,
+                                diag=_diag,
                             )
                             raise ModelCallFailed(
                                 call_id=reqs.effective_task or reqs.primary_capability,

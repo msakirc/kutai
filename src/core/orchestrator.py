@@ -28,6 +28,26 @@ logger = get_logger("core.orchestrator")
 # behind a still-running budget.
 
 
+def _dispatch_exc_to_result(exc: BaseException, task: dict) -> dict:
+    """Build a failure result dict from a dispatch exception.
+
+    Bug 2026-05-26: a bare ``asyncio.TimeoutError`` (e.g. a cloud call that
+    rode the 600s wall-clock cap) has ``str(exc) == ''``, so the old generic
+    handler wrote ``error="TimeoutError: "`` with NO ``error_category``.
+    Beckman then defaulted the category to ``worker`` and the DB row's DLQ
+    reason was blank — losing both the right retry curve and any forensic
+    "where". Tag timeouts explicitly and name the held model so the row is
+    actionable. (asyncio.TimeoutError and the builtin TimeoutError are
+    distinct classes on Python 3.10 — catch both.)
+    """
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        held = task.get("_held_pick") if isinstance(task, dict) else None
+        model = getattr(getattr(held, "model", None), "name", "") if held else ""
+        msg = "call timed out (wall-clock cap)" + (f" on {model}" if model else "")
+        return {"status": "failed", "error": msg, "error_category": "timeout"}
+    return {"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+
+
 async def _check_mcp_idle_sweep() -> None:
     """Periodically shut down idle MCP servers (lazy-start companion).
 
@@ -358,8 +378,11 @@ class Orchestrator:
             result = {"status": "failed", "error": str(mcf)[:500], "error_category": cat}
             logger.warning("ModelCallFailed task #%s: %s (category=%s)", task_id, mcf, cat)
         except Exception as e:
-            result = {"status": "failed", "error": f"{type(e).__name__}: {str(e)[:300]}"}
-            logger.exception("dispatch failed task #%s: %s", task_id, e)
+            result = _dispatch_exc_to_result(e, task)
+            if result.get("error_category") == "timeout":
+                logger.warning("dispatch timeout task #%s: %s", task_id, result["error"])
+            else:
+                logger.exception("dispatch failed task #%s: %s", task_id, e)
 
         # Mechanical clarify (variant_choice keyboard) self-manages state:
         # mr_roboto.clarify already called update_task(status="waiting_human")

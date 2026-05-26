@@ -1115,6 +1115,24 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
                     source_id=source_id, artifact=artifact_name)
 
 
+# Post-hook agent_types that are single-call LLM evaluation work (no tools,
+# no ReAct loop). They belong on the OVERHEAD lane (loaded local model,
+# runner='direct') — NOT main_work, where they pick a cloud model and ride
+# the 600s wall-clock cap. Bug 2026-05-26: spawned without kind=, grade/
+# summarize post-hooks defaulted to kind='main_work' → cloud → a
+# connection-phase hang ran the full 600s → bare TimeoutError → DLQ at 6/6.
+# The inline grade (grading.py) and _llm_summarize (hooks.py) already use
+# kind='overhead'; this aligns the post-hook spawn path with them. Mechanical
+# post-hooks (verify_artifacts/test_run/pattern_lint) route via
+# agent_type='mechanical' (runner='mechanical') and are unaffected.
+_OVERHEAD_POSTHOOK_AGENTS = frozenset({"grader", "artifact_summarizer"})
+
+
+def _posthook_kind(agent_type: str) -> str:
+    """Task ``kind`` for a spawned post-hook of the given agent_type."""
+    return "overhead" if agent_type in _OVERHEAD_POSTHOOK_AGENTS else "main_work"
+
+
 async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
     """Park the source in `ungraded`, enqueue a post-hook task row."""
     import json as _json
@@ -1155,6 +1173,7 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
         title=_posthook_title(a, source),
         description="",
         agent_type=agent_type,
+        kind=_posthook_kind(agent_type),
         mission_id=source.get("mission_id"),
         depends_on=[],
         context=payload,
@@ -4182,6 +4201,7 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
                 title=f"Summarize '{kind.split(':',1)[1]}' for #{a.source_task_id}",
                 description="",
                 agent_type="artifact_summarizer",
+                kind=_posthook_kind("artifact_summarizer"),
                 mission_id=source.get("mission_id"),
                 depends_on=[],
                 context={

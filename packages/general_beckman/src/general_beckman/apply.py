@@ -261,7 +261,24 @@ async def _apply_clarify(task: dict, a: RequestClarification) -> None:
 
 
 async def _apply_review(task: dict, a: RequestReview) -> None:
-    from src.infra.db import add_task, get_db
+    from src.infra.db import add_task, get_db, update_task
+    # A MECHANICAL post-hook task that returned needs_review (e.g.
+    # find_similar_missions: prior missions matched) has already done its job:
+    # mr_roboto enqueued the founder Continue/Branch/Abort notice and rewrite
+    # Rule 0c' synthesised the SOURCE's PostHookVerdict. The post-hook task
+    # itself must now go TERMINAL — left non-terminal it was swept back,
+    # re-run, and DLQ'd at the worker_attempts cap (bug 2026-05-26: #166396
+    # find_similar DLQ'd 6× with its own needs_review string as the "error").
+    # And a mechanical gate must never spawn a reviewer AGENT.
+    _ctx = _parse_ctx(task)
+    if task.get("agent_type") == "mechanical" and _ctx.get("posthook_kind"):
+        await update_task(a.task_id, status="completed")
+        logger.info(
+            "mechanical post-hook needs_review completed (founder notice "
+            "already surfaced; source verdict synthesised)",
+            task_id=a.task_id, kind=_ctx.get("posthook_kind"),
+        )
+        return
     # Dedup: if a review task already exists for this parent, skip.
     conn = await get_db()
     cursor = await conn.execute(

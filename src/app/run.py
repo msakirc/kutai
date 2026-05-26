@@ -56,8 +56,11 @@ _log = get_logger("app.run")
 # Attach Telegram alert handler (ERROR+) to root logger
 import logging as _logging
 try:
-    from src.infra.notifications import TelegramAlertHandler
+    from src.infra.notifications import TelegramAlertHandler, install_polling_noise_filter
     _logging.getLogger().addHandler(TelegramAlertHandler())
+    # Downgrade transient PTB poll DNS/connect failures ERROR→WARNING so they
+    # don't spam the alert feed (bot auto-retries). WS-2, handoff 2026-05-25.
+    install_polling_noise_filter()
 except Exception as e:
     _log = get_logger("app.run")
     _log.warning("Could not attach TelegramAlertHandler", error=str(e))

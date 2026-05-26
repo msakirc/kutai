@@ -26,6 +26,13 @@ from .times import db_now
 
 import requests
 
+try:
+    # PTB wraps httpx connect/DNS/timeout failures as NetworkError (TimedOut is
+    # a subclass). Tuple fallback keeps isinstance() False if telegram is absent.
+    from telegram.error import NetworkError as _TelegramNetworkError
+except Exception:  # pragma: no cover - telegram is a core dependency in prod
+    _TelegramNetworkError = ()  # type: ignore[assignment]
+
 # Import lazily to avoid circular imports at module load time
 def _cfg():
     from src.app import config as c
@@ -255,6 +262,47 @@ class TelegramAlertHandler(logging.Handler):
             )
         except Exception as exc:
             _handler_error_logger.error("TelegramAlertHandler._send_sync failed: %s", exc)
+
+
+# ─── Polling network-noise filter (WS-2, handoff 2026-05-25) ─────────────────
+
+class PollingNetworkNoiseFilter(logging.Filter):
+    """Downgrade transient Telegram-poll connect failures from ERROR to WARNING.
+
+    python-telegram-bot's Updater logs *every* getUpdates failure at ERROR with a
+    full traceback (telegram.ext._updater ``default_error_callback``). Transient
+    DNS/connect blips — ``[Errno 11001] getaddrinfo failed``, connection resets —
+    are wrapped as ``telegram.error.NetworkError`` and auto-retried; the poller
+    recovers on its own. Left at ERROR they spam the 🟠 Telegram alert feed
+    (``TelegramAlertHandler``, ERROR+). This filter rewrites those records in
+    place to a single WARNING line and drops the traceback, so the handler's
+    ERROR-level gate skips them. Genuine non-network Updater errors stay ERROR.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            record.name == "telegram.ext.Updater"
+            and record.exc_info
+            and isinstance(record.exc_info[1], _TelegramNetworkError)
+        ):
+            exc = record.exc_info[1]
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+            record.msg = "Telegram poll network blip (auto-retry): %s: %s"
+            record.args = (exc.__class__.__name__, str(exc))
+            record.exc_info = None
+            record.exc_text = None
+        return True  # always keep — only the level/traceback may change
+
+
+def install_polling_noise_filter() -> None:
+    """Attach :class:`PollingNetworkNoiseFilter` to the PTB Updater logger.
+
+    Idempotent; safe to call once at startup before polling begins.
+    """
+    lg = logging.getLogger("telegram.ext.Updater")
+    if not any(isinstance(f, PollingNetworkNoiseFilter) for f in lg.filters):
+        lg.addFilter(PollingNetworkNoiseFilter())
 
 
 # ─── Shopping Notification Helpers ────────────────────────────────────────────

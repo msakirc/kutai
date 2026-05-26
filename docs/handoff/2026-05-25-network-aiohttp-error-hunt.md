@@ -30,7 +30,19 @@ stderr (microsecond-identical timestamps confirm). Not the 05-25 legacy-removal 
 Guard test: `packages/hallederiz_kadir/tests/test_aiohttp_transport.py`. **Takes effect on
 next orchestrator restart** (lifecycle is user-managed via Telegram).
 
-**WS-2 — still OPEN (optional, log-noise only).** See §3. Not done; bot self-recovers.
+**WS-2 — FIXED.** Handoff §3 Option 1 (PTB `add_error_handler`) would NOT work: PTB
+22.6 logs poll failures *internally* in `Updater` (`telegram.ext._updater`
+`default_error_callback` → logger `telegram.ext.Updater`, `_LOGGER.exception` = ERROR +
+traceback), never routing them to error handlers. PTB wraps httpx connect/DNS/timeout
+errors as `telegram.error.NetworkError` (`_httpxrequest.py:303`).
+
+Real fix: `PollingNetworkNoiseFilter` (`src/infra/notifications.py`) attached to the
+`telegram.ext.Updater` logger via `install_polling_noise_filter()` (wired in `run.py`
+startup, before polling). It rewrites NetworkError records in place to a one-line WARNING
+and clears the traceback, so `TelegramAlertHandler` (ERROR+, root) skips them; genuine
+non-network Updater errors stay ERROR. End-to-end verified: NetworkError → 0 alert-handler
+fires, ValueError → 1. Tests: `tests/test_polling_noise_filter.py` (6) + e2e. Takes effect
+on next orchestrator restart.
 
 ---
 

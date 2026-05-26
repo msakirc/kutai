@@ -19,6 +19,12 @@ from .retry import execute_with_retry, classify_error
 
 litellm.suppress_debug_info = True
 litellm.return_response_headers = True
+# Use litellm's pooled httpx transport, not its aiohttp transport. The aiohttp
+# path (litellm issue #12443) creates ClientSessions whose async close can't run
+# from __del__, so aiohttp's finalizer logged "Unclosed client session" at ERROR
+# in the orchestrator on every async-client (re)creation. httpx is pooled+closed
+# cleanly. See packages/hallederiz_kadir/tests/test_aiohttp_transport.py.
+litellm.disable_aiohttp_transport = True
 
 # Silence LiteLLM's Python logger. ``suppress_debug_info=True`` only mutes
 # the verbose stdout dump; the logger emits DEBUG events independently

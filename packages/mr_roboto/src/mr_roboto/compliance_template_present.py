@@ -103,7 +103,17 @@ def compliance_template_present(
                     "root": root,
                 }
         if overlay_obj:
-            for doc in overlay_obj.get("required_documents") or []:
+            # required_documents SHOULD be a list of {template_id, ...} dicts.
+            # A thin/placeholder analyst overlay (#166124) put a prose STRING
+            # here — iterating it yielded characters and ``doc.get`` crashed
+            # with "'str' object has no attribute 'get'" (#166560). Accept only
+            # a list, and skip any non-dict entry. No valid refs → ids stays
+            # empty → ok=True (the schema-validation gate flags the malformed
+            # overlay; this gate must not crash on top of it).
+            reqs = overlay_obj.get("required_documents")
+            for doc in reqs if isinstance(reqs, list) else []:
+                if not isinstance(doc, dict):
+                    continue
                 tid = doc.get("template_id")
                 if tid and tid not in ids:
                     ids.append(tid)

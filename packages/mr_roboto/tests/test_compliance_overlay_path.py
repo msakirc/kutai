@@ -45,3 +45,43 @@ def test_absolute_overlay_path_still_read(tmp_path, monkeypatch):
 
     res = compliance_template_present(overlay_path=str(overlay))
     assert res["ok"] is True, res
+
+
+def test_prose_required_documents_does_not_crash(tmp_path, monkeypatch):
+    """A placeholder-prose required_documents (a STRING, not a list) must not
+    crash with 'str' object has no attribute 'get' (#166560). No valid
+    template refs → nothing to check → ok=True (the schema gate is what
+    flags the malformed overlay)."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path),
+                        raising=False)
+    msn = tmp_path / "mission_x"
+    msn.mkdir()
+    (msn / "compliance_overlay.json").write_text(
+        json.dumps({"required_documents":
+                    "No legal documents are currently required."}),
+        encoding="utf-8",
+    )
+    res = compliance_template_present(
+        overlay_path="mission_x/compliance_overlay.json")
+    assert res["ok"] is True, res
+    assert res["checked"] == []
+
+
+def test_non_dict_entries_skipped(tmp_path, monkeypatch):
+    """A list mixing prose strings and real {template_id} dicts must skip the
+    strings and check only the dicts — no crash."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path),
+                        raising=False)
+    msn = tmp_path / "mission_y"
+    msn.mkdir()
+    (msn / "compliance_overlay.json").write_text(
+        json.dumps({"required_documents": [
+            "placeholder prose", {"template_id": "privacy_policy"}]}),
+        encoding="utf-8",
+    )
+    res = compliance_template_present(
+        overlay_path="mission_y/compliance_overlay.json",
+        template_root=str(tmp_path / "templates_empty"),  # no templates on disk
+    )
+    assert res["checked"] == ["privacy_policy"]
+    assert res["ok"] is False  # missing on disk, but NO crash

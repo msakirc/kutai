@@ -279,7 +279,7 @@ async def next_task(lane: str | None = None):
     from general_beckman.admission import compute_urgency
     from general_beckman.cron import fire_due
     from general_beckman.lanes import (
-        LANE_ONESHOT, cap_for, count_in_flight,
+        LANE_ONESHOT, cap_for, count_in_flight, has_ready_mechanical,
     )
 
     if lane is None:
@@ -291,12 +291,23 @@ async def next_task(lane: str | None = None):
 
     # Lane cap: reject early so the snapshot/Hoca scan is skipped when
     # the lane is already saturated. Uses the shared db connection.
+    #
+    # MECHANICAL EXEMPTION (bug 2026-05-26): the cap bounds GPU/cloud
+    # contention, which mr_roboto mechanicals (git commit / snapshot /
+    # notify_user — CPU-only) don't create. count_in_flight already
+    # excludes in-flight mechanicals; here we ALSO refuse to short-circuit
+    # when a ready mechanical is waiting, so it isn't stranded behind a
+    # lane full of slow LLM work. The per-task guard in the loop below
+    # keeps the cap exact for LLM/overhead candidates. _cap/_inflight are
+    # retained for that guard (None when the lane column hasn't migrated).
+    _cap: int | None = None
+    _inflight: int | None = None
     try:
         from src.infra.db import get_db as _get_db
         _conn = await _get_db()
         _cap = await cap_for(lane)
         _inflight = await count_in_flight(_conn, lane)
-        if _inflight >= _cap:
+        if _inflight >= _cap and not await has_ready_mechanical(_conn, lane):
             return None
     except Exception:
         # If the lane column hasn't migrated yet (pre-T1B DB), fall through
@@ -403,6 +414,18 @@ async def next_task(lane: str | None = None):
         return None
 
     for task in candidates:
+        # Lane-cap guard (bug 2026-05-26): the cap applies to LLM/overhead
+        # tasks only. Mechanicals are exempt — they reached here precisely
+        # because has_ready_mechanical let the gate fall through. When the
+        # lane is saturated, skip non-mechanical candidates so a ready
+        # mechanical behind a higher-urgency LLM task still gets admitted,
+        # while the LLM cap stays exact (the LLM task remains pending).
+        _is_mech = (task.get("agent_type") == "mechanical"
+                    or task.get("runner") == "mechanical")
+        if (not _is_mech and _cap is not None and _inflight is not None
+                and _inflight >= _cap):
+            continue
+
         # Defensive guard: a pending row past worker_attempts cap should
         # never have reached this point (sweep section 8 is supposed to
         # catch them) but if a fast retry bumped it between sweep ticks,

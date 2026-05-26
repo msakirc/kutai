@@ -153,12 +153,14 @@ async def test_ongoing_lane_cap_enforced():
 
     snap = MagicMock()
     snap.pressure_for = MagicMock(return_value=_breakdown(0.7))
-    # Cap reached: pick_ready_top_k should never be called.
+    # Cap reached AND no mechanical waiting: pick_ready_top_k never called.
     pick_mock = AsyncMock(return_value=[])
     with patch("general_beckman.queue.pick_ready_top_k", pick_mock), \
          patch("general_beckman.cron.fire_due", new=AsyncMock(return_value=None)), \
          patch("general_beckman.lanes.count_in_flight",
                new=AsyncMock(return_value=ONGOING_CONCURRENCY)), \
+         patch("general_beckman.lanes.has_ready_mechanical",
+               new=AsyncMock(return_value=False)), \
          patch("nerd_herd.refresh_snapshot",
                new=AsyncMock(return_value=snap), create=True):
         out = await general_beckman.next_task(lane=LANE_ONGOING)

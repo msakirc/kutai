@@ -31,6 +31,31 @@ def _candidate_filenames(template_id: str) -> list[str]:
     ]
 
 
+def _resolve_overlay_path(overlay_path: str) -> str:
+    """Resolve a possibly workspace-relative overlay path.
+
+    Post-hook payloads pass ``mission_<id>/compliance_overlay.json`` relative
+    to the mission WORKSPACE_DIR — NOT the process CWD. Opening it against CWD
+    (project root) was a guaranteed FileNotFoundError → ok=False → the gate
+    DLQ'd (bug 2026-05-26, task #166560). Mirror
+    find_similar_missions._resolve_workspace: absolute+exists → as-is; a
+    relative path that exists at CWD → as-is; else try WORKSPACE_DIR/<path>;
+    else fall back to the raw string (read fails downstream with a real error).
+    """
+    if not overlay_path:
+        return overlay_path
+    if os.path.isfile(overlay_path):
+        return overlay_path
+    try:
+        from src.tools.workspace import WORKSPACE_DIR
+        candidate = os.path.join(WORKSPACE_DIR, overlay_path)
+        if os.path.isfile(candidate):
+            return candidate
+    except Exception:
+        pass
+    return overlay_path
+
+
 def _walk_templates(root: str) -> set[str]:
     """Return a set of every filename present under ``root`` (recursive)."""
     found: set[str] = set()
@@ -65,13 +90,14 @@ def compliance_template_present(
         ids = list(template_ids)
     else:
         if overlay_obj is None and overlay_path:
+            resolved = _resolve_overlay_path(overlay_path)
             try:
-                with open(overlay_path, "r", encoding="utf-8") as fh:
+                with open(resolved, "r", encoding="utf-8") as fh:
                     overlay_obj = json.load(fh)
             except Exception as e:
                 return {
                     "ok": False,
-                    "error": f"could not read overlay: {e}",
+                    "error": f"could not read overlay {resolved!r}: {e}",
                     "missing": [],
                     "checked": [],
                     "root": root,

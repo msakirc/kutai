@@ -2700,10 +2700,13 @@ async def _run_dispatch(task: dict) -> Action:
                 template_root=payload.get("template_root"),
             )
             if not res.get("ok"):
+                _detail = res.get("error")
                 return Action(
                     status="failed",
                     error=(
-                        f"compliance_template_present: missing={res.get('missing')} "
+                        f"compliance_template_present: "
+                        + (f"{_detail} " if _detail else "")
+                        + f"missing={res.get('missing')} "
                         f"checked={res.get('checked')} root={res.get('root')}"
                     ),
                     result=res,

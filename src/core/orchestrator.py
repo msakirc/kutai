@@ -48,6 +48,30 @@ def _dispatch_exc_to_result(exc: BaseException, task: dict) -> dict:
     return {"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
 
 
+def _mech_action_to_result(action) -> dict:
+    """Map a mr_roboto Action to the orchestrator result dict.
+
+    needs_review (e.g. find_similar_missions: prior missions matched) MUST
+    propagate so result_router → RequestReview → rewrite Rule 0c' surfaces
+    the founder Continue/Branch/Abort decision and _apply_review marks the
+    post-hook task complete. Bug 2026-05-26: the missing needs_review case
+    fell through to {"status": "failed"} → category=worker → retried 6× on
+    the backoff ladder → DLQ (#166396, even after the _apply_review fix —
+    the result never reached result_router as needs_review).
+    """
+    if action.status == "completed":
+        return {"status": "completed", "result": json.dumps(action.result)}
+    if action.status == "needs_clarification":
+        return {"status": "needs_clarification", "result": json.dumps(action.result)}
+    if action.status == "needs_review":
+        return {
+            "status": "needs_review",
+            "result": json.dumps(action.result),
+            "error": action.error or "",
+        }
+    return {"status": "failed", "error": action.error or "mechanical failed"}
+
+
 async def _check_mcp_idle_sweep() -> None:
     """Periodically shut down idle MCP servers (lazy-start companion).
 
@@ -267,20 +291,10 @@ class Orchestrator:
                 if "payload" not in t and "payload" in ctx:
                     t["payload"] = ctx["payload"]
                 r = await mr_roboto.run(t)
-                if r.status == "completed":
-                    return {"status": "completed", "result": json.dumps(r.result)}
-                if r.status == "needs_clarification":
-                    # Mechanical executor asked the user something
-                    # (variant_choice keyboard) and set the task to
-                    # waiting_human. Return the same status upstream so
-                    # beckman's router leaves the row where mr_roboto put
-                    # it — no "completed" flip that would advance the
-                    # mission past a user-gated step.
-                    return {
-                        "status": "needs_clarification",
-                        "result": json.dumps(r.result),
-                    }
-                return {"status": "failed", "error": r.error or "mechanical failed"}
+                # needs_clarification → beckman's router leaves the row where
+                # mr_roboto put it (waiting_human); needs_review → founder
+                # decision surface; both must NOT collapse to failed/completed.
+                return _mech_action_to_result(r)
             # ── raw_dispatch sentinel: LLM call routed via beckman.enqueue
             # alias (dispatcher.request → beckman.enqueue → pump → here).
             # These tasks have context.llm_call.raw_dispatch == True and no

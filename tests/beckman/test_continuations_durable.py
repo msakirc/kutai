@@ -264,3 +264,52 @@ async def test_enqueue_rejects_await_inline_plus_on_complete(tmp_path, monkeypat
             )
     finally:
         await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_on_task_finished_fires_resume_with_state(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman import enqueue, on_task_finished
+        from general_beckman.continuations import register_resume, _HANDLERS
+        seen = []
+
+        async def resume(task_id, result, state):
+            seen.append((task_id, state))
+
+        register_resume("t.resume", resume)
+        cid = await enqueue(
+            {"title": "c", "description": "d", "agent_type": "coder"},
+            on_complete="t.resume", cont_state={"parent_id": 99},
+        )
+        await on_task_finished(cid, {"status": "completed", "result": "ok"})
+        await asyncio.sleep(0.05)
+        assert seen == [(cid, {"parent_id": 99})]
+    finally:
+        _HANDLERS.pop("t.resume", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_double_on_task_finished_fires_once(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman import enqueue, on_task_finished
+        from general_beckman.continuations import register_resume, _HANDLERS
+        calls = []
+
+        async def resume(task_id, result, state):
+            calls.append(task_id)
+
+        register_resume("t.resume", resume)
+        cid = await enqueue(
+            {"title": "c", "description": "d", "agent_type": "coder"},
+            on_complete="t.resume",
+        )
+        await on_task_finished(cid, {"status": "completed", "result": "ok"})
+        await on_task_finished(cid, {"status": "completed", "result": "ok"})
+        await asyncio.sleep(0.05)
+        assert calls == [cid], f"expected single fire, got {calls}"
+    finally:
+        _HANDLERS.pop("t.resume", None)
+        await _close_db()

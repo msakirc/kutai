@@ -3,7 +3,7 @@
 Public API (everything else is internal):
   - next_task() -> Task | None
   - on_task_finished(task_id, result) -> None
-  - enqueue(spec, *, parent_id, await_inline, on_complete, next_task_spec) -> int | TaskResult
+  - enqueue(spec, *, parent_id, await_inline, on_complete, on_error, next_task_spec, cont_state) -> int | TaskResult
   - resolve_inline(task_id, result) -> None
 """
 from __future__ import annotations
@@ -871,23 +871,32 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     # grader tasks #31203/#31204/#35460 timed out while 10 reviewer
     # children all completed cleanly.
     try:
-        import json as _json
-        _beckman_sub = (task_ctx or {}).get("beckman") or {}
+        _raw_status = (result or {}).get("status") or "completed"
 
-        _on_complete = _beckman_sub.get("on_complete")
-        if _on_complete:
-            from general_beckman.continuations import dispatch_on_complete
-            _cont_result = dict(result or {})
-            asyncio.create_task(dispatch_on_complete(_on_complete, task_id, _cont_result))
+        # Durable continuation fire (claim-then-detach via the table). Replaces
+        # the old fire-and-forget create_task(dispatch_on_complete). Idempotent.
+        from general_beckman.continuations import fire_for_task, dispatch_on_complete
+        _fired = await fire_for_task(task_id, dict(result or {}), _raw_status)
 
-        _next_spec = _beckman_sub.get("next_task_spec")
+        # Legacy straggler shim (removable post-SP5): a task enqueued BEFORE this
+        # upgrade carried on_complete in context.beckman, not the table. If no
+        # row claimed and the status is terminal, fire that legacy handler once.
+        if not _fired and _raw_status != "needs_clarification":
+            _legacy = (task_ctx.get("beckman") or {}).get("on_complete")
+            if _legacy:
+                asyncio.create_task(
+                    dispatch_on_complete(_legacy, task_id, dict(result or {}), {})
+                )
+
+        # next_task_spec fire-and-forget chain (unchanged, context-based).
+        _next_spec = (task_ctx.get("beckman") or {}).get("next_task_spec")
         if _next_spec and isinstance(_next_spec, dict):
             asyncio.create_task(enqueue(_next_spec, parent_id=task_id))
 
+        # await_inline resolve (coexists until SP5).
         if task_id in _inline_waiters:
-            _status = (result or {}).get("status", "completed")
             _tr = TaskResult(
-                status=_status,
+                status=_raw_status,
                 result=(result or {}).get("result"),
                 error=(result or {}).get("error"),
             )

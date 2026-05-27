@@ -6,6 +6,7 @@ interface contract.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -115,6 +116,17 @@ class TaskContext:
     def from_task(cls, task: dict) -> "TaskContext":
         """Build a TaskContext from a raw KutAI task dict."""
         ctx = task.get("context") or {}
+        # DB-sourced tasks carry `context` as a JSON STRING. Parse it before
+        # calling .get(): the unparsed string previously raised 'str' object
+        # has no attribute 'get' inside query() for EVERY db task → flash
+        # degraded → skills never attached (mission 77, 4023 hits).
+        if isinstance(ctx, str):
+            try:
+                ctx = json.loads(ctx)
+            except (json.JSONDecodeError, TypeError):
+                ctx = {}
+        if not isinstance(ctx, dict):
+            ctx = {}
         return cls(
             task_id=str(task.get("id", "")),
             title=task.get("title", "") or task.get("name", ""),

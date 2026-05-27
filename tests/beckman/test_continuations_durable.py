@@ -48,3 +48,74 @@ async def test_continuations_table_and_index_created(tmp_path, monkeypatch):
         }, f"unexpected columns: {cols}"
     finally:
         await _close_db()
+
+
+async def _add(**kw):
+    from src.infra.db import add_task
+    base = dict(title="t", description="d", agent_type="coder")
+    base.update(kw)
+    return await add_task(**base)
+
+
+@pytest.mark.asyncio
+async def test_add_task_writes_continuation_row_atomically(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        cid = await _add(on_complete="x.resume", cont_state={"k": 1})
+        assert isinstance(cid, int)
+        db = await _db_mod.get_db()
+        cur = await db.execute(
+            "SELECT resume_name, on_error_name, state_json, status "
+            "FROM continuations WHERE child_task_id = ?", (cid,)
+        )
+        row = await cur.fetchone()
+        assert row is not None, "continuation row not written"
+        assert row[0] == "x.resume"
+        assert row[1] is None
+        assert json.loads(row[2]) == {"k": 1}
+        assert row[3] == "pending"
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_add_task_on_error_only_writes_empty_resume(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        cid = await _add(on_error="x.fail")
+        db = await _db_mod.get_db()
+        cur = await db.execute(
+            "SELECT resume_name, on_error_name FROM continuations WHERE child_task_id = ?",
+            (cid,),
+        )
+        row = await cur.fetchone()
+        assert row[0] == ""        # empty resume sentinel
+        assert row[1] == "x.fail"
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_continuation_children_are_never_deduped(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        a = await _add(on_complete="x.resume")
+        b = await _add(on_complete="x.resume")
+        assert a != b, "continuation children were deduped (PK collision risk)"
+        db = await _db_mod.get_db()
+        cur = await db.execute("SELECT COUNT(*) FROM continuations")
+        assert (await cur.fetchone())[0] == 2
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_plain_tasks_still_dedup(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        a = await _add()
+        b = await _add()        # identical → deduped to None
+        assert isinstance(a, int)
+        assert b is None, f"expected dedup (None), got {b}"
+    finally:
+        await _close_db()

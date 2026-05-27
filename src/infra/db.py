@@ -768,6 +768,26 @@ async def init_db():
         )
     """)
 
+    # Durable continuation substrate (CPS SP1). One row per child task; the
+    # child's terminal state fires the registered resume/on_error handler.
+    # child_task_id is the PK → exactly one continuation per child (load-bearing;
+    # add_task skips dedup for continuation children to honor this).
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS continuations (
+            child_task_id   INTEGER PRIMARY KEY,
+            resume_name     TEXT NOT NULL,
+            on_error_name   TEXT,
+            state_json      TEXT NOT NULL DEFAULT '{}',
+            status          TEXT NOT NULL DEFAULT 'pending',
+            created_at      TEXT NOT NULL
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_continuations_pending "
+        "ON continuations(status)"
+    )
+    await db.commit()
+
     # Conversations
     await db.execute("""
         CREATE TABLE IF NOT EXISTS conversations (

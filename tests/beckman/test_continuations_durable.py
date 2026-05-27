@@ -119,3 +119,112 @@ async def test_plain_tasks_still_dedup(tmp_path, monkeypatch):
         assert b is None, f"expected dedup (None), got {b}"
     finally:
         await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_claim_for_fire_is_single_winner(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import claim_for_fire
+        cid = await _add(on_complete="x.resume", cont_state={"v": 9})
+        first = await claim_for_fire(cid)
+        second = await claim_for_fire(cid)
+        assert first is not None and first["resume_name"] == "x.resume"
+        assert first["state"] == {"v": 9}
+        assert second is None, "second claim must lose"
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_fire_for_task_success_dispatches_resume(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import (
+            register_resume, fire_for_task, _HANDLERS,
+        )
+        seen = []
+
+        async def resume(task_id, result, state):
+            seen.append((task_id, result, state))
+
+        register_resume("t.resume", resume)
+        cid = await _add(on_complete="t.resume", cont_state={"s": 1})
+        fired = await fire_for_task(cid, {"status": "completed", "result": "ok"},
+                                    "completed")
+        await asyncio.sleep(0.05)
+        assert fired is True
+        assert seen == [(cid, {"status": "completed", "result": "ok"}, {"s": 1})]
+    finally:
+        _HANDLERS.pop("t.resume", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_fire_failed_with_on_error_dispatches_on_error(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import (
+            register_resume, fire_for_task, _HANDLERS,
+        )
+        errs = []
+
+        async def on_err(task_id, result, state):
+            errs.append((task_id, result.get("status"), state))
+
+        register_resume("t.err", on_err)
+        cid = await _add(on_error="t.err", cont_state={"p": 2})
+        fired = await fire_for_task(cid, {"status": "failed", "error": "boom"},
+                                    "failed")
+        await asyncio.sleep(0.05)
+        assert fired is True
+        assert errs == [(cid, "failed", {"p": 2})]
+    finally:
+        _HANDLERS.pop("t.err", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_fire_failed_without_on_error_is_noop(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import fire_for_task
+        cid = await _add(on_complete="t.resume")     # resume only, no on_error
+        fired = await fire_for_task(cid, {"status": "failed"}, "failed")
+        assert fired is True
+        db = await _db_mod.get_db()
+        cur = await db.execute(
+            "SELECT status FROM continuations WHERE child_task_id = ?", (cid,)
+        )
+        assert (await cur.fetchone())[0] == "fired"
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_fire_needs_clarification_leaves_pending(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import fire_for_task
+        cid = await _add(on_complete="t.resume")
+        fired = await fire_for_task(cid, {"status": "needs_clarification"},
+                                    "needs_clarification")
+        assert fired is False, "needs_clarification must not fire"
+        db = await _db_mod.get_db()
+        cur = await db.execute(
+            "SELECT status FROM continuations WHERE child_task_id = ?", (cid,)
+        )
+        assert (await cur.fetchone())[0] == "pending", "row must stay pending"
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_fire_no_row_returns_false(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import fire_for_task
+        plain = await _add()    # no continuation
+        assert await fire_for_task(plain, {"status": "completed"}, "completed") is False
+    finally:
+        await _close_db()

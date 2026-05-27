@@ -35,7 +35,7 @@ async def test_register_and_dispatch_handler(tmp_path, monkeypatch):
     try:
         calls = []
 
-        async def my_handler(task_id: int, result: dict) -> None:
+        async def my_handler(task_id: int, result: dict, state: dict = None) -> None:
             calls.append((task_id, result))
 
         register("test.handler", my_handler)
@@ -51,7 +51,7 @@ async def test_handler_crash_does_not_propagate(tmp_path, monkeypatch):
     """A crashing handler must not raise — dispatch swallows it."""
     await _fresh_db(tmp_path, monkeypatch)
     try:
-        async def bad_handler(task_id: int, result: dict) -> None:
+        async def bad_handler(task_id: int, result: dict, state: dict = None) -> None:
             raise RuntimeError("boom")
 
         register("test.crash", bad_handler)
@@ -69,7 +69,7 @@ async def test_terminal_router_fires_on_complete(tmp_path, monkeypatch):
     try:
         invoked = []
 
-        async def my_resume(task_id: int, result: dict) -> None:
+        async def my_resume(task_id: int, result: dict, state: dict = None) -> None:
             invoked.append(task_id)
 
         register("my.handler", my_resume)

@@ -404,3 +404,22 @@ async def test_ttl_leaves_alive_child_pending(tmp_path, monkeypatch):
         assert (await cur.fetchone())[0] == "pending", "alive child must stay pending"
     finally:
         await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_existing_handlers_fire_with_empty_state(tmp_path, monkeypatch):
+    """analytics_digest + classify_signals handlers run under the durable path
+    with state={} (they don't use state). Proves the 3-arg migration."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import register_startup_handlers, _HANDLERS
+
+        register_startup_handlers()
+        assert "growth.store_weekly_digest" in _HANDLERS
+        assert "growth.classify_signals_complete" in _HANDLERS
+
+        # Calling each with 3 args must not raise (they early-return on empty input).
+        await _HANDLERS["growth.store_weekly_digest"](1, {"result": ""}, {})
+        await _HANDLERS["growth.classify_signals_complete"](1, {"result": {}}, {})
+    finally:
+        await _close_db()

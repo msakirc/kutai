@@ -313,3 +313,94 @@ async def test_double_on_task_finished_fires_once(tmp_path, monkeypatch):
     finally:
         _HANDLERS.pop("t.resume", None)
         await _close_db()
+
+
+async def _set_task_status(task_id, status, result_json=None):
+    db = await _db_mod.get_db()
+    if result_json is None:
+        await db.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
+    else:
+        await db.execute(
+            "UPDATE tasks SET status=?, result=? WHERE id=?",
+            (status, result_json, task_id),
+        )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_fires_terminal_child_with_reconstructed_result(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import (
+            register_resume, reconcile_continuations, _HANDLERS,
+        )
+        seen = []
+
+        async def resume(task_id, result, state):
+            seen.append((task_id, result.get("verdict"), state))
+
+        register_resume("t.resume", resume)
+        cid = await _add(on_complete="t.resume", cont_state={"p": 5})
+        await _set_task_status(cid, "completed", json.dumps({"verdict": "pass"}))
+        await reconcile_continuations()
+        await asyncio.sleep(0.05)
+        assert seen == [(cid, "pass", {"p": 5})], (
+            f"reconcile must fire with reconstructed result: {seen}"
+        )
+    finally:
+        _HANDLERS.pop("t.resume", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_ttl_expires_dead_stale_child(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import (
+            register_resume, reconcile_continuations, _HANDLERS,
+        )
+        errs = []
+
+        async def on_err(task_id, result, state):
+            errs.append(task_id)
+
+        register_resume("t.err", on_err)
+        cid = await _add(on_error="t.err")
+        await _set_task_status(cid, "processing")
+        db = await _db_mod.get_db()
+        await db.execute(
+            "UPDATE continuations SET created_at='2000-01-01 00:00:00' "
+            "WHERE child_task_id=?", (cid,))
+        await db.commit()
+        await reconcile_continuations(ttl_seconds=3600)
+        await asyncio.sleep(0.05)
+        assert errs == [cid], "dead stale child must expire via on_error"
+    finally:
+        _HANDLERS.pop("t.err", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_ttl_leaves_alive_child_pending(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        import src.core.in_flight as _if
+        from general_beckman.continuations import reconcile_continuations
+        cid = await _add(on_complete="t.resume")
+        await _set_task_status(cid, "processing")
+        db = await _db_mod.get_db()
+        await db.execute(
+            "UPDATE continuations SET created_at='2000-01-01 00:00:00' "
+            "WHERE child_task_id=?", (cid,))
+        await db.commit()
+
+        class _E:
+            task_id = cid
+        monkeypatch.setattr(_if, "in_flight_snapshot", lambda: [_E()])
+
+        await reconcile_continuations(ttl_seconds=3600)
+        cur = await db.execute(
+            "SELECT status FROM continuations WHERE child_task_id=?", (cid,))
+        assert (await cur.fetchone())[0] == "pending", "alive child must stay pending"
+    finally:
+        await _close_db()

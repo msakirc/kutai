@@ -228,3 +228,39 @@ async def test_fire_no_row_returns_false(tmp_path, monkeypatch):
         assert await fire_for_task(plain, {"status": "completed"}, "completed") is False
     finally:
         await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_with_continuation_returns_fresh_id_and_row(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman import enqueue
+        cid = await enqueue(
+            {"title": "child", "description": "d", "agent_type": "coder"},
+            on_complete="t.resume", cont_state={"parent_id": 7},
+        )
+        assert isinstance(cid, int)
+        db = await _db_mod.get_db()
+        cur = await db.execute(
+            "SELECT resume_name, state_json FROM continuations WHERE child_task_id=?",
+            (cid,),
+        )
+        row = await cur.fetchone()
+        assert row[0] == "t.resume"
+        assert json.loads(row[1]) == {"parent_id": 7}
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_rejects_await_inline_plus_on_complete(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman import enqueue
+        with pytest.raises(ValueError):
+            await enqueue(
+                {"title": "x", "description": "d", "agent_type": "coder"},
+                await_inline=True, on_complete="t.resume",
+            )
+    finally:
+        await _close_db()

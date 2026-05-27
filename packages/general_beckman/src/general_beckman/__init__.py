@@ -1033,6 +1033,8 @@ async def enqueue(
     parent_id: int | None = None,
     await_inline: bool = False,
     on_complete: str | None = None,
+    on_error: str | None = None,
+    cont_state: dict | None = None,
     next_task_spec: dict | None = None,
     lane: str | None = None,
 ) -> "int | TaskResult":
@@ -1050,15 +1052,28 @@ async def enqueue(
         ``resolve_inline``).  Returns a ``TaskResult``.
     on_complete:
         Name of a registered continuation handler (see continuations.py).
-        Stored inside ``spec["context"]["beckman"]["on_complete"]``.
+        Written atomically to the continuations table via add_task.
+    on_error:
+        Name of a registered continuation handler fired on task failure.
+        Written atomically to the continuations table via add_task.
+    cont_state:
+        Arbitrary state dict persisted alongside the continuation row and
+        passed back to the handler when it fires.
     next_task_spec:
         Spec dict for a follow-up task to enqueue when this task reaches
         a terminal state.  Stored inside context["beckman"]["next_task_spec"].
+        This is a fire-and-forget chain (NOT the durable substrate).
     """
     import json as _json
     from src.infra.db import add_task
     from general_beckman.queue_profile_push import build_and_push
     from general_beckman.lanes import pick_lane
+
+    if await_inline and (on_complete is not None or on_error is not None):
+        raise ValueError(
+            "enqueue: await_inline and on_complete/on_error are mutually "
+            "exclusive (a blocking wait can't also fire a continuation)"
+        )
 
     spec = dict(spec)  # shallow copy — don't mutate caller's dict
 
@@ -1080,8 +1095,10 @@ async def enqueue(
     if parent_id is not None:
         spec["parent_task_id"] = parent_id
 
-    # ── continuation envelope ─────────────────────────────────────────────
-    if on_complete is not None or next_task_spec is not None:
+    # ── next_task_spec envelope (fire-and-forget chain — NOT the durable
+    # substrate; stays context-based and coexists). on_complete/on_error go
+    # straight to add_task → continuations table.
+    if next_task_spec is not None:
         raw_ctx = spec.get("context")
         if raw_ctx is None:
             ctx: dict = {}
@@ -1092,16 +1109,19 @@ async def enqueue(
                 ctx = {}
         else:
             ctx = dict(raw_ctx)
-
         beckman_sub: dict = dict(ctx.get("beckman") or {})
-        if on_complete is not None:
-            beckman_sub["on_complete"] = on_complete
-        if next_task_spec is not None:
-            beckman_sub["next_task_spec"] = next_task_spec
+        beckman_sub["next_task_spec"] = next_task_spec
         ctx["beckman"] = beckman_sub
         spec["context"] = ctx  # add_task will json.dumps() it
 
-    task_id = await add_task(**spec, kind=kind, lane=_lane)
+    task_id = await add_task(**spec, kind=kind, lane=_lane,
+                             on_complete=on_complete, on_error=on_error,
+                             cont_state=cont_state)
+    if (on_complete is not None or on_error is not None) and task_id is None:
+        raise RuntimeError(
+            "enqueue: add_task returned no child id for a continuation task "
+            "(dedup should be skipped for continuations — investigate add_task)"
+        )
     await build_and_push()
 
     if not await_inline:

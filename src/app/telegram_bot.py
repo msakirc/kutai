@@ -363,6 +363,96 @@ def set_telegram(instance: "TelegramInterface") -> None:
     _TG_INSTANCE = instance
 
 
+# ─── CPS resume helpers (SP2) ───────────────────────────────────────────────
+
+
+async def _send_telegram_via_resume(
+    chat_id: int, text: str, *, parse_mode: str | None = None
+) -> bool:
+    """Send a Telegram message from a CPS resume context.
+
+    Resumes have no live `Update` object — they must reach the bot via the
+    module-level singleton and the raw bot API. Returns False if the bot is
+    uninitialised or the chat is unreachable (silent drop — matches the
+    pre-CPS `await_inline` 'reply got lost' behaviour, e.g. user blocked
+    the bot between enqueue and terminal).
+    """
+    try:
+        tg = get_telegram()
+    except RuntimeError:
+        return False
+    if tg is None or not getattr(tg, "app", None):
+        return False
+    try:
+        kwargs = {"chat_id": chat_id, "text": text[:4000]}
+        if parse_mode:
+            kwargs["parse_mode"] = parse_mode
+        await tg.app.bot.send_message(**kwargs)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("resume telegram send failed",
+                     chat_id=chat_id, error=str(exc))
+        return False
+
+
+async def _casual_reply_resume(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS resume for `_handle_casual` (SP2 Task 1).
+
+    state = {"chat_id": int, "text": str}
+    """
+    chat_id = state.get("chat_id")
+    if chat_id is None:
+        logger.debug("casual_reply_resume: missing chat_id in state",
+                     child_task_id=child_task_id)
+        return
+    agent_output = (result or {}).get("result") or {}
+    if isinstance(agent_output, dict):
+        content = agent_output.get("content", "")
+    else:
+        content = str(agent_output)
+    if isinstance(content, list):  # multimodal pieces — flatten
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    reply = (content or "Hey! How can I help?").strip()
+    await _send_telegram_via_resume(chat_id, reply[:1000])
+
+
+async def _casual_reply_err(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS on_error for `_handle_casual` (SP2 Task 1)."""
+    chat_id = state.get("chat_id")
+    if chat_id is None:
+        return
+    await _send_telegram_via_resume(
+        chat_id, "Hey! Send me a task or mission to work on."
+    )
+
+
+def register_continuations() -> None:
+    """Register all Telegram CPS resume / on_error handlers (SP2).
+
+    Called at import-time AND by `register_startup_handlers()` for
+    restart-reconcile. Idempotent.
+    """
+    try:
+        from general_beckman.continuations import register_resume
+        register_resume("telegram.casual_reply_resume", _casual_reply_resume)
+        register_resume("telegram.casual_reply_err",    _casual_reply_err)
+        # Sub-tasks 1.5 / 1.6 add `telegram.message_route_resume` etc. here.
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("telegram continuation registration deferred",
+                     error=str(exc))
+
+
+# Register at import so restart-reconcile finds these handlers.
+register_continuations()
+
+
 async def enqueue_launch_mission(spec: dict, **kwargs) -> int:
     """Z7 T3A (A2) — Thin wrapper to enqueue a launch mission via Beckman.
 
@@ -7902,28 +7992,45 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             await self.cmd_progress(update, context)
 
     async def _handle_casual(self, text: str, update: Update):
-        """Handle casual messages with a quick LLM response (no task creation)."""
+        """Handle casual messages with a quick LLM response (no task creation).
+
+        SP2: enqueues an LLM child with on_complete + on_error; returns
+        immediately. The eventual reply is sent from `_casual_reply_resume`
+        via the module-level Telegram singleton (the live `update` object
+        is dead by then).
+        """
         try:
-            response = await _enqueue_inline_chat(
-                title="telegram-casual-chat",
-                description=f"Casual chat reply: {text[:80]!r}",
-                agent_type="assistant",
-                kind="chat",
-                llm_call_kwargs={
-                    "task": "assistant",
+            from general_beckman import enqueue
+            chat_id = update.effective_chat.id
+            await enqueue(
+                {
+                    "title": "telegram-casual-chat",
+                    "description": f"Casual chat reply: {text[:80]!r}",
                     "agent_type": "assistant",
-                    "difficulty": 2,
-                    "messages": [{"role": "user", "content": text}],
-                    "prefer_speed": True,
-                    "priority": 1,
-                    "estimated_input_tokens": 100,
-                    "estimated_output_tokens": 100,
-                    "call_category": "overhead",
+                    "kind": "chat",
+                    "context": {
+                        "llm_call": {
+                            "raw_dispatch": True,
+                            "task": "assistant",
+                            "agent_type": "assistant",
+                            "difficulty": 2,
+                            "messages": [{"role": "user", "content": text}],
+                            "prefer_speed": True,
+                            "priority": 1,
+                            "estimated_input_tokens": 100,
+                            "estimated_output_tokens": 100,
+                            "call_category": "overhead",
+                        },
+                    },
                 },
+                on_complete="telegram.casual_reply_resume",
+                on_error="telegram.casual_reply_err",
+                cont_state={"chat_id": chat_id, "text": text},
             )
-            reply = response.get("content", "Hey! How can I help?")
-            await self._reply(update, reply[:1000])
-        except Exception:
+        except Exception as exc:
+            # Local failure (DB write, validation) — fall through to the
+            # synchronous fallback so the user always sees *something*.
+            logger.debug("casual chat enqueue failed", error=str(exc))
             await self._reply(update, "Hey! Send me a task or mission to work on.")
 
     async def _handle_load_control(self, text: str, update: Update):

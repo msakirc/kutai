@@ -119,6 +119,8 @@ async def fire_for_task(child_task_id: int, result: dict, raw_status: str) -> bo
 _HANDLER_MODULES = (
     "mr_roboto.executors.analytics_digest",
     "mr_roboto.executors.classify_signals",
+    # CPS SP2 — edge-group migrations:
+    "src.app.telegram_bot",
 )
 
 

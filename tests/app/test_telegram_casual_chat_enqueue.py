@@ -1,6 +1,9 @@
 """
-TDD tests for Site 9 migration: Telegram casual chat reply enqueues
-with kind='chat' via beckman.enqueue(await_inline=True).
+Tests for Site 9: Telegram casual chat reply enqueues via beckman.enqueue.
+
+SP2: migrated from `await_inline=True` to CPS — on_complete/on_error
+continuations route the eventual reply through `_casual_reply_resume`.
+The bot returns immediately from `_handle_casual`.
 """
 from __future__ import annotations
 
@@ -36,12 +39,7 @@ async def test_casual_chat_enqueues_with_kind_chat(tmp_path, monkeypatch):
     async def fake_enqueue(spec, **kwargs):
         captured["spec"] = spec
         captured["kwargs"] = kwargs
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": "Hello! How can I help?"},
-            error=None,
-        )
+        return 1234  # child task id
 
     # Build a minimal fake Update
     fake_update = MagicMock()
@@ -63,16 +61,18 @@ async def test_casual_chat_enqueues_with_kind_chat(tmp_path, monkeypatch):
     kwargs = captured["kwargs"]
 
     assert spec["kind"] == "chat", f"Expected kind='chat', got {spec.get('kind')!r}"
-    assert kwargs.get("await_inline") is True
-    assert kwargs.get("parent_id") is None
+    # SP2: no longer await_inline — CPS via on_complete instead.
+    assert kwargs.get("await_inline") in (False, None)
+    assert kwargs.get("on_complete") == "telegram.casual_reply_resume"
+    assert kwargs.get("on_error") == "telegram.casual_reply_err"
     assert spec["context"]["llm_call"]["raw_dispatch"] is True
-    assert len(replies) == 1
-    assert "Hello" in replies[0]
+    # The bot now returns immediately — no inline reply.
+    assert replies == []
 
 
 @pytest.mark.asyncio
-async def test_casual_chat_await_inline_true(tmp_path, monkeypatch):
-    """await_inline=True must be passed."""
+async def test_casual_chat_uses_cps_on_complete(tmp_path, monkeypatch):
+    """SP2: on_complete continuation name must be passed."""
     import src.infra.db as _db_mod
     monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
@@ -82,18 +82,13 @@ async def test_casual_chat_await_inline_true(tmp_path, monkeypatch):
 
     async def fake_enqueue(spec, **kwargs):
         captured_kwargs.update(kwargs)
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": "Sure!"},
-            error=None,
-        )
+        return 1234
 
     fake_update = MagicMock()
-    replies = []
+    fake_update.effective_chat.id = 99
 
     async def fake_reply(update, text, **kwargs):
-        replies.append(text)
+        pass
 
     with patch("general_beckman.enqueue", fake_enqueue):
         from src.app.telegram_bot import TelegramInterface
@@ -101,7 +96,11 @@ async def test_casual_chat_await_inline_true(tmp_path, monkeypatch):
         bot._reply = fake_reply
         await bot._handle_casual("thanks", fake_update)
 
-    assert captured_kwargs.get("await_inline") is True
+    assert captured_kwargs.get("on_complete") == "telegram.casual_reply_resume"
+    assert captured_kwargs.get("on_error") == "telegram.casual_reply_err"
+    cs = captured_kwargs.get("cont_state") or {}
+    assert cs.get("chat_id") == 99
+    assert cs.get("text") == "thanks"
 
 
 @pytest.mark.asyncio
@@ -116,14 +115,10 @@ async def test_casual_chat_parent_id_none(tmp_path, monkeypatch):
 
     async def fake_enqueue(spec, **kwargs):
         captured_kwargs.update(kwargs)
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": "ok"},
-            error=None,
-        )
+        return 1234
 
     fake_update = MagicMock()
+    fake_update.effective_chat.id = 1
 
     async def fake_reply(update, text, **kwargs):
         pass
@@ -134,7 +129,7 @@ async def test_casual_chat_parent_id_none(tmp_path, monkeypatch):
         bot._reply = fake_reply
         await bot._handle_casual("yo", fake_update)
 
-    assert captured_kwargs.get("parent_id") is None
+    assert captured_kwargs.get("parent_id") in (None, 0) or "parent_id" not in captured_kwargs
 
 
 @pytest.mark.asyncio
@@ -149,6 +144,7 @@ async def test_casual_chat_fallback_on_failure(tmp_path, monkeypatch):
         raise RuntimeError("beckman down")
 
     fake_update = MagicMock()
+    fake_update.effective_chat.id = 1
     replies = []
 
     async def fake_reply(update, text, **kwargs):
@@ -176,14 +172,10 @@ async def test_casual_chat_spec_contains_message_text(tmp_path, monkeypatch):
 
     async def fake_enqueue(spec, **kwargs):
         captured["spec"] = spec
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": "yep"},
-            error=None,
-        )
+        return 1234
 
     fake_update = MagicMock()
+    fake_update.effective_chat.id = 1
 
     async def fake_reply(update, text, **kwargs):
         pass

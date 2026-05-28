@@ -405,7 +405,11 @@ async def main():
             except Exception as exc:
                 _log.warning("periodic reconcile failed: %s", exc)
 
-    asyncio.create_task(_periodic_continuation_reconcile())
+    # Save the handle to a closure-captured variable so asyncio doesn't GC the
+    # task while it's sleeping (Python asyncio docs: "Save a reference to the
+    # result of this function, to avoid a task disappearing mid-execution").
+    _periodic_reconcile_task = asyncio.create_task(_periodic_continuation_reconcile())
+    main._periodic_reconcile_task = _periodic_reconcile_task  # type: ignore[attr-defined]
 
     # Phase 2: Docker, non-critical checks, and seeding ALL in parallel
     async def _docker_phase():

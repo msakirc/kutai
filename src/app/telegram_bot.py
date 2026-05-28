@@ -7611,8 +7611,82 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             self.user_last_task_id.pop(chat_id, None)
             return
 
-        # Fall-through: treat as plain task.
+        # SP2 fix-up — followup / clarification_response: pre-SP2 these were
+        # explicit branches in handle_message that called
+        # ``_find_followup_parent`` (clarification) or
+        # ``find_followup_context`` (followup) and threaded ``parent_task_id``
+        # + ``recent_context`` into the new task. The CPS route lost that
+        # linkage when it merged everything into the fall-through plain task
+        # branch. Restore both branches here. Both helpers take only
+        # ``chat_id`` + ``text`` so they work without a live ``Update``.
         from ..infra.db import add_task as _add_task
+
+        if msg_type == "clarification_response":
+            parent_id = await self._find_followup_parent(chat_id, text)
+            if parent_id:
+                task_context = {
+                    "chat_id": chat_id,
+                    "followup_to": parent_id,
+                }
+                task_id = await _add_task(
+                    title=f"Follow-up to #{parent_id}: {text[:40]}",
+                    description=text,
+                    tier="auto",
+                    parent_task_id=parent_id,
+                    priority=TASK_PRIORITY.get("high", 8),
+                    context=task_context,
+                )
+                if task_id is None:
+                    await _send_telegram_via_resume(
+                        chat_id, "⏳ A similar task is already in progress.",
+                    )
+                    return
+                self.user_last_task_id[chat_id] = task_id
+                await _send_telegram_via_resume(
+                    chat_id,
+                    f"🔗 Continuing task #{parent_id}. Queued as #{task_id}.",
+                )
+                return
+            # No parent found → fall through to plain task (matches pre-SP2).
+
+        if msg_type == "followup":
+            parent_id = self.user_last_task_id.get(chat_id)
+            recent_context = None
+            try:
+                followup = await find_followup_context(chat_id, text)
+                if followup.get("is_followup") and followup.get("parent_task_id"):
+                    parent_id = int(followup["parent_task_id"])
+                if followup.get("context"):
+                    recent_context = format_recent_context(followup["context"])
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("followup context lookup failed (cps)",
+                             error=str(exc))
+            if parent_id:
+                task_context: dict = {"chat_id": chat_id}
+                if recent_context:
+                    task_context["recent_conversation"] = recent_context
+                task_id = await _add_task(
+                    title=f"Follow-up to #{parent_id}: {text[:40]}",
+                    description=text,
+                    tier="auto",
+                    parent_task_id=parent_id,
+                    priority=TASK_PRIORITY.get("high", 8),
+                    context=task_context,
+                )
+                if task_id is None:
+                    await _send_telegram_via_resume(
+                        chat_id, "⏳ A similar task is already in progress.",
+                    )
+                    return
+                self.user_last_task_id[chat_id] = task_id
+                await _send_telegram_via_resume(
+                    chat_id,
+                    f"🔗 Continuing task #{parent_id}. Queued as #{task_id}.",
+                )
+                return
+            # No parent_id → fall through to plain task (matches pre-SP2).
+
+        # Fall-through: treat as plain task.
         task_id = await _add_task(
             title=text[:50], description=text, tier="auto",
             priority=TASK_PRIORITY["critical"],

@@ -7477,11 +7477,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
 
         if msg_type in ("progress_inquiry", "status_query"):
-            # Status queries require richer DB lookups; just acknowledge.
-            await _send_telegram_via_resume(
-                chat_id,
-                "📊 Use /tasks or /missions to see status.",
-            )
+            # SP2 fix-up: invoke the rich DB lookup (extracted into
+            # ``_build_status_query_response`` so it works without a live
+            # ``Update`` object). Falls back to a brief "no matches" notice
+            # when nothing matches — cannot dispatch ``cmd_progress`` here
+            # because it is itself ``Update``-bound.
+            await self._handle_status_query_chat(text, chat_id)
             return
 
         if msg_type == "question":
@@ -8172,8 +8173,17 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             logger.error("failed to log user input", error=str(e))
             await self._reply(update,f"Logged your {input_type}. (Note: save had an issue, check logs)")
 
-    async def _handle_status_query(self, text: str, chat_id: int, update: Update, context):
-        """Look up existing tasks/missions matching the user's status question."""
+    async def _build_status_query_response(
+        self, text: str,
+    ) -> list[tuple[str, str | None]] | None:
+        """Look up tasks/missions matching the user's status question.
+
+        Returns a list of ``(message_text, parse_mode)`` tuples to send, or
+        ``None`` to signal "no matches, caller should show general progress
+        fallback". Pure DB/string work — no ``update`` object touched —
+        so this is reusable from both the keyword-routing path (which still
+        has a live ``Update``) and the CPS resume path (which does not).
+        """
         import re
 
         lower = text.lower()
@@ -8202,8 +8212,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     latest = completed[-1]
                     preview = (latest["result"] or "")[:200]
                     msg += f"\n\nLatest result from _{latest['title']}_:\n{preview}"
-                await self._reply(update,msg, parse_mode="Markdown")
-                return
+                return [(msg, "Markdown")]
 
             task = await get_task(ref_id)
             if task:
@@ -8213,11 +8222,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     msg += f"\n\nResult:\n{preview}"
                 elif task["status"] == "failed" and task.get("error"):
                     msg += f"\n\nError: {task['error'][:200]}"
-                await self._reply(update,msg, parse_mode="Markdown")
-                return
+                return [(msg, "Markdown")]
 
-            await self._reply(update,f"Could not find mission or task #{ref_id}.")
-            return
+            return [(f"Could not find mission or task #{ref_id}.", None)]
 
         # 2) Search recent tasks/missions by keyword matching
         # Extract likely subject from the status question
@@ -8278,11 +8285,41 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             msg = header + "\n\n".join(matches[:5])
             if len(msg) > 4000:
                 msg = msg[:4000] + "\n... (truncated)"
-            await self._reply(update,msg, parse_mode="Markdown")
-        else:
-            # Fallback: show general progress
-            await self._reply(update,"📊 No matching tasks found. Showing general progress:")
+            return [(msg, "Markdown")]
+        # No matches — caller decides fallback (general progress vs short note).
+        return None
+
+    async def _handle_status_query(self, text: str, chat_id: int, update: Update, context):
+        """Look up existing tasks/missions matching the user's status question."""
+        responses = await self._build_status_query_response(text)
+        if responses is None:
+            # Fallback: show general progress (Update-aware path).
+            await self._reply(update, "📊 No matching tasks found. Showing general progress:")
             await self.cmd_progress(update, context)
+            return
+        for msg, parse_mode in responses:
+            if parse_mode:
+                await self._reply(update, msg, parse_mode=parse_mode)
+            else:
+                await self._reply(update, msg)
+
+    async def _handle_status_query_chat(self, text: str, chat_id: int) -> None:
+        """Chat-only variant of :meth:`_handle_status_query` for CPS resumes.
+
+        Uses :func:`_send_telegram_via_resume` instead of ``_reply`` (no
+        live ``Update`` in a resume context). On "no matches" sends a brief
+        notice rather than dumping ``cmd_progress`` which is itself
+        ``Update``-bound.
+        """
+        responses = await self._build_status_query_response(text)
+        if responses is None:
+            await _send_telegram_via_resume(
+                chat_id,
+                "📊 No matching tasks found. Use /tasks or /missions to see status.",
+            )
+            return
+        for msg, parse_mode in responses:
+            await _send_telegram_via_resume(chat_id, msg, parse_mode=parse_mode)
 
     async def _handle_casual(self, text: str, update: Update):
         """Handle casual messages with a quick LLM response (no task creation).

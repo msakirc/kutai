@@ -201,6 +201,13 @@ async def _call_llm_anomaly_hypothesis(
                 },
             },
             lane=LANE_ONESHOT,
+            # SP5-DEFERRED: investor_bullets' anomaly-hypothesis path is
+            # unreachable in production today (missions.product_id is NULL
+            # per the 2026-05-17 Z7 handoff, so fetchers return {} and this
+            # code path never fires). CPS-migrating it costs either ~80 LOC
+            # + a pending-table schema or a kickoff/finalize split — neither
+            # justified while the upstream producer is missing. See SP2
+            # spec §Site 6 deferral.
             await_inline=True,
         )
     except Exception as exc:

@@ -121,6 +121,7 @@ _HANDLER_MODULES = (
     "mr_roboto.executors.classify_signals",
     # CPS SP2 — edge-group migrations:
     "src.app.telegram_bot",
+    "src.app.interview",
 )
 
 

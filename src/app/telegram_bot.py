@@ -2358,13 +2358,21 @@ class TelegramInterface:
             await self._reply(update,"Please provide a mission description.")
             return
 
-        # Let the classifier decide if this needs a workflow
-        if not workflow:
-            classification = await self._classify_user_message(description)
-            if classification.get("workflow") == "i2p":
-                workflow = "i2p_v3"
-
         chat_id = update.message.chat_id
+
+        # SP2 CPS: classification is fire-and-forget. When the user did not
+        # ask for a workflow, dispatch through the CPS classifier; the
+        # resume creates the mission (workflow or plain) based on the
+        # classification (see _route_classified_message's _pending_mission
+        # branch).
+        if not workflow:
+            self._pending_mission[chat_id] = description
+            await self._classify_user_message(description, chat_id=chat_id)
+            await self._reply(
+                update,
+                "🎯 Classifying mission… (id pending)",
+            )
+            return
 
         if workflow:
             # Workflow mission — delegate to workflow runner

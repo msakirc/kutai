@@ -210,3 +210,35 @@ async def test_message_route_resume_routes_via_extracted_helper(tmp_path, monkey
         from src.app.telegram_bot import set_telegram
         set_telegram(None)  # type: ignore[arg-type]
         await _close_db()
+
+
+# ─── Task 1.6: cmd_mission migration ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cmd_mission_uses_cps_classification(tmp_path, monkeypatch):
+    """cmd_mission's no-workflow path goes through the CPS classifier."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from src.app.telegram_bot import TelegramInterface
+        bot = object.__new__(TelegramInterface)
+        bot._pending_clarifications = {}
+        bot._pending_mission = {}
+        bot.user_last_task_id = {}
+        bot._reply = AsyncMock()
+        bot._classify_user_message = AsyncMock()
+
+        fake_update = MagicMock()
+        fake_update.message.chat_id = 7777
+        fake_context = MagicMock()
+        fake_context.args = ["Build", "a", "login", "page"]
+
+        await bot.cmd_mission(fake_update, fake_context)
+        bot._classify_user_message.assert_awaited_once()
+        # chat_id keyword must be passed (otherwise resume can't reply)
+        kwargs = bot._classify_user_message.call_args.kwargs
+        assert kwargs.get("chat_id") == 7777
+        # The mission description must be cached in _pending_mission for the resume.
+        assert bot._pending_mission.get(7777) == "Build a login page"
+    finally:
+        await _close_db()

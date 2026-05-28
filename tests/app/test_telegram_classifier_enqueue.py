@@ -1,6 +1,10 @@
 """
-TDD tests for Site 8 migration: Telegram message classifier enqueues
-with kind='classifier' via beckman.enqueue(await_inline=True).
+Tests for Site 8: Telegram message classifier enqueues via beckman.enqueue.
+
+SP2: migrated from `await_inline=True` to CPS — on_complete/on_error
+continuations route the classification result through
+`_message_route_resume` and dispatch to `_route_classified_message`.
+The bot returns immediately from `_classify_user_message`.
 """
 from __future__ import annotations
 
@@ -36,35 +40,34 @@ async def test_message_classifier_enqueues_with_kind_classifier(tmp_path, monkey
     async def fake_enqueue(spec, **kwargs):
         captured["spec"] = spec
         captured["kwargs"] = kwargs
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": '{"type": "task", "confidence": 0.9}'},
-            error=None,
-        )
+        return 9999  # child task id
 
     with patch("general_beckman.enqueue", fake_enqueue):
-        # Import the bot but patch heavy deps so we can instantiate minimally
         from src.app.telegram_bot import TelegramInterface
 
         bot = object.__new__(TelegramInterface)
         bot._pending_clarifications = {}
 
-        result = await bot._classify_user_message("Build me a website")
+        rv = await bot._classify_user_message(
+            "Build me a website", chat_id=42,
+        )
 
+    # SP2: classifier returns None (queued); reply arrives via the resume.
+    assert rv is None
     spec = captured["spec"]
     kwargs = captured["kwargs"]
 
     assert spec["kind"] == "classifier", f"Expected kind='classifier', got {spec.get('kind')!r}"
-    assert kwargs.get("await_inline") is True
-    assert kwargs.get("parent_id") is None
+    # SP2: no longer await_inline.
+    assert kwargs.get("await_inline") in (False, None)
+    assert kwargs.get("on_complete") == "telegram.message_route_resume"
+    assert kwargs.get("on_error") == "telegram.message_route_err"
     assert spec["context"]["llm_call"]["raw_dispatch"] is True
-    assert result.get("type") == "task"
 
 
 @pytest.mark.asyncio
-async def test_message_classifier_await_inline_true(tmp_path, monkeypatch):
-    """await_inline=True must be passed so caller blocks on result."""
+async def test_message_classifier_cps_state_carries_chat_and_text(tmp_path, monkeypatch):
+    """cont_state must include chat_id, text and the flow discriminator."""
     import src.infra.db as _db_mod
     monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
@@ -74,20 +77,18 @@ async def test_message_classifier_await_inline_true(tmp_path, monkeypatch):
 
     async def fake_enqueue(spec, **kwargs):
         captured_kwargs.update(kwargs)
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": '{"type": "casual", "confidence": 0.8}'},
-            error=None,
-        )
+        return 9999
 
     with patch("general_beckman.enqueue", fake_enqueue):
         from src.app.telegram_bot import TelegramInterface
         bot = object.__new__(TelegramInterface)
         bot._pending_clarifications = {}
-        await bot._classify_user_message("hey")
+        await bot._classify_user_message("hey", chat_id=42)
 
-    assert captured_kwargs.get("await_inline") is True
+    cs = captured_kwargs.get("cont_state") or {}
+    assert cs.get("chat_id") == 42
+    assert cs.get("text") == "hey"
+    assert cs.get("flow") == "message_route"
 
 
 @pytest.mark.asyncio
@@ -102,25 +103,20 @@ async def test_message_classifier_parent_id_none(tmp_path, monkeypatch):
 
     async def fake_enqueue(spec, **kwargs):
         captured_kwargs.update(kwargs)
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": '{"type": "task", "confidence": 0.7}'},
-            error=None,
-        )
+        return 9999
 
     with patch("general_beckman.enqueue", fake_enqueue):
         from src.app.telegram_bot import TelegramInterface
         bot = object.__new__(TelegramInterface)
         bot._pending_clarifications = {}
-        await bot._classify_user_message("do something")
+        await bot._classify_user_message("do something", chat_id=1)
 
-    assert captured_kwargs.get("parent_id") is None
+    assert captured_kwargs.get("parent_id") in (None, 0) or "parent_id" not in captured_kwargs
 
 
 @pytest.mark.asyncio
-async def test_message_classifier_fallback_on_failure(tmp_path, monkeypatch):
-    """On enqueue failure, classifier falls back to keyword-based result (no raise)."""
+async def test_message_classifier_fallback_on_enqueue_failure(tmp_path, monkeypatch):
+    """On enqueue failure with chat_id, fall back to keyword routing in place."""
     import src.infra.db as _db_mod
     monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
@@ -133,11 +129,13 @@ async def test_message_classifier_fallback_on_failure(tmp_path, monkeypatch):
         from src.app.telegram_bot import TelegramInterface
         bot = object.__new__(TelegramInterface)
         bot._pending_clarifications = {}
-        result = await bot._classify_user_message("hello world")
+        bot._route_classified_message = AsyncMock()
+        # Should NOT raise; should call the routing helper with a keyword
+        # classification.
+        await bot._classify_user_message("hello world", chat_id=42)
 
-    # Should not raise; keyword fallback returns a dict with 'type'
-    assert isinstance(result, dict)
-    assert "type" in result
+    # _route_classified_message was invoked in the local-failure branch.
+    bot._route_classified_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -152,18 +150,13 @@ async def test_message_classifier_spec_context_has_messages(tmp_path, monkeypatc
 
     async def fake_enqueue(spec, **kwargs):
         captured["spec"] = spec
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": '{"type": "task", "confidence": 0.85}'},
-            error=None,
-        )
+        return 9999
 
     with patch("general_beckman.enqueue", fake_enqueue):
         from src.app.telegram_bot import TelegramInterface
         bot = object.__new__(TelegramInterface)
         bot._pending_clarifications = {}
-        await bot._classify_user_message("Fix the login bug")
+        await bot._classify_user_message("Fix the login bug", chat_id=1)
 
     llm_call = captured["spec"]["context"]["llm_call"]
     assert "messages" in llm_call

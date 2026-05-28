@@ -433,6 +433,74 @@ async def _casual_reply_err(
     )
 
 
+async def _message_route_resume(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS resume for `_classify_user_message` (SP2 Task 1.5).
+
+    Parses the classification JSON from the LLM response and dispatches via
+    `TelegramInterface._route_classified_message`. Falls back to keyword
+    classification if JSON parse fails or confidence is low.
+    """
+    chat_id = state.get("chat_id")
+    text = state.get("text") or ""
+    if chat_id is None:
+        return
+    try:
+        tg = get_telegram()
+    except RuntimeError:
+        return
+    if tg is None:
+        return
+
+    # Parse classification.
+    agent_output = (result or {}).get("result") or {}
+    if isinstance(agent_output, dict):
+        content = agent_output.get("content", "")
+    else:
+        content = str(agent_output)
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    classification: dict
+    try:
+        from ..core.task_classifier import _extract_json
+        parsed = _extract_json((content or "").strip())
+        msg_type = parsed.get("type") or "task"
+        confidence = parsed.get("confidence", 0.5)
+        workflow = parsed.get("workflow")
+        if confidence < 0.4:
+            classification = tg._classify_message_by_keywords(text)
+        else:
+            classification = {"type": msg_type}
+            if workflow:
+                classification["workflow"] = workflow
+    except Exception:
+        classification = tg._classify_message_by_keywords(text)
+
+    await tg._route_classified_message(chat_id, text, classification)
+
+
+async def _message_route_err(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS on_error for `_classify_user_message` (SP2 Task 1.5)."""
+    chat_id = state.get("chat_id")
+    text = state.get("text") or ""
+    if chat_id is None:
+        return
+    try:
+        tg = get_telegram()
+    except RuntimeError:
+        return
+    if tg is None:
+        return
+    cls = tg._classify_message_by_keywords(text)
+    await tg._route_classified_message(chat_id, text, cls)
+
+
 def register_continuations() -> None:
     """Register all Telegram CPS resume / on_error handlers (SP2).
 
@@ -441,9 +509,10 @@ def register_continuations() -> None:
     """
     try:
         from general_beckman.continuations import register_resume
-        register_resume("telegram.casual_reply_resume", _casual_reply_resume)
-        register_resume("telegram.casual_reply_err",    _casual_reply_err)
-        # Sub-tasks 1.5 / 1.6 add `telegram.message_route_resume` etc. here.
+        register_resume("telegram.casual_reply_resume",   _casual_reply_resume)
+        register_resume("telegram.casual_reply_err",      _casual_reply_err)
+        register_resume("telegram.message_route_resume",  _message_route_resume)
+        register_resume("telegram.message_route_err",     _message_route_err)
     except Exception as exc:  # noqa: BLE001
         logger.debug("telegram continuation registration deferred",
                      error=str(exc))
@@ -7260,14 +7329,21 @@ class TelegramInterface:
             "status_query", "todo", "load_control", "bug_report",
             "feature_request", "casual",
         }
-        if keyword_result["type"] in _KEYWORD_AUTHORITATIVE_TYPES:
-            classification = keyword_result
-        else:
-            classification = await self._classify_user_message(text)
+        if keyword_result["type"] not in _KEYWORD_AUTHORITATIVE_TYPES:
+            # SP2: CPS path — fire-and-forget classification; the resume
+            # routes via `_route_classified_message`. The bot returns
+            # immediately; the user sees an asynchronous reply.
+            await self._classify_user_message(text, chat_id=chat_id)
+            return
 
+        # Synchronous keyword path — keep the rich, Update-aware in-process
+        # routing so we can pass the live `update` to _handle_user_input,
+        # _handle_status_query, _handle_casual, _handle_load_control,
+        # _handle_todo_from_message (all of which need `Update.message.*`).
+        classification = keyword_result
         msg_type = classification["type"]
         msg_workflow = classification.get("workflow")
-        logger.info("message classified", msg_type=msg_type,
+        logger.info("message classified (keyword)", msg_type=msg_type,
                     workflow=msg_workflow, text_preview=text[:50])
 
         # ── Route by classification ──
@@ -7278,39 +7354,6 @@ class TelegramInterface:
 
         if msg_type in ("progress_inquiry", "status_query"):
             await self._handle_status_query(text, chat_id, update, context)
-            return
-
-        if msg_type == "question":
-            task_id = await add_task(
-                title=f"Q: {text[:50]}",
-                description=text,
-                tier="auto",
-                priority=TASK_PRIORITY.get("high", 8),
-                agent_type="assistant",
-            )
-            self.user_last_task_id[chat_id] = task_id
-            await self._reply(update,f"❓ Task #{task_id} queued.")
-            return
-
-        if msg_type == "shopping":
-            task_id = await add_task(
-                title=text[:80],
-                description=text,
-                tier="auto",
-                priority=TASK_PRIORITY.get("high", 8),
-                agent_type="shopping_advisor",
-                context={"chat_id": chat_id},
-            )
-            if task_id is None:
-                await self._reply(update,
-                    "🛒 A shopping search for this is already in progress.",
-                )
-                return
-            self.user_last_task_id[chat_id] = task_id
-            await self._reply(update,
-                f"🛒 Shopping task #{task_id} queued.\n"
-                f"I'll search prices and compare options for you.",
-            )
             return
 
         if msg_type == "casual":
@@ -7325,42 +7368,15 @@ class TelegramInterface:
             await self._handle_todo_from_message(text, chat_id, update)
             return
 
-        if msg_type in ("followup", "clarification_response"):
-            parent_id = await self._find_followup_parent(chat_id, text)
-            if parent_id:
-                task_context = {"followup_to": parent_id}
-                task_id = await add_task(
-                    title=f"Follow-up to #{parent_id}: {text[:40]}",
-                    description=text,
-                    tier="auto",
-                    parent_task_id=parent_id,
-                    priority=TASK_PRIORITY.get("high", 8),
-                    context=task_context,
-                )
-                self.user_last_task_id[chat_id] = task_id
-                await self._reply(update,
-                    f"🔗 Continuing task #{parent_id}. Queued as #{task_id}."
-                )
-                return
-
         # ═══════════════════════════════════════════════════════
-        # PRIORITY 3: Mission vs task
+        # Fall-through safety net (should be unreachable —
+        # _KEYWORD_AUTHORITATIVE_TYPES is exhaustively handled above).
         # ═══════════════════════════════════════════════════════
-        # Only link to parent task if the message was classified as a followup.
-        # New tasks ("task" type) should NOT inherit context from previous tasks —
-        # "Can you do a web search" after a shoes task should not search for shoes.
+        # Keep the original Mission/Task tail intact below so that any future
+        # addition to _KEYWORD_AUTHORITATIVE_TYPES doesn't suddenly skip
+        # routing — but it is no longer the primary path.
         parent_id = None
         recent_context = None
-        if msg_type == "followup":
-            parent_id = self.user_last_task_id.get(chat_id)
-            try:
-                followup = await find_followup_context(chat_id, text)
-                if followup.get("is_followup") and followup.get("parent_task_id"):
-                    parent_id = int(followup["parent_task_id"])
-                if followup.get("context"):
-                    recent_context = format_recent_context(followup["context"])
-            except Exception:
-                pass
 
         if msg_type == "mission":
             # Classifier decides if this needs workflow engine
@@ -7445,18 +7461,209 @@ Message: {message}
 Respond as: {{"type": "mission", "confidence": 0.9, "workflow": "i2p"}}
 Or: {{"type": "task", "confidence": 0.8}}"""
 
-    async def _classify_user_message(self, text: str) -> dict:
-        """Classify user message using LLM with keyword fallback.
+    async def _route_classified_message(
+        self,
+        chat_id: int,
+        text: str,
+        classification: dict,
+    ) -> None:
+        """Route a classified message to its handler.
 
-        Returns dict with at least {"type": str}. May also include
-        "workflow" for mission-type messages that need the workflow engine.
+        Extracted from the inline block in handle_message so it can be
+        invoked from a CPS resume context — where there is no live
+        ``Update`` object and replies must use the module-level Telegram
+        singleton via ``_send_telegram_via_resume``.
+        """
+        msg_type = classification.get("type") or "task"
+        msg_workflow = classification.get("workflow")
+        logger.info("message classified (cps)", msg_type=msg_type,
+                    workflow=msg_workflow, text_preview=text[:50])
+
+        if msg_type in ("bug_report", "feature_request", "ui_note", "feedback"):
+            await _send_telegram_via_resume(
+                chat_id, f"📝 Logged your {msg_type.replace('_', ' ')}.",
+            )
+            try:
+                from ..infra.user_inputs import log_input
+                type_map = {
+                    "bug_report": "bug",
+                    "feature_request": "feature",
+                    "ui_note": "ui_note",
+                    "feedback": "feedback",
+                }
+                await log_input(
+                    input_type=type_map.get(msg_type, "feedback"),
+                    content=text,
+                    related_mission_id=None,
+                )
+            except Exception as exc:
+                logger.debug("user_input log failed (cps)", error=str(exc))
+            return
+
+        if msg_type in ("progress_inquiry", "status_query"):
+            # Status queries require richer DB lookups; just acknowledge.
+            await _send_telegram_via_resume(
+                chat_id,
+                "📊 Use /tasks or /missions to see status.",
+            )
+            return
+
+        if msg_type == "question":
+            from ..infra.db import add_task as _add_task
+            task_id = await _add_task(
+                title=f"Q: {text[:50]}", description=text,
+                tier="auto", priority=TASK_PRIORITY.get("high", 8),
+                agent_type="assistant",
+            )
+            self.user_last_task_id[chat_id] = task_id
+            await _send_telegram_via_resume(chat_id, f"❓ Task #{task_id} queued.")
+            return
+
+        if msg_type == "shopping":
+            from ..infra.db import add_task as _add_task
+            task_id = await _add_task(
+                title=text[:80], description=text, tier="auto",
+                priority=TASK_PRIORITY.get("high", 8),
+                agent_type="shopping_advisor",
+                context={"chat_id": chat_id},
+            )
+            if task_id is None:
+                await _send_telegram_via_resume(
+                    chat_id, "🛒 A shopping search for this is already in progress.",
+                )
+                return
+            self.user_last_task_id[chat_id] = task_id
+            await _send_telegram_via_resume(
+                chat_id,
+                f"🛒 Shopping task #{task_id} queued.\n"
+                "I'll search prices and compare options for you.",
+            )
+            return
+
+        if msg_type == "casual":
+            # Recursively enqueue casual reply via CPS (no chained await).
+            from general_beckman import enqueue as _enqueue
+            await _enqueue(
+                {
+                    "title": "telegram-casual-chat",
+                    "description": f"Casual chat reply: {text[:80]!r}",
+                    "agent_type": "assistant",
+                    "kind": "chat",
+                    "context": {"llm_call": {
+                        "raw_dispatch": True, "task": "assistant",
+                        "agent_type": "assistant", "difficulty": 2,
+                        "messages": [{"role": "user", "content": text}],
+                        "prefer_speed": True, "priority": 1,
+                        "estimated_input_tokens": 100,
+                        "estimated_output_tokens": 100,
+                        "call_category": "overhead",
+                    }},
+                },
+                on_complete="telegram.casual_reply_resume",
+                on_error="telegram.casual_reply_err",
+                cont_state={"chat_id": chat_id, "text": text},
+            )
+            return
+
+        # cmd_mission CPS branch — descriptions cached in _pending_mission.
+        mission_desc = None
+        try:
+            mission_desc = self._pending_mission.pop(chat_id, None)
+        except AttributeError:
+            mission_desc = None
+        if mission_desc is not None:
+            from ..infra.db import add_mission as _add_mission
+            wf = classification.get("workflow")
+            if wf == "i2p":
+                try:
+                    from ..workflows.engine.runner import WorkflowRunner
+                    runner = WorkflowRunner()
+                    mission_id = await runner.start(
+                        workflow_name="i2p_v3",
+                        initial_input={"raw_idea": mission_desc,
+                                       "product_name": mission_desc[:50]},
+                        title=mission_desc[:80],
+                    )
+                    await _send_telegram_via_resume(
+                        chat_id,
+                        f"🔄 Workflow mission #{mission_id} created!",
+                    )
+                except Exception as e:
+                    logger.error("workflow mission failed (cps)", error=str(e))
+                    await _send_telegram_via_resume(
+                        chat_id, f"❌ {_friendly_error(str(e))}",
+                    )
+                return
+            mission_id = await _add_mission(
+                title=mission_desc[:80], description=mission_desc, priority=7,
+            )
+            await _send_telegram_via_resume(
+                chat_id, f"🎯 Mission #{mission_id} created.",
+            )
+            return
+
+        if msg_type == "mission":
+            if msg_workflow == "i2p":
+                try:
+                    from ..workflows.engine.runner import WorkflowRunner
+                    runner = WorkflowRunner()
+                    mission_id = await runner.start(
+                        workflow_name="i2p_v3",
+                        initial_input={"raw_idea": text, "product_name": text[:50]},
+                        title=text[:80],
+                    )
+                    await _send_telegram_via_resume(
+                        chat_id, f"🔄 Workflow mission #{mission_id} created!",
+                    )
+                except Exception as e:
+                    logger.error("workflow mission failed (cps)", error=str(e))
+                    await _send_telegram_via_resume(
+                        chat_id, f"❌ {_friendly_error(str(e))}",
+                    )
+            else:
+                from ..infra.db import add_mission as _add_mission
+                mission_id = await _add_mission(
+                    title=text[:80], description=text, priority=5,
+                )
+                if self.orchestrator:
+                    await self.orchestrator.plan_mission(
+                        mission_id, text[:80], text,
+                    )
+                await _send_telegram_via_resume(
+                    chat_id, f"🎯 Mission #{mission_id} created. Planning now…",
+                )
+            self.user_last_task_id.pop(chat_id, None)
+            return
+
+        # Fall-through: treat as plain task.
+        from ..infra.db import add_task as _add_task
+        task_id = await _add_task(
+            title=text[:50], description=text, tier="auto",
+            priority=TASK_PRIORITY["critical"],
+            context={"chat_id": chat_id},
+        )
+        if task_id is None:
+            await _send_telegram_via_resume(
+                chat_id, "⏳ A similar task is already in progress.",
+            )
+            return
+        self.user_last_task_id[chat_id] = task_id
+        await _send_telegram_via_resume(chat_id, f"✅ Task #{task_id} queued.")
+
+    async def _classify_user_message(
+        self, text: str, *, chat_id: int | None = None
+    ) -> None:
+        """Enqueue classification + return immediately (SP2 CPS).
+
+        After classification, the resume routes the message via
+        :meth:`_route_classified_message`. **No return value** — the answer
+        arrives on the user's chat asynchronously. Callers must pass
+        ``chat_id`` so the resume can reach the bot.
         """
         try:
-            # Build context hint
             context_parts = []
             if self._pending_clarifications:
                 context_parts.append("System has pending clarification requests")
-
             messages = [{
                 "role": "user",
                 "content": self.MESSAGE_CLASSIFIER_PROMPT.format(
@@ -7464,42 +7671,37 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     context="; ".join(context_parts) if context_parts else "none",
                 ),
             }]
-            response = await _enqueue_inline_chat(
-                title="telegram-classifier",
-                description=f"Classify telegram message: {text[:80]!r}",
-                agent_type="classifier",
-                kind="classifier",
-                llm_call_kwargs={
-                    "task": "router",
+            from general_beckman import enqueue as _enqueue
+            await _enqueue(
+                {
+                    "title": "telegram-classifier",
+                    "description": f"Classify telegram message: {text[:80]!r}",
                     "agent_type": "classifier",
-                    "difficulty": 2,
-                    "messages": messages,
-                    "prefer_speed": True,
-                    "needs_json_mode": True,
-                    "priority": 2,
-                    "estimated_input_tokens": 300,
-                    "estimated_output_tokens": 50,
-                    "call_category": "overhead",
+                    "kind": "classifier",
+                    "context": {"llm_call": {
+                        "raw_dispatch": True, "task": "router",
+                        "agent_type": "classifier", "difficulty": 2,
+                        "messages": messages, "prefer_speed": True,
+                        "needs_json_mode": True, "priority": 2,
+                        "estimated_input_tokens": 300,
+                        "estimated_output_tokens": 50,
+                        "call_category": "overhead",
+                    }},
+                },
+                on_complete="telegram.message_route_resume",
+                on_error="telegram.message_route_err",
+                cont_state={
+                    "chat_id": chat_id, "text": text,
+                    "flow": "message_route",
                 },
             )
-            from ..core.task_classifier import _extract_json
-            raw = response.get("content", "").strip()
-            result = _extract_json(raw)
-            msg_type = result.get("type", "task")
-            confidence = result.get("confidence", 0.5)
-            workflow = result.get("workflow")
-            logger.debug("llm message classification",
-                         type=msg_type, confidence=confidence, workflow=workflow)
-            if confidence < 0.4:
-                return self._classify_message_by_keywords(text)
-            classification = {"type": msg_type}
-            if workflow:
-                classification["workflow"] = workflow
-            return classification
-        except Exception as e:
-            logger.debug("message classification failed, using keyword fallback",
-                         error=str(e))
-            return self._classify_message_by_keywords(text)
+        except Exception as exc:
+            logger.debug("classification enqueue failed, keyword fallback",
+                         error=str(exc))
+            # Local failure — route via keyword on the spot.
+            if chat_id is not None:
+                cls = self._classify_message_by_keywords(text)
+                await self._route_classified_message(chat_id, text, cls)
 
     @staticmethod
     def _classify_message_by_keywords(text: str) -> dict:

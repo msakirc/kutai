@@ -137,3 +137,76 @@ async def test_telegram_module_added_to_handler_modules():
     assert "src.app.telegram_bot" in _HANDLER_MODULES, (
         f"_HANDLER_MODULES = {_HANDLER_MODULES!r}"
     )
+
+
+# ─── Task 1.5: _classify_user_message + _route_classified_message ──────────
+
+
+@pytest.mark.asyncio
+async def test_classify_user_message_enqueues_with_cps(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        captured = {}
+
+        async def fake_enqueue(spec, **kwargs):
+            captured["spec"] = spec
+            captured["kwargs"] = kwargs
+            return 5151
+
+        monkeypatch.setattr("general_beckman.enqueue", fake_enqueue)
+
+        from src.app.telegram_bot import TelegramInterface
+        bot = object.__new__(TelegramInterface)
+        bot._pending_clarifications = {}
+
+        # The fn used to RETURN dict; now returns None (queued).
+        rv = await bot._classify_user_message(
+            "How is the coffee mission going?", chat_id=999
+        )
+        assert rv is None, f"_classify_user_message must return None (queued), got {rv!r}"
+        assert captured["kwargs"]["on_complete"] == "telegram.message_route_resume"
+        assert captured["kwargs"]["on_error"] == "telegram.message_route_err"
+        cs = captured["kwargs"]["cont_state"]
+        assert cs["chat_id"] == 999
+        assert cs["text"] == "How is the coffee mission going?"
+        assert cs["flow"] == "message_route"
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_message_route_resume_routes_via_extracted_helper(tmp_path, monkeypatch):
+    """Resume must call `_route_classified_message` with parsed classification."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from src.app.telegram_bot import (
+            _message_route_resume,
+            TelegramInterface,
+            set_telegram,
+        )
+        bot = object.__new__(TelegramInterface)
+        bot.app = MagicMock()
+        bot.app.bot.send_message = AsyncMock()
+        bot.user_last_task_id = {}
+        bot._pending_clarifications = {}
+        bot._pending_mission = {}
+        bot._route_classified_message = AsyncMock()
+        set_telegram(bot)
+
+        await _message_route_resume(
+            child_task_id=5151,
+            result={"status": "completed",
+                    "result": {"content": '{"type": "casual", "confidence": 0.9}'}},
+            state={"chat_id": 999, "text": "hi", "flow": "message_route"},
+        )
+
+        bot._route_classified_message.assert_awaited_once()
+        args = bot._route_classified_message.call_args.args
+        # signature: _route_classified_message(chat_id, text, classification)
+        assert args[0] == 999
+        assert args[1] == "hi"
+        assert args[2]["type"] == "casual"
+    finally:
+        from src.app.telegram_bot import set_telegram
+        set_telegram(None)  # type: ignore[arg-type]
+        await _close_db()

@@ -159,10 +159,14 @@ async def test_faq_regen_clusters_within_language_only(init_db):
 
 @pytest.mark.asyncio
 async def test_faq_regen_cluster_gt3_drafts_entry():
-    """A cluster with > 3 tickets should produce a draft FAQ entry via beckman enqueue."""
+    """A cluster with > 3 tickets should be enqueued via CPS for drafting.
+
+    SP2: ``run_faq_regen`` is the entry point that gates on
+    MIN_CLUSTER_SIZE and dispatches via ``enqueue_cluster_draft``. The
+    actual draft + founder_action happen in the resume.
+    """
     import general_beckman
-    from general_beckman import TaskResult
-    from src.app.jobs.faq_regen import _draft_faq_entry
+    from src.app.jobs.faq_regen import enqueue_cluster_draft
 
     cluster = [
         {"question": "How to reset password?", "answer": "Go to settings."},
@@ -171,43 +175,53 @@ async def test_faq_regen_cluster_gt3_drafts_entry():
         {"question": "Can I change my password?", "answer": "Yes, in settings."},
     ]
 
-    # Mock beckman.enqueue at the LLM boundary — the real API is called,
-    # only the actual LLM execution is faked.
-    mock_result = TaskResult(
-        status="completed",
-        result={"content": '{"question": "How do I reset or change my password?", "answer": "Go to Settings > Security > Reset Password."}'},
-        error=None,
-    )
     with patch.object(general_beckman, "enqueue", new_callable=AsyncMock) as m:
-        m.return_value = mock_result
-        result = await _draft_faq_entry(cluster, lang="en")
+        m.return_value = 1234  # child task id
+        child_id = await enqueue_cluster_draft(cluster, lang="en")
 
-    # enqueue must have been called with await_inline=True
     m.assert_called_once()
     call_kwargs = m.call_args[1]
-    assert call_kwargs.get("await_inline") is True, "enqueue must be called with await_inline=True"
-
-    assert result is not None
-    assert "question" in result
-    assert "answer" in result
+    # SP2: CPS — on_complete + on_error (NOT await_inline).
+    assert call_kwargs.get("await_inline") in (False, None)
+    assert call_kwargs.get("on_complete") == "faq_regen.draft_persist_resume"
+    assert call_kwargs.get("on_error") == "faq_regen.draft_persist_err"
+    cs = call_kwargs.get("cont_state") or {}
+    assert cs.get("lang") == "en"
+    assert cs.get("cluster_size") == len(cluster)
+    assert child_id == 1234
 
 
 @pytest.mark.asyncio
-async def test_faq_regen_small_cluster_skipped():
-    """A cluster with <= 3 tickets should NOT call beckman enqueue."""
-    import general_beckman
-    from src.app.jobs.faq_regen import _draft_faq_entry
+async def test_faq_regen_small_cluster_skipped(init_db):
+    """``run_faq_regen`` should NOT enqueue for clusters <= MIN_CLUSTER_SIZE.
 
-    cluster = [
-        {"question": "How to reset password?", "answer": "Go to settings."},
-        {"question": "I forgot my password, help!", "answer": "Go to settings."},
-    ]
+    SP2: the gate moved from ``_draft_faq_entry`` to ``run_faq_regen``.
+    """
+    import aiosqlite
+    import general_beckman
+
+    # Seed a small cluster (2 tickets — below MIN_CLUSTER_SIZE=3).
+    async with aiosqlite.connect(init_db) as db:
+        for q in [
+            "How to reset password?",
+            "I forgot my password, help!",
+        ]:
+            await db.execute(
+                "INSERT INTO tickets (user_id, question, answer, confidence, "
+                "status, escalated_to_founder, sentiment, created_at) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+                ("u1", q, "A", 0.5, "closed", 0, "neutral"),
+            )
+        await db.commit()
+
+    from src.app.jobs.faq_regen import run_faq_regen
 
     with patch.object(general_beckman, "enqueue", new_callable=AsyncMock) as m:
-        result = await _draft_faq_entry(cluster, lang="en")
+        res = await run_faq_regen()
 
     m.assert_not_called()
-    assert result is None
+    assert res.get("ok") is True
+    assert res.get("queued") == 0
 
 
 @pytest.mark.asyncio

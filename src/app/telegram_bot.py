@@ -407,11 +407,16 @@ async def _casual_reply_resume(
         logger.debug("casual_reply_resume: missing chat_id in state",
                      child_task_id=child_task_id)
         return
-    agent_output = (result or {}).get("result") or {}
-    if isinstance(agent_output, dict):
-        content = agent_output.get("content", "")
+    # Normal terminal: ``result["result"]["content"]`` (dispatcher envelope).
+    # Restart-reconcile: flat shape with ``content`` at the outer level.
+    result = result or {}
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        content = inner.get("content", "")
+    elif inner is not None:
+        content = inner
     else:
-        content = str(agent_output)
+        content = result.get("content", "")
     if isinstance(content, list):  # multimodal pieces — flatten
         content = "\n".join(
             p.get("text", "") if isinstance(p, dict) else str(p)
@@ -454,11 +459,16 @@ async def _message_route_resume(
         return
 
     # Parse classification.
-    agent_output = (result or {}).get("result") or {}
-    if isinstance(agent_output, dict):
-        content = agent_output.get("content", "")
+    # Normal terminal: ``result["result"]["content"]`` (dispatcher envelope).
+    # Restart-reconcile: flat shape with ``content`` at the outer level.
+    result = result or {}
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        content = inner.get("content", "")
+    elif inner is not None:
+        content = inner
     else:
-        content = str(agent_output)
+        content = result.get("content", "")
     if isinstance(content, list):
         content = "\n".join(
             p.get("text", "") if isinstance(p, dict) else str(p)

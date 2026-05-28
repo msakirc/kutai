@@ -123,6 +123,7 @@ _HANDLER_MODULES = (
     "src.app.telegram_bot",
     "src.app.interview",
     "src.app.meetings",
+    "src.app.jobs.faq_regen",
 )
 
 

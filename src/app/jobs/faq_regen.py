@@ -105,12 +105,18 @@ def _group_tickets_by_language(tickets: list[dict]) -> dict[str, list[dict]]:
 # ---------------------------------------------------------------------------
 
 
-async def _llm_cluster_draft(cluster: list[dict], lang: str) -> dict | None:
-    """Call LLM via beckman OVERHEAD lane to draft a synthetic FAQ entry.
+async def enqueue_cluster_draft(cluster: list[dict], lang: str) -> int:
+    """Enqueue the cluster-draft LLM call via CPS (SP2 Task 5).
 
-    Returns ``{"question": ..., "answer": ...}`` or None on failure.
+    Returns the child task id immediately. The draft is parsed and the
+    founder_action emitted by :func:`_draft_persist_resume` when the
+    child completes.
     """
-    # Build a compact prompt
+    import time
+    import uuid
+    import general_beckman
+    from general_beckman.lanes import LANE_ONESHOT
+
     examples = "\n".join(
         f"Q: {t.get('question', '')}\nA: {t.get('answer', '')}"
         for t in cluster[:10]  # cap at 10 to stay within context
@@ -123,82 +129,157 @@ async def _llm_cluster_draft(cluster: list[dict], lang: str) -> dict | None:
         f"Output a JSON object with keys 'question' and 'answer' only. "
         f"The FAQ should be in the same language as the interactions."
     )
-    try:
-        import time
-        import uuid
-        import json
-        import general_beckman
-        from general_beckman.lanes import LANE_ONESHOT
+    messages = [{"role": "user", "content": prompt}]
+    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
 
-        messages = [{"role": "user", "content": prompt}]
-        _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
-        task_result = await general_beckman.enqueue(
-            {
-                "title": f"faq_regen:cluster:{lang}:{_suffix}",
-                "description": "Draft synthetic FAQ entry from clustered support tickets.",
-                "agent_type": "responder",
-                "kind": "overhead",
-                "priority": 2,
-                "context": {
-                    "source": "faq_regen",
-                    "lang": lang,
-                    "llm_call": {
-                        "raw_dispatch": True,
-                        "call_category": "overhead",
-                        "task": "responder",
-                        "agent_type": "responder",
-                        "difficulty": 3,
-                        "messages": messages,
-                        "failures": [],
-                        "estimated_input_tokens": 500,
-                        "estimated_output_tokens": 150,
-                    },
+    return await general_beckman.enqueue(
+        {
+            "title": f"faq_regen:cluster:{lang}:{_suffix}",
+            "description": "Draft synthetic FAQ entry from clustered support tickets.",
+            "agent_type": "responder",
+            "kind": "overhead",
+            "priority": 2,
+            "context": {
+                "source": "faq_regen",
+                "lang": lang,
+                "llm_call": {
+                    "raw_dispatch": True,
+                    "call_category": "overhead",
+                    "task": "responder",
+                    "agent_type": "responder",
+                    "difficulty": 3,
+                    "messages": messages,
+                    "failures": [],
+                    "estimated_input_tokens": 500,
+                    "estimated_output_tokens": 150,
                 },
             },
-            lane=LANE_ONESHOT,
-            await_inline=True,
+        },
+        lane=LANE_ONESHOT,
+        on_complete="faq_regen.draft_persist_resume",
+        on_error="faq_regen.draft_persist_err",
+        cont_state={"lang": lang, "cluster_size": len(cluster)},
+    )
+
+
+def _extract_faq_entry_from_content(content) -> dict | None:
+    """Pull a ``{"question": ..., "answer": ...}`` dict out of arbitrary
+    LLM content. Handles dict-shaped result, JSON-string, or JSON embedded
+    in surrounding prose. Returns None on failure (matches the pre-CPS
+    silent-no-emit behaviour)."""
+    import json
+    if content is None:
+        return None
+    # Dict already.
+    if isinstance(content, dict) and "question" in content:
+        return content
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
         )
-        # Extract text from TaskResult
-        raw = None
-        if task_result is not None:
-            if task_result.status != "completed":
-                logger.warning(
-                    "faq_regen: LLM task did not complete",
-                    status=task_result.status,
-                    error=getattr(task_result, "error", ""),
-                )
-                return None
-            result_dict = task_result.result if hasattr(task_result, "result") else None
-            if isinstance(result_dict, dict):
-                raw = result_dict.get("content") or result_dict.get("text") or result_dict.get("response")
-            if raw is None:
-                raw = str(task_result)
-        if raw and isinstance(raw, dict) and "question" in raw:
-            return raw
-        # Try to extract JSON from text response
-        text = str(raw) if raw else ""
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
+    text = str(content)
+    if not text.strip():
+        return None
+    # Try whole-string JSON first.
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and "question" in parsed:
+            return parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # Embedded JSON.
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        try:
             parsed = json.loads(text[start:end])
-            if "question" in parsed:
+            if isinstance(parsed, dict) and "question" in parsed:
                 return parsed
-    except Exception as exc:
-        logger.warning("faq_regen: _llm_cluster_draft failed", error=str(exc))
+        except json.JSONDecodeError:
+            return None
     return None
 
 
-async def _draft_faq_entry(cluster: list[dict], lang: str) -> dict | None:
-    """Draft a FAQ entry from *cluster* if cluster size > MIN_CLUSTER_SIZE.
+async def _draft_persist_resume(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS resume for ``enqueue_cluster_draft`` (SP2 Task 5).
 
-    Returns the draft dict (with 'question', 'answer', 'lang') or None.
+    Parses the LLM response and emits a founder_action when the draft is
+    usable. Mirrors the pre-CPS ``run_faq_regen`` per-language loop.
     """
-    if len(cluster) <= MIN_CLUSTER_SIZE:
-        return None
-    draft = await _llm_cluster_draft(cluster, lang)
-    if draft:
-        draft["lang"] = lang
-    return draft
+    lang = state.get("lang") or "en"
+    cluster_size = int(state.get("cluster_size") or 0)
+
+    # Normal terminal: ``result["result"]["content"]`` (dispatcher envelope).
+    # Restart-reconcile: ``tasks.result`` is reconstructed by
+    # ``continuations.reconcile_continuations`` as ``dict(parsed)`` of
+    # whatever was persisted — so the envelope is flat, e.g.
+    # ``{"content": "...", "status": "completed"}``. Handle both shapes.
+    result = result or {}
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        content = (
+            inner.get("content")
+            or inner.get("text")
+            or inner.get("response")
+        )
+    elif inner is not None:
+        content = inner
+    else:
+        content = (
+            result.get("content")
+            or result.get("text")
+            or result.get("response")
+        )
+
+    entry = _extract_faq_entry_from_content(content)
+    if entry is None:
+        logger.info(
+            "faq_regen: resume parsed no usable entry (silent skip)",
+            child_task_id=child_task_id, lang=lang,
+        )
+        return
+    entry["lang"] = lang
+    await _emit_faq_founder_action(
+        mission_id=0,
+        entry=entry,
+        cluster_size=cluster_size,
+    )
+
+
+async def _draft_persist_err(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS on_error for ``enqueue_cluster_draft`` (SP2 Task 5).
+
+    Mirrors pre-CPS ``_llm_cluster_draft`` returning None on LLM failure —
+    no founder action is emitted; the cluster is silently retried next
+    weekly run.
+    """
+    logger.warning(
+        "faq_regen: cluster-draft LLM failed; no founder action emitted",
+        child_task_id=child_task_id,
+        lang=state.get("lang"),
+        cluster_size=state.get("cluster_size"),
+        error=(result or {}).get("error"),
+    )
+
+
+def register_continuations() -> None:
+    """Register faq_regen CPS handlers (SP2). Idempotent."""
+    try:
+        from general_beckman.continuations import register_resume
+        register_resume("faq_regen.draft_persist_resume", _draft_persist_resume)
+        register_resume("faq_regen.draft_persist_err",    _draft_persist_err)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("faq_regen continuation registration deferred",
+                     error=str(exc))
+
+
+# Register at import so the handler is present for restart reconcile.
+register_continuations()
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +407,9 @@ async def _emit_faq_founder_action(
 async def run_faq_regen(confidence_threshold: float = CONFIDENCE_THRESHOLD, days: int = 7) -> dict:
     """Weekly FAQ regen entry point. Called by mr_roboto for the ``faq_regen`` executor.
 
-    Returns ``{"ok": True, "drafts": N}`` on success.
+    SP2: per-language clusters are enqueued via CPS; founder_actions are
+    emitted by ``_draft_persist_resume`` when each child completes.
+    Returns ``{"ok": True, "queued": N}`` immediately.
     """
     try:
         tickets = await _fetch_candidate_tickets(
@@ -335,10 +418,10 @@ async def run_faq_regen(confidence_threshold: float = CONFIDENCE_THRESHOLD, days
         )
         if not tickets:
             logger.info("faq_regen: no candidate tickets in window")
-            return {"ok": True, "drafts": 0, "reason": "no_candidates"}
+            return {"ok": True, "queued": 0, "reason": "no_candidates"}
 
         grouped = _group_tickets_by_language(tickets)
-        total_drafts = 0
+        total_queued = 0
 
         for lang, lang_tickets in grouped.items():
             logger.info(
@@ -346,22 +429,19 @@ async def run_faq_regen(confidence_threshold: float = CONFIDENCE_THRESHOLD, days
                 lang=lang,
                 count=len(lang_tickets),
             )
-            # Simple topic clustering: group by shared keywords
-            # Real clustering: pass all to _llm_cluster_draft as one big cluster
-            # For now, treat the entire language group as one cluster — LLM
-            # can split or merge topics internally. Production upgrade: k-means
-            # or LLM-driven multi-cluster.
-            entry = await _draft_faq_entry(lang_tickets, lang)
-            if entry:
-                await _emit_faq_founder_action(
-                    mission_id=0,
-                    entry=entry,
-                    cluster_size=len(lang_tickets),
+            if len(lang_tickets) <= MIN_CLUSTER_SIZE:
+                continue
+            try:
+                await enqueue_cluster_draft(lang_tickets, lang)
+                total_queued += 1
+            except Exception as exc:
+                logger.warning(
+                    "faq_regen: enqueue_cluster_draft failed",
+                    lang=lang, error=str(exc),
                 )
-                total_drafts += 1
 
-        logger.info("faq_regen: run complete", total_drafts=total_drafts)
-        return {"ok": True, "drafts": total_drafts}
+        logger.info("faq_regen: run complete", total_queued=total_queued)
+        return {"ok": True, "queued": total_queued}
 
     except Exception as exc:
         logger.error("faq_regen: failed", error=str(exc))

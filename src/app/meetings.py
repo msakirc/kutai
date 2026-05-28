@@ -453,11 +453,16 @@ async def _brief_persist_resume(
     if meeting_id is None:
         return
 
-    agent_output = (result or {}).get("result") or {}
-    if isinstance(agent_output, dict):
-        content = agent_output.get("content", "")
+    # Normal terminal: ``result["result"]["content"]`` (dispatcher envelope).
+    # Restart-reconcile: flat shape with ``content`` at the outer level.
+    result = result or {}
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        content = inner.get("content", "")
+    elif inner is not None:
+        content = inner
     else:
-        content = str(agent_output)
+        content = result.get("content", "")
     if isinstance(content, list):
         content = "\n".join(
             p.get("text", "") if isinstance(p, dict) else str(p)

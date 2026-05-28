@@ -242,3 +242,285 @@ async def test_cmd_mission_uses_cps_classification(tmp_path, monkeypatch):
         assert bot._pending_mission.get(7777) == "Build a login page"
     finally:
         await _close_db()
+
+
+# ─── SP2 fix-ups: bug 1 (followup linkage), bug 2 (Z0 ceiling), bug 3 (status query) ──
+
+
+@pytest.mark.asyncio
+async def test_followup_route_sets_parent_task_id(tmp_path, monkeypatch):
+    """`_route_classified_message` for ``followup`` must thread the parent
+    task id into the new task — pre-SP2 ``handle_message`` did this and the
+    CPS path lost it when collapsing into the fall-through plain-task
+    branch."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from src.app.telegram_bot import TelegramInterface, set_telegram
+
+        bot = object.__new__(TelegramInterface)
+        bot.app = MagicMock()
+        bot.app.bot.send_message = AsyncMock()
+        bot.user_last_task_id = {}
+        bot._pending_clarifications = {}
+        bot._pending_mission = {}
+        bot._pending_action = {}
+        set_telegram(bot)
+
+        # Seed a "previous" task by the same chat so user_last_task_id maps
+        # cleanly. We do NOT need find_followup_context to return is_followup —
+        # the fallback in _route_classified_message uses user_last_task_id.
+        from src.infra.db import add_task
+
+        parent_id = await add_task(
+            title="Previous shopping search",
+            description="Looking for a coffee machine",
+            tier="auto",
+            priority=8,
+            agent_type="shopping_advisor",
+            context={"chat_id": 8888},
+        )
+        bot.user_last_task_id[8888] = parent_id
+
+        # Stub find_followup_context so it doesn't actually hit chroma.
+        async def fake_followup_context(chat_id: int, text: str):
+            return {"is_followup": True, "parent_task_id": parent_id,
+                    "context": []}
+        monkeypatch.setattr(
+            "src.memory.conversations.find_followup_context",
+            fake_followup_context,
+        )
+        # The function is also imported at module-level in telegram_bot —
+        # patch the local reference too so the in-module call hits the stub.
+        monkeypatch.setattr(
+            "src.app.telegram_bot.find_followup_context",
+            fake_followup_context,
+        )
+
+        await bot._route_classified_message(
+            chat_id=8888,
+            text="any update on that?",
+            classification={"type": "followup"},
+        )
+
+        # The new task must be wired to the parent.
+        from src.infra.db import get_db
+        db = await get_db()
+        cur = await db.execute(
+            "SELECT id, parent_task_id, title FROM tasks "
+            "WHERE id != ? ORDER BY id DESC LIMIT 1",
+            (parent_id,),
+        )
+        row = await cur.fetchone()
+        assert row is not None, "no follow-up task was created"
+        assert row[1] == parent_id, (
+            f"parent_task_id={row[1]} but expected {parent_id} (title={row[2]!r})"
+        )
+        assert bot.user_last_task_id[8888] == row[0]
+    finally:
+        from src.app.telegram_bot import set_telegram
+        set_telegram(None)  # type: ignore[arg-type]
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_clarification_response_route_sets_parent_task_id(tmp_path, monkeypatch):
+    """`_route_classified_message` for ``clarification_response`` must thread
+    the parent task id via ``_find_followup_parent``."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from src.app.telegram_bot import TelegramInterface, set_telegram
+
+        bot = object.__new__(TelegramInterface)
+        bot.app = MagicMock()
+        bot.app.bot.send_message = AsyncMock()
+        bot.user_last_task_id = {}
+        bot._pending_clarifications = {}
+        bot._pending_mission = {}
+        bot._pending_action = {}
+        set_telegram(bot)
+
+        from src.infra.db import add_task
+
+        parent_id = await add_task(
+            title="Clarification needed",
+            description="Which colour?",
+            tier="auto",
+            priority=8,
+            agent_type="shopping_advisor",
+            context={"chat_id": 9999},
+        )
+        bot.user_last_task_id[9999] = parent_id
+
+        # _find_followup_parent calls find_followup_context first; on miss
+        # falls back to user_last_task_id. Force it through the fallback by
+        # making find_followup_context return is_followup=False so the
+        # fallback is exercised.
+        async def fake_followup_context(chat_id: int, text: str):
+            return {"is_followup": False, "context": []}
+        monkeypatch.setattr(
+            "src.memory.conversations.find_followup_context",
+            fake_followup_context,
+        )
+        monkeypatch.setattr(
+            "src.app.telegram_bot.find_followup_context",
+            fake_followup_context,
+        )
+
+        await bot._route_classified_message(
+            chat_id=9999,
+            text="The blue one please",
+            classification={"type": "clarification_response"},
+        )
+
+        from src.infra.db import get_db
+        db = await get_db()
+        cur = await db.execute(
+            "SELECT id, parent_task_id, title FROM tasks "
+            "WHERE id != ? ORDER BY id DESC LIMIT 1",
+            (parent_id,),
+        )
+        row = await cur.fetchone()
+        assert row is not None, "no clarification-response task was created"
+        assert row[1] == parent_id, (
+            f"parent_task_id={row[1]} but expected {parent_id}"
+        )
+        assert bot.user_last_task_id[9999] == row[0]
+    finally:
+        from src.app.telegram_bot import set_telegram
+        set_telegram(None)  # type: ignore[arg-type]
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_mission_plain_sets_z0_ceiling_pending_action(tmp_path, monkeypatch):
+    """The ``_pending_mission`` resume branch must, on a plain (no-workflow)
+    mission, set ``_pending_action[chat_id] = {'kind': 'z0_ceiling', ...}``
+    and send the cost-ceiling prompt — pre-SP2 ``cmd_mission`` did this and
+    the CPS resume previously just sent "🎯 Mission #X created."."""
+    await _fresh_db(tmp_path, monkeypatch)
+    sent = []
+
+    async def fake_send(chat_id, text, *, parse_mode=None):
+        sent.append((chat_id, text, parse_mode))
+        return True
+
+    monkeypatch.setattr(
+        "src.app.telegram_bot._send_telegram_via_resume", fake_send,
+    )
+    try:
+        from src.app.telegram_bot import TelegramInterface, set_telegram
+
+        bot = object.__new__(TelegramInterface)
+        bot.app = MagicMock()
+        bot.app.bot.send_message = AsyncMock()
+        bot.user_last_task_id = {}
+        bot._pending_clarifications = {}
+        bot._pending_mission = {}
+        bot._pending_action = {}
+        bot.orchestrator = None  # explicitly skip plan_mission
+        set_telegram(bot)
+
+        # Stage the mission description as cmd_mission would have done.
+        bot._pending_mission[5555] = "Build a coffee app"
+
+        # Stub ensure_mission_topic so it doesn't try to talk to a real bot.
+        async def fake_ensure(*args, **kwargs):
+            return None
+        monkeypatch.setattr(
+            "src.app.telegram_topics.ensure_mission_topic", fake_ensure,
+        )
+
+        # No "workflow" in classification → plain mission path.
+        await bot._route_classified_message(
+            chat_id=5555,
+            text="ignored — _pending_mission overrides",
+            classification={"type": "mission"},
+        )
+
+        assert 5555 in bot._pending_action, (
+            f"_pending_action was not armed; got {bot._pending_action!r}"
+        )
+        pa = bot._pending_action[5555]
+        assert pa["kind"] == "z0_ceiling", (
+            f"pending action kind={pa.get('kind')!r}, expected 'z0_ceiling'"
+        )
+        assert isinstance(pa.get("mission_id"), int) and pa["mission_id"] > 0
+
+        # Cost-ceiling prompt must have been sent via _send_telegram_via_resume.
+        ceiling_msgs = [m for m in sent if "cost ceiling" in m[1].lower()]
+        assert ceiling_msgs, (
+            f"cost-ceiling prompt missing; sent messages = {sent!r}"
+        )
+        chat_id, text, _ = ceiling_msgs[0]
+        assert chat_id == 5555
+        # user_last_task_id should have been cleared per pre-SP2 cmd_mission.
+        assert bot.user_last_task_id.get(5555) is None
+    finally:
+        from src.app.telegram_bot import set_telegram
+        set_telegram(None)  # type: ignore[arg-type]
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_status_query_resume_invokes_status_handler(tmp_path, monkeypatch):
+    """LLM-classified ``status_query`` must invoke the rich DB-lookup handler
+    instead of the pre-fix static placeholder. Verified by seeding a task
+    whose title matches the query subject and asserting the formatted
+    "Found N matching item(s)" output reaches ``_send_telegram_via_resume``."""
+    await _fresh_db(tmp_path, monkeypatch)
+    sent = []
+
+    async def fake_send(chat_id, text, *, parse_mode=None):
+        sent.append((chat_id, text, parse_mode))
+        return True
+
+    monkeypatch.setattr(
+        "src.app.telegram_bot._send_telegram_via_resume", fake_send,
+    )
+    try:
+        from src.app.telegram_bot import TelegramInterface, set_telegram
+
+        bot = object.__new__(TelegramInterface)
+        bot.app = MagicMock()
+        bot.app.bot.send_message = AsyncMock()
+        bot.user_last_task_id = {}
+        bot._pending_clarifications = {}
+        bot._pending_mission = {}
+        bot._pending_action = {}
+        set_telegram(bot)
+
+        # Seed a task whose title contains the subject keyword.
+        from src.infra.db import add_task
+
+        await add_task(
+            title="coffee machine search",
+            description="Hunting for an espresso machine",
+            tier="auto",
+            priority=8,
+            agent_type="shopping_advisor",
+            context={"chat_id": 4321},
+        )
+
+        await bot._route_classified_message(
+            chat_id=4321,
+            text="how is the coffee machine search going?",
+            classification={"type": "status_query"},
+        )
+
+        # The fix routes through _build_status_query_response, which formats
+        # "📊 Found N matching item(s):". The pre-fix static placeholder was
+        # "📊 Use /tasks or /missions to see status." — assert we did NOT
+        # send that and DID send the rich match.
+        joined = "\n".join(m[1] for m in sent)
+        assert "Use /tasks or /missions to see status" not in joined, (
+            f"static placeholder leaked through; sent={sent!r}"
+        )
+        assert any("Found" in m[1] and "matching" in m[1] for m in sent), (
+            f"rich status_query lookup did not run; sent={sent!r}"
+        )
+        # Title preview must reach the user.
+        assert any("coffee machine" in m[1] for m in sent)
+    finally:
+        from src.app.telegram_bot import set_telegram
+        set_telegram(None)  # type: ignore[arg-type]
+        await _close_db()

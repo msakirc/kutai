@@ -3949,71 +3949,32 @@ async def _run_dispatch(task: dict) -> Action:
     # ── Z7 T4 B4: meeting brief auto-generation verbs ────────────────────────
 
     if action == "meeting/brief":
-        # Z7 B4 — LLM-bound brief generation.
-        # Pulls: last 5 interactions, open follow-ups, optional A11/B2 data.
-        # Drafts talking points + suggested asks via the LLM (beckman ONESHOT
-        # lane, await_inline).  Writes brief_md to meetings row; surfaces result
-        # as a Telegram notify.
-        # Degrades gracefully if A11 (mentions) or B2 (changelog) are absent,
-        # and if the LLM draft fails (renders an explicit "unavailable" message
-        # rather than a misleading placeholder).
+        # Z7 B4 — LLM-bound brief generation via CPS (SP2 Task 4).
+        # The mechanical step builds the brief context, then enqueues the
+        # LLM brief draft via Beckman with on_complete/on_error
+        # continuations. The actual brief_md write + Telegram notify happen
+        # in `meetings._brief_persist_resume` / `_brief_persist_err`.
         from src.app.meetings import (
             build_brief_context,
-            compose_brief_md,
-            _call_llm_meeting_brief,
+            enqueue_meeting_brief,
         )
         try:
             meeting_id = int(payload.get("meeting_id") or 0)
             product_id = str(payload.get("product_id") or "default")
 
-            ctx = await build_brief_context(meeting_id=meeting_id, product_id=product_id)
-
-            # Draft talking points + suggested asks via the LLM (await_inline).
-            talking_points: list[str] = []
-            suggested_asks: list[str] = []
-            llm_failed = False
-            talking_points, suggested_asks = await _call_llm_meeting_brief(ctx)
-            if not talking_points and not suggested_asks:
-                llm_failed = True
-
-            brief_md = compose_brief_md(
-                ctx,
-                talking_points=talking_points,
-                suggested_asks=suggested_asks,
-                llm_unavailable=llm_failed,
+            ctx = await build_brief_context(
+                meeting_id=meeting_id, product_id=product_id,
             )
-
-            # Persist brief_md to meetings row
-            from src.infra.db import get_db
-            db = await get_db()
-            await db.execute(
-                "UPDATE meetings SET brief_md=?, brief_generated_at=strftime('%Y-%m-%d %H:%M:%S','now') "
-                "WHERE meeting_id=?",
-                (brief_md, meeting_id),
+            child_id = await enqueue_meeting_brief(
+                ctx, meeting_id=meeting_id, product_id=product_id,
             )
-            await db.commit()
-
-            # Surface as a Telegram notify (best-effort)
-            try:
-                from src.app.telegram_bot import get_telegram
-                import os
-                tg = get_telegram()
-                if tg is not None:
-                    admin_chat = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
-                    if admin_chat:
-                        contact = ctx.get("contact") or {}
-                        name = contact.get("display_name") or "Contact"
-                        header = f"Meeting Brief — {name} in 30min\n\n"
-                        await tg.app.bot.send_message(
-                            chat_id=int(admin_chat),
-                            text=header + brief_md[:3800],
-                        )
-            except Exception as _notify_exc:
-                pass  # best-effort; never fail the verb
-
             return Action(
                 status="completed",
-                result={"meeting_id": meeting_id, "brief_length": len(brief_md)},
+                result={
+                    "meeting_id": meeting_id,
+                    "queued": True,
+                    "child_task_id": child_id,
+                },
             )
         except Exception as e:
             return Action(status="failed", error=str(e))

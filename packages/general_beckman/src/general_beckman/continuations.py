@@ -122,6 +122,7 @@ _HANDLER_MODULES = (
     # CPS SP2 — edge-group migrations:
     "src.app.telegram_bot",
     "src.app.interview",
+    "src.app.meetings",
 )
 
 

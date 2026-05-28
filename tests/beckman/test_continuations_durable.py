@@ -266,6 +266,18 @@ async def test_enqueue_rejects_await_inline_plus_on_complete(tmp_path, monkeypat
         await _close_db()
 
 
+async def _set_task(task_id, status, result_json=None):
+    db = await _db_mod.get_db()
+    if result_json is None:
+        await db.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
+    else:
+        await db.execute(
+            "UPDATE tasks SET status=?, result=? WHERE id=?",
+            (status, result_json, task_id),
+        )
+    await db.commit()
+
+
 @pytest.mark.asyncio
 async def test_on_task_finished_fires_resume_with_state(tmp_path, monkeypatch):
     await _fresh_db(tmp_path, monkeypatch)
@@ -282,6 +294,8 @@ async def test_on_task_finished_fires_resume_with_state(tmp_path, monkeypatch):
             {"title": "c", "description": "d", "agent_type": "coder"},
             on_complete="t.resume", cont_state={"parent_id": 99},
         )
+        # SP1.1: fire trigger reads DB status; must be terminal before calling.
+        await _set_task(cid, "completed", json.dumps({"result": "ok"}))
         await on_task_finished(cid, {"status": "completed", "result": "ok"})
         await asyncio.sleep(0.05)
         assert seen == [(cid, {"parent_id": 99})]
@@ -306,6 +320,8 @@ async def test_double_on_task_finished_fires_once(tmp_path, monkeypatch):
             {"title": "c", "description": "d", "agent_type": "coder"},
             on_complete="t.resume",
         )
+        # SP1.1: fire trigger reads DB status; must be terminal before calling.
+        await _set_task(cid, "completed", json.dumps({"result": "ok"}))
         await on_task_finished(cid, {"status": "completed", "result": "ok"})
         await on_task_finished(cid, {"status": "completed", "result": "ok"})
         await asyncio.sleep(0.05)
@@ -422,4 +438,196 @@ async def test_existing_handlers_fire_with_empty_state(tmp_path, monkeypatch):
         await _HANDLERS["growth.store_weekly_digest"](1, {"result": ""}, {})
         await _HANDLERS["growth.classify_signals_complete"](1, {"result": {}}, {})
     finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_failed_then_retried_completed_fires_success_resume(tmp_path, monkeypatch):
+    """C1 regression: a transient failed → retry → success sequence MUST fire
+    the success resume on the eventual completion. Pre-fix the row claimed on
+    the first failed attempt and silently suppressed the retry's resume."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman import enqueue, on_task_finished
+        from general_beckman.continuations import register_resume, _HANDLERS
+        seen = []
+
+        async def resume(task_id, result, state):
+            seen.append((task_id, result.get("status"), state))
+
+        register_resume("t.resume", resume)
+        cid = await enqueue(
+            {"title": "c", "description": "d", "agent_type": "coder"},
+            on_complete="t.resume", cont_state={"p": 1},
+        )
+        # Simulate: agent reports failed → apply_failed re-pends.
+        await _set_task(cid, "pending")
+        await on_task_finished(cid, {"status": "failed", "error": "transient"})
+        await asyncio.sleep(0.05)
+        assert seen == [], (
+            f"resume must NOT fire on a re-pended transient failure: {seen}"
+        )
+
+        # Retry succeeds.
+        await _set_task(cid, "completed", json.dumps({"result": "ok"}))
+        await on_task_finished(cid, {"status": "completed", "result": "ok"})
+        await asyncio.sleep(0.05)
+        assert seen == [(cid, "completed", {"p": 1})], (
+            f"resume MUST fire on the retry's completion: {seen}"
+        )
+    finally:
+        _HANDLERS.pop("t.resume", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_failed_exhausted_fires_on_error_on_true_terminal(tmp_path, monkeypatch):
+    """A truly terminal failed task (retries exhausted, DB status='failed')
+    fires on_error with the agent's last result."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman import enqueue, on_task_finished
+        from general_beckman.continuations import register_resume, _HANDLERS
+        errs = []
+
+        async def on_err(task_id, result, state):
+            errs.append((task_id, result.get("error"), state))
+
+        register_resume("t.err", on_err)
+        cid = await enqueue(
+            {"title": "c", "description": "d", "agent_type": "coder"},
+            on_error="t.err", cont_state={"p": 2},
+        )
+        # Simulate: retries exhausted — set worker_attempts to max so that
+        # _retry_or_dlq fires DLQ (writes status='failed') rather than re-pend.
+        db = await _db_mod.get_db()
+        await db.execute(
+            "UPDATE tasks SET worker_attempts=15, max_worker_attempts=15 WHERE id=?",
+            (cid,),
+        )
+        await db.commit()
+        await on_task_finished(cid, {"status": "failed", "error": "final"})
+        await asyncio.sleep(0.05)
+        assert errs == [(cid, "final", {"p": 2})], errs
+    finally:
+        _HANDLERS.pop("t.err", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_handlers_see_agent_result_not_posthook_flip(tmp_path, monkeypatch):
+    """C2 regression: if post_execute_workflow_step flips result['status'] or
+    rewrites result['result'], the handler must still see the AGENT's snapshot
+    captured before the post-hook ran.
+
+    Scenario: agent reports completed with AGENT_TRUE_OUTPUT; the post-hook
+    flips result['status'] to 'failed' and overwrites result['result']. Retries
+    are exhausted so _retry_or_dlq fires DLQ → DB status stays 'failed' → the
+    on_error handler fires with the AGENT snapshot (not the post-hook mutation).
+    """
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman import on_task_finished, enqueue
+        from general_beckman.continuations import register_resume, _HANDLERS
+        import src.workflows.engine.hooks as _hooks_mod
+
+        seen_result = []
+        seen_status = []
+
+        async def on_err(task_id, result, state):
+            seen_result.append(result.get("result"))
+            seen_status.append(result.get("status"))
+
+        register_resume("t.err", on_err)
+
+        # Patch is_workflow_step to True and post_execute_workflow_step to
+        # MUTATE the in-memory result IN PLACE (simulating a degenerate-output flip).
+        async def _evil_posthook(task, result):
+            if isinstance(result, dict):
+                result["status"] = "failed"
+                result["result"] = "POST_HOOK_OVERWROTE_THIS"
+
+        monkeypatch.setattr(_hooks_mod, "is_workflow_step", lambda ctx: True)
+        monkeypatch.setattr(_hooks_mod, "post_execute_workflow_step", _evil_posthook)
+
+        cid = await enqueue(
+            {"title": "c", "description": "d", "agent_type": "coder",
+             "context": {"workflow_step": True}},
+            on_error="t.err",
+        )
+        # Exhaust retries so _retry_or_dlq fires DLQ (DB status stays 'failed')
+        # rather than re-pending. This simulates the last retry attempt.
+        db = await _db_mod.get_db()
+        await db.execute(
+            "UPDATE tasks SET worker_attempts=15, max_worker_attempts=15 WHERE id=?",
+            (cid,),
+        )
+        await db.commit()
+
+        await on_task_finished(cid, {"status": "completed", "result": "AGENT_TRUE_OUTPUT"})
+        await asyncio.sleep(0.05)
+
+        # The post-hook DID overwrite the in-memory result (to failed +
+        # POST_HOOK_OVERWROTE_THIS), but the on_error handler must have received
+        # the snapshot taken BEFORE the post-hook ran: status=completed,
+        # result=AGENT_TRUE_OUTPUT.
+        assert seen_result == ["AGENT_TRUE_OUTPUT"], (
+            f"handler must see agent's pre-posthook result, got: {seen_result}"
+        )
+        assert seen_status == ["completed"], (
+            f"handler must see agent's pre-posthook status, got: {seen_status}"
+        )
+    finally:
+        _HANDLERS.pop("t.err", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_one_bad_row_does_not_poison_pass(tmp_path, monkeypatch):
+    """Important #2 regression: per-row try/except in reconcile so one bad
+    row doesn't abort the rest of the pass."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import (
+            register_resume, reconcile_continuations, _HANDLERS,
+        )
+        fired = []
+
+        async def resume(task_id, result, state):
+            fired.append(task_id)
+
+        register_resume("t.resume", resume)
+        good = await _add(on_complete="t.resume", cont_state={"k": 1})
+        bad = await _add(on_complete="t.resume", cont_state={"k": 2})
+        # Both terminal in DB so reconcile would normally fire both.
+        await _set_task(good, "completed", json.dumps({"result": "ok"}))
+        await _set_task(bad, "completed", json.dumps({"result": "ok"}))
+
+        # Poison: monkeypatch get_db to fail on the SECOND tasks SELECT.
+        import src.infra.db as _db_mod
+        orig_get_db = _db_mod.get_db
+        calls = {"n": 0}
+
+        class _PoisonConn:
+            def __init__(self, real):
+                self._real = real
+            async def execute(self, sql, params=()):
+                if "FROM tasks" in sql:
+                    calls["n"] += 1
+                    if calls["n"] == 2:
+                        raise RuntimeError("simulated transient row failure")
+                return await self._real.execute(sql, params)
+            async def commit(self):
+                return await self._real.commit()
+
+        async def _poisoned_get_db():
+            return _PoisonConn(await orig_get_db())
+
+        monkeypatch.setattr(_db_mod, "get_db", _poisoned_get_db)
+        await reconcile_continuations()
+        await asyncio.sleep(0.05)
+        # At least one row must still have fired (the pass kept going).
+        assert len(fired) >= 1, f"reconcile aborted after one bad row: {fired}"
+    finally:
+        _HANDLERS.pop("t.resume", None)
         await _close_db()

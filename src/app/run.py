@@ -390,6 +390,23 @@ async def main():
     except Exception as exc:
         _log.warning("Continuation reconcile failed (non-critical): %s", exc)
 
+    # CPS SP1.1 (Important #7): periodic reconcile so mid-day pending
+    # continuations are reaped without waiting for a restart. Fires every
+    # 5 minutes. No existing general_beckman cron hook has the right cadence
+    # (Beckman's beckman_cron is 6h, suited for capacity checks, not recovery),
+    # so we add a standalone asyncio task here — same pattern as other
+    # background maintenance tasks in run.py.
+    async def _periodic_continuation_reconcile():
+        from general_beckman.continuations import reconcile_continuations
+        while True:
+            await asyncio.sleep(300)  # 5 minutes
+            try:
+                await reconcile_continuations()
+            except Exception as exc:
+                _log.warning("periodic reconcile failed: %s", exc)
+
+    asyncio.create_task(_periodic_continuation_reconcile())
+
     # Phase 2: Docker, non-critical checks, and seeding ALL in parallel
     async def _docker_phase():
         docker_ok = await start_docker_services()

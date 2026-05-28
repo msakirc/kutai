@@ -153,51 +153,58 @@ async def reconcile_continuations(ttl_seconds: int = CONTINUATION_TTL_SECONDS) -
     pending_ids = [r[0] for r in await cur.fetchall()]
 
     for cid in pending_ids:
-        tcur = await db.execute("SELECT status, result FROM tasks WHERE id=?", (cid,))
-        trow = await tcur.fetchone()
-        if trow is None:
-            continue
-        tstatus, tresult = trow[0], trow[1]
-
-        if tstatus in ("completed", "failed"):
-            res: dict = {}
-            if tresult:
-                try:
-                    parsed = json.loads(tresult) if isinstance(tresult, str) else tresult
-                    res = dict(parsed) if isinstance(parsed, dict) else {"result": parsed}
-                except Exception:
-                    res = {"result": tresult}
-            res.setdefault("status", tstatus)
-            await fire_for_task(cid, res, tstatus)
-            continue
-
-        # Not terminal — TTL + alive check.
-        ecur = await db.execute(
-            "SELECT 1 FROM continuations WHERE child_task_id=? "
-            "AND datetime(created_at, '+' || ? || ' seconds') < datetime('now')",
-            (cid, ttl_seconds),
-        )
-        if await ecur.fetchone() is None:
-            continue  # not yet expired
-
-        alive = False
         try:
-            from src.core.in_flight import in_flight_snapshot
-            alive = any(getattr(e, "task_id", None) == cid for e in in_flight_snapshot())
-        except Exception:
-            alive = False
-        if alive:
-            continue  # long-runner — leave pending
+            tcur = await db.execute("SELECT status, result FROM tasks WHERE id=?", (cid,))
+            trow = await tcur.fetchone()
+            if trow is None:
+                continue
+            tstatus, tresult = trow[0], trow[1]
 
-        claim = await claim_for_fire(cid)
-        if claim is None:
-            continue
-        name = claim["on_error_name"]
-        if name:
-            asyncio.create_task(dispatch_on_complete(
-                name, cid,
-                {"status": "failed", "error": "continuation TTL expired"},
-                claim["state"],
-            ))
-        else:
-            _log.warning("continuation expired (no on_error)", child_task_id=cid)
+            if tstatus in ("completed", "failed"):
+                res: dict = {}
+                if tresult:
+                    try:
+                        parsed = json.loads(tresult) if isinstance(tresult, str) else tresult
+                        res = dict(parsed) if isinstance(parsed, dict) else {"result": parsed}
+                    except Exception:
+                        res = {"result": tresult}
+                res.setdefault("status", tstatus)
+                await fire_for_task(cid, res, tstatus)
+                continue
+
+            # Not terminal — TTL + alive check.
+            ecur = await db.execute(
+                "SELECT 1 FROM continuations WHERE child_task_id=? "
+                "AND datetime(created_at, '+' || ? || ' seconds') < datetime('now')",
+                (cid, ttl_seconds),
+            )
+            if await ecur.fetchone() is None:
+                continue  # not yet expired
+
+            alive = False
+            try:
+                from src.core.in_flight import in_flight_snapshot
+                alive = any(getattr(e, "task_id", None) == cid for e in in_flight_snapshot())
+            except Exception:
+                alive = False
+            if alive:
+                continue  # long-runner — leave pending
+
+            claim = await claim_for_fire(cid)
+            if claim is None:
+                continue
+            name = claim["on_error_name"]
+            if name:
+                asyncio.create_task(dispatch_on_complete(
+                    name, cid,
+                    {"status": "failed", "error": "continuation TTL expired"},
+                    claim["state"],
+                ))
+            else:
+                _log.warning("continuation expired (no on_error)", child_task_id=cid)
+        except Exception as _row_exc:  # noqa: BLE001
+            _log.warning(
+                "reconcile row failed",
+                child_task_id=cid,
+                error=str(_row_exc),
+            )

@@ -843,6 +843,13 @@ async def on_task_finished(task_id, result: dict = None) -> None:
         except Exception as e:
             log.warning("ctx persist failed", task_id=task_id, error=str(e))
 
+    # CPS SP1.1 (C2 fix): snapshot the agent's untouched result envelope BEFORE
+    # post_execute_workflow_step mutates result["status"]/etc. The continuation
+    # handlers must receive the agent's true output; post-hook flips will
+    # propagate naturally via apply_actions → tasks.status → fire trigger.
+    import copy as _copy_mod
+    _agent_result_snapshot = _copy_mod.deepcopy(result) if isinstance(result, dict) else {}
+
     # Workflow-step post-hook runs synchronously before routing — stores
     # artifacts and may flip status (degenerate output, schema validation,
     # disguised failures, human-gate clarifications). Deferring this to
@@ -857,60 +864,65 @@ async def on_task_finished(task_id, result: dict = None) -> None:
             await post_execute_workflow_step(task, result)
     except Exception as e:
         log.warning("post_execute_workflow_step raised", task_id=task_id, error=str(e))
-    # ── Continuation hooks ────────────────────────────────────────────────
-    # Dispatch on_complete handler, chain next_task_spec, and resolve any
-    # await_inline waiter — all three are independent (do all that apply).
-    #
-    # MUST run BEFORE the `route_result is None` early-return below.
-    # raw_dispatch child tasks (LLM calls spawned via beckman.enqueue,
-    # e.g. grade_task's reviewer child) have route_result return None —
-    # they carry no workflow routing. With the hook block placed after the
-    # early-return, the parent's inline-waiter future was never resolved,
-    # the child completed silently, and the parent blocked the full
-    # INLINE_TIMEOUT (600s) then DLQ'd. Production 2026-05-15 mission 69:
-    # grader tasks #31203/#31204/#35460 timed out while 10 reviewer
-    # children all completed cleanly.
-    try:
-        _raw_status = (result or {}).get("status") or "completed"
-
-        # Durable continuation fire (claim-then-detach via the table). Replaces
-        # the old fire-and-forget create_task(dispatch_on_complete). Idempotent.
-        from general_beckman.continuations import fire_for_task, dispatch_on_complete
-        _fired = await fire_for_task(task_id, dict(result or {}), _raw_status)
-
-        # Legacy straggler shim (removable post-SP5): a task enqueued BEFORE this
-        # upgrade carried on_complete in context.beckman, not the table. If no
-        # row claimed and the status is terminal, fire that legacy handler once.
-        if not _fired and _raw_status != "needs_clarification":
-            _legacy = (task_ctx.get("beckman") or {}).get("on_complete")
-            if _legacy:
-                asyncio.create_task(
-                    dispatch_on_complete(_legacy, task_id, dict(result or {}), {})
-                )
-
-        # next_task_spec fire-and-forget chain (unchanged, context-based).
-        _next_spec = (task_ctx.get("beckman") or {}).get("next_task_spec")
-        if _next_spec and isinstance(_next_spec, dict):
-            asyncio.create_task(enqueue(_next_spec, parent_id=task_id))
-
-        # await_inline resolve (coexists until SP5).
-        if task_id in _inline_waiters:
-            _tr = TaskResult(
-                status=_raw_status,
-                result=(result or {}).get("result"),
-                error=(result or {}).get("error"),
-            )
-            resolve_inline(task_id, _tr)
-    except Exception as _ce:
-        log.debug("continuation hook failed", task_id=task_id, error=str(_ce))
 
     actions = route_result(task, result)
-    if actions is None:
-        return
     if not isinstance(actions, (list, tuple)):
         actions = [actions]
     actions = rewrite_actions(task, task_ctx, actions)
     await apply_actions(task, actions)
+
+    # ── Continuation hooks (CPS SP1.1: relocated post-apply) ──────────────
+    # The continuation FIRE trigger is the DB tasks.status AFTER apply_actions,
+    # NOT the in-memory result["status"]. Rationale: apply_actions runs
+    # _retry_or_dlq which re-pends a transient-failed task; firing on raw
+    # status would latch on the failed first attempt and drop the eventual
+    # successful retry's resume. We re-read DB status here; only fire when
+    # the task has reached a TRUE terminal (completed / failed). Handlers
+    # receive the captured _agent_result_snapshot so post-hook flips can't
+    # corrupt the payload the handler sees.
+    try:
+        from src.infra.db import get_task as _get_task
+        _live = await _get_task(task_id) or {}
+        _db_status = _live.get("status") or ""
+
+        if _db_status in ("completed", "failed"):
+            from general_beckman.continuations import (
+                fire_for_task, dispatch_on_complete,
+            )
+            _fired = await fire_for_task(
+                task_id, dict(_agent_result_snapshot), _db_status
+            )
+            # Legacy straggler shim (removable post-SP5): a pre-upgrade task
+            # carried on_complete in context.beckman, not the continuations
+            # table. Fire it only when no table row claimed.
+            if not _fired:
+                _legacy = (task_ctx.get("beckman") or {}).get("on_complete")
+                if _legacy:
+                    asyncio.create_task(
+                        dispatch_on_complete(
+                            _legacy, task_id,
+                            dict(_agent_result_snapshot), {},
+                        )
+                    )
+
+            # await_inline resolve: only on TRUE terminal so retries don't
+            # prematurely wake the parent.
+            if task_id in _inline_waiters:
+                _tr = TaskResult(
+                    status=_db_status,
+                    result=_agent_result_snapshot.get("result"),
+                    error=_agent_result_snapshot.get("error"),
+                )
+                resolve_inline(task_id, _tr)
+
+        # next_task_spec fire-and-forget chain (unchanged behavior: fires on
+        # any on_task_finished invocation; not the durable substrate).
+        _next_spec = (task_ctx.get("beckman") or {}).get("next_task_spec")
+        if _next_spec and isinstance(_next_spec, dict):
+            asyncio.create_task(enqueue(_next_spec, parent_id=task_id))
+
+    except Exception as _ce:
+        log.debug("continuation hook failed", task_id=task_id, error=str(_ce))
 
     # Progress ping: terse per-step notification for workflow-step tasks so
     # the user sees a mission moving forward rather than 2+ minutes of

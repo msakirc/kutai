@@ -631,3 +631,115 @@ async def test_reconcile_one_bad_row_does_not_poison_pass(tmp_path, monkeypatch)
     finally:
         _HANDLERS.pop("t.resume", None)
         await _close_db()
+
+
+# ─── T12 tests ────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_fire_leaves_row_pending_when_resume_handler_missing(tmp_path, monkeypatch):
+    """T12: don't claim the row when the resume handler isn't registered.
+    A subsequent reconcile (after a restart that fixes the import) can
+    then still recover via fire_for_task."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import fire_for_task, _HANDLERS
+        # Resume handler is NOT registered.
+        cid = await _add(on_complete="t.missing_resume", cont_state={"v": 1})
+        fired = await fire_for_task(cid, {"status": "completed"}, "completed")
+        assert fired is False
+        db = await _db_mod.get_db()
+        cur = await db.execute(
+            "SELECT status FROM continuations WHERE child_task_id=?", (cid,)
+        )
+        assert (await cur.fetchone())[0] == "pending", "row must stay pending"
+
+        # Now register the handler and re-fire — the row should now claim.
+        fired_after = []
+
+        async def resume(task_id, result, state):
+            fired_after.append((task_id, state))
+
+        from general_beckman.continuations import register_resume
+        register_resume("t.missing_resume", resume)
+        fired2 = await fire_for_task(cid, {"status": "completed"}, "completed")
+        await asyncio.sleep(0.05)
+        assert fired2 is True
+        assert fired_after == [(cid, {"v": 1})]
+    finally:
+        _HANDLERS.pop("t.missing_resume", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_fire_leaves_row_pending_when_on_error_handler_missing(tmp_path, monkeypatch):
+    """T12: same logic on the on_error path."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import fire_for_task, _HANDLERS
+        cid = await _add(on_error="t.missing_err")
+        fired = await fire_for_task(cid, {"status": "failed"}, "failed")
+        assert fired is False
+        db = await _db_mod.get_db()
+        cur = await db.execute(
+            "SELECT status FROM continuations WHERE child_task_id=?", (cid,)
+        )
+        assert (await cur.fetchone())[0] == "pending"
+    finally:
+        await _close_db()
+
+
+@pytest.mark.asyncio
+async def test_register_continuations_module_extends_static_list(tmp_path, monkeypatch):
+    """T12: register_continuations_module() appends to _HANDLER_MODULES
+    for the current process (no duplicate)."""
+    from general_beckman.continuations import (
+        register_continuations_module, _HANDLER_MODULES,
+    )
+    snapshot = list(_HANDLER_MODULES)
+    register_continuations_module("nonexistent.test.module")
+    assert "nonexistent.test.module" in _HANDLER_MODULES
+    # Idempotent.
+    register_continuations_module("nonexistent.test.module")
+    assert _HANDLER_MODULES.count("nonexistent.test.module") == 1
+    # Cleanup so other tests aren't polluted.
+    _HANDLER_MODULES[:] = snapshot
+
+
+@pytest.mark.asyncio
+async def test_register_startup_handlers_warns_on_import_failure(tmp_path, monkeypatch, caplog):
+    """T12: a failing module import is logged at WARNING (not DEBUG).
+
+    structlog routes through the stdlib logging bridge; the module name is
+    passed as a kwarg (not embedded in getMessage()), so we capture warnings
+    by patching _log.warning instead of relying on caplog message content.
+    """
+    import logging
+    from general_beckman.continuations import (
+        register_startup_handlers, register_continuations_module,
+        _HANDLER_MODULES,
+    )
+    import general_beckman.continuations as _cont_mod
+
+    snapshot = list(_HANDLER_MODULES)
+    register_continuations_module("definitely.not.a.real.module")
+    warnings_captured: list[tuple] = []
+    original_warning = _cont_mod._log.warning
+
+    def _capture_warning(msg, **kw):
+        warnings_captured.append((msg, kw))
+        original_warning(msg, **kw)
+
+    try:
+        monkeypatch.setattr(_cont_mod._log, "warning", _capture_warning)
+        register_startup_handlers()
+        # Verify that at least one warning references the bad module name.
+        module_warnings = [
+            (msg, kw) for msg, kw in warnings_captured
+            if kw.get("module") == "definitely.not.a.real.module"
+        ]
+        assert module_warnings, (
+            f"expected a WARNING with module='definitely.not.a.real.module', "
+            f"got: {warnings_captured}"
+        )
+    finally:
+        _HANDLER_MODULES[:] = snapshot

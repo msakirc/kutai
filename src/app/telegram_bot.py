@@ -7573,8 +7573,49 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             mission_id = await _add_mission(
                 title=mission_desc[:80], description=mission_desc, priority=7,
             )
+
+            # SP2 fix-up — restore the rest of pre-SP2 ``cmd_mission``'s
+            # no-workflow tail: provision the mission topic, kick off
+            # planning, prompt the user for the Z0 cost ceiling, and
+            # arm ``_pending_action`` so the next chat reply is treated
+            # as the ceiling answer. Mutate state on the singleton so
+            # the live ``TelegramInterface`` (not ``self`` from a stale
+            # binding) picks it up.
+            try:
+                from .telegram_topics import ensure_mission_topic
+                await ensure_mission_topic(
+                    self.app.bot, mission_id, mission_desc[:80], chat_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ensure_mission_topic skipped (cps): %s", exc)
+
+            if getattr(self, "orchestrator", None):
+                try:
+                    await self.orchestrator.plan_mission(
+                        mission_id, mission_desc[:80], mission_desc,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("plan_mission failed (cps): %s", exc)
+
+            # Arm the cost-ceiling pending-action BEFORE sending the prompt
+            # so the user's reply is matched. The resume has no live
+            # ``self`` reference into the live singleton's mutable
+            # ``_pending_action`` dict — look it up via ``get_telegram``.
+            try:
+                tg = get_telegram()
+            except RuntimeError:
+                tg = None
+            if tg is not None:
+                tg._pending_action[chat_id] = {
+                    "kind": "z0_ceiling",
+                    "mission_id": mission_id,
+                }
+                tg.user_last_task_id[chat_id] = None
+
             await _send_telegram_via_resume(
-                chat_id, f"🎯 Mission #{mission_id} created.",
+                chat_id,
+                "Cost ceiling for this mission ($)? Reply with a number, "
+                "or `none` for unlimited.",
             )
             return
 

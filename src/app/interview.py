@@ -229,9 +229,11 @@ Transcript:
 
 
 async def summarize_interview(note_id: int, product_id: str) -> dict:
-    """LLM-bound (OVERHEAD lane): read transcript, write structured summary to DB.
+    """LLM-bound (OVERHEAD lane via CPS): enqueue summary LLM and return.
 
-    Returns ``{"ok": True/False, ...}``.
+    SP2: actual persistence happens in ``_summary_persist_resume`` when the
+    child completes. Returns ``{"ok": True, "queued": True, ...}``
+    immediately so the mr_roboto action handler proceeds without blocking.
     """
     from src.infra.db import get_db
 
@@ -249,71 +251,130 @@ async def summarize_interview(note_id: int, product_id: str) -> dict:
 
     prompt = _SUMMARIZE_PROMPT.format(transcript=transcript)
 
-    # Enqueue to Beckman (OVERHEAD lane) — inline for simplicity
-    task_result = await beckman_enqueue(
+    child_id = await beckman_enqueue(
         {
             "title": f"Interview summary note_id={note_id}",
             "agent_type": "summarizer",
             "kind": "overhead",
             "context": json.dumps({"prompt": prompt, "note_id": note_id}),
         },
-        await_inline=True,
+        on_complete="interview.summary_persist_resume",
+        on_error="interview.summary_persist_err",
+        cont_state={"note_id": note_id, "product_id": product_id},
         lane="overhead",
     )
+    logger.info(
+        "interview: summarize enqueued (CPS)",
+        note_id=note_id, child_task_id=child_id,
+    )
+    return {
+        "ok": True,
+        "queued": True,
+        "note_id": note_id,
+        "child_task_id": child_id,
+    }
 
-    # Parse structured output
-    output_str = getattr(task_result, "output", None) or ""
+
+async def _summary_persist_resume(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS resume for `summarize_interview` (SP2 Task 3).
+
+    Parses structured JSON from the LLM response and writes the four
+    interview_notes columns. This is where the latent
+    ``task_result.output`` bug (pre-SP2 interview.py:265) is fixed — we
+    now route through the documented ``result["result"]["content"]``
+    shape produced by the dispatcher.
+    """
+    note_id = state.get("note_id")
+    if note_id is None:
+        return
+
+    # Normal terminal: ``result["result"]["content"]`` (dispatcher envelope).
+    # Restart-reconcile: ``continuations.reconcile_continuations`` flattens
+    # ``tasks.result`` into the outer dict, e.g. ``{"content": "...",
+    # "status": "completed"}``. Handle both shapes.
+    result = result or {}
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        content = inner.get("content", "")
+    elif inner is not None:
+        content = inner
+    else:
+        content = result.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    raw = str(content or "").strip()
+
+    structured: dict[str, Any] = {}
     try:
-        structured: dict[str, Any] = json.loads(output_str)
+        structured = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        # Try to find JSON in the output
         import re
-        match = re.search(r"\{.*\}", output_str, re.DOTALL)
+        match = re.search(r"\{[\s\S]*\}", raw)
         if match:
             try:
                 structured = json.loads(match.group())
             except json.JSONDecodeError:
                 structured = {}
-        else:
-            structured = {}
 
     bullets = structured.get("bullets") or []
     quotes = structured.get("quotes") or []
     insights = structured.get("insights") or ""
     action_items = structured.get("action_items") or []
 
-    # Compose summary_md from bullets
     summary_md = "## Interview Summary\n\n"
     if bullets:
         summary_md += "\n".join(f"- {b}" for b in bullets)
 
+    from src.infra.db import get_db
+    db = await get_db()
     await db.execute(
         "UPDATE interview_notes "
         "SET summary_md=?, quotes_json=?, insights_md=?, action_items_json=? "
         "WHERE note_id=?",
-        (
-            summary_md,
-            json.dumps(quotes),
-            insights,
-            json.dumps(action_items),
-            note_id,
-        ),
+        (summary_md, json.dumps(quotes), insights,
+         json.dumps(action_items), note_id),
     )
     await db.commit()
     logger.info(
-        "interview: summarized",
-        note_id=note_id,
-        bullets=len(bullets),
-        quotes=len(quotes),
-        action_items=len(action_items),
+        "interview: summary persisted via CPS resume",
+        note_id=note_id, bullets=len(bullets), quotes=len(quotes),
     )
-    return {
-        "ok": True,
-        "note_id": note_id,
-        "bullets": len(bullets),
-        "quotes": len(quotes),
-        "action_items": len(action_items),
-    }
+
+
+async def _summary_persist_err(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS on_error for `summarize_interview` (SP2 Task 3).
+
+    The pre-CPS code wrote an empty summary_md on LLM failure; the
+    CPS path leaves the row's summary_md NULL — an explicit "no
+    summary" signal rather than a misleadingly empty one.
+    """
+    logger.warning(
+        "interview: summary LLM failed; leaving row untouched",
+        note_id=state.get("note_id"),
+        error=(result or {}).get("error"),
+    )
+
+
+def register_continuations() -> None:
+    """Register interview-pipeline CPS handlers (SP2). Idempotent."""
+    try:
+        from general_beckman.continuations import register_resume
+        register_resume("interview.summary_persist_resume", _summary_persist_resume)
+        register_resume("interview.summary_persist_err",    _summary_persist_err)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("interview continuation registration deferred",
+                     error=str(exc))
+
+
+# Register at import so the handler is present for restart reconcile.
+register_continuations()
 
 
 # ---------------------------------------------------------------------------

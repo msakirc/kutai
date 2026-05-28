@@ -335,21 +335,18 @@ def _summarise_ctx_for_llm(ctx: dict) -> str:
     return "\n".join(parts)
 
 
-async def _call_llm_meeting_brief(ctx: dict) -> tuple[list[str], list[str]]:
-    """Draft talking points + suggested asks for a meeting via the LLM.
+async def enqueue_meeting_brief(
+    ctx: dict, *, meeting_id: int, product_id: str
+) -> int:
+    """Enqueue the meeting-brief LLM call via CPS (SP2).
 
-    Uses the beckman ONESHOT lane with ``await_inline=True`` — returns a
-    ``TaskResult`` synchronously.  Returns ``(talking_points, suggested_asks)``;
-    on any failure returns ``([], [])`` so the caller can degrade gracefully.
-
-    Extracted as a module-level function so tests can monkeypatch
-    ``general_beckman.enqueue`` (the outermost model boundary) and exercise the
-    real parsing/extraction path.
+    Returns the child task id immediately. The brief is composed and
+    persisted by :func:`_brief_persist_resume` when the child completes.
     """
     import time
     import uuid
 
-    from general_beckman import TaskResult, enqueue
+    from general_beckman import enqueue
     from general_beckman.lanes import LANE_ONESHOT
 
     ctx_summary = _summarise_ctx_for_llm(ctx)
@@ -394,22 +391,78 @@ async def _call_llm_meeting_brief(ctx: dict) -> tuple[list[str], list[str]]:
         },
     }
 
+    return await enqueue(
+        spec,
+        lane=LANE_ONESHOT,
+        on_complete="meetings.brief_persist_resume",
+        on_error="meetings.brief_persist_err",
+        # Persist the FULL ctx in cont_state — compose_brief_md needs it.
+        cont_state={"meeting_id": meeting_id, "product_id": product_id,
+                    "ctx": ctx},
+    )
+
+
+async def _persist_brief_md(meeting_id: int, brief_md: str) -> None:
+    """Write brief_md + brief_generated_at to the meetings row."""
+    from src.infra.db import get_db
+    db = await get_db()
+    await db.execute(
+        "UPDATE meetings SET brief_md=?, "
+        "brief_generated_at=strftime('%Y-%m-%d %H:%M:%S','now') "
+        "WHERE meeting_id=?",
+        (brief_md, meeting_id),
+    )
+    await db.commit()
+
+
+async def _notify_brief_telegram(ctx: dict, brief_md: str) -> None:
+    """Best-effort Telegram notify of the composed brief (admin chat).
+
+    Mirrors the pre-CPS inline notify in mr_roboto/__init__ at the
+    ``meeting/brief`` action handler — moved here so the resume owns
+    the full post-LLM cycle.
+    """
     try:
-        task_result: TaskResult = await enqueue(spec, lane=LANE_ONESHOT, await_inline=True)
-    except Exception as exc:
-        logger.warning("meeting_brief: LLM enqueue failed: %r", exc)
-        return [], []
-
-    if task_result.status != "completed":
-        logger.warning(
-            "meeting_brief: LLM task did not complete (status=%s): %s",
-            task_result.status,
-            getattr(task_result, "error", ""),
+        import os
+        from src.app.telegram_bot import get_telegram, _send_telegram_via_resume
+        try:
+            tg = get_telegram()
+        except RuntimeError:
+            return
+        if tg is None:
+            return
+        admin_chat = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
+        if not admin_chat:
+            return
+        contact = ctx.get("contact") or {}
+        name = contact.get("display_name") or "Contact"
+        header = f"Meeting Brief — {name} in 30min\n\n"
+        await _send_telegram_via_resume(
+            int(admin_chat), header + brief_md[:3800],
         )
-        return [], []
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("brief telegram notify failed", error=str(exc))
 
-    result_data = getattr(task_result, "result", None) or {}
-    content = result_data.get("content", "")
+
+async def _brief_persist_resume(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS resume for ``enqueue_meeting_brief`` (SP2 Task 4)."""
+    meeting_id = state.get("meeting_id")
+    ctx = state.get("ctx") or {}
+    if meeting_id is None:
+        return
+
+    # Normal terminal: ``result["result"]["content"]`` (dispatcher envelope).
+    # Restart-reconcile: flat shape with ``content`` at the outer level.
+    result = result or {}
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        content = inner.get("content", "")
+    elif inner is not None:
+        content = inner
+    else:
+        content = result.get("content", "")
     if isinstance(content, list):
         content = "\n".join(
             p.get("text", "") if isinstance(p, dict) else str(p)
@@ -417,15 +470,72 @@ async def _call_llm_meeting_brief(ctx: dict) -> tuple[list[str], list[str]]:
         )
     raw_str = str(content or "").strip()
 
+    talking_points: list[str] = []
+    suggested_asks: list[str] = []
     parsed = _parse_brief_llm_response(raw_str)
     if parsed is None:
         logger.warning(
-            "meeting_brief: LLM returned unparseable response: %r", raw_str[:200]
+            "meeting_brief: LLM returned unparseable response: %r",
+            raw_str[:200],
         )
-        return [], []
+        llm_failed = True
+    else:
+        talking_points, suggested_asks = parsed
+        llm_failed = not (talking_points or suggested_asks)
 
-    talking_points, suggested_asks = parsed
-    return talking_points, suggested_asks
+    brief_md = compose_brief_md(
+        ctx,
+        talking_points=talking_points,
+        suggested_asks=suggested_asks,
+        llm_unavailable=llm_failed,
+    )
+    await _persist_brief_md(int(meeting_id), brief_md)
+    await _notify_brief_telegram(ctx, brief_md)
+    logger.info(
+        "meeting_brief: persisted via CPS resume",
+        meeting_id=meeting_id, brief_length=len(brief_md),
+        llm_failed=llm_failed,
+    )
+
+
+async def _brief_persist_err(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS on_error for ``enqueue_meeting_brief`` (SP2 Task 4).
+
+    Writes the "LLM unavailable" brief so the meeting still has a brief
+    row — matches the pre-CPS behaviour where _call_llm_meeting_brief
+    returned ``([], [])`` and the action handler called
+    ``compose_brief_md(..., llm_unavailable=True)``.
+    """
+    meeting_id = state.get("meeting_id")
+    ctx = state.get("ctx") or {}
+    if meeting_id is None:
+        return
+    brief_md = compose_brief_md(
+        ctx, talking_points=[], suggested_asks=[], llm_unavailable=True,
+    )
+    await _persist_brief_md(int(meeting_id), brief_md)
+    await _notify_brief_telegram(ctx, brief_md)
+    logger.warning(
+        "meeting_brief: LLM failed; wrote unavailable brief",
+        meeting_id=meeting_id, error=(result or {}).get("error"),
+    )
+
+
+def register_continuations() -> None:
+    """Register meeting-brief CPS handlers (SP2). Idempotent."""
+    try:
+        from general_beckman.continuations import register_resume
+        register_resume("meetings.brief_persist_resume", _brief_persist_resume)
+        register_resume("meetings.brief_persist_err",    _brief_persist_err)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("meetings continuation registration deferred",
+                     error=str(exc))
+
+
+# Register at import so the handler is present for restart reconcile.
+register_continuations()
 
 
 def _parse_brief_llm_response(raw: str) -> tuple[list[str], list[str]] | None:

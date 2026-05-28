@@ -280,6 +280,10 @@ async def _enqueue_inline_classifier(
             },
         },
     }
+    # SP5-DEFERRED: this is the one edge-group await_inline site SP2 keeps,
+    # because classify_task's caller (add_task) consumes the returned
+    # TaskClassification synchronously. CPS-migrating this requires
+    # redesigning task admission — see SP2 spec §Site 2 special case.
     tr = await general_beckman.enqueue(spec, parent_id=None, await_inline=True)
     if tr.status == "failed":
         from src.core.router import ModelCallFailed

@@ -329,7 +329,12 @@ async def test_transcribe_blocked_after_consent_revoked(db):
 
 @pytest.mark.asyncio
 async def test_summarize_structured_output(db):
-    """interview/summarize reads transcript, writes structured summary to DB."""
+    """interview/summarize enqueues via CPS, and the resume writes the DB.
+
+    SP2: ``summarize_interview`` is now fire-and-forget — it returns
+    ``{"ok": True, "queued": True}`` immediately. The structured columns
+    are written by ``_summary_persist_resume`` when the child terminates.
+    """
     contact_id = await _add_contact(db)
     note_id = await _insert_interview(db, contact_id=contact_id)
 
@@ -341,25 +346,30 @@ async def test_summarize_structured_output(db):
     )
     await db.commit()
 
-    # Mock beckman.enqueue (OVERHEAD lane) to return structured LLM response
+    # Mock beckman.enqueue to capture the CPS call (returns child task id).
+    with patch(
+        "src.app.interview.beckman_enqueue", new=AsyncMock(return_value=4242)
+    ):
+        from src.app.interview import summarize_interview
+        result = await summarize_interview(note_id=note_id, product_id="prod1")
+
+    assert result["ok"] is True
+    assert result.get("queued") is True
+
+    # Drive the resume manually with a representative terminal child result.
     mock_summary = {
         "bullets": ["Customer likes pricing", "Feature request: dark mode"],
         "quotes": ["We love the pricing"],
         "insights": "Customer is price-sensitive; values aesthetics.",
         "action_items": ["Add dark mode to backlog"],
     }
-
-    mock_result = MagicMock()
-    mock_result.status = "completed"
-    mock_result.output = json.dumps(mock_summary)
-
-    with patch(
-        "src.app.interview.beckman_enqueue", new=AsyncMock(return_value=mock_result)
-    ):
-        from src.app.interview import summarize_interview
-        result = await summarize_interview(note_id=note_id, product_id="prod1")
-
-    assert result["ok"] is True
+    from src.app.interview import _summary_persist_resume
+    await _summary_persist_resume(
+        child_task_id=4242,
+        result={"status": "completed",
+                "result": {"content": json.dumps(mock_summary)}},
+        state={"note_id": note_id, "product_id": "prod1"},
+    )
 
     # Verify DB updated
     cur = await db.execute(

@@ -89,48 +89,6 @@ def _friendly_error(error: str) -> str:
     return "Interrupted. Will retry on restart."
 
 
-async def _enqueue_inline_chat(
-    *,
-    title: str,
-    description: str,
-    agent_type: str,
-    kind: str,
-    llm_call_kwargs: dict,
-    parent_id: int | None = None,
-) -> dict:
-    """Enqueue an LLM call as a Beckman task with await_inline=True.
-
-    Returns the dispatcher response dict (same shape today's
-    dispatcher.request returns), so callers can do
-    `response.get("content", ...)` unchanged.
-    """
-    import general_beckman
-    spec = {
-        "title": title,
-        "description": description,
-        "agent_type": agent_type,
-        "kind": kind,
-        "context": {
-            "llm_call": {
-                "raw_dispatch": True,
-                **llm_call_kwargs,
-            },
-        },
-    }
-    tr = await general_beckman.enqueue(spec, parent_id=parent_id, await_inline=True)
-    if tr.status == "failed":
-        from src.core.router import ModelCallFailed
-        raise ModelCallFailed(tr.error or "call failed", error_category="availability")
-    res = tr.result
-    if isinstance(res, str):
-        import json
-        try:
-            res = json.loads(res)
-        except Exception:
-            res = {"content": res}
-    return res or {}
-
-
 # ─── Product/App Detection ────────────────────────────────────────────────
 _PRODUCT_KEYWORDS = [
     "build ", "create ", "make ", "develop ", "design ",

@@ -154,7 +154,7 @@ async def run(task: dict) -> dict:
     }
 
 
-async def _on_classifier_complete(task_id: int, result: dict) -> None:
+async def _on_classifier_complete(task_id: int, result: dict, state: dict | None = None) -> None:
     """Continuation: persist signal_classifier verdicts as classified_signal rows.
 
     Called by Beckman's ``dispatch_on_complete`` when the classifier agent
@@ -276,3 +276,16 @@ async def _on_classifier_complete(task_id: int, result: dict) -> None:
             "classify_signals_complete: score_backlog enqueue failed",
             error=str(exc),
         )
+
+
+def register_continuations() -> None:
+    """Register the classify-signals continuation (idempotent). Called at import
+    so the handler survives a restart for the reconcile pass."""
+    try:
+        from general_beckman.continuations import register
+        register("growth.classify_signals_complete", _on_classifier_complete)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("classify_signals continuation registration deferred", error=str(exc))
+
+
+register_continuations()

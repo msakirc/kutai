@@ -301,7 +301,7 @@ async def _load_success_metrics(mission_id: int | None) -> dict[str, Any]:
 _DIGEST_CONTINUATION = "growth.store_weekly_digest"
 
 
-async def _store_weekly_digest(task_id: int, result: dict) -> None:
+async def _store_weekly_digest(task_id: int, result: dict, state: dict | None = None) -> None:
     """Beckman on_complete handler — persist the agent's digest markdown.
 
     ``result`` is the agent task's terminal result envelope; ``result['result']``
@@ -352,20 +352,20 @@ async def _store_weekly_digest(task_id: int, result: dict) -> None:
         logger.warning("store_weekly_digest failed", task_id=task_id, error=str(exc))
 
 
-def _register_continuation() -> None:
+def register_continuations() -> None:
     """Register the digest-persistence continuation (idempotent)."""
     try:
         from general_beckman.continuations import register
-
         register(_DIGEST_CONTINUATION, _store_weekly_digest)
     except Exception as exc:  # noqa: BLE001
         logger.debug("digest continuation registration deferred", error=str(exc))
 
 
-# Register at module import — the executor module is imported lazily by the
-# mr_roboto dispatcher before it enqueues the synthesis agent, so the
-# handler is always present by the time that agent task completes.
-_register_continuation()
+# Back-compat name used internally elsewhere in this module.
+_register_continuation = register_continuations
+
+# Register at import so the handler is present for restart reconcile.
+register_continuations()
 
 
 # ── synthesis agent enqueue (via Beckman — never the dispatcher) ───────────

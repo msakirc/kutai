@@ -768,6 +768,26 @@ async def init_db():
         )
     """)
 
+    # Durable continuation substrate (CPS SP1). One row per child task; the
+    # child's terminal state fires the registered resume/on_error handler.
+    # child_task_id is the PK → exactly one continuation per child (load-bearing;
+    # add_task skips dedup for continuation children to honor this).
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS continuations (
+            child_task_id   INTEGER PRIMARY KEY,
+            resume_name     TEXT NOT NULL,
+            on_error_name   TEXT,
+            state_json      TEXT NOT NULL DEFAULT '{}',
+            status          TEXT NOT NULL DEFAULT 'pending',
+            created_at      TEXT NOT NULL
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_continuations_pending "
+        "ON continuations(status)"
+    )
+    await db.commit()
+
     # Conversations
     await db.execute("""
         CREATE TABLE IF NOT EXISTS conversations (
@@ -4333,7 +4353,8 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                    requires_approval=False, depends_on=None, context=None,
                    kind="main_work", runner=None,
                    needs_real_tools=None, reversibility=None,
-                   lane=None):
+                   lane=None,
+                   on_complete=None, on_error=None, cont_state=None):
     """Atomic dedup + insert.
 
     Uses an isolated connection (connect_aux) for the BEGIN/COMMIT
@@ -4365,52 +4386,54 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
         try:
             await db.execute("BEGIN IMMEDIATE")
 
-            cursor = await db.execute(
-                """SELECT id, title, status, started_at FROM tasks
-                   WHERE task_hash = ?
-                     AND status IN ('pending', 'processing')
-                   LIMIT 1""",
-                (task_hash,)
-            )
-            duplicate = await cursor.fetchone()
-            if duplicate:
-                dup = dict(duplicate)
-                # If the duplicate is stuck in 'processing' for >10 minutes,
-                # reset it instead of blocking the new task creation.
-                if dup["status"] == "processing" and dup.get("started_at"):
-                    stuck_cursor = await db.execute(
-                        """SELECT 1 FROM tasks
-                           WHERE id = ? AND status = 'processing'
-                             AND started_at < datetime('now', '-10 minutes')""",
-                        (dup["id"],)
-                    )
-                    if await stuck_cursor.fetchone():
-                        logger.warning(
-                            f"Task dedup: duplicate #{dup['id']} stuck in "
-                            f"processing — resetting to pending"
-                        )
-                        await db.execute(
-                            "UPDATE tasks SET status = 'pending', "
-                            "worker_attempts = COALESCE(worker_attempts, 0) + 1 "
-                            "WHERE id = ?",
+            _has_cont = on_complete is not None or on_error is not None
+            if not _has_cont:
+                cursor = await db.execute(
+                    """SELECT id, title, status, started_at FROM tasks
+                       WHERE task_hash = ?
+                         AND status IN ('pending', 'processing')
+                       LIMIT 1""",
+                    (task_hash,)
+                )
+                duplicate = await cursor.fetchone()
+                if duplicate:
+                    dup = dict(duplicate)
+                    # If the duplicate is stuck in 'processing' for >10 minutes,
+                    # reset it instead of blocking the new task creation.
+                    if dup["status"] == "processing" and dup.get("started_at"):
+                        stuck_cursor = await db.execute(
+                            """SELECT 1 FROM tasks
+                               WHERE id = ? AND status = 'processing'
+                                 AND started_at < datetime('now', '-10 minutes')""",
                             (dup["id"],)
                         )
-                        if db._conn.in_transaction:
-                            await db.execute("COMMIT")
-                        else:
+                        if await stuck_cursor.fetchone():
                             logger.warning(
-                                f"add_task: tx vanished before COMMIT "
-                                f"(stuck-reset path, dup #{dup['id']}); "
-                                f"work likely auto-rolled-back"
+                                f"Task dedup: duplicate #{dup['id']} stuck in "
+                                f"processing — resetting to pending"
                             )
-                        return dup["id"]
-                logger.info(
-                    f"⏭️ Task dedup: '{title[:50]}' matches pending task "
-                    f"#{dup['id']} — skipping creation"
-                )
-                if db._conn.in_transaction:
-                    await db.execute("ROLLBACK")
-                return None
+                            await db.execute(
+                                "UPDATE tasks SET status = 'pending', "
+                                "worker_attempts = COALESCE(worker_attempts, 0) + 1 "
+                                "WHERE id = ?",
+                                (dup["id"],)
+                            )
+                            if db._conn.in_transaction:
+                                await db.execute("COMMIT")
+                            else:
+                                logger.warning(
+                                    f"add_task: tx vanished before COMMIT "
+                                    f"(stuck-reset path, dup #{dup['id']}); "
+                                    f"work likely auto-rolled-back"
+                                )
+                            return dup["id"]
+                    logger.info(
+                        f"⏭️ Task dedup: '{title[:50]}' matches pending task "
+                        f"#{dup['id']} — skipping creation"
+                    )
+                    if db._conn.in_transaction:
+                        await db.execute("ROLLBACK")
+                    return None
 
             # Z10 T3A: derive phase_id from workflow context if present.
             # Expander writes 'workflow_phase' (e.g. 'phase_5'); legacy
@@ -4453,6 +4476,21 @@ async def add_task(title, description, mission_id=None, parent_task_id=None,
                  _nrt_int, _rev, _lane)
             )
             row_id = cursor.lastrowid
+            # CPS SP1: write the continuation row atomically with the child, on
+            # the SAME aux connection / transaction. add_task commits before
+            # returning, so this is the ONLY place the child can never exist
+            # (claimable) without its continuation row. resume_name is NOT NULL
+            # → empty string for on_error-only.
+            if _has_cont:
+                await db.execute(
+                    "INSERT INTO continuations "
+                    "(child_task_id, resume_name, on_error_name, state_json, "
+                    " status, created_at) "
+                    "VALUES (?, ?, ?, ?, 'pending', "
+                    " strftime('%Y-%m-%d %H:%M:%S','now'))",
+                    (row_id, on_complete or "", on_error,
+                     json.dumps(cont_state or {})),
+                )
             if db._conn.in_transaction:
                 await db.execute("COMMIT")
             else:

@@ -80,7 +80,9 @@ async def test_enqueue_propagates_parent_id_to_db_row(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_enqueue_stores_continuation_in_context_envelope(tmp_path, monkeypatch):
-    """on_complete and next_task_spec must land in context['beckman']."""
+    """on_complete goes to the continuations table (NOT context); next_task_spec
+    stays in context['beckman'] (fire-and-forget chain, not the durable substrate).
+    """
     await _fresh_db(tmp_path, monkeypatch)
     try:
         next_spec = {"title": "followup", "description": "f"}
@@ -90,12 +92,24 @@ async def test_enqueue_stores_continuation_in_context_envelope(tmp_path, monkeyp
             next_task_spec=next_spec,
         )
         assert task_id is not None
+
+        # on_complete must be in the continuations table, NOT context
+        db = await _db_mod.get_db()
+        cur = await db.execute(
+            "SELECT resume_name FROM continuations WHERE child_task_id = ?",
+            (task_id,),
+        )
+        cont_row = await cur.fetchone()
+        assert cont_row is not None, "continuations row missing"
+        assert cont_row[0] == "agent.resume", f"resume_name wrong: {cont_row[0]}"
+
+        # next_task_spec still travels via context['beckman']
         row = await _db_mod.get_task(task_id)
         ctx_raw = row.get("context") or "{}"
         ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else dict(ctx_raw)
         beckman = ctx.get("beckman", {})
-        assert beckman.get("on_complete") == "agent.resume", (
-            f"on_complete missing/wrong: {beckman}"
+        assert "on_complete" not in beckman, (
+            f"on_complete must NOT be in context (now lives in continuations table): {beckman}"
         )
         assert beckman.get("next_task_spec") == next_spec, (
             f"next_task_spec missing/wrong: {beckman}"

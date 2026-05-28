@@ -377,6 +377,19 @@ async def main():
         _log.critical("Critical health checks failed — aborting")
         sys.exit(1)
 
+    # Continuation recovery (CPS SP1): re-fire continuations whose child went
+    # terminal while we were down; expire genuinely-dead stale ones. Handlers
+    # must be registered first (in-memory registry is empty after restart).
+    try:
+        from general_beckman.continuations import (
+            register_startup_handlers, reconcile_continuations,
+        )
+        register_startup_handlers()
+        await reconcile_continuations()
+        _log.info("Continuation recovery pass complete")
+    except Exception as exc:
+        _log.warning("Continuation reconcile failed (non-critical): %s", exc)
+
     # Phase 2: Docker, non-critical checks, and seeding ALL in parallel
     async def _docker_phase():
         docker_ok = await start_docker_services()

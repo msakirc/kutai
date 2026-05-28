@@ -3,7 +3,7 @@
 Public API (everything else is internal):
   - next_task() -> Task | None
   - on_task_finished(task_id, result) -> None
-  - enqueue(spec, *, parent_id, await_inline, on_complete, next_task_spec) -> int | TaskResult
+  - enqueue(spec, *, parent_id, await_inline, on_complete, on_error, next_task_spec, cont_state) -> int | TaskResult
   - resolve_inline(task_id, result) -> None
 """
 from __future__ import annotations
@@ -871,23 +871,32 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     # grader tasks #31203/#31204/#35460 timed out while 10 reviewer
     # children all completed cleanly.
     try:
-        import json as _json
-        _beckman_sub = (task_ctx or {}).get("beckman") or {}
+        _raw_status = (result or {}).get("status") or "completed"
 
-        _on_complete = _beckman_sub.get("on_complete")
-        if _on_complete:
-            from general_beckman.continuations import dispatch_on_complete
-            _cont_result = dict(result or {})
-            asyncio.create_task(dispatch_on_complete(_on_complete, task_id, _cont_result))
+        # Durable continuation fire (claim-then-detach via the table). Replaces
+        # the old fire-and-forget create_task(dispatch_on_complete). Idempotent.
+        from general_beckman.continuations import fire_for_task, dispatch_on_complete
+        _fired = await fire_for_task(task_id, dict(result or {}), _raw_status)
 
-        _next_spec = _beckman_sub.get("next_task_spec")
+        # Legacy straggler shim (removable post-SP5): a task enqueued BEFORE this
+        # upgrade carried on_complete in context.beckman, not the table. If no
+        # row claimed and the status is terminal, fire that legacy handler once.
+        if not _fired and _raw_status != "needs_clarification":
+            _legacy = (task_ctx.get("beckman") or {}).get("on_complete")
+            if _legacy:
+                asyncio.create_task(
+                    dispatch_on_complete(_legacy, task_id, dict(result or {}), {})
+                )
+
+        # next_task_spec fire-and-forget chain (unchanged, context-based).
+        _next_spec = (task_ctx.get("beckman") or {}).get("next_task_spec")
         if _next_spec and isinstance(_next_spec, dict):
             asyncio.create_task(enqueue(_next_spec, parent_id=task_id))
 
+        # await_inline resolve (coexists until SP5).
         if task_id in _inline_waiters:
-            _status = (result or {}).get("status", "completed")
             _tr = TaskResult(
-                status=_status,
+                status=_raw_status,
                 result=(result or {}).get("result"),
                 error=(result or {}).get("error"),
             )
@@ -1033,6 +1042,8 @@ async def enqueue(
     parent_id: int | None = None,
     await_inline: bool = False,
     on_complete: str | None = None,
+    on_error: str | None = None,
+    cont_state: dict | None = None,
     next_task_spec: dict | None = None,
     lane: str | None = None,
 ) -> "int | TaskResult":
@@ -1050,15 +1061,28 @@ async def enqueue(
         ``resolve_inline``).  Returns a ``TaskResult``.
     on_complete:
         Name of a registered continuation handler (see continuations.py).
-        Stored inside ``spec["context"]["beckman"]["on_complete"]``.
+        Written atomically to the continuations table via add_task.
+    on_error:
+        Name of a registered continuation handler fired on task failure.
+        Written atomically to the continuations table via add_task.
+    cont_state:
+        Arbitrary state dict persisted alongside the continuation row and
+        passed back to the handler when it fires.
     next_task_spec:
         Spec dict for a follow-up task to enqueue when this task reaches
         a terminal state.  Stored inside context["beckman"]["next_task_spec"].
+        This is a fire-and-forget chain (NOT the durable substrate).
     """
     import json as _json
     from src.infra.db import add_task
     from general_beckman.queue_profile_push import build_and_push
     from general_beckman.lanes import pick_lane
+
+    if await_inline and (on_complete is not None or on_error is not None):
+        raise ValueError(
+            "enqueue: await_inline and on_complete/on_error are mutually "
+            "exclusive (a blocking wait can't also fire a continuation)"
+        )
 
     spec = dict(spec)  # shallow copy — don't mutate caller's dict
 
@@ -1080,8 +1104,10 @@ async def enqueue(
     if parent_id is not None:
         spec["parent_task_id"] = parent_id
 
-    # ── continuation envelope ─────────────────────────────────────────────
-    if on_complete is not None or next_task_spec is not None:
+    # ── next_task_spec envelope (fire-and-forget chain — NOT the durable
+    # substrate; stays context-based and coexists). on_complete/on_error go
+    # straight to add_task → continuations table.
+    if next_task_spec is not None:
         raw_ctx = spec.get("context")
         if raw_ctx is None:
             ctx: dict = {}
@@ -1092,16 +1118,19 @@ async def enqueue(
                 ctx = {}
         else:
             ctx = dict(raw_ctx)
-
         beckman_sub: dict = dict(ctx.get("beckman") or {})
-        if on_complete is not None:
-            beckman_sub["on_complete"] = on_complete
-        if next_task_spec is not None:
-            beckman_sub["next_task_spec"] = next_task_spec
+        beckman_sub["next_task_spec"] = next_task_spec
         ctx["beckman"] = beckman_sub
         spec["context"] = ctx  # add_task will json.dumps() it
 
-    task_id = await add_task(**spec, kind=kind, lane=_lane)
+    task_id = await add_task(**spec, kind=kind, lane=_lane,
+                             on_complete=on_complete, on_error=on_error,
+                             cont_state=cont_state)
+    if (on_complete is not None or on_error is not None) and task_id is None:
+        raise RuntimeError(
+            "enqueue: add_task returned no child id for a continuation task "
+            "(dedup should be skipped for continuations — investigate add_task)"
+        )
     await build_and_push()
 
     if not await_inline:

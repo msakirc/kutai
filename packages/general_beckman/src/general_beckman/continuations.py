@@ -238,6 +238,11 @@ async def reconcile_continuations(ttl_seconds: int = CONTINUATION_TTL_SECONDS) -
       - else, if past TTL AND child is not alive (no in_flight entry) → expire
         (fire on_error if set, else log). A still-alive long-runner is left
         pending — no premature abandon.
+
+    Result reconstruction: the persisted tasks.result is JSON-decoded at the
+    TOP level only and passed to the handler as-is. Handlers that need nested
+    decoding (e.g. raw_dispatch envelopes where content is itself a JSON
+    string) must do that decoding inside the handler.
     """
     from src.infra.db import get_db
     db = await get_db()

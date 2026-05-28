@@ -77,14 +77,10 @@ async def run(task: dict) -> dict:
     without touching Beckman.
     """
     import general_beckman
-    from general_beckman.continuations import register
     from src.infra.db import get_growth_events
 
     payload = task.get("payload") or {}
     mission_id = task.get("mission_id") or payload.get("mission_id")
-
-    # Register the continuation handler (idempotent — safe every run).
-    register("growth.classify_signals_complete", _on_classifier_complete)
 
     raw = await get_growth_events(
         mission_id=mission_id, kind="raw_signal", limit=_BATCH_LIMIT * 3

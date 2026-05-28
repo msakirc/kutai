@@ -706,6 +706,53 @@ async def test_register_continuations_module_extends_static_list(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_reconcile_passes_raw_dispatch_envelope_unchanged(tmp_path, monkeypatch):
+    """T13: reconcile must pass the persisted tasks.result JSON to the handler
+    verbatim (after JSON-decoding the outer level). Handlers are responsible
+    for any nested decoding their child's persistence format requires —
+    reconcile doesn't magic-unwrap. This test mirrors raw_dispatch shape
+    (the SP3 grading consumer)."""
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import (
+            register_resume, reconcile_continuations, _HANDLERS,
+        )
+        seen = []
+
+        async def resume(task_id, result, state):
+            seen.append(result)
+
+        register_resume("t.resume", resume)
+        cid = await _add(on_complete="t.resume", cont_state={"source_task_id": 42})
+
+        # Mirror raw_dispatch persistence shape — `content` is itself a JSON
+        # string the handler will decode if it needs verdict fields.
+        inner_verdict = json.dumps({"verdict": "pass", "score": 0.92})
+        envelope = {"content": inner_verdict, "model": "qwen-9b"}
+        await _set_task_status(cid, "completed", json.dumps(envelope))
+
+        await reconcile_continuations()
+        await asyncio.sleep(0.05)
+
+        assert len(seen) == 1, f"expected exactly one fire, got {seen}"
+        got = seen[0]
+        # Outer level is JSON-decoded.
+        assert got.get("content") == inner_verdict, (
+            f"content must be passed through verbatim: {got}"
+        )
+        assert got.get("model") == "qwen-9b"
+        # status is set by reconcile from tasks.status.
+        assert got.get("status") == "completed"
+        # No magical unwrap: content is STILL a JSON string, not a dict.
+        assert isinstance(got["content"], str), (
+            "reconcile must not pre-decode nested JSON; handler decides"
+        )
+    finally:
+        _HANDLERS.pop("t.resume", None)
+        await _close_db()
+
+
+@pytest.mark.asyncio
 async def test_register_startup_handlers_warns_on_import_failure(tmp_path, monkeypatch, caplog):
     """T12: a failing module import is logged at WARNING (not DEBUG).
 

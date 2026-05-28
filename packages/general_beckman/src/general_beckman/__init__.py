@@ -894,16 +894,25 @@ async def on_task_finished(task_id, result: dict = None) -> None:
             )
             # Legacy straggler shim (removable post-SP5): a pre-upgrade task
             # carried on_complete in context.beckman, not the continuations
-            # table. Fire it only when no table row claimed.
+            # table. Fire only when (a) the table has no row for this child
+            # (so we know this is a legacy task, NOT a row left pending by
+            # T12's handler-presence pre-check or already 'fired' by a
+            # prior call).
             if not _fired:
-                _legacy = (task_ctx.get("beckman") or {}).get("on_complete")
-                if _legacy:
-                    asyncio.create_task(
-                        dispatch_on_complete(
-                            _legacy, task_id,
-                            dict(_agent_result_snapshot), {},
+                from src.infra.db import get_db as _get_db_legacy
+                _ldb = await _get_db_legacy()
+                _lcur = await _ldb.execute(
+                    "SELECT 1 FROM continuations WHERE child_task_id=?", (task_id,)
+                )
+                if await _lcur.fetchone() is None:
+                    _legacy = (task_ctx.get("beckman") or {}).get("on_complete")
+                    if _legacy:
+                        asyncio.create_task(
+                            dispatch_on_complete(
+                                _legacy, task_id,
+                                dict(_agent_result_snapshot), {},
+                            )
                         )
-                    )
 
             # await_inline resolve: only on TRUE terminal so retries don't
             # prematurely wake the parent.
@@ -931,6 +940,7 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     try:
         _bookkeeping = task.get("agent_type") in (
             "mechanical", "grader", "artifact_summarizer",
+            "reviewer", "code_reviewer",
         )
         if not _bookkeeping:
             status = (result or {}).get("status", "completed")
@@ -1013,7 +1023,10 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     grading passes. Check the live DB status to avoid premature ticks
     on steps that are queued for re-grade or retry.
     """
-    if task.get("agent_type") in ("mechanical", "grader", "artifact_summarizer"):
+    if task.get("agent_type") in (
+        "mechanical", "grader", "artifact_summarizer",
+        "reviewer", "code_reviewer",
+    ):
         return
     # Always compare the raw agent-reported status against the live DB
     # status before pinging. The rewrite layer can flip actions between

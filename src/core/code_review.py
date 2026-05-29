@@ -1,10 +1,10 @@
 """Code review post-hook — LLM judges a build step's emitted code.
 
 Mirrors src.core.grading shape but with a code-review-flavoured prompt.
-Used by ``CodeReviewerAgent`` as a post-hook on build steps. Pass/fail
-verdict drives the existing retry-with-feedback pipeline; failed
-reviews carry concrete issue text so the source agent's next attempt
-sees what to fix.
+Used by the ``posthook.code_review.resume`` continuation handler via
+``build_code_review_spec``.  Pass/fail verdict drives the existing
+retry-with-feedback pipeline; failed reviews carry concrete issue text
+so the source agent's next attempt sees what to fix.
 """
 from __future__ import annotations
 

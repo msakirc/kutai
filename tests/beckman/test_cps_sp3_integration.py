@@ -289,3 +289,106 @@ async def test_double_terminal_fires_resume_once(tmp_path, monkeypatch):
         _HANDLERS.pop("posthook.grade.resume", None)
         register_continuations()
         await _close_db()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Test 4 — reconcile restart-recovery: grade child went terminal while the
+# orchestrator was down; on restart reconcile_continuations reconstructs the
+# result from tasks.result and fires the grade resume; _extract_content must
+# decode the reconcile-reconstructed shape (top-level "content") correctly.
+# ──────────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_reconcile_fires_grade_resume_with_reconstructed_reviewer_text(
+    tmp_path, monkeypatch,
+):
+    """Restart-recovery: a grade child went terminal while the orchestrator was
+    down.  On restart reconcile_continuations reconstructs result from
+    tasks.result and fires the resume.  The grade resume's _extract_content
+    must decode the reconcile-reconstructed top-level-content shape and parse
+    a PASS verdict, transitioning the source out of 'ungraded'.
+    """
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        from general_beckman.continuations import (
+            reconcile_continuations, _HANDLERS,
+        )
+        from general_beckman.posthook_continuations import register_continuations
+        from src.infra.db import add_task
+
+        # Ensure SP3 grade handlers are in the registry (mirrors startup path).
+        register_continuations()
+
+        # ── 1. Seed a source task parked 'ungraded'. ────────────────────
+        source_id = await add_task(
+            title="build login", description="implement auth",
+            agent_type="coder", context=json.dumps({}),
+        )
+        db = await _db_mod.get_db()
+        await db.execute(
+            "UPDATE tasks SET status='ungraded', result=? WHERE id=?",
+            (GRADEABLE_RESULT, source_id),
+        )
+        await db.commit()
+        assert await _task_status(source_id) == "ungraded"
+
+        # ── 2. Seed the grade reviewer child — already terminal (completed). ─
+        # raw_dispatch tasks persist their result as a JSON envelope whose
+        # "content" key holds the raw LLM output.  reconcile JSON-decodes the
+        # outer dict and passes it verbatim to the handler, so the child's
+        # tasks.result must be:  json.dumps({"content": GRADER_PASS, ...}).
+        # _extract_content receives {"content": GRADER_PASS, "status": "completed"}
+        # (reconcile adds the "status" key), falls through to result.get("content")
+        # and returns GRADER_PASS.  parse_grade_response then resolves to PASS.
+        reviewer_text = GRADER_PASS
+        child_id = await add_task(
+            title="grade reviewer", description="grade the source",
+            agent_type="reviewer",
+            on_complete="posthook.grade.resume",
+            on_error="posthook.grade.resume_err",
+            cont_state={
+                "source_task_id": source_id,
+                "kind": "grade",
+                "attempt": 0,
+                "exclusions": [],
+                "mission_id": None,
+            },
+        )
+        # The child is already terminal: the orchestrator was down when it
+        # finished, so tasks.result holds the raw_dispatch envelope and
+        # tasks.status is 'completed'.
+        raw_dispatch_result = json.dumps({"content": reviewer_text, "model": "test-model"})
+        await db.execute(
+            "UPDATE tasks SET status='completed', result=? WHERE id=?",
+            (raw_dispatch_result, child_id),
+        )
+        await db.commit()
+
+        # Continuation row was written by add_task; verify it is 'pending'.
+        crow_before = await _continuation_row(child_id)
+        assert crow_before is not None, "continuation row must exist after add_task"
+        assert crow_before[0] == "posthook.grade.resume"
+        assert crow_before[2] == "pending", f"expected pending, got {crow_before[2]}"
+
+        # ── 3. Run reconcile (the restart-recovery pass). ────────────────
+        await reconcile_continuations()
+        await asyncio.sleep(0.1)
+
+        # ── 4. Assert full verdict-apply: continuation fired + source graded. ─
+        # The PASS reviewer text must have survived reconstruction and been
+        # parsed correctly.  A PASS transitions the source from 'ungraded'
+        # to 'completed'.
+        crow_after = await _continuation_row(child_id)
+        assert crow_after[2] == "fired", (
+            f"continuation must be fired after reconcile, got {crow_after[2]}"
+        )
+        final_status = await _task_status(source_id)
+        assert final_status == "completed", (
+            f"source must transition to 'completed' (PASS verdict) after reconcile, "
+            f"got '{final_status}' — _extract_content likely failed to decode the "
+            f"reconcile-reconstructed top-level-content shape"
+        )
+    finally:
+        _HANDLERS.pop("posthook.grade.resume", None)
+        _HANDLERS.pop("posthook.grade.resume_err", None)
+        register_continuations()  # restore canonical handlers
+        await _close_db()

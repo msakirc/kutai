@@ -211,10 +211,29 @@ class LLMDispatcher:
         preselected_pick: Any = None,
         **kwargs,
     ) -> dict:
-        """DEPRECATION ALIAS — routes through Beckman.
+        """DEPRECATED SHOPPING-ONLY SHIM — do NOT add new callers.
 
-        All callers will migrate to beckman.enqueue() over time. Until
-        then this preserves the public API by:
+        This method is a temporary bridge that still routes through
+        ``beckman.enqueue(await_inline=True)`` (the blocking inline primitive
+        that SP5 will delete).  It exists ONLY because the shopping subsystem
+        has not yet been migrated to workflow-step definitions:
+
+          Permitted callers (exhaustive — no new callers permitted):
+          - ``coulson.single_shot.run``        (shopping_clarifier profile)
+          - ``src.workflows.shopping.pipeline_v2`` (×2 calls)
+          - ``src.workflows.shopping.labels``
+          - ``src.shopping.intelligence._llm``
+
+        Note: ``coulson.reflection.self_reflect`` and
+        ``src.workflows.engine.constrained_emit.maybe_apply`` also call this
+        method, but both functions are DEAD LEGACY CODE — they have no
+        production callers (reflection and constrained-emit are now CPS
+        post-hook child tasks in Beckman, spawned by
+        ``_enqueue_posthook_llm_child``).
+
+        Lifecycle: this method dies when shopping migrates to workflow-step
+        definitions, BEFORE SP5 deletes ``await_inline``.  Until then it
+        preserves the legacy API by:
           1. Converting kwargs → Beckman task spec
           2. Calling beckman.enqueue(spec, await_inline=True)
           3. Mapping TaskResult back to the legacy response dict

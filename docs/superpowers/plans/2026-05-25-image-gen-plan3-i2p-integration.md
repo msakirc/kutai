@@ -1,22 +1,40 @@
-# Image Generation — Plan 3: i2p integration
+# Image Generation — Plan 3 (v2): i2p integration
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Real image generation wired into the i2p prototype phase — replace `placehold.co` `<img>` placeholders with diffusion-generated PNGs, served back through the existing web-preview host. End-to-end: a mission reaches phase 5, prototype HTML is emitted with `placehold.co` placeholders (current Z1 behaviour), Plan 3's `swap_placeholder_images` mechanic enqueues ONE `prompt_writer` LLM task to enrich each placeholder's `alt` text into a diffusion prompt, enqueues one image task per placeholder through beckman (which selects via Plan 1's image scorer and dispatches via Plan 1's paintress branch), and rewrites the `<img src="...">` to point at the generated asset under `mission_{id}/assets/`.
+**Goal:** Real image generation wired into the i2p prototype phase — replace `placehold.co` `<img>` placeholders with diffusion-generated PNGs, served back through the existing web-preview host. Robust against the **actual data shapes** flowing through beckman+orchestrator: `TaskResult.result` arrives as a **JSON string** (recon verified), prompt_writer needs **constrained decoding** to survive cheap-tier LLMs, and the HTML walker must **recurse** to handle multi-screen prototypes.
 
-**Architecture:** Plan 3 is the consumer-side wiring for the design spec §8 "i2p prototype swap" bullet. It depends on Plan 1 (cloud spine: `paintress`, image scorer, dispatcher image branch, beckman image-aware admission, `needs_image=True`). It is INDEPENDENT of Plan 2 (`clair_obscur` + GPU handover) — every image task in Plan 3 flows through Plan 1's cloud path; if Plan 2 is also merged the same beckman→hoca→paintress chain transparently picks local providers when fit/budget says so. Plan 3 is file-disjoint from Plan 2 so the two can run in parallel worktrees.
+**Architecture:** A mr_roboto mechanical (`swap_placeholder_images`) is invoked from i2p step `5.35` (phase_5, after annotate_html_oids, before emit_preview_url). The mechanic recursively walks `mission_{id}/.web/**/*.html`, scans each file for `<img>` whose `src` matches `^https?://placehold\.co/`, enqueues ONE `prompt_writer` agent task (single-call, **constrained-decoded via `artifact_schema` on the step**) carrying the design context + placeholder list, then enqueues one image task per placeholder via beckman (which routes through Plan 1 v2's `needs_image=True` admission → dispatcher.dispatch_image → paintress). Each TaskResult is **JSON-loaded** before extraction. Generated PNGs land directly under `mission_{id}/.web/assets/<placeholder_id>.png` (no rename dance). HTML `<img src>` is rewritten to relative `assets/<id>.png`. A sibling `verify_swap_placeholder_images_shape` post-hook validates the rewrite produced a well-formed HTML with no surviving `placehold.co` references (or, on graceful degrade, that surviving placeholders are accompanied by matching `errors`).
 
-**Tech Stack:** Python 3.10, async/await, BeautifulSoup4 (already used by `annotate_html_oids` for HTML rewriting), pytest. The new `prompt_writer` agent is a pure-config `BaseAgent` subclass (per `feedback_no_agent_modes` + `project_agents_polish_20260508` — sys_prompt + tools, zero methods). The `swap_placeholder_images` mechanic is a normal mr_roboto executor following the `marketing_copy` precedent (beckman-enqueue from inside a mechanical, await_inline=True).
+**Tech Stack:** Python 3.10, async/await, regex-based HTML rewriting (mirrors `verify_html_prototype_shape`), pytest. No new packages; only new files inside `packages/mr_roboto/` and `src/agents/` plus an i2p step.
 
 **Scope boundary (in this plan):**
-- `prompt_writer` agent (config-only) + agent-registry wiring.
-- Prompt-writing templates for small LLMs (system prompt + few-shot exemplars).
-- `swap_placeholder_images` mr_roboto mechanic — scan HTML, enqueue prompt_writer, enqueue N image tasks, rewrite `src`, write assets under `mission_{id}/assets/`.
-- i2p_v3.json prototype-phase step that invokes the mechanic (soft `done_when` — skipping is acceptable).
-- Web-preview host extension so `/assets/<file>.png` resolves under the mission's assets directory.
-- e2e host-path test.
+- `prompt_writer` agent (pure config) + agent-registry wiring.
+- Diffusion-prompt template + few-shot exemplars.
+- `swap_placeholder_images` mr_roboto mechanic (recursive scan, robust JSON-string parse, direct-write to assets, HTML rewrite, graceful degrade).
+- `verify_swap_placeholder_images_shape` post-hook mechanic.
+- i2p_v3.json prototype-phase step `5.35` with the correct mechanical convention (`executor: "mechanical"`, verb in `payload.action`) + `artifact_schema` for prompt_writer constraint.
+- e2e host-path test that uses **real JSON-string TaskResult shape** so production bugs don't hide.
 
-**NOT in this plan:** anything in Plan 1's or Plan 2's territory (see file-ownership table below). No changes to `paintress`, `renoir`, `clair_obscur`, `fatih_hoca`, `llm_dispatcher`, `orchestrator`, `general_beckman`, `nerd_herd`, or `telegram_bot`.
+**NOT in this plan:** anything in Plan 1 v2's or Plan 2 v2's territory (see file-ownership table below). No changes to `paintress`, `renoir`, `clair_obscur`, `fatih_hoca`, `llm_dispatcher`, `orchestrator`, `general_beckman`, `nerd_herd`, or `telegram_bot`.
+
+**Dependency: Plan 1 v2 MUST be merged first.** Plan 3 enqueues `agent_type: "image"` tasks that beckman routes via Plan 1 v2's `_select_for_admission` image branch + Plan 1 v2's `_dispatch_image`. Without Plan 1 v2, every image task degrades to failed → mission ships with placeholders (graceful degrade, but the feature does nothing).
+
+Plan 3 is **file-disjoint from Plan 2** — Plans 2 and 3 can run in parallel worktrees after Plan 1 v2 lands.
+
+---
+
+## Audit findings this rewrite addresses
+
+Prior Plan 3 had: (1) **`isinstance(raw, dict)` checks against `TaskResult.result` — which is a JSON STRING in production** (the exact bug Plan 1 v1 was rewritten to fix; Plan 3 v1 repeated it both in `_call_prompt_writer` AND `_generate_one_image`), (2) **prompt_writer enqueued without `response_format=json_schema`** despite using `default_tier="cheap"` (small LLMs emit malformed JSON without constraint), (3) **flat `os.listdir(.web/)` not recursive** (Z5 mobile and multi-screen prototypes write to subdirs), (4) **wrong i2p mechanical step shape** — used `executor: "swap_placeholder_images"` when convention is `executor: "mechanical"` + `payload.action: "<verb>"`, (5) **assets file-naming dance** (paintress wrote timestamped name, then renamed to `<pid>.png`), (6) **no verify-shape posthook** breaking the Z2/Z3 pattern (mechanical without a verifier = silent rot).
+
+Recon confirmed (verbatim file:line):
+- `TaskResult.result` is a JSON STRING — `orchestrator.py:326` does `json.dumps(_dispatch_result)`, `on_task_finished` at `:919-925` extracts that string into `TaskResult.result`. Confirmed mirroring of dispatcher's `_task_result_to_request_response` at `llm_dispatcher.py:137-163` is required.
+- i2p mechanical step convention (3+ examples in `src/workflows/i2p/i2p_v3.json`): `"agent": "mechanical"`, `"executor": "mechanical"`, verb in `payload.action`. E.g. `verify_charter_shape` at line 961-983.
+- `verify_charter_shape` template (`mr_roboto/__init__.py:1071-1094`): pure function returning `{ok, problems, ...}`, dispatched via `if action == "verify_charter_shape":`. Mirror this for `verify_swap_placeholder_images_shape`.
+- `response_format` for raw_dispatch tasks goes in `context.llm_call.response_format` (per `hallederiz_kadir/caller.py:533, 564`). For normal agent tasks, declare `artifact_schema` on the i2p step — workflow_engine's `constrained_emit.maybe_apply` (`coulson/__init__.py:104-106`) reads the schema and injects a post-emit structured pass.
+- No recursive HTML walker exists in mr_roboto — Plan 3 writes its own `os.walk`-based walker.
+- `get_mission_workspace(mission_id: int) -> str` at `src/tools/workspace.py:439-447` returns an absolute path. Mechanicals resolve via `payload.get("workspace_path")` override → `get_mission_workspace(mission_id)` fallback (pattern in `marketing_copy.py:343-363`).
 
 ---
 
@@ -24,198 +42,146 @@
 
 **Plan 3 owns (NEW files):**
 - `packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py`
+- `packages/mr_roboto/src/mr_roboto/verify_swap_placeholder_images_shape.py`
 - `packages/mr_roboto/tests/test_swap_placeholder_images.py`
+- `packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py`
+- `packages/mr_roboto/tests/test_verify_swap_placeholder_images_shape.py`
+- `packages/mr_roboto/tests/test_emit_preview_url_assets.py`
 - `src/agents/prompt_writer.py`
-- `docs/templates/prompt_writer/diffusion_prompt_template.md` (template + few-shots)
+- `docs/templates/prompt_writer/diffusion_prompt_template.md`
+- `tests/agents/test_prompt_writer.py`
+- `tests/agents/test_prompt_writer_template.py`
+- `tests/i2p/test_i2p_swap_step.py`
 - `tests/integration/test_image_i2p_swap_e2e.py`
-- (Possibly a small fixture HTML for tests, kept inline in the test file — no separate fixture file.)
 
 **Plan 3 extends (anchors clearly marked in each task):**
-- `packages/mr_roboto/src/mr_roboto/__init__.py` — import + `__all__` + `_run_dispatch` branch.
-- `packages/mr_roboto/src/mr_roboto/reversibility.py` — `swap_placeholder_images: "full"` in `VERB_REVERSIBILITY`.
-- `packages/mr_roboto/src/mr_roboto/emit_preview_url.py` — extend `_resolve_preview_root` to also expose `mission_{id}/assets/` under the served tree (the static server's `--directory` already serves whatever is at the root; we ensure `assets/` ends up there by copying / linking — see Task 7 for the exact mechanic).
+- `packages/mr_roboto/src/mr_roboto/__init__.py` — import + `__all__` + `_run_dispatch` branches for both verbs.
+- `packages/mr_roboto/src/mr_roboto/reversibility.py` — register both verbs (`swap_placeholder_images: "full"`, `verify_swap_placeholder_images_shape: "full"`).
 - `src/agents/__init__.py` — register `prompt_writer` in `AGENT_REGISTRY`.
-- `src/workflows/i2p/i2p_v3.json` — new step `5.35` (swap_placeholder_images) in phase_5, between `5.30c` (annotate_html_oids) and `5.40` (emit_preview_url).
+- `src/workflows/i2p/i2p_v3.json` — new step `5.35` + sibling `5.35.verify` + extend `5.40`'s `depends_on`.
 
-**Plan 3 must NOT touch (Plan 1 / Plan 2 territory):**
+**Plan 3 must NOT touch (Plan 1 v2 / Plan 2 v2 territory):**
 - `packages/paintress/*`, `packages/renoir/*`, `packages/clair_obscur/*`.
 - `packages/fatih_hoca/*` (any file).
 - `src/core/llm_dispatcher.py`, `src/core/orchestrator.py`.
 - `packages/general_beckman/*`, `packages/nerd_herd/*`.
 - `src/app/telegram_bot.py`.
 
-If Plan 3 needs to know a value that lives in Plan-1-territory (e.g. the `image_call` context shape, the `needs_image` kwarg), Plan 3 calls beckman.enqueue with the spec's `context.image_call` filled in exactly as Plan 1's `/image` command does — that contract is already public.
-
 ---
 
-## Discovered conventions (recorded inline so subsequent tasks don't re-grep)
+## Task 1: Verify discovered conventions
 
-These were confirmed before writing the plan (so Task 1's "research" step below is verification, not discovery):
+**Files:** none modified — read-only audit. Confirms the four facts subsequent tasks depend on.
 
-1. **Placeholder convention** (from `src/workflows/i2p/i2p_v3.json:5076`, step `5.30a` instruction):
-   ```
-   Images: PLACEHOLDER ONLY — every <img> src must use
-   https://placehold.co/<W>x<H>/<bg>/<fg>?text=<intent>.
-   Z2 gorsel_ustasi swaps to real images later. Each <img> MUST carry a
-   descriptive alt="..." attribute that describes what the real image
-   should show — this becomes the prompt for image gen.
-   ```
-   So: **placeholder = `<img>` whose `src` matches `^https?://placehold\.co/`**, and **the `alt` attribute is the seed for the diffusion prompt**. We use both: detect by src host, prompt from alt.
-
-2. **Mission workspace helper** (`src/tools/workspace.py:439`):
-   ```python
-   get_mission_workspace(mission_id: int) -> str
-   ```
-   Returns absolute `workspace/mission_{id}/`. We write PNGs under `<that>/assets/<name>.png` and rewrite `src` to a path the served preview root sees (see Task 7 for the resolver tweak).
-
-3. **HTML prototype output location**: `mission_{mission_id}/.web/<slug>.html` (from step 5.30a's `produces:`).
-
-4. **Web-preview root resolver** (`packages/mr_roboto/src/mr_roboto/emit_preview_url.py:_resolve_preview_root`): currently picks `<ws>/.prototype/` if `index.html` exists, else `<ws>/.web/` if non-empty. The static server serves that directory as the document root. To make rewritten `<img src="../assets/foo.png">` (or `src="assets/foo.png"`) resolve, we need `assets/` to be reachable from the served root — we put it inside `.web/assets/` (Task 4 writes there). The resolver doesn't need to change for `.web/` paths since `.web/assets/` is already under the served root. For `.prototype/` (Expo bundle, used by Z5), we mirror to `.prototype/assets/`. Task 7 codifies this.
-
-5. **Mr Roboto dispatch shape**: a verb is wired by (a) module import at top of `__init__.py`, (b) appearance in `__all__`, (c) an `if action == "<verb>":` branch in `_run_dispatch` returning an `Action`, (d) an entry in `VERB_REVERSIBILITY`. The `marketing_copy` verb at `__init__.py:102` + `reversibility.py:302` is the closest precedent — same shape: mechanical body that calls `beckman.enqueue` internally for the LLM step, writes artifact to workspace, surfaces founder action. We mirror it.
-
-6. **Agent registry** (`src/agents/__init__.py`): import the class, instantiate in `AGENT_REGISTRY` dict. `signal_classifier.py` is the canonical small/pure-config precedent — sys_prompt + `default_tier="cheap"` + `max_iterations=2` + `allowed_tools=[]` + `enable_self_reflection=False`. We mirror it (single-call, no tools).
-
-7. **Beckman enqueue + await_inline**: from `marketing_copy.py:117-120`:
-   ```python
-   from general_beckman import enqueue as _enqueue
-   return await _enqueue(spec, **kwargs)
-   ```
-   For a one-shot LLM task we pass `await_inline=True` and read `.result` off the returned `TaskResult` (see `/image` cmd in Plan 1 Task 12 for the result-shape handling).
-
----
-
-## Task 1: Verify discovered conventions still hold
-
-**Files:** none modified — read-only audit.
-
-This is a SHORT verification task (per the project's "Audit call sites not docstrings" rule). We confirm the four facts the subsequent tasks depend on, recording the exact line numbers we'll anchor edits to.
-
-- [ ] **Step 1: Confirm the placeholder convention**
+- [ ] **Step 1: Confirm the placeholder convention is still `placehold.co`**
 
 ```bash
-.venv/Scripts/python -c "import json, re; d = json.load(open('src/workflows/i2p/i2p_v3.json', encoding='utf-8')); steps = [s for s in d['steps'] if s.get('id') == '5.30a']; print(steps[0]['instruction'][:800])"
+.venv/Scripts/python -c "import json; d = json.load(open('src/workflows/i2p/i2p_v3.json', encoding='utf-8')); steps = [s for s in d['steps'] if s.get('id') == '5.30a']; print(steps[0]['instruction'][:800])"
 ```
-Expected: output contains `placehold.co` and `descriptive alt`. If the convention has changed, STOP and update the rest of this plan's regex/detection logic in Tasks 4 / 5 before proceeding.
+Expected: output contains `placehold.co` and `descriptive alt`. If the convention has drifted, update the regex in Task 4 before proceeding.
 
-- [ ] **Step 2: Confirm step 5.30c → 5.40 ordering and that step id `5.35` is free**
+- [ ] **Step 2: Confirm `5.30c` exists, `5.40` exists, `5.35`/`5.35.verify` are free**
 
 ```bash
-.venv/Scripts/python -c "import json; d = json.load(open('src/workflows/i2p/i2p_v3.json', encoding='utf-8')); ids = [s['id'] for s in d['steps']]; print('5.30c' in ids, '5.40' in ids, '5.35' in ids)"
+.venv/Scripts/python -c "import json; d = json.load(open('src/workflows/i2p/i2p_v3.json', encoding='utf-8')); ids = [s['id'] for s in d['steps']]; print('5.30c' in ids, '5.40' in ids, '5.35' in ids, '5.35.verify' in ids)"
 ```
-Expected: `True True False`. If `5.35` is already taken, pick the next free id between 5.30c and 5.40 (e.g. `5.30d`) and use it consistently in Task 6.
+Expected: `True True False False`. If `5.35` is taken, pick the next free id (e.g. `5.30d` / `5.30d.verify`) and use it consistently in Tasks 9/10.
 
-- [ ] **Step 3: Confirm `_resolve_preview_root` shape**
-
-```bash
-.venv/Scripts/python -c "from mr_roboto.emit_preview_url import _resolve_preview_root; import inspect; print(inspect.getsource(_resolve_preview_root))"
-```
-Expected: function body matches the version recorded in "Discovered conventions" §4 — picks `.prototype/index.html` first, then non-empty `.web/`. If the signature/body has drifted, adjust Task 7's edit anchor.
-
-- [ ] **Step 4: Confirm `AGENT_REGISTRY` shape**
+- [ ] **Step 3: Confirm AGENT_REGISTRY shape and that `prompt_writer` is NOT present**
 
 ```bash
 .venv/Scripts/python -c "from src.agents import AGENT_REGISTRY; print(sorted(AGENT_REGISTRY.keys()))"
 ```
-Expected: the listed 21 agents from `project_agents_polish_20260508`. `prompt_writer` must NOT be present yet. If it is, STOP and resolve the collision (someone else added it).
+Expected: 21+ agents, `prompt_writer` not present.
 
-- [ ] **Step 5: No commit**
+- [ ] **Step 4: Confirm Plan 1 v2 has merged (the image lane exists)**
 
-This is a read-only verification task. Nothing to stage.
+```bash
+.venv/Scripts/python -c "from src.core.llm_dispatcher import CallCategory; print(CallCategory.IMAGE.value)"
+.venv/Scripts/python -c "import fatih_hoca; pick = fatih_hoca.select(needs_image=True); print(type(pick).__name__)"
+```
+Expected: `image` and `Pick` (or `SelectionFailure` if no provider configured — both are fine, the import being clean is the key signal). If either raises `AttributeError`/`TypeError`, Plan 1 v2 is not merged — STOP Plan 3 execution until it is.
+
+- [ ] **Step 5: No commit (read-only)**
 
 ---
 
-## Task 2: `prompt_writer` agent (pure config)
+## Task 2: `prompt_writer` agent — pure config + correct artifact_schema
 
 **Files:**
 - Create: `src/agents/prompt_writer.py`
 - Modify: `src/agents/__init__.py`
 - Test: `tests/agents/test_prompt_writer.py`
 
-The agent is single-call (no ReAct iteration), small/local-LLM-friendly, and emits one JSON object mapping placeholder ids to enriched diffusion prompts. Follows the `signal_classifier.py` template — pure config, zero methods.
+The agent is **single-call** (`max_iterations = 1`), small/local-LLM friendly. v2 emphasis: the system prompt is the contract, but **the constraint that enforces the JSON shape is the `artifact_schema` declared on the i2p step** (Task 9), which workflow_engine's `constrained_emit.maybe_apply` reads after the main call. The agent's sys_prompt still describes the schema for the first-pass LLM; the post-emit pass repairs malformed output via a `response_format=json_schema` second call.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/agents/test_prompt_writer.py
-"""prompt_writer agent — pure-config invariants + registry wiring."""
 import re
 from src.agents.prompt_writer import PromptWriterAgent
 from src.agents import AGENT_REGISTRY, get_agent
 
 
-def test_prompt_writer_registered():
+def test_registered():
     assert "prompt_writer" in AGENT_REGISTRY
     inst = get_agent("prompt_writer")
     assert isinstance(inst, PromptWriterAgent)
 
 
-def test_prompt_writer_is_pure_config():
-    """Per feedback_no_agent_modes + project_agents_polish_20260508."""
+def test_pure_config():
     body = open("src/agents/prompt_writer.py", encoding="utf-8").read()
-    # No method definitions beyond get_system_prompt (the one allowed shape).
-    method_defs = re.findall(r"^    def (\w+)\(", body, flags=re.MULTILINE)
-    assert set(method_defs) <= {"get_system_prompt"}, method_defs
+    methods = re.findall(r"^    def (\w+)\(", body, flags=re.MULTILINE)
+    assert set(methods) <= {"get_system_prompt"}, methods
 
 
-def test_prompt_writer_config_fields():
+def test_config_fields():
     a = PromptWriterAgent()
     assert a.name == "prompt_writer"
     assert a.default_tier == "cheap"
-    assert a.max_iterations == 1  # single-call; no ReAct loop
+    assert a.max_iterations == 1
     assert a.enable_self_reflection is False
     assert a.allowed_tools == []
 
 
 def test_system_prompt_satisfies_three_invariants():
-    """CLAUDE.md: first line `You are ...`, must/always + don't/never,
-    final_answer + fenced ```json``` schema."""
     p = PromptWriterAgent().get_system_prompt({})
     first_line = p.strip().splitlines()[0]
     assert first_line.startswith("You are "), first_line
     body = p.lower()
-    assert ("must" in body or "always" in body), "missing must/always"
-    assert ("don't" in body or "never" in body), "missing don't/never"
+    assert "must" in body or "always" in body
+    assert "don't" in body or "never" in body
     assert "final_answer" in p
     assert "```json" in p
-    # The schema mentions placeholder_id + prompt + _schema_version
     assert "placeholder_id" in p
     assert "_schema_version" in p
 
 
-def test_system_prompt_mentions_template_inputs():
-    """Should reference design_tokens / brand_voice / section_intent — the
-    three slots the diffusion-prompt template fills."""
+def test_system_prompt_mentions_template_slots():
     p = PromptWriterAgent().get_system_prompt({})
     for slot in ("design_tokens", "brand_voice", "section_intent"):
-        assert slot in p.lower(), f"missing slot reference: {slot}"
+        assert slot in p.lower()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run + implement**
 
-```
-.venv/Scripts/python -m pytest tests/agents/test_prompt_writer.py -q
-```
-Expected: FAIL — `ModuleNotFoundError: No module named 'src.agents.prompt_writer'`.
-
-- [ ] **Step 3: Implement the agent**
+Run: `.venv/Scripts/python -m pytest tests/agents/test_prompt_writer.py -q`
+Expected: FAIL — `ModuleNotFoundError`.
 
 `src/agents/prompt_writer.py`:
-
 ```python
-# agents/prompt_writer.py
-"""Image-generation prompt writer agent (Plan 3).
+"""Image-generation prompt writer (Plan 3).
 
-For a prototype with N placeholder <img> tags, this agent reads the
-design context (design_tokens, brand_voice, section_intent) plus each
-placeholder's intent (its `alt` text + size + section role) and emits
-ONE structured JSON artifact mapping each placeholder_id to an enriched
-diffusion prompt.
+For a prototype with N placeholder <img> intents, emits one JSON envelope
+mapping each placeholder_id to an enriched diffusion prompt. Pure config —
+sys_prompt + tools, zero methods beyond get_system_prompt. Single-call.
 
-Pure config (sys_prompt + tools, zero methods beyond get_system_prompt) —
-see feedback_no_agent_modes + project_agents_polish_20260508. Single-call:
-no ReAct iteration needed; the response_format=json_schema constraint on
-beckman.enqueue keeps small/local LLMs honest about the shape.
+Shape is enforced by:
+  (a) sys_prompt (this file) — instructs the LLM,
+  (b) artifact_schema on the i2p step (5.35.prompts) — workflow_engine's
+      constrained_emit.maybe_apply runs a post-emit structured pass when
+      the first call's output is malformed (response_format=json_schema).
 """
 from .base import BaseAgent
 from ..infra.logging_config import get_logger
@@ -228,35 +194,27 @@ class PromptWriterAgent(BaseAgent):
     description = "Turns prototype placeholder intents into diffusion prompts"
     default_tier = "cheap"
     min_tier = "cheap"
-    max_iterations = 1  # single-call — no ReAct loop
+    max_iterations = 1
     enable_self_reflection = False
     allowed_tools = []
 
     def get_system_prompt(self, task: dict) -> str:
         return (
             "You are a diffusion-prompt engineer for product UI mockups. "
-            "Given a list of placeholder <img> intents from a mobile "
-            "prototype, you write ONE enriched diffusion prompt per "
-            "placeholder so a text-to-image model can produce the real "
-            "asset.\n"
-            "\n"
-            "## Context you receive\n"
-            "- `design_tokens` — color palette + typography from the "
-            "mission's design system. Use these to keep generated images "
-            "visually consistent with the prototype's chrome.\n"
-            "- `brand_voice` — short paragraph describing the product's "
-            "voice / mood (founder-set, may be terse). Use to bias subject "
-            "matter and tone (calm vs. energetic, premium vs. casual).\n"
-            "- `section_intent` — the screen role each placeholder lives "
-            "in (hero / feature-illustration / avatar / product-shot / "
-            "background / icon). Use to pick composition, framing, "
-            "subject distance.\n"
+            "Given a list of placeholder <img> intents from a prototype, "
+            "you write ONE enriched diffusion prompt per placeholder so a "
+            "text-to-image model can produce the real asset.\n\n"
+            "## Context\n"
+            "- `design_tokens` — color palette + typography. Bias generated "
+            "images toward these colors.\n"
+            "- `brand_voice` — short paragraph describing voice/mood. Bias "
+            "subject choice and composition.\n"
+            "- `section_intent` — per-placeholder screen role (hero / "
+            "feature / avatar / product / background / icon). Drives "
+            "composition + framing.\n"
             "- `placeholders` — list of `{placeholder_id, alt, width, "
-            "height, section}`. The `alt` text is the seed: it already "
-            "tells you what the real image should show. Enrich it with "
-            "style descriptors, composition, lighting, and design-token "
-            "color cues.\n"
-            "\n"
+            "height, section}`. `alt` is the seed; enrich it with style + "
+            "composition + lighting + color cues.\n\n"
             "## You must\n"
             "- Always emit exactly one prompt per placeholder — every "
             "`placeholder_id` in the input must appear in the output.\n"
@@ -265,21 +223,13 @@ class PromptWriterAgent(BaseAgent):
             "models truncate; the first words dominate.\n"
             "- Always start each prompt with the subject (the `alt` "
             "intent), then add style + composition + color cues.\n"
-            "- Always include at least one `design_tokens` color cue "
-            "(e.g. \"warm coral accent\", \"muted slate background\") so "
-            "the generated image harmonizes with the surrounding UI.\n"
-            "\n"
+            "- Always include at least one `design_tokens` color cue.\n\n"
             "## You must never\n"
-            "- Don't invent new `placeholder_id` values that weren't in "
-            "the input — the swap mechanic joins on id.\n"
-            "- Don't return text outside the JSON envelope. No prose, no "
-            "markdown fences around the result, no commentary.\n"
+            "- Don't invent new `placeholder_id` values not in the input.\n"
+            "- Don't return text outside the JSON envelope.\n"
             "- Don't include negative prompts or model-specific tokens "
-            "(e.g. `<lora:...>`, `((emphasis))`) — these break some "
-            "providers. Plain natural-language only.\n"
-            "- Never copy the `alt` text verbatim — enrich it. A "
-            "verbatim copy is a failure.\n"
-            "\n"
+            "(`<lora:...>`, `((emphasis))`).\n"
+            "- Never copy `alt` verbatim — enrich it.\n\n"
             "## final_answer format\n"
             "```json\n"
             "{\n"
@@ -299,48 +249,35 @@ class PromptWriterAgent(BaseAgent):
         )
 ```
 
-- [ ] **Step 4: Register in `AGENT_REGISTRY`**
-
-In `src/agents/__init__.py`, add the import + registry entry. The import line goes alphabetically near the other `from .` imports (after `from .signal_classifier import SignalClassifierAgent`). The `AGENT_REGISTRY` entry goes at the end of the dict (the trailing comma after `"signal_classifier": SignalClassifierAgent(),` keeps the diff small).
-
+In `src/agents/__init__.py`, add import (alphabetically) + AGENT_REGISTRY entry:
 ```python
-# Add to the imports block:
 from .prompt_writer import PromptWriterAgent
-
-# Add to AGENT_REGISTRY (last entry, before the closing brace):
+# ...
     "prompt_writer": PromptWriterAgent(),
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 3: Run + regression**
 
-```
-.venv/Scripts/python -m pytest tests/agents/test_prompt_writer.py -q
-```
-Expected: PASS (5 passed).
+Run: `.venv/Scripts/python -m pytest tests/agents/test_prompt_writer.py tests/agents/test_prompt_quality.py -q`
+Expected: PASS (5 + the existing 3-invariant sweep covering all 22 agents).
 
-- [ ] **Step 6: Regression — prompt-quality invariants still green**
-
-```
-.venv/Scripts/python -m pytest tests/agents/test_prompt_quality.py -q
-```
-Expected: PASS — the existing 3-invariant test sweep now covers prompt_writer too (it iterates AGENT_REGISTRY). If it fails on prompt_writer, fix the system prompt to satisfy whatever invariant tripped.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/agents/prompt_writer.py src/agents/__init__.py tests/agents/test_prompt_writer.py
-git commit -m "feat(image): prompt_writer agent (pure-config, single-call)"
+git commit -m "feat(image): prompt_writer agent (pure-config single-call)"
 ```
 
 ---
 
-## Task 3: Prompt-writing template + few-shot exemplars
+## Task 3: Diffusion-prompt template + few-shot exemplars
 
 **Files:**
 - Create: `docs/templates/prompt_writer/diffusion_prompt_template.md`
+- Modify: `src/agents/prompt_writer.py` (add `load_diffusion_prompt_template`)
 - Test: `tests/agents/test_prompt_writer_template.py`
 
-The agent's sys_prompt is the contract. This template is the **scaffolding** the spec §8 calls for — a few-shot block the `swap_placeholder_images` mechanic prepends to the user message when calling small/local LLMs. Co-located with the founder-voice templates (`docs/templates/brand_voices/`) which `marketing_copy.py:_load_brand_voice_doc` already reads from — same shape, same loader pattern.
+(Identical to Plan 3 v1 Task 3 — no audit finding here. Reproduced for plan completeness.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -352,46 +289,34 @@ from src.agents.prompt_writer import load_diffusion_prompt_template
 
 def test_template_loads():
     body = load_diffusion_prompt_template()
-    assert body is not None
-    assert len(body) > 200
+    assert body is not None and len(body) > 200
 
 
-def test_template_has_few_shot_block():
+def test_has_few_shot_block():
     body = load_diffusion_prompt_template()
-    # Each exemplar shows an input → output pair the agent learns from.
-    assert "EXAMPLE 1" in body
-    assert "EXAMPLE 2" in body
-    # At least one example references a design_tokens color cue.
-    assert ("coral" in body.lower()
-            or "slate" in body.lower()
-            or "color" in body.lower())
+    assert "EXAMPLE 1" in body and "EXAMPLE 2" in body
+    assert any(w in body.lower() for w in ("coral", "slate", "color"))
 
 
-def test_template_has_slot_placeholders():
+def test_has_slot_placeholders():
     body = load_diffusion_prompt_template()
     for slot in ("{design_tokens}", "{brand_voice}", "{section_intent}",
                  "{placeholders}"):
         assert slot in body, f"missing slot: {slot}"
 
 
-def test_template_file_lives_under_docs_templates():
-    """Co-located with brand_voices/ so the same loader convention applies."""
+def test_file_under_docs_templates():
     assert os.path.isfile(
         "docs/templates/prompt_writer/diffusion_prompt_template.md"
     )
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run + implement**
 
-```
-.venv/Scripts/python -m pytest tests/agents/test_prompt_writer_template.py -q
-```
-Expected: FAIL — `ImportError: cannot import name 'load_diffusion_prompt_template'`.
-
-- [ ] **Step 3: Write the template**
+Run: `.venv/Scripts/python -m pytest tests/agents/test_prompt_writer_template.py -q`
+Expected: FAIL.
 
 `docs/templates/prompt_writer/diffusion_prompt_template.md`:
-
 ```markdown
 # Diffusion-prompt template (prompt_writer)
 
@@ -421,22 +346,22 @@ Input placeholder:
   width: 390
   height: 220
   section: hero
-Brand voice: "warm, neighborhood coffee shop — third-wave, not pretentious"
+Brand voice: "warm, neighborhood coffee shop — third-wave"
 Design tokens: { primary: "#E07A5F" (warm coral), surface: "#F4F1DE" (cream) }
 Expected prompt:
-  "Warm candid photo of a smiling young barista handing a takeaway cup to a customer, soft morning light through cafe window, warm coral apron accent against cream-toned interior, shallow depth of field, third-wave coffee shop atmosphere, eye-level wide composition."
+  "Warm candid photo of a smiling young barista handing a takeaway cup, soft morning light through cafe window, warm coral apron accent against cream-toned interior, shallow depth of field, eye-level wide composition."
 
 EXAMPLE 2
 Input placeholder:
-  placeholder_id: feature_2_illustration
+  placeholder_id: feature_2
   alt: "ai-powered task triage dashboard"
   width: 260
   height: 180
   section: feature
-Brand voice: "calm, professional productivity tool for solo founders"
+Brand voice: "calm, professional productivity tool"
 Design tokens: { primary: "#3D405B" (slate indigo), accent: "#81B29A" (muted sage) }
 Expected prompt:
-  "Minimal isometric illustration of a clean dashboard with sorted task cards, slate indigo header bar, muted sage progress accents on a soft white background, flat vector style, calm professional mood, centered composition, no text on screen."
+  "Minimal isometric illustration of a clean dashboard with sorted task cards, slate indigo header bar, muted sage progress accents on soft white background, flat vector style, centered composition, no text on screen."
 
 EXAMPLE 3
 Input placeholder:
@@ -448,35 +373,27 @@ Input placeholder:
 Brand voice: "diverse community, real people"
 Design tokens: { primary: "#264653" (deep teal) }
 Expected prompt:
-  "Friendly close-up portrait headshot of a person against soft deep-teal blurred background, natural diffuse lighting, eye contact, neutral expression, square composition, photographic style, candid not staged."
+  "Friendly close-up headshot of a person against soft deep-teal blurred background, natural diffuse lighting, eye contact, neutral expression, square composition."
 
 ## Now emit the JSON
 
 Return ONLY the final_answer JSON envelope — no prose, no markdown
-fences. Every placeholder_id from the input MUST appear in `prompts`.
-Each prompt MUST be <=220 characters and MUST embed at least one
-design-token color cue.
+fences around it. Every placeholder_id from the input MUST appear in
+`prompts`. Each prompt MUST be <=220 characters and MUST embed at least
+one design-token color cue.
 ```
 
-- [ ] **Step 4: Add the loader to `prompt_writer.py`**
-
-Append to `src/agents/prompt_writer.py` (after the class, module-level):
-
+Append to `src/agents/prompt_writer.py`:
 ```python
 import os as _os
-
 
 _DEFAULT_TEMPLATE_PATH = "docs/templates/prompt_writer/diffusion_prompt_template.md"
 
 
 def load_diffusion_prompt_template(path: str | None = None) -> str | None:
-    """Load the diffusion-prompt few-shot template.
-
-    Returns the raw template text with {design_tokens}, {brand_voice},
-    {section_intent}, {placeholders} slots un-substituted. Returns None
-    if the file is missing (graceful degrade — agent still works on its
-    sys_prompt alone).
-    """
+    """Load the diffusion-prompt few-shot template. Slots are
+    {design_tokens}, {brand_voice}, {section_intent}, {placeholders}.
+    Returns None if file missing — agent still works on sys_prompt alone."""
     p = path or _DEFAULT_TEMPLATE_PATH
     if not _os.path.isfile(p):
         return None
@@ -487,14 +404,10 @@ def load_diffusion_prompt_template(path: str | None = None) -> str | None:
         return None
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+Run: `.venv/Scripts/python -m pytest tests/agents/test_prompt_writer_template.py -q`
+Expected: PASS.
 
-```
-.venv/Scripts/python -m pytest tests/agents/test_prompt_writer_template.py -q
-```
-Expected: PASS (4 passed).
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add docs/templates/prompt_writer/diffusion_prompt_template.md src/agents/prompt_writer.py tests/agents/test_prompt_writer_template.py
@@ -503,39 +416,39 @@ git commit -m "feat(image): prompt_writer template + few-shot exemplars"
 
 ---
 
-## Task 4: `swap_placeholder_images` mechanic — scaffold + placeholder scan
+## Task 4: `swap_placeholder_images` — scaffold + **recursive** scanner
 
 **Files:**
 - Create: `packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py`
 - Create: `packages/mr_roboto/tests/test_swap_placeholder_images.py`
 
-This task builds the mechanic's skeleton + the placeholder-scanning pass. Subsequent tasks wire the prompt_writer call (Task 5) and the image-task fanout + HTML rewrite (Task 6).
+v2 changes from Plan 3 v1: (1) **recursive** HTML walk via `os.walk` (Plan 3 v1 missed subdirectories), (2) **JSON-string parse helper** ready for Tasks 5 + 6, (3) **direct-write to assets** (no rename dance).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # packages/mr_roboto/tests/test_swap_placeholder_images.py
+import json
 import os
 import pytest
 from mr_roboto.swap_placeholder_images import (
     swap_placeholder_images,
     _scan_placeholders,
+    _list_html_files,
     _PLACEHOLDER_HOST_RE,
+    _parse_task_result,
 )
 
-
-# -- Pure-function tests (no I/O) -------------------------------------------
 
 def test_placeholder_host_regex():
     assert _PLACEHOLDER_HOST_RE.search("https://placehold.co/64x64/eee/333?text=x")
     assert _PLACEHOLDER_HOST_RE.search("http://placehold.co/256x256")
-    # Real asset (already swapped) — must NOT match.
     assert not _PLACEHOLDER_HOST_RE.search("/assets/hero_1.png")
     assert not _PLACEHOLDER_HOST_RE.search("assets/hero_1.png")
     assert not _PLACEHOLDER_HOST_RE.search("https://example.com/real.png")
 
 
-_HTML_THREE_PLACEHOLDERS = """<!DOCTYPE html>
+_HTML = """<!DOCTYPE html>
 <html><body class="w-[390px] min-h-[844px]">
   <img src="https://placehold.co/390x220/E07A5F/FFF?text=hero"
        alt="smiling barista handing over a takeaway cup">
@@ -547,91 +460,112 @@ _HTML_THREE_PLACEHOLDERS = """<!DOCTYPE html>
 </body></html>"""
 
 
-def test_scan_placeholders_finds_three_not_four(tmp_path):
+def test_scan_finds_three(tmp_path):
     p = tmp_path / "home.html"
-    p.write_text(_HTML_THREE_PLACEHOLDERS, encoding="utf-8")
+    p.write_text(_HTML, encoding="utf-8")
     hits = _scan_placeholders(str(p))
     assert len(hits) == 3
-    # Each hit carries placeholder_id, alt, width, height, original src.
     ids = {h["placeholder_id"] for h in hits}
+    assert ids == {"home__0", "home__1", "home__2"}
     assert all(h["alt"] for h in hits)
     assert all(h["width"] > 0 and h["height"] > 0 for h in hits)
-    # placeholder_id is deterministic from file slug + occurrence index.
-    assert ids == {"home__0", "home__1", "home__2"}
 
 
-def test_scan_placeholders_handles_no_html(tmp_path):
+def test_scan_handles_missing(tmp_path):
     assert _scan_placeholders(str(tmp_path / "missing.html")) == []
 
 
-def test_scan_placeholders_handles_zero_placeholders(tmp_path):
+def test_scan_handles_no_placeholders(tmp_path):
     p = tmp_path / "empty.html"
-    p.write_text("<!DOCTYPE html><html><body>no images</body></html>",
-                 encoding="utf-8")
+    p.write_text("<html><body>no images</body></html>", encoding="utf-8")
     assert _scan_placeholders(str(p)) == []
 
 
-# -- Integration test (with mocked enqueue) ---------------------------------
+def test_list_html_recursive(tmp_path):
+    """v2 fix: walks subdirectories so multi-screen prototypes work."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    (web / "home.html").write_text("<html></html>", encoding="utf-8")
+    (web / "screens" / "onboarding.html").write_text("<html></html>", encoding="utf-8")
+    (web / "screens" / "settings.html").write_text("<html></html>", encoding="utf-8")
+    (web / "assets" / "ignored.png").parent.mkdir(exist_ok=True)
+    (web / "assets" / "ignored.png").write_bytes(b"\x89PNG")  # not an HTML
+    files = _list_html_files(str(tmp_path))
+    names = sorted(os.path.basename(f) for f in files)
+    assert names == ["home.html", "onboarding.html", "settings.html"]
+
+
+def test_parse_task_result_handles_json_string():
+    """v2 fix: TaskResult.result is a JSON string in production."""
+    class _TR:
+        result = json.dumps({"path": "/x/y.png", "provider": "p"})
+    parsed = _parse_task_result(_TR())
+    assert parsed == {"path": "/x/y.png", "provider": "p"}
+
+
+def test_parse_task_result_handles_dict():
+    """Defensive: tests may pass dicts."""
+    class _TR:
+        result = {"path": "/x/y.png"}
+    parsed = _parse_task_result(_TR())
+    assert parsed == {"path": "/x/y.png"}
+
+
+def test_parse_task_result_handles_none():
+    class _TR:
+        result = None
+    assert _parse_task_result(_TR()) == {}
+
+
+def test_parse_task_result_handles_garbage_string():
+    class _TR:
+        result = "not json {"
+    assert _parse_task_result(_TR()) == {}
+
 
 @pytest.mark.asyncio
-async def test_swap_placeholder_images_no_html_files(monkeypatch, tmp_path):
-    """Mission workspace exists but .web/ is empty → ok=True with 0 replaced."""
-    web_dir = tmp_path / ".web"
-    web_dir.mkdir()
+async def test_swap_no_html_files(monkeypatch, tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
     res = await swap_placeholder_images(mission_id=42)
     assert res["ok"] is True
     assert res["replaced_count"] == 0
-    assert res["skipped_count"] == 0
     assert res["html_files_seen"] == 0
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run + implement**
 
-```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q
-```
-Expected: FAIL — `ModuleNotFoundError: No module named 'mr_roboto.swap_placeholder_images'`.
-
-- [ ] **Step 3: Implement scaffold + scanner**
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q`
+Expected: FAIL.
 
 `packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py`:
-
 ```python
 """Plan 3 — swap placehold.co <img> tags for real diffusion-generated PNGs.
 
-Pipeline (Z1 phase 5 mechanic):
-  1. Read every HTML file under the mission's `.web/` directory.
-  2. Scan each file for <img> tags whose src is a placehold.co URL — these
-     are the Z1 placeholders (per i2p_v3.json step 5.30a contract).
-  3. Enqueue ONE prompt_writer LLM task (beckman.enqueue, await_inline)
-     passing the design context + the full placeholder list. Receive a
-     placeholder_id → enriched diffusion prompt map.
-  4. For each placeholder: enqueue one image task via beckman.enqueue
-     (context.image_call.raw_dispatch=True; beckman calls
-     fatih_hoca.select(needs_image=True); dispatcher routes to paintress;
-     paintress writes the PNG and returns its path).
-  5. Move each generated PNG under `mission_{id}/.web/assets/` (relative
-     to the served preview root) and rewrite the original <img src> to
-     `assets/<filename>.png`.
-  6. Graceful degrade: if a single placeholder's image task fails, keep
-     the original placehold.co URL for that slot — never fail the whole
-     step.
+Pipeline:
+  1. Recursively walk `mission_{id}/.web/**/*.html`.
+  2. Scan each file for <img> whose src is placehold.co.
+  3. Enqueue ONE prompt_writer task (beckman.enqueue, await_inline) with
+     the design context + placeholder list. Receive a placeholder_id ->
+     prompt map. Robust to JSON-string TaskResult.result (recon-verified
+     shape).
+  4. Per placeholder: enqueue one image task (context.image_call.raw_dispatch).
+     Beckman routes via Plan 1 v2's _select_for_admission(needs_image=True).
+  5. PNG lands directly under .web/assets/<placeholder_id>.png (paintress
+     writes the file; mechanic asks paintress to put it there).
+  6. HTML <img src> rewritten to relative "assets/<id>.png".
+  7. Graceful degrade: per-placeholder failure keeps the placehold.co URL.
 
-Mirrors marketing_copy.py's mechanical shape: a non-LLM verb body that
-internally enqueues LLM + image work through beckman, never calls the
-dispatcher or HK directly (feedback_singular_dispatcher_caller).
-
-Reversibility: `full` — all writes are under the mission workspace and
-git-reversible. No external publish. Generated PNGs are regenerable.
-"""
+Mirrors marketing_copy.py's mechanical shape — internally enqueues LLM +
+image work through beckman, never calls dispatcher/HK/paintress directly
+(feedback_singular_dispatcher_caller). Reversibility: "full"."""
 from __future__ import annotations
 
+import json
 import os
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -642,16 +576,9 @@ logger = get_logger("mr_roboto.swap_placeholder_images")
 
 # ── Placeholder detection ──────────────────────────────────────────────
 
-_PLACEHOLDER_HOST_RE = re.compile(
-    r"^https?://placehold\.co/", re.IGNORECASE
-)
-
-# <img ...> matcher (single-line tag bodies). Mirrors verify_html_prototype_shape.
+_PLACEHOLDER_HOST_RE = re.compile(r"^https?://placehold\.co/", re.IGNORECASE)
 _IMG_RE = re.compile(r"<img\b([^>]*?)/?>", re.IGNORECASE | re.DOTALL)
-_ATTR_RE = re.compile(
-    r'(\b[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"([^"]*)"',
-)
-# Pull width/height out of the placehold.co URL: e.g. ".../390x220/..."
+_ATTR_RE = re.compile(r'(\b[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"([^"]*)"')
 _DIM_RE = re.compile(r"/(\d{2,4})x(\d{2,4})", re.IGNORECASE)
 
 
@@ -660,35 +587,24 @@ def _parse_attrs(tag_inner: str) -> dict[str, str]:
 
 
 def _slug_from_path(html_path: str) -> str:
-    return Path(html_path).stem  # "home.html" -> "home"
+    return Path(html_path).stem
 
 
 def _section_from_alt(alt: str) -> str:
-    """Cheap heuristic — section role inferred from alt text wording.
-
-    The agent uses this as a hint; the real section is part of the alt
-    intent already. We default to 'feature' (the most common case).
-    """
     a = (alt or "").lower()
-    if "hero" in a or "header" in a or "banner" in a:
-        return "hero"
-    if "avatar" in a or "portrait" in a or "headshot" in a:
-        return "avatar"
-    if "icon" in a:
-        return "icon"
-    if "background" in a or "bg" in a:
-        return "background"
+    if any(t in a for t in ("hero", "header", "banner")): return "hero"
+    if any(t in a for t in ("avatar", "portrait", "headshot")): return "avatar"
+    if "icon" in a: return "icon"
+    if "background" in a or "bg" in a: return "background"
     return "feature"
 
 
 def _scan_placeholders(html_path: str) -> list[dict[str, Any]]:
-    """Return per-placeholder records for one HTML file. [] if file missing."""
     try:
         with open(html_path, encoding="utf-8") as fh:
             html = fh.read()
     except OSError:
         return []
-
     slug = _slug_from_path(html_path)
     out: list[dict[str, Any]] = []
     occ = 0
@@ -699,15 +615,10 @@ def _scan_placeholders(html_path: str) -> list[dict[str, Any]]:
             continue
         alt = (attrs.get("alt") or "").strip()
         dim_m = _DIM_RE.search(src)
-        if dim_m:
-            w, h = int(dim_m.group(1)), int(dim_m.group(2))
-        else:
-            w, h = 512, 512
+        w, h = (int(dim_m.group(1)), int(dim_m.group(2))) if dim_m else (512, 512)
         out.append({
             "placeholder_id": f"{slug}__{occ}",
-            "alt": alt,
-            "width": w,
-            "height": h,
+            "alt": alt, "width": w, "height": h,
             "section": _section_from_alt(alt),
             "original_src": src,
             "tag_span": (m.start(), m.end()),
@@ -724,21 +635,50 @@ def _web_root(workspace_path: str) -> str:
 
 
 def _assets_dir(workspace_path: str) -> str:
-    """Where generated PNGs live (inside the served preview root)."""
     p = os.path.join(workspace_path, ".web", "assets")
     os.makedirs(p, exist_ok=True)
     return p
 
 
 def _list_html_files(workspace_path: str) -> list[str]:
+    """v2 fix: recursive walk of <ws>/.web/**/*.html (Plan 3 v1 was flat
+    and missed subdirectory screens)."""
     root = _web_root(workspace_path)
     if not os.path.isdir(root):
         return []
     out = []
-    for name in sorted(os.listdir(root)):
-        if name.lower().endswith(".html"):
-            out.append(os.path.join(root, name))
-    return out
+    for dirpath, _dirs, filenames in os.walk(root):
+        for name in filenames:
+            if name.lower().endswith(".html"):
+                out.append(os.path.join(dirpath, name))
+    return sorted(out)
+
+
+# ── TaskResult.result parser (the recon-confirmed v2 fix) ──────────────
+
+def _parse_task_result(result_obj) -> dict:
+    """TaskResult.result is a JSON STRING in production (recon: orchestrator
+    json.dumps at :326). Mirror dispatcher's _task_result_to_request_response
+    (llm_dispatcher.py:137-163) — accept both string and dict."""
+    raw = getattr(result_obj, "result", None)
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+            return decoded if isinstance(decoded, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+# ── beckman wrapper (test-patchable, mirrors marketing_copy) ───────────
+
+async def _enqueue_beckman(spec: dict, **kwargs):
+    from general_beckman import enqueue as _enqueue
+    return await _enqueue(spec, **kwargs)
 
 
 # ── Main entry ─────────────────────────────────────────────────────────
@@ -749,145 +689,109 @@ async def swap_placeholder_images(
     design_tokens: dict | None = None,
     brand_voice: str | None = None,
 ) -> dict[str, Any]:
-    """Scan mission HTML, generate real images for placehold.co <img>s,
-    rewrite src. Best-effort: per-placeholder failures keep the original.
-
+    """Best-effort: per-placeholder failures keep the original placeholder.
     Returns:
-        {
-          "ok": bool,
-          "replaced_count": int,
-          "skipped_count": int,
-          "html_files_seen": int,
-          "html_files_changed": int,
-          "errors": list[str],
-        }
+      {ok: bool, replaced_count, skipped_count, html_files_seen,
+       html_files_changed, errors: list[str]}
     """
-    # Lazy import — keeps scanner-only tests free of workspace deps.
     from src.tools.workspace import get_mission_workspace
-
     workspace_path = workspace_path or get_mission_workspace(int(mission_id))
-    logger.info(
-        "swap_placeholder_images: starting",
-        mission_id=mission_id,
-        workspace_path=workspace_path,
-    )
+    logger.info("swap_placeholder_images: starting",
+                mission_id=mission_id, workspace_path=workspace_path)
 
     html_files = _list_html_files(workspace_path)
     if not html_files:
         return {
-            "ok": True,
-            "replaced_count": 0,
-            "skipped_count": 0,
-            "html_files_seen": 0,
-            "html_files_changed": 0,
-            "errors": [],
+            "ok": True, "replaced_count": 0, "skipped_count": 0,
+            "html_files_seen": 0, "html_files_changed": 0, "errors": [],
         }
 
-    # Scan every HTML; collect placeholders.
     all_placeholders: list[dict[str, Any]] = []
     for h in html_files:
         all_placeholders.extend(_scan_placeholders(h))
 
     if not all_placeholders:
-        logger.info(
-            "swap_placeholder_images: no placeholders found in %d html files",
-            len(html_files),
-        )
         return {
-            "ok": True,
-            "replaced_count": 0,
-            "skipped_count": 0,
-            "html_files_seen": len(html_files),
-            "html_files_changed": 0,
+            "ok": True, "replaced_count": 0, "skipped_count": 0,
+            "html_files_seen": len(html_files), "html_files_changed": 0,
             "errors": [],
         }
 
-    # Task 5 fills in the prompt_writer enqueue + result handling.
-    # Task 6 fills in the per-placeholder image fanout + HTML rewrite.
-    # For now (Task 4 scaffold), we return the scan as-is.
+    # Task 5 fills prompt_writer; Task 6 fills fanout. Scaffold returns scan.
     return {
-        "ok": True,
-        "replaced_count": 0,
-        "skipped_count": len(all_placeholders),
-        "html_files_seen": len(html_files),
-        "html_files_changed": 0,
-        "placeholders": all_placeholders,  # debug breadcrumb; Task 6 removes
+        "ok": True, "replaced_count": 0, "skipped_count": len(all_placeholders),
+        "html_files_seen": len(html_files), "html_files_changed": 0,
         "errors": [],
     }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 3: Run + commit**
 
-```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q
-```
-Expected: PASS (5 passed).
-
-- [ ] **Step 5: Commit**
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q`
+Expected: PASS (10 passed).
 
 ```bash
 git add packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py packages/mr_roboto/tests/test_swap_placeholder_images.py
-git commit -m "feat(image): swap_placeholder_images scaffold + scanner"
+git commit -m "feat(image): swap_placeholder_images scaffold (recursive scan, json-string parse)"
 ```
 
 ---
 
-## Task 5: Wire the `prompt_writer` call into the mechanic
+## Task 5: Wire prompt_writer call **with JSON-string-safe parse**
 
 **Files:**
 - Modify: `packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py`
 - Modify: `packages/mr_roboto/tests/test_swap_placeholder_images.py`
 
-The mechanic enqueues ONE prompt_writer task through beckman (await_inline) carrying the design context + the placeholder list. Receives a `placeholder_id → prompt` map. Mirrors `marketing_copy.py`'s `enqueue` wrapper for test-patchability.
+v2 fix: the prompt_writer's `TaskResult.result` is a JSON string. The parser uses `_parse_task_result` (Task 4) so the existing `isinstance(raw, dict)` shape is decoded.
 
 - [ ] **Step 1: Extend the failing test**
 
 Append to `packages/mr_roboto/tests/test_swap_placeholder_images.py`:
 
 ```python
+import json as _json  # if not already imported
+
+
 # -- Task 5: prompt_writer enqueue --------------------------------------
 
 @pytest.mark.asyncio
-async def test_swap_calls_prompt_writer_once(monkeypatch, tmp_path):
-    """One prompt_writer task per swap call, regardless of placeholder count."""
-    web = tmp_path / ".web"
-    web.mkdir()
-    (web / "home.html").write_text(_HTML_THREE_PLACEHOLDERS, encoding="utf-8")
-
+async def test_calls_prompt_writer_once_with_json_string_result(
+    monkeypatch, tmp_path,
+):
+    """v2 fix: PRODUCTION shape — TaskResult.result is a JSON STRING."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
 
-    captured: list[dict] = []
+    captured = []
 
-    class _FakeResult:
+    class _PromptResultJSONString:
         status = "completed"
-        result = {
+        # PRODUCTION SHAPE — JSON string, not dict.
+        result = _json.dumps({
             "_schema_version": "1",
             "prompts": [
                 {"placeholder_id": "home__0", "prompt": "coral barista scene"},
                 {"placeholder_id": "home__1", "prompt": "slate dashboard"},
                 {"placeholder_id": "home__2", "prompt": "teal portrait"},
             ],
-        }
+        })
+        error = None
 
     async def _fake_enqueue(spec, **kwargs):
         captured.append({"spec": spec, "kwargs": kwargs})
-        return _FakeResult()
-
-    # Patch in the swap module's namespace (mirrors marketing_copy's
-    # local `enqueue` wrapper).
+        return _PromptResultJSONString()
     monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._enqueue_beckman",
-        _fake_enqueue,
+        "mr_roboto.swap_placeholder_images._enqueue_beckman", _fake_enqueue,
     )
-    # Stub the image fanout so Task 5 can be tested in isolation. Task 6
-    # replaces the stub with the real fanout.
     async def _fake_fanout(workspace_path, placeholders, prompt_map):
-        return {"replaced": 0, "skipped": len(placeholders), "errors": []}
+        return {"replaced": 0, "skipped": len(placeholders),
+                "html_files_changed": 0, "errors": []}
     monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._fanout_and_rewrite",
-        _fake_fanout,
+        "mr_roboto.swap_placeholder_images._fanout_and_rewrite", _fake_fanout,
     )
 
     res = await swap_placeholder_images(
@@ -896,92 +800,76 @@ async def test_swap_calls_prompt_writer_once(monkeypatch, tmp_path):
         brand_voice="warm, neighborhood coffee shop",
     )
 
-    assert len(captured) == 1, "prompt_writer must be enqueued exactly once"
+    assert len(captured) == 1
     spec = captured[0]["spec"]
     assert spec["agent_type"] == "prompt_writer"
-    # Context carries the design inputs + the placeholder list.
-    ctx_payload = spec.get("context", {})
-    assert "design_tokens" in str(ctx_payload)
-    assert "warm, neighborhood" in str(ctx_payload)
-    # await_inline so the mechanic can read the result synchronously.
     assert captured[0]["kwargs"].get("await_inline") is True
+    # Result string was parsed — the fanout was called (would not be if
+    # parser had treated string as None).
+    assert res["ok"] is True
 
 
 @pytest.mark.asyncio
-async def test_swap_handles_prompt_writer_failure_gracefully(
-    monkeypatch, tmp_path,
-):
-    """If prompt_writer fails, the whole step degrades to 'skipped' but ok=True."""
-    web = tmp_path / ".web"
-    web.mkdir()
-    (web / "home.html").write_text(_HTML_THREE_PLACEHOLDERS, encoding="utf-8")
+async def test_prompt_writer_failure_degrades_gracefully(monkeypatch, tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
-
-    class _FailResult:
-        status = "failed"
-        result = None
-        error = "LLM down"
-
+    class _Fail:
+        status = "failed"; result = None; error = "LLM down"
     async def _fail_enqueue(spec, **kwargs):
-        return _FailResult()
-
+        return _Fail()
     monkeypatch.setattr(
         "mr_roboto.swap_placeholder_images._enqueue_beckman", _fail_enqueue,
     )
 
     res = await swap_placeholder_images(mission_id=42)
-    assert res["ok"] is True  # never hard-fail the step
+    assert res["ok"] is True
     assert res["replaced_count"] == 0
     assert res["skipped_count"] == 3
     assert any("prompt_writer" in e for e in res["errors"])
+
+
+@pytest.mark.asyncio
+async def test_prompt_writer_malformed_json_degrades(monkeypatch, tmp_path):
+    """Cheap-tier LLM emits garbage — parser returns {} → no prompts → skip."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+    class _Garbage:
+        status = "completed"; result = "not json"; error = None
+    async def _enq(spec, **kwargs):
+        return _Garbage()
+    monkeypatch.setattr("mr_roboto.swap_placeholder_images._enqueue_beckman", _enq)
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["ok"] is True
+    assert res["replaced_count"] == 0
+    assert res["skipped_count"] == 3
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run + implement**
 
-```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q
-```
-Expected: FAIL on the two new tests (`_enqueue_beckman`/`_fanout_and_rewrite` attrs don't exist).
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q`
+Expected: FAIL on the new tests (`_fanout_and_rewrite` stub doesn't exist yet, `_call_prompt_writer` doesn't exist).
 
-- [ ] **Step 3: Add the prompt_writer call**
-
-Append to `swap_placeholder_images.py` (above `swap_placeholder_images` async def):
-
+Append to `swap_placeholder_images.py`:
 ```python
-# ── beckman wrappers (test-patchable) ─────────────────────────────────
-
-async def _enqueue_beckman(spec: dict, **kwargs):
-    """Thin wrapper; mirrors marketing_copy's `enqueue` for test patching."""
-    from general_beckman import enqueue as _enqueue
-    return await _enqueue(spec, **kwargs)
-
-
 async def _call_prompt_writer(
-    *,
-    mission_id: int,
+    *, mission_id: int,
     placeholders: list[dict[str, Any]],
     design_tokens: dict | None,
     brand_voice: str | None,
 ) -> dict[str, str] | None:
-    """Enqueue one prompt_writer task and return placeholder_id -> prompt map.
-
-    Returns None on any failure (caller degrades gracefully).
-    """
-    # Strip internal-only fields before showing the agent.
+    """Enqueue one prompt_writer task. Returns placeholder_id -> prompt map,
+    or None on failure. Robust to JSON-string TaskResult.result."""
     visible = [
-        {
-            "placeholder_id": p["placeholder_id"],
-            "alt": p["alt"],
-            "width": p["width"],
-            "height": p["height"],
-            "section": p["section"],
-        }
+        {"placeholder_id": p["placeholder_id"], "alt": p["alt"],
+         "width": p["width"], "height": p["height"], "section": p["section"]}
         for p in placeholders
     ]
-
-    # Optional few-shot scaffold (graceful degrade if missing).
     template_text = None
     try:
         from src.agents.prompt_writer import load_diffusion_prompt_template
@@ -991,11 +879,10 @@ async def _call_prompt_writer(
 
     spec = {
         "title": f"prompt_writer:mission#{mission_id}",
-        "description": (
-            "Enrich placeholder <img> intents into diffusion prompts for "
-            "real image generation."
-        ),
+        "description": "Enrich placeholder <img> intents into diffusion prompts.",
         "agent_type": "prompt_writer",
+        "kind": "main_work",
+        "priority": 5,
         "mission_id": mission_id,
         "context": {
             "design_tokens": design_tokens or {},
@@ -1013,23 +900,17 @@ async def _call_prompt_writer(
     if getattr(result, "status", "") != "completed":
         logger.warning(
             "prompt_writer task did not complete (status=%r, error=%r)",
-            getattr(result, "status", ""),
-            getattr(result, "error", ""),
+            getattr(result, "status", ""), getattr(result, "error", ""),
         )
         return None
 
-    raw = getattr(result, "result", None)
-    # Mirror marketing_copy._parse_llm_result loosely: accept dict-with-
-    # prompts, or a wrapped {result: {prompts: ...}}.
-    if isinstance(raw, dict):
-        prompts = raw.get("prompts")
-        if prompts is None and isinstance(raw.get("result"), dict):
-            prompts = raw["result"].get("prompts")
-    else:
-        prompts = None
-
+    parsed = _parse_task_result(result)
+    # Tolerate both shapes: top-level prompts OR nested under "result".
+    prompts = parsed.get("prompts")
+    if prompts is None and isinstance(parsed.get("result"), dict):
+        prompts = parsed["result"].get("prompts")
     if not isinstance(prompts, list):
-        logger.warning("prompt_writer returned no prompts list (raw=%r)", raw)
+        logger.warning("prompt_writer returned no prompts list (parsed=%r)", parsed)
         return None
 
     out: dict[str, str] = {}
@@ -1043,42 +924,32 @@ async def _call_prompt_writer(
     return out or None
 
 
-# ── Image fanout + HTML rewrite (Task 6 fills this in) ────────────────
-
+# Stub for Task 6 testability.
 async def _fanout_and_rewrite(
     workspace_path: str,
     placeholders: list[dict[str, Any]],
     prompt_map: dict[str, str],
 ) -> dict[str, Any]:
-    """Task 6 implements this. Stub for Task 5 testability."""
-    return {"replaced": 0, "skipped": len(placeholders), "errors": []}
+    return {"replaced": 0, "skipped": len(placeholders),
+            "html_files_changed": 0, "errors": []}
 ```
 
-Then replace the body of `swap_placeholder_images` (the "Task 5 fills in" stub) with the real flow:
-
+Replace `swap_placeholder_images`'s body's tail with the real flow:
 ```python
-    # ── Step 1: enqueue prompt_writer for the whole batch ──────────────
     prompt_map = await _call_prompt_writer(
-        mission_id=int(mission_id),
-        placeholders=all_placeholders,
-        design_tokens=design_tokens,
-        brand_voice=brand_voice,
+        mission_id=int(mission_id), placeholders=all_placeholders,
+        design_tokens=design_tokens, brand_voice=brand_voice,
     )
     if prompt_map is None:
         return {
-            "ok": True,  # graceful degrade — never hard-fail
-            "replaced_count": 0,
+            "ok": True, "replaced_count": 0,
             "skipped_count": len(all_placeholders),
-            "html_files_seen": len(html_files),
-            "html_files_changed": 0,
+            "html_files_seen": len(html_files), "html_files_changed": 0,
             "errors": ["prompt_writer task did not return a usable prompt map"],
         }
-
-    # ── Step 2: per-placeholder image fanout + HTML rewrite ────────────
     fanout = await _fanout_and_rewrite(
         workspace_path, all_placeholders, prompt_map,
     )
-
     return {
         "ok": True,
         "replaced_count": fanout.get("replaced", 0),
@@ -1089,87 +960,85 @@ Then replace the body of `swap_placeholder_images` (the "Task 5 fills in" stub) 
     }
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 3: Run + commit**
 
-```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q
-```
-Expected: PASS (7 passed).
-
-- [ ] **Step 5: Commit**
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q`
+Expected: PASS (13 passed).
 
 ```bash
 git add packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py packages/mr_roboto/tests/test_swap_placeholder_images.py
-git commit -m "feat(image): swap mechanic enqueues prompt_writer"
+git commit -m "feat(image): prompt_writer enqueue with JSON-string-safe parse"
 ```
 
 ---
 
-## Task 6: Per-placeholder image fanout + HTML rewrite
+## Task 6: Per-placeholder image fanout + HTML rewrite — **JSON-string-safe + direct-write to assets**
 
 **Files:**
 - Modify: `packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py`
 - Modify: `packages/mr_roboto/tests/test_swap_placeholder_images.py`
 
-The mechanic enqueues one image task per placeholder (each carrying `context.image_call.raw_dispatch=True` so beckman routes via Plan 1's `needs_image=True` admission path). On success, the PNG path is moved under `<ws>/.web/assets/` (inside the served preview root), and the HTML `src` attribute is rewritten to the relative path `assets/<filename>.png`. On per-placeholder failure, the original `placehold.co` URL stays.
+v2 fixes: (1) `_parse_task_result` for image task results too, (2) paintress writes directly to `<ws>/.web/assets/` with `filename_hint=<pid>` so the saved file lands as `<pid>_<ms>.png`, then `_move_into_assets` is replaced by a single-step rename to `<pid>.png` (no separate copy step), (3) HTML rewrite preserves attribute order.
 
 - [ ] **Step 1: Extend the failing test**
 
-Append to `packages/mr_roboto/tests/test_swap_placeholder_images.py`:
-
+Append to test file:
 ```python
-# -- Task 6: image fanout + rewrite -------------------------------------
+import os as _os
+import io
+from PIL import Image as _Image
+
+
+def _write_real_png(path, w=64, h=64):
+    _os.makedirs(_os.path.dirname(path), exist_ok=True)
+    _Image.new("RGB", (w, h), (100, 150, 200)).save(path, "PNG")
+
 
 @pytest.mark.asyncio
-async def test_full_swap_writes_assets_and_rewrites_html(
+async def test_full_swap_writes_assets_and_rewrites_html_json_string(
     monkeypatch, tmp_path,
 ):
-    """End-to-end (with mocked enqueue): 3 placeholders → 3 PNGs under
-    .web/assets/, HTML has 3 rewritten src attrs, 1 untouched real src."""
-    web = tmp_path / ".web"
-    web.mkdir()
-    (web / "home.html").write_text(_HTML_THREE_PLACEHOLDERS, encoding="utf-8")
+    """v2 fix: production shape — image TaskResult.result is a JSON STRING."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
 
     class _OK:
         status = "completed"
-        result = {
+        # prompt_writer result as JSON string (production shape).
+        result = _json.dumps({
             "_schema_version": "1",
             "prompts": [
-                {"placeholder_id": "home__0", "prompt": "coral barista scene"},
-                {"placeholder_id": "home__1", "prompt": "slate dashboard"},
-                {"placeholder_id": "home__2", "prompt": "teal portrait"},
+                {"placeholder_id": "home__0", "prompt": "p0"},
+                {"placeholder_id": "home__1", "prompt": "p1"},
+                {"placeholder_id": "home__2", "prompt": "p2"},
             ],
-        }
+        })
+        error = None
 
-    image_call_count = {"n": 0}
+    image_idx = {"n": 0}
 
     async def _fake_enqueue(spec, **kwargs):
-        # First call: prompt_writer (no image_call in context)
         if spec.get("agent_type") == "prompt_writer":
             return _OK()
-        # Subsequent calls: image tasks. paintress would have written a PNG;
-        # we simulate by writing a real PNG file to the requested out_dir
-        # and returning a TaskResult whose .result has the path.
+        # Image task — paintress writes the file as
+        # <out_dir>/<filename_hint>_<ms>.png. We simulate that exactly.
         ic = spec["context"]["image_call"]
-        from PIL import Image
-        os.makedirs(ic["out_dir"], exist_ok=True)
-        idx = image_call_count["n"]
-        image_call_count["n"] += 1
-        png_path = os.path.join(ic["out_dir"], f"gen_{idx}.png")
-        Image.new("RGB", (ic["width"], ic["height"]), (100, 150, 200)).save(
-            png_path, "PNG"
-        )
+        idx = image_idx["n"]; image_idx["n"] += 1
+        # Use a deterministic mock filename so test is stable.
+        png_path = _os.path.join(ic["out_dir"], f"{ic['filename_hint']}_mock{idx}.png")
+        _write_real_png(png_path, ic["width"], ic["height"])
 
         class _ImgResult:
             status = "completed"
-            result = {
-                "path": png_path,
-                "provider": "pollinations",
-                "model": "pollinations/flux",
-            }
+            # PRODUCTION SHAPE — JSON string.
+            result = _json.dumps({
+                "path": png_path, "provider": "pollinations",
+                "model": "pollinations/flux", "cost": 0.0,
+            })
+            error = None
         return _ImgResult()
 
     monkeypatch.setattr(
@@ -1177,9 +1046,8 @@ async def test_full_swap_writes_assets_and_rewrites_html(
     )
 
     res = await swap_placeholder_images(
-        mission_id=42,
-        design_tokens={"primary": "#E07A5F"},
-        brand_voice="warm, neighborhood coffee shop",
+        mission_id=42, design_tokens={"primary": "#E07A5F"},
+        brand_voice="warm",
     )
 
     assert res["ok"] is True
@@ -1187,100 +1055,77 @@ async def test_full_swap_writes_assets_and_rewrites_html(
     assert res["skipped_count"] == 0
     assert res["html_files_changed"] == 1
 
-    # 3 PNGs landed under .web/assets/ (the served preview root + assets/).
-    assets_dir = tmp_path / ".web" / "assets"
-    pngs = sorted(p.name for p in assets_dir.glob("*.png"))
-    assert len(pngs) == 3
+    assets = tmp_path / ".web" / "assets"
+    pngs = sorted(p.name for p in assets.glob("*.png"))
+    # 3 files renamed to <pid>.png stable names.
+    assert "home__0.png" in pngs
+    assert "home__1.png" in pngs
+    assert "home__2.png" in pngs
 
-    # The HTML now references the 3 PNGs and still has the 1 already-real src.
     rewritten = (web / "home.html").read_text(encoding="utf-8")
     assert "placehold.co" not in rewritten
-    assert rewritten.count('src="assets/') == 3
-    assert "/assets/already_real.png" in rewritten
+    assert rewritten.count('src="assets/home__0.png"') == 1
+    assert rewritten.count('src="assets/home__1.png"') == 1
+    assert rewritten.count('src="assets/home__2.png"') == 1
+    assert "/assets/already_real.png" in rewritten  # untouched real src
 
 
 @pytest.mark.asyncio
-async def test_swap_per_image_failure_keeps_placeholder(monkeypatch, tmp_path):
-    """If image generation fails for placeholder N, that <img> keeps its
-    placehold.co URL; the others still get swapped."""
-    web = tmp_path / ".web"
-    web.mkdir()
-    (web / "home.html").write_text(_HTML_THREE_PLACEHOLDERS, encoding="utf-8")
+async def test_per_image_failure_keeps_placeholder(monkeypatch, tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
-
     class _OK:
         status = "completed"
-        result = {
+        result = _json.dumps({
             "_schema_version": "1",
             "prompts": [
                 {"placeholder_id": "home__0", "prompt": "p0"},
                 {"placeholder_id": "home__1", "prompt": "p1"},
                 {"placeholder_id": "home__2", "prompt": "p2"},
             ],
-        }
-
+        })
+        error = None
     n = {"i": 0}
-
-    async def _flaky_enqueue(spec, **kwargs):
+    async def _flaky(spec, **kwargs):
         if spec.get("agent_type") == "prompt_writer":
             return _OK()
-        ic = spec["context"]["image_call"]
-        idx = n["i"]
-        n["i"] += 1
+        ic = spec["context"]["image_call"]; idx = n["i"]; n["i"] += 1
         if idx == 1:
-            class _Fail:
-                status = "failed"
-                result = None
-                error = "provider rate-limit"
-            return _Fail()
-        from PIL import Image
-        os.makedirs(ic["out_dir"], exist_ok=True)
-        path = os.path.join(ic["out_dir"], f"gen_{idx}.png")
-        Image.new("RGB", (ic["width"], ic["height"]), (100, 150, 200)).save(
-            path, "PNG"
-        )
-
-        class _ImgResult:
+            class _F:
+                status = "failed"; result = None; error = "rate-limit"
+            return _F()
+        path = _os.path.join(ic["out_dir"], f"{ic['filename_hint']}_x{idx}.png")
+        _write_real_png(path, ic["width"], ic["height"])
+        class _I:
             status = "completed"
-            result = {"path": path, "provider": "pollinations"}
-        return _ImgResult()
-
-    monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._enqueue_beckman", _flaky_enqueue,
-    )
+            result = _json.dumps({"path": path, "provider": "pollinations"})
+            error = None
+        return _I()
+    monkeypatch.setattr("mr_roboto.swap_placeholder_images._enqueue_beckman", _flaky)
 
     res = await swap_placeholder_images(mission_id=42)
     assert res["ok"] is True
     assert res["replaced_count"] == 2
     assert res["skipped_count"] == 1
-    # 2 placehold.co srcs replaced, 1 still present.
     rewritten = (web / "home.html").read_text(encoding="utf-8")
     assert rewritten.count("placehold.co") == 1
     assert rewritten.count('src="assets/') == 2
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run + implement**
 
-```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q
-```
-Expected: FAIL — fanout still returns the stub `{replaced: 0, ...}`.
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q`
+Expected: FAIL on new tests (fanout still a stub).
 
-- [ ] **Step 3: Implement `_fanout_and_rewrite`**
-
-Replace the stub `_fanout_and_rewrite` in `swap_placeholder_images.py`:
-
+Replace the `_fanout_and_rewrite` stub with the real impl:
 ```python
 async def _generate_one_image(
-    *,
-    mission_id_for_log: str,
-    placeholder: dict[str, Any],
-    prompt: str,
-    out_dir: str,
+    *, placeholder: dict[str, Any], prompt: str, out_dir: str,
 ) -> str | None:
-    """Enqueue one image task; return the generated PNG path or None on fail."""
+    """Enqueue one image task; return the PNG path or None."""
     pid = placeholder["placeholder_id"]
     spec = {
         "title": f"image:{pid}",
@@ -1304,64 +1149,51 @@ async def _generate_one_image(
     try:
         result = await _enqueue_beckman(spec, await_inline=True)
     except Exception as exc:
-        logger.warning(
-            "image enqueue raised for %s: %s", pid, exc,
-        )
+        logger.warning("image enqueue raised for %s: %s", pid, exc)
         return None
-
     if getattr(result, "status", "") != "completed":
-        logger.info(
-            "image task for %s did not complete (status=%r)",
-            pid, getattr(result, "status", ""),
-        )
+        logger.info("image task for %s did not complete (status=%r)",
+                    pid, getattr(result, "status", ""))
         return None
-
-    raw = getattr(result, "result", None)
-    path = None
-    if isinstance(raw, dict):
-        path = raw.get("path") or raw.get("content")
+    payload = _parse_task_result(result)
+    path = payload.get("path") or payload.get("content")
     if not (path and os.path.isfile(path)):
         logger.warning("image task for %s returned no usable path", pid)
         return None
     return path
 
 
-def _move_into_assets(src_path: str, assets_dir: str, placeholder_id: str) -> str:
-    """Move (or copy) the generated PNG into the served-root assets dir.
-
-    Returns the final filename (basename) inside assets_dir.
-    """
+def _rename_to_pid(src_path: str, assets_dir: str, placeholder_id: str) -> str:
+    """Rename the timestamp-named PNG to a stable <pid>.png inside assets/.
+    Single rename — no copy fallback unless rename fails."""
     os.makedirs(assets_dir, exist_ok=True)
-    # Stable filename per placeholder so re-runs overwrite rather than pile up.
-    final_name = f"{placeholder_id}.png"
-    final_path = os.path.join(assets_dir, final_name)
+    final = os.path.join(assets_dir, f"{placeholder_id}.png")
+    if os.path.abspath(src_path) == os.path.abspath(final):
+        return f"{placeholder_id}.png"
     try:
-        # If src is already inside the assets dir, no-op.
-        if os.path.abspath(src_path) == os.path.abspath(final_path):
-            return final_name
-        # Atomic-ish replace.
-        if os.path.exists(final_path):
-            os.remove(final_path)
-        try:
-            os.replace(src_path, final_path)
-        except OSError:
-            # Cross-device or permission — fall back to copy.
-            shutil.copyfile(src_path, final_path)
+        if os.path.exists(final):
+            os.remove(final)
+        os.replace(src_path, final)
+        return f"{placeholder_id}.png"
     except OSError as exc:
-        logger.warning("move-to-assets failed for %s: %s", placeholder_id, exc)
-        # Best-effort: copy in place if move failed.
+        logger.warning("rename failed for %s: %s", placeholder_id, exc)
         try:
-            shutil.copyfile(src_path, final_path)
+            import shutil
+            shutil.copyfile(src_path, final)
+            return f"{placeholder_id}.png"
         except OSError:
             return ""
-    return final_name
+
+
+def _swap_src_in_tag(tag: str, new_src: str) -> str:
+    """Replace src="..." inside a single <img> tag, preserving other attrs."""
+    return re.sub(r'src\s*=\s*"[^"]*"', f'src="{new_src}"', tag, count=1,
+                  flags=re.IGNORECASE)
 
 
 def _rewrite_html_srcs(
     html_path: str, rewrites: dict[tuple[int, int], str],
 ) -> bool:
-    """Replace tag bodies at (start, end) spans with new <img> tags whose src
-    has been swapped. Returns True if the file was modified."""
     if not rewrites:
         return False
     try:
@@ -1369,21 +1201,14 @@ def _rewrite_html_srcs(
             html = fh.read()
     except OSError:
         return False
-
-    # Apply replacements RIGHT-TO-LEFT so earlier spans stay valid.
     ordered = sorted(rewrites.items(), key=lambda kv: kv[0][0], reverse=True)
     changed = False
     for (start, end), new_src in ordered:
         old_tag = html[start:end]
-        new_tag = _IMG_RE.sub(
-            lambda m: _swap_src_in_tag(m.group(0), new_src),
-            old_tag,
-            count=1,
-        )
+        new_tag = _swap_src_in_tag(old_tag, new_src)
         if new_tag != old_tag:
             html = html[:start] + new_tag + html[end:]
             changed = True
-
     if changed:
         tmp = html_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -1392,32 +1217,15 @@ def _rewrite_html_srcs(
     return changed
 
 
-def _swap_src_in_tag(tag: str, new_src: str) -> str:
-    """Replace the src="..." attribute value inside a single <img> tag."""
-    return re.sub(
-        r'src\s*=\s*"[^"]*"',
-        f'src="{new_src}"',
-        tag,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-
-
 async def _fanout_and_rewrite(
     workspace_path: str,
     placeholders: list[dict[str, Any]],
     prompt_map: dict[str, str],
 ) -> dict[str, Any]:
-    """For each placeholder, enqueue an image task, move the PNG into
-    .web/assets/, and rewrite the <img src> in the source HTML.
-
-    Sequential (not parallel) — beckman + fatih_hoca already pace the
-    queue; firing N tasks in parallel would defeat the swap-budget +
-    cloud-capacity guards. A 10-image batch takes longer but is correct.
-    """
+    """Sequential per-placeholder: image enqueue → rename to <pid>.png →
+    record rewrite. Per-placeholder failures kept in errors; original
+    placehold.co URL survives in HTML for that slot."""
     assets_dir = _assets_dir(workspace_path)
-    out_dir_for_gen = assets_dir  # paintress writes here directly
-
     rewrites_per_file: dict[str, dict[tuple[int, int], str]] = {}
     errors: list[str] = []
     replaced = 0
@@ -1430,27 +1238,18 @@ async def _fanout_and_rewrite(
             skipped += 1
             errors.append(f"no prompt for {pid}")
             continue
-
         path = await _generate_one_image(
-            mission_id_for_log=str(workspace_path),
-            placeholder=ph,
-            prompt=prompt,
-            out_dir=out_dir_for_gen,
+            placeholder=ph, prompt=prompt, out_dir=assets_dir,
         )
         if not path:
             skipped += 1
             errors.append(f"image gen failed for {pid}")
             continue
-
-        final_name = _move_into_assets(path, assets_dir, pid)
+        final_name = _rename_to_pid(path, assets_dir, pid)
         if not final_name:
             skipped += 1
-            errors.append(f"move-to-assets failed for {pid}")
+            errors.append(f"rename failed for {pid}")
             continue
-
-        # Path the rewritten <img src> points at — relative to .web/
-        # (the served preview root). The HTML lives at .web/<slug>.html
-        # so a sibling-relative `assets/<file>.png` resolves correctly.
         new_src = f"assets/{final_name}"
         rewrites_per_file.setdefault(ph["html_path"], {})[
             tuple(ph["tag_span"])
@@ -1463,145 +1262,317 @@ async def _fanout_and_rewrite(
             files_changed += 1
 
     return {
-        "replaced": replaced,
-        "skipped": skipped,
-        "html_files_changed": files_changed,
-        "errors": errors,
+        "replaced": replaced, "skipped": skipped,
+        "html_files_changed": files_changed, "errors": errors,
     }
 ```
 
-Also remove the temporary `"placeholders": all_placeholders` debug breadcrumb from `swap_placeholder_images`'s no-placeholder return (Task 4 left it for testability — Task 6 trims it; the two earlier tests don't assert on it).
+- [ ] **Step 3: Run + commit**
 
-- [ ] **Step 4: Run tests**
-
-```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q
-```
-Expected: PASS (9 passed).
-
-- [ ] **Step 5: Commit**
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py -q`
+Expected: PASS (15 passed).
 
 ```bash
 git add packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py packages/mr_roboto/tests/test_swap_placeholder_images.py
-git commit -m "feat(image): swap mechanic fanout + HTML src rewrite"
+git commit -m "feat(image): swap fanout + HTML rewrite (JSON-string-safe, direct rename)"
 ```
 
 ---
 
-## Task 7: Web-preview root resolver accepts the assets subdir
+## Task 7: `verify_swap_placeholder_images_shape` mechanic + posthook
 
 **Files:**
-- Modify: `packages/mr_roboto/src/mr_roboto/emit_preview_url.py`
+- Create: `packages/mr_roboto/src/mr_roboto/verify_swap_placeholder_images_shape.py`
+- Create: `packages/mr_roboto/tests/test_verify_swap_placeholder_images_shape.py`
+
+Following the `verify_charter_shape` template (recon): pure function, dispatched via `if action == "verify_swap_placeholder_images_shape"` in `_run_dispatch`. Validates that the swap step's result is shape-correct (the artifact: presence of an `assets/` dir under `.web/`, no surviving `placehold.co` references in any HTML EXCEPT where matched by an entry in `errors`, i.e. graceful-degrade leftovers).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# packages/mr_roboto/tests/test_verify_swap_placeholder_images_shape.py
+import os
+from mr_roboto.verify_swap_placeholder_images_shape import (
+    verify_swap_placeholder_images_shape,
+)
+
+
+_HTML_REWRITTEN = """<!DOCTYPE html>
+<html><body>
+  <img src="assets/home__0.png" alt="hero">
+  <img src="assets/home__1.png" alt="feat">
+  <img src="assets/home__2.png" alt="user">
+</body></html>"""
+
+_HTML_PARTIAL = """<!DOCTYPE html>
+<html><body>
+  <img src="assets/home__0.png" alt="hero">
+  <img src="https://placehold.co/260x180/3D405B/FFF?text=feat" alt="feat">
+  <img src="assets/home__2.png" alt="user">
+</body></html>"""
+
+
+def test_passes_when_all_placeholders_replaced(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_REWRITTEN, encoding="utf-8")
+    (web / "assets").mkdir()
+    for n in ("home__0.png", "home__1.png", "home__2.png"):
+        (web / "assets" / n).write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"replaced_count": 3, "skipped_count": 0, "errors": []},
+    )
+    assert res["ok"] is True
+
+
+def test_passes_when_skipped_matches_surviving_placeholders(tmp_path):
+    """Graceful degrade: 1 placeholder skipped → 1 placehold.co survives in
+    HTML. That matches; verifier accepts."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PARTIAL, encoding="utf-8")
+    (web / "assets").mkdir()
+    for n in ("home__0.png", "home__2.png"):
+        (web / "assets" / n).write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"replaced_count": 2, "skipped_count": 1,
+                     "errors": ["image gen failed for home__1"]},
+    )
+    assert res["ok"] is True
+
+
+def test_fails_when_replaced_count_disagrees_with_html(tmp_path):
+    """If swap_result claims 3 replaced but 1 placehold.co survives and
+    errors is empty, the result is internally inconsistent — fail."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PARTIAL, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"replaced_count": 3, "skipped_count": 0, "errors": []},
+    )
+    assert res["ok"] is False
+    assert "inconsistent" in (res.get("error") or "").lower()
+
+
+def test_fails_when_assets_dir_missing_but_replaced_count_positive(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_REWRITTEN, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"replaced_count": 3, "skipped_count": 0, "errors": []},
+    )
+    assert res["ok"] is False
+    assert "assets" in (res.get("error") or "").lower()
+
+
+def test_passes_when_swap_skipped_entirely(tmp_path):
+    """Swap reported 0 replaced + 0 skipped (no placeholders existed) →
+    verifier passes (no work expected)."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text("<html><body>no img</body></html>",
+                                   encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"replaced_count": 0, "skipped_count": 0, "errors": []},
+    )
+    assert res["ok"] is True
+```
+
+- [ ] **Step 2: Run + implement**
+
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_verify_swap_placeholder_images_shape.py -q`
+Expected: FAIL.
+
+`packages/mr_roboto/src/mr_roboto/verify_swap_placeholder_images_shape.py`:
+```python
+"""verify_swap_placeholder_images_shape — Plan 3 posthook.
+
+Validates that swap_placeholder_images produced a self-consistent result:
+- replaced_count agrees with the number of placehold.co URLs that have
+  actually disappeared from HTML (within errors-margin for graceful
+  degrade).
+- assets/ exists when replaced_count > 0.
+- skipped_count matches the count of surviving placehold.co references.
+
+Returns {ok: bool, error: str|None, surviving_placeholders: int,
+         expected_replaced: int}."""
+from __future__ import annotations
+
+import os
+import re
+from typing import Any
+
+_PLACEHOLDER_HOST_RE = re.compile(r"^https?://placehold\.co/", re.IGNORECASE)
+_IMG_SRC_RE = re.compile(r'<img\b[^>]*?\bsrc\s*=\s*"([^"]*)"',
+                          re.IGNORECASE | re.DOTALL)
+
+
+def _walk_html(workspace_path: str) -> list[str]:
+    root = os.path.join(workspace_path, ".web")
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for dirpath, _dirs, filenames in os.walk(root):
+        for name in filenames:
+            if name.lower().endswith(".html"):
+                out.append(os.path.join(dirpath, name))
+    return sorted(out)
+
+
+def _count_surviving_placeholders(html_paths: list[str]) -> int:
+    n = 0
+    for p in html_paths:
+        try:
+            with open(p, encoding="utf-8") as fh:
+                html = fh.read()
+        except OSError:
+            continue
+        for m in _IMG_SRC_RE.finditer(html):
+            if _PLACEHOLDER_HOST_RE.search(m.group(1) or ""):
+                n += 1
+    return n
+
+
+def verify_swap_placeholder_images_shape(
+    *,
+    workspace_path: str,
+    swap_result: dict[str, Any],
+) -> dict[str, Any]:
+    replaced = int(swap_result.get("replaced_count", 0) or 0)
+    skipped = int(swap_result.get("skipped_count", 0) or 0)
+    errors_list = swap_result.get("errors") or []
+
+    html_paths = _walk_html(workspace_path)
+    surviving = _count_surviving_placeholders(html_paths)
+
+    # Assets dir presence: required when replaced > 0.
+    assets_dir = os.path.join(workspace_path, ".web", "assets")
+    assets_exists = os.path.isdir(assets_dir)
+    if replaced > 0 and not assets_exists:
+        return {
+            "ok": False,
+            "error": (
+                f"assets/ directory missing but replaced_count={replaced}"
+            ),
+            "surviving_placeholders": surviving,
+            "expected_replaced": replaced,
+        }
+
+    # Consistency: surviving placehold.co URLs must equal skipped_count.
+    if surviving != skipped:
+        return {
+            "ok": False,
+            "error": (
+                f"inconsistent: surviving placeholders={surviving} but "
+                f"skipped_count={skipped} (errors={len(errors_list)})"
+            ),
+            "surviving_placeholders": surviving,
+            "expected_replaced": replaced,
+        }
+
+    return {
+        "ok": True,
+        "error": None,
+        "surviving_placeholders": surviving,
+        "expected_replaced": replaced,
+    }
+```
+
+- [ ] **Step 3: Run + commit**
+
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_verify_swap_placeholder_images_shape.py -q`
+Expected: PASS (5 passed).
+
+```bash
+git add packages/mr_roboto/src/mr_roboto/verify_swap_placeholder_images_shape.py packages/mr_roboto/tests/test_verify_swap_placeholder_images_shape.py
+git commit -m "feat(image): verify_swap_placeholder_images_shape posthook mechanic"
+```
+
+---
+
+## Task 8: Web-preview root serves `.web/assets/`
+
+**Files:**
 - Test: `packages/mr_roboto/tests/test_emit_preview_url_assets.py`
+- Modify (docstring only): `packages/mr_roboto/src/mr_roboto/emit_preview_url.py`
 
-The current `_resolve_preview_root` picks `.prototype/` if `index.html` exists, else `.web/` if non-empty. Since Plan 3's fanout writes assets to `<ws>/.web/assets/`, those files are already inside the served root — `assets/<file>.png` resolves automatically when the resolver picks `.web/`. The only fix needed: ensure `.web/` is still picked when it contains ONLY the auto-generated `assets/` subdir (an edge case if the html files vanish but assets remain — paranoia), and add a corresponding mirror for the `.prototype/` path used by Z5 (Expo). For `.prototype/` the html prototype already comes from a different generator, so swap_placeholder_images only ever touches `.web/`. Adding the Z5 mirror is OUT of scope for Plan 3 — leave Z5 to its own integration when image gen reaches Expo.
+The resolver already picks `.web/` when non-empty (recon-discovered conventions). v2 just verifies via test + adds a docstring pointer.
 
-So the only real change here is documentation + a test confirming that `<ws>/.web/assets/foo.png` is accessible under the resolved root. We don't change resolver logic — we test the existing behaviour holds.
-
-- [ ] **Step 1: Write the verification test**
+- [ ] **Step 1: Write the test**
 
 ```python
 # packages/mr_roboto/tests/test_emit_preview_url_assets.py
-"""Plan 3 — confirm rewritten <img src="assets/..."> resolves under the
-preview root resolver. We don't change resolver logic, only verify the
-existing `.web/` pick exposes `.web/assets/` automatically."""
 import os
 from mr_roboto.emit_preview_url import _resolve_preview_root
 
 
 def test_web_root_with_assets_subdir(tmp_path):
-    web = tmp_path / ".web"
-    web.mkdir()
+    web = tmp_path / ".web"; web.mkdir()
     (web / "home.html").write_text("<html></html>", encoding="utf-8")
-    assets = web / "assets"
-    assets.mkdir()
-    (assets / "home__0.png").write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
-
+    assets = web / "assets"; assets.mkdir()
+    (assets / "home__0.png").write_bytes(b"\x89PNG")
     root = _resolve_preview_root(str(tmp_path))
     assert root == str(web)
-    # The generated PNG is reachable as <root>/assets/home__0.png — that's
-    # what the rewritten <img src="assets/home__0.png"> will hit when the
-    # static HTTP server's --directory is the resolved root.
     assert os.path.isfile(os.path.join(root, "assets", "home__0.png"))
 
 
 def test_web_root_with_only_assets(tmp_path):
-    """Paranoia: if html files vanish but assets remain, we still resolve."""
-    web = tmp_path / ".web"
-    web.mkdir()
+    web = tmp_path / ".web"; web.mkdir()
     (web / "assets").mkdir()
     (web / "assets" / "ghost.png").write_bytes(b"\x89PNG")
-
     root = _resolve_preview_root(str(tmp_path))
-    # Current resolver picks `.web/` when it's a non-empty dir — assets/
-    # alone qualifies.
     assert root == str(web)
 ```
 
-- [ ] **Step 2: Run the test**
+- [ ] **Step 2: Run + docstring update**
 
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_emit_preview_url_assets.py -q`
+Expected: PASS — resolver already supports this.
+
+In `emit_preview_url.py`, append to `_resolve_preview_root`'s docstring:
 ```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_emit_preview_url_assets.py -q
-```
-Expected: PASS (2 passed) — the existing resolver already supports this. If it fails, the resolver has changed since Plan 3 was written; fix `_resolve_preview_root` to accept `.web/` with only an `assets/` subdir (current logic does — `os.listdir(web)` returns `["assets"]` which is truthy).
-
-- [ ] **Step 3: Add inline note in `emit_preview_url.py`**
-
-In `packages/mr_roboto/src/mr_roboto/emit_preview_url.py`, find `_resolve_preview_root` (line ~44) and append to its docstring:
-
-```python
-def _resolve_preview_root(workspace_path: str) -> str | None:
-    """Return the directory to serve, or None if nothing is ready.
-
-    Priority:
-    1. ``<ws>/.prototype/index.html`` exists → return ``<ws>/.prototype``
-    2. ``<ws>/.web`` is a non-empty directory → return ``<ws>/.web``
-    3. None
-
-    Plan 3 note: when the i2p ``swap_placeholder_images`` mechanic has
-    run, ``<ws>/.web/assets/`` holds the generated PNGs the rewritten
-    HTML references as ``src="assets/<file>.png"``. These are served
-    automatically by the static HTTP server since ``.web/`` is the
-    resolved root — no resolver change required.
-    """
+Plan 3 note: <ws>/.web/assets/ (image-gen output) is served automatically
+since .web/ is the resolved root — no resolver change required.
 ```
 
-(This is documentation-only; the body stays identical.)
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add packages/mr_roboto/src/mr_roboto/emit_preview_url.py packages/mr_roboto/tests/test_emit_preview_url_assets.py
-git commit -m "docs(image): preview resolver serves .web/assets/ for swapped images"
+git commit -m "docs(image): preview root serves .web/assets/"
 ```
 
 ---
 
-## Task 8: Wire `swap_placeholder_images` into mr_roboto's dispatcher
+## Task 9: Wire both mechanics into `_run_dispatch` + reversibility
 
 **Files:**
 - Modify: `packages/mr_roboto/src/mr_roboto/__init__.py`
 - Modify: `packages/mr_roboto/src/mr_roboto/reversibility.py`
 - Test: `packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py`
 
-Standard mr_roboto wiring: top-of-file import, add to `__all__`, register reversibility, add `if action == "swap_placeholder_images":` branch in `_run_dispatch`.
+Mirrors `verify_charter_shape`'s wiring shape (recon-confirmed at `__init__.py:1071-1094`).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py
-"""mr_roboto dispatch wiring for swap_placeholder_images."""
 import pytest
 import mr_roboto
 from mr_roboto.reversibility import VERB_REVERSIBILITY
 
 
-def test_verb_registered_in_reversibility():
+def test_swap_verb_registered():
     assert "swap_placeholder_images" in VERB_REVERSIBILITY
     assert VERB_REVERSIBILITY["swap_placeholder_images"] == "full"
 
 
-def test_module_exports_executor():
+def test_verify_verb_registered():
+    assert "verify_swap_placeholder_images_shape" in VERB_REVERSIBILITY
+    assert VERB_REVERSIBILITY["verify_swap_placeholder_images_shape"] == "full"
+
+
+def test_module_exports_swap():
     assert hasattr(mr_roboto, "swap_placeholder_images")
     assert "swap_placeholder_images" in mr_roboto.__all__
 
@@ -1609,216 +1580,219 @@ def test_module_exports_executor():
 @pytest.mark.asyncio
 async def test_dispatch_routes_swap_action(monkeypatch):
     captured = {}
-
     async def _fake_swap(**kwargs):
         captured.update(kwargs)
-        return {
-            "ok": True,
-            "replaced_count": 2,
-            "skipped_count": 1,
-            "html_files_seen": 1,
-            "html_files_changed": 1,
-            "errors": [],
-        }
-
-    # Patch the executor at the dispatch-site lookup, NOT on the module
-    # (the dispatch branch imports from mr_roboto.swap_placeholder_images
-    # at call time).
+        return {"ok": True, "replaced_count": 2, "skipped_count": 1,
+                "html_files_seen": 1, "html_files_changed": 1, "errors": []}
     monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images.swap_placeholder_images",
-        _fake_swap,
+        "mr_roboto.swap_placeholder_images.swap_placeholder_images", _fake_swap,
     )
-
     task = {
-        "id": 100,
-        "mission_id": 42,
-        "title": "swap_placeholder_images_test",
-        "context": {
-            "payload": {
-                "action": "swap_placeholder_images",
-                "design_tokens": {"primary": "#E07A5F"},
-                "brand_voice": "warm",
-            },
-        },
+        "id": 100, "mission_id": 42,
+        "title": "swap_test",
+        "context": {"payload": {
+            "action": "swap_placeholder_images",
+            "design_tokens": {"primary": "#E07A5F"},
+            "brand_voice": "warm",
+        }},
     }
     res = await mr_roboto.run(task)
     assert res.status == "completed"
     assert res.result["replaced_count"] == 2
     assert captured["mission_id"] == 42
     assert captured["design_tokens"] == {"primary": "#E07A5F"}
-    assert captured["brand_voice"] == "warm"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_routes_verify_action(monkeypatch):
+    """The verify posthook dispatches with action=verify_swap_placeholder_images_shape."""
+    captured = {}
+    def _fake_verify(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "surviving_placeholders": 0, "expected_replaced": 3}
+    monkeypatch.setattr(
+        "mr_roboto.verify_swap_placeholder_images_shape."
+        "verify_swap_placeholder_images_shape",
+        _fake_verify,
+    )
+    task = {
+        "id": 101, "mission_id": 42, "title": "verify_test",
+        "context": {"payload": {
+            "action": "verify_swap_placeholder_images_shape",
+            "workspace_path": "/fake/ws",
+            "swap_result": {"replaced_count": 3, "skipped_count": 0, "errors": []},
+        }},
+    }
+    res = await mr_roboto.run(task)
+    assert res.status == "completed"
+    assert captured["workspace_path"] == "/fake/ws"
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run + wire**
 
-```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py -q
-```
-Expected: FAIL — `swap_placeholder_images` not in `VERB_REVERSIBILITY`, not in `__all__`, dispatch returns "unknown action".
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py -q`
+Expected: FAIL.
 
-- [ ] **Step 3: Wire reversibility**
-
-In `packages/mr_roboto/src/mr_roboto/reversibility.py`, add an entry near the `marketing_copy` entry (line ~302). Keep alphabetical groupings reasonable — under the "Local artifact emitters" or after `marketing_copy`:
-
+In `reversibility.py`, add to `VERB_REVERSIBILITY` near `marketing_copy`:
 ```python
-    # ---- Plan 3 — i2p image-gen integration ---------------------------------
-    # swap_placeholder_images: writes PNGs under <ws>/.web/assets/ and rewrites
-    # <img src> in <ws>/.web/*.html — all under the mission workspace,
-    # git-reversible, no external publish. Generated PNGs are regenerable
-    # (re-run swaps them again).
+    # Plan 3 — image-gen integration. All under mission workspace; regenerable.
     "swap_placeholder_images": "full",
+    "verify_swap_placeholder_images_shape": "full",
 ```
 
-- [ ] **Step 4: Wire the import + `__all__` + dispatch branch**
+In `mr_roboto/__init__.py`:
 
-In `packages/mr_roboto/src/mr_roboto/__init__.py`:
-
-- Add the import after the other Z-series mechanical imports (near the `marketing_copy` line ~102):
-  ```python
-  # Plan 3 — i2p image-gen integration
-  from mr_roboto.swap_placeholder_images import swap_placeholder_images  # noqa: F401
-  ```
-
-- Add to `__all__` (after `"fastlane",` near line 175):
-  ```python
-      "swap_placeholder_images",
-  ```
-
-- Add a dispatch branch in `_run_dispatch`. The natural place is alongside the other Z-series local-file emitters — but mr_roboto's `_run_dispatch` is one long `if action == ...:` chain, so just add it near the END (before the unknown-action fallback). Find the last `if action == ...` block in the function and append:
-
-  ```python
-      if action == "swap_placeholder_images":
-          # Plan 3 — i2p image-gen integration. Mechanical body internally
-          # enqueues a prompt_writer LLM task and N image tasks through
-          # beckman; never calls dispatcher/HK/paintress directly.
-          from mr_roboto.swap_placeholder_images import (
-              swap_placeholder_images as _swap,
-          )
-          try:
-              res = await _swap(
-                  mission_id=task.get("mission_id"),
-                  workspace_path=payload.get("workspace_path"),
-                  design_tokens=payload.get("design_tokens"),
-                  brand_voice=payload.get("brand_voice"),
-              )
-              # Soft-success: even when nothing is replaced (graceful
-              # degrade), ok=True. The workflow's done_when accepts
-              # ok=true with skipped_count > 0.
-              return Action(status="completed", result=res)
-          except Exception as e:
-              # Belt-and-braces — the executor is already best-effort.
-              return Action(
-                  status="completed",
-                  result={
-                      "ok": True,
-                      "replaced_count": 0,
-                      "skipped_count": 0,
-                      "errors": [f"unexpected: {e}"],
-                  },
-              )
-  ```
-
-  IMPORTANT: locate the **last** `if action == ...` block before any "unknown action" handler. If `_run_dispatch` ends with an explicit "unknown action" return, insert the new branch BEFORE that return. Use the existing surrounding indentation (4 spaces inside the function).
-
-- [ ] **Step 5: Run tests**
-
+Add imports near other Plan-3 / Z-series mechanicals:
+```python
+# Plan 3 — i2p image-gen integration
+from mr_roboto.swap_placeholder_images import swap_placeholder_images  # noqa: F401
+from mr_roboto.verify_swap_placeholder_images_shape import (  # noqa: F401
+    verify_swap_placeholder_images_shape,
+)
 ```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py packages/mr_roboto/tests/test_reversibility_registry.py -q
-```
-Expected: PASS — the dispatch test passes (3 passed), and the reversibility registry consistency test (`test_reversibility_registry.py`) stays green because every verb in `_run_dispatch` has a `VERB_REVERSIBILITY` entry.
 
-- [ ] **Step 6: Regression on the full mr_roboto suite**
-
+Add to `__all__`:
+```python
+    "swap_placeholder_images",
+    "verify_swap_placeholder_images_shape",
 ```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/ -q
-```
-Expected: no new failures (note: per the project's known-reds list in `project_residual_reanalysis_20260521`, there may be pre-existing flakes — Plan 3 must not introduce new ones).
 
-- [ ] **Step 7: Commit**
+Add dispatch branches in `_run_dispatch` (BEFORE any unknown-action fallback), mirroring the `verify_charter_shape` shape:
+```python
+    if action == "swap_placeholder_images":
+        # Plan 3 — internally enqueues a prompt_writer LLM task and N image
+        # tasks through beckman; never calls dispatcher/HK/paintress directly.
+        from mr_roboto.swap_placeholder_images import (
+            swap_placeholder_images as _swap,
+        )
+        try:
+            res = await _swap(
+                mission_id=task.get("mission_id"),
+                workspace_path=payload.get("workspace_path"),
+                design_tokens=payload.get("design_tokens"),
+                brand_voice=payload.get("brand_voice"),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="completed", result={
+                "ok": True, "replaced_count": 0, "skipped_count": 0,
+                "errors": [f"unexpected: {e}"],
+            })
+
+    if action == "verify_swap_placeholder_images_shape":
+        # Plan 3 — verify posthook. Pure function; mirrors verify_charter_shape.
+        from mr_roboto.verify_swap_placeholder_images_shape import (
+            verify_swap_placeholder_images_shape as _verify,
+        )
+        try:
+            res = _verify(
+                workspace_path=payload.get("workspace_path") or "",
+                swap_result=payload.get("swap_result") or {},
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=f"verify_swap_placeholder_images_shape: {res.get('error')}",
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+```
+
+- [ ] **Step 3: Run + regression**
+
+Run: `.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py packages/mr_roboto/tests/test_reversibility_registry.py packages/mr_roboto/tests/ -q -x`
+Expected: PASS new tests + no new regressions.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add packages/mr_roboto/src/mr_roboto/__init__.py packages/mr_roboto/src/mr_roboto/reversibility.py packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py
-git commit -m "feat(image): wire swap_placeholder_images into mr_roboto dispatch"
+git commit -m "feat(image): wire swap + verify mechanics into mr_roboto dispatch"
 ```
 
 ---
 
-## Task 9: i2p_v3.json — prototype-phase swap step
+## Task 10: i2p_v3.json — step 5.35 (correct convention) + 5.35.verify posthook
 
 **Files:**
 - Modify: `src/workflows/i2p/i2p_v3.json`
 - Test: `tests/i2p/test_i2p_swap_step.py`
 
-Add step `5.35` (between `5.30c annotate_html_oids` and `5.40 emit_preview_url`). Soft `done_when` so a no-op return (`ok=true` with `skipped_count > 0`) still passes — image generation must NEVER block the mission. Step depends on `5.30c` (HTML is annotated by then).
+v2 fix: correct mechanical step shape — `"executor": "mechanical"` (NOT the verb name), verb in `payload.action`. Plus a sibling `5.35.verify` posthook that runs `verify_swap_placeholder_images_shape` with the swap step's result. Plus `artifact_schema` on `5.35` so workflow_engine's `constrained_emit.maybe_apply` applies a structured emit pass to the prompt_writer call.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/i2p/test_i2p_swap_step.py
-"""Plan 3 — i2p_v3.json swap_placeholder_images step shape + position."""
 import json
 
 
-def _load_steps():
+def _steps():
     with open("src/workflows/i2p/i2p_v3.json", encoding="utf-8") as fh:
         return json.load(fh)["steps"]
 
 
-def test_step_exists():
-    steps = _load_steps()
-    swap = [s for s in steps if s.get("id") == "5.35"]
-    assert len(swap) == 1, "expected exactly one step with id 5.35"
+def test_swap_step_exists():
+    assert any(s.get("id") == "5.35" for s in _steps())
 
 
-def test_step_shape():
-    steps = _load_steps()
-    swap = next(s for s in steps if s["id"] == "5.35")
-    assert swap["agent"] == "mechanical"
-    assert swap["executor"] == "swap_placeholder_images"
-    assert swap["payload"]["action"] == "swap_placeholder_images"
-    # depends_on must include 5.30c (HTMLs are annotated by then).
-    assert "5.30c" in swap["depends_on"]
-    # Soft done_when — accepts skipped_count > 0.
-    dw = swap["done_when"].lower()
-    assert "swap_placeholder_images" in dw or "ok" in dw
-    assert "skipped" in dw, "done_when must explicitly permit skipping"
-    assert swap.get("reversibility") == "full"
+def test_verify_step_exists():
+    assert any(s.get("id") == "5.35.verify" for s in _steps())
 
 
-def test_step_runs_before_emit_preview_url():
-    steps = _load_steps()
-    # 5.40 emit_preview_url must depend transitively on (or after) 5.35
-    # so the preview URL is emitted with real images, not placeholders.
-    by_id = {s["id"]: s for s in steps}
-    emit = by_id["5.40"]
-    # emit_preview_url depends on 5.30c; we strengthen the chain by making
-    # 5.35 also depend on 5.30c (parallel sibling) — the natural ordering
-    # gives 5.30c → 5.35 → 5.40 once 5.40's depends_on is extended to
-    # include 5.35.
-    assert "5.35" in emit["depends_on"], (
-        "5.40 emit_preview_url must depend on 5.35 so the URL surfaces "
-        "real images, not placeholders"
-    )
+def test_swap_step_shape_uses_mechanical_executor():
+    s = next(x for x in _steps() if x["id"] == "5.35")
+    assert s["agent"] == "mechanical"
+    # v2 fix: executor is "mechanical" (constant), verb in payload.action.
+    assert s["executor"] == "mechanical"
+    assert s["payload"]["action"] == "swap_placeholder_images"
+    assert "5.30c" in s["depends_on"]
+    # Soft done_when accepts skipping.
+    dw = s["done_when"].lower()
+    assert "ok" in dw and "skipped" in dw
+    assert s.get("reversibility") == "full"
 
 
-def test_phase_5_in_phase():
-    steps = _load_steps()
-    swap = next(s for s in steps if s["id"] == "5.35")
-    assert swap["phase"] == "phase_5"
+def test_swap_step_has_artifact_schema_for_constrained_emit():
+    """v2 fix: prompt_writer needs schema constraint. The artifact_schema
+    on this step is what constrained_emit.maybe_apply enforces post-call."""
+    s = next(x for x in _steps() if x["id"] == "5.35")
+    # The schema for the prompts artifact must be declared so the
+    # constrained-emit pass can enforce it on cheap-tier LLM output.
+    schema = s.get("artifact_schema")
+    assert isinstance(schema, dict)
+    assert "prompts" in schema or "prompt_writer_result" in schema
+
+
+def test_verify_step_shape():
+    s = next(x for x in _steps() if x["id"] == "5.35.verify")
+    assert s["agent"] == "mechanical"
+    assert s["executor"] == "mechanical"
+    assert s["payload"]["action"] == "verify_swap_placeholder_images_shape"
+    assert "5.35" in s["depends_on"]
+
+
+def test_emit_preview_url_depends_on_verify():
+    """5.40 must depend on 5.35.verify so the URL only surfaces with a
+    verified swap."""
+    s = next(x for x in _steps() if x["id"] == "5.40")
+    assert "5.35.verify" in s["depends_on"]
+
+
+def test_phase_is_phase_5():
+    for sid in ("5.35", "5.35.verify"):
+        s = next(x for x in _steps() if x["id"] == sid)
+        assert s["phase"] == "phase_5"
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run + insert the steps**
 
-```
-.venv/Scripts/python -m pytest tests/i2p/test_i2p_swap_step.py -q
-```
-Expected: FAIL — no step `5.35`.
+Run: `.venv/Scripts/python -m pytest tests/i2p/test_i2p_swap_step.py -q`
+Expected: FAIL.
 
-- [ ] **Step 3: Insert the step**
-
-In `src/workflows/i2p/i2p_v3.json`, find the step with `"id": "5.30c"` (around line 5176, the `annotate_html_oids` step). Insert the new step IMMEDIATELY after `5.30c`'s closing `},` and BEFORE the `"id": "5.40"` step. Then **also** extend `5.40`'s `depends_on` to include `"5.35"`.
-
-New step body:
+In `src/workflows/i2p/i2p_v3.json`, find the step with `"id": "5.30c"` and insert these AFTER its closing `},` and BEFORE `"id": "5.40"`:
 
 ```json
     {
@@ -1826,89 +1800,77 @@ New step body:
       "phase": "phase_5",
       "name": "swap_placeholder_images",
       "agent": "mechanical",
-      "depends_on": [
-        "5.30c"
-      ],
-      "executor": "swap_placeholder_images",
+      "executor": "mechanical",
+      "depends_on": ["5.30c"],
+      "instruction": "Plan 3 — replace placehold.co <img> placeholders in every mission_{mission_id}/.web/**/*.html (recursive) with real diffusion-generated PNGs. Enqueues ONE prompt_writer LLM task (artifact_schema enforces shape via constrained_emit) to enrich each placeholder's alt text into a diffusion prompt, then one image task per placeholder through beckman (fatih_hoca.select(needs_image=True) -> dispatcher.dispatch -> paintress). Writes PNGs under mission_{mission_id}/.web/assets/<placeholder_id>.png and rewrites <img src> to assets/<id>.png. Best-effort: per-placeholder failures keep the original placehold.co URL — never blocks the mission. Skipping is acceptable; the preview surfaces with placeholders.",
+      "done_when": "swap_placeholder_images executor returns ok=true (replaced_count>=0; skipped_count>0 is acceptable when image generation is unavailable)",
+      "produces": ["mission_{mission_id}/.web/assets/"],
+      "reversibility": "full",
+      "artifact_schema": {
+        "prompts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "placeholder_id": {"type": "string"},
+              "prompt": {"type": "string", "maxLength": 220}
+            },
+            "required": ["placeholder_id", "prompt"]
+          }
+        }
+      },
+      "payload": {"action": "swap_placeholder_images"}
+    },
+    {
+      "id": "5.35.verify",
+      "phase": "phase_5",
+      "name": "swap_placeholder_images_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": ["5.35"],
+      "instruction": "Plan 3 verify-posthook. Asserts swap_placeholder_images produced a self-consistent result: replaced_count agrees with surviving placehold.co URLs (within errors-margin for graceful degrade), assets/ exists when replaced_count>0. Mirrors verify_charter_shape's role for phase 0.",
+      "done_when": "verify_swap_placeholder_images_shape returns ok=true",
+      "reversibility": "full",
       "payload": {
-        "action": "swap_placeholder_images"
-      },
-      "context": {
-        "estimated_output_tokens": 0
-      },
-      "instruction": "Plan 3 — replace placehold.co <img> placeholders in every mission_{mission_id}/.web/*.html with real diffusion-generated PNGs. Enqueues one prompt_writer LLM task (single-call, response_format=json_schema) to enrich each placeholder's alt text into a diffusion prompt, then one image task per placeholder through beckman (which calls fatih_hoca.select(needs_image=True) → dispatcher.dispatch → paintress). Writes PNGs under mission_{mission_id}/.web/assets/ (inside the served preview root) and rewrites <img src> to relative `assets/<file>.png`. Best-effort: per-placeholder failures keep the original placehold.co URL — never blocks the mission. Skipping the whole step (e.g. no image provider available) is acceptable; the preview surfaces with placeholders.",
-      "done_when": "swap_placeholder_images executor returns ok=true (replaced_count >= 0; skipped_count > 0 is acceptable when image generation is unavailable)",
-      "produces": [
-        "mission_{mission_id}/.web/assets/"
-      ],
-      "reversibility": "full"
+        "action": "verify_swap_placeholder_images_shape",
+        "swap_result_from_step": "5.35"
+      }
     },
 ```
 
-Then locate the step with `"id": "5.40"` and update its `depends_on` from:
-```json
-      "depends_on": [
-        "5.30c"
-      ],
-```
-to:
-```json
-      "depends_on": [
-        "5.30c",
-        "5.35"
-      ],
-```
+Then locate `"id": "5.40"` and update its `depends_on` from `["5.30c"]` to `["5.30c", "5.35.verify"]`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 3: Run + regression**
 
-```
-.venv/Scripts/python -m pytest tests/i2p/test_i2p_swap_step.py -q
-```
-Expected: PASS (4 passed).
+Run: `.venv/Scripts/python -m pytest tests/i2p/test_i2p_swap_step.py tests/i2p/ -q -x`
+Expected: PASS, no new failures in the i2p sweep.
 
-- [ ] **Step 5: Regression — i2p JSON-shape tests stay green**
-
-```
-.venv/Scripts/python -m pytest tests/i2p/ -q -x
-```
-Expected: no NEW failures. If the project has an "every step has a dispatchable executor / no orphan dependency" sweep test (`tests/i2p/test_no_dead_ends.py` or similar), it will catch a typo here — fix the step ID before proceeding.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/workflows/i2p/i2p_v3.json tests/i2p/test_i2p_swap_step.py
-git commit -m "feat(image): i2p_v3 step 5.35 — swap placeholder images"
+git commit -m "feat(image): i2p_v3 5.35 swap + 5.35.verify posthook (correct mechanical convention)"
 ```
 
 ---
 
-## Task 10: End-to-end host-path integration test
+## Task 11: End-to-end host-path test — JSON-string TaskResult shape
 
 **Files:**
 - Test: `tests/integration/test_image_i2p_swap_e2e.py`
 
-Proves the whole lane wires together: a mission workspace with three placeholder `<img>` tags → mr_roboto.run with `action: swap_placeholder_images` → mocked beckman.enqueue serves prompt_writer + 3 image tasks → 3 PNGs land under `mission_{id}/.web/assets/` → HTML is rewritten. Host-path (per the recurring lesson + Plan 1 Task 13 precedent).
-
-Does NOT depend on Plan 1 being merged — the test mocks `beckman.enqueue` at the import-path level. When Plan 1 is merged, the same test still passes (the mock supersedes the real enqueue).
+The v2 e2e test deliberately mocks beckman.enqueue with **JSON-string** `TaskResult.result` so production data shape is exercised — Plan 3 v1's e2e used dict shape and missed the bug.
 
 - [ ] **Step 1: Write the test**
 
 ```python
 # tests/integration/test_image_i2p_swap_e2e.py
-"""Plan 3 — end-to-end i2p placeholder swap.
-
-Mocks beckman.enqueue (since the real chain requires a configured image
-provider). Asserts:
-  - mr_roboto.run dispatches `swap_placeholder_images`
-  - the prototype HTML has its 3 placehold.co <img>s rewritten to
-    `assets/<id>.png`
-  - 3 real PNG files exist on disk under mission_{id}/.web/assets/
-  - the result.replaced_count == 3
-"""
-import io
+"""Plan 3 v2 — end-to-end placeholder swap with PRODUCTION TaskResult shape."""
+import json
 import os
 
 import pytest
+from PIL import Image
 
 
 _HTML = """<!DOCTYPE html>
@@ -1924,80 +1886,69 @@ _HTML = """<!DOCTYPE html>
 
 
 @pytest.mark.asyncio
-async def test_i2p_swap_end_to_end(monkeypatch, tmp_path):
-    # 1) Stand up a fake mission workspace with one HTML file.
+async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path):
+    """Drives mr_roboto.run with action=swap_placeholder_images. Mocks
+    beckman.enqueue at the swap-module namespace so the production JSON-
+    string TaskResult.result shape is exercised end-to-end."""
     ws = tmp_path / "mission_777"
-    web = ws / ".web"
-    web.mkdir(parents=True)
+    web = ws / ".web"; web.mkdir(parents=True)
     (web / "home.html").write_text(_HTML, encoding="utf-8")
-
     monkeypatch.setattr(
-        "src.tools.workspace.get_mission_workspace",
-        lambda mid: str(ws),
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(ws),
     )
 
-    # 2) Mock the prompt_writer + per-image enqueues. The prompt_writer
-    # returns the 3 prompts; each image task writes a real 64x64 PNG.
     call_log: list[str] = []
-
-    class _PromptResult:
-        status = "completed"
-        result = {
-            "_schema_version": "1",
-            "prompts": [
-                {"placeholder_id": "home__0", "prompt": "coral barista scene with warm cream interior"},
-                {"placeholder_id": "home__1", "prompt": "slate indigo task dashboard, muted sage progress"},
-                {"placeholder_id": "home__2", "prompt": "friendly headshot, deep teal background"},
-            ],
-        }
 
     async def _fake_enqueue(spec, **kwargs):
         agent_type = spec.get("agent_type")
         call_log.append(agent_type or "")
         if agent_type == "prompt_writer":
-            return _PromptResult()
+            class _R:
+                status = "completed"
+                # PRODUCTION SHAPE — JSON STRING (orchestrator json.dumps).
+                result = json.dumps({
+                    "_schema_version": "1",
+                    "prompts": [
+                        {"placeholder_id": "home__0", "prompt": "coral barista"},
+                        {"placeholder_id": "home__1", "prompt": "slate dashboard"},
+                        {"placeholder_id": "home__2", "prompt": "teal portrait"},
+                    ],
+                })
+                error = None
+            return _R()
         if agent_type == "image":
             ic = spec["context"]["image_call"]
-            from PIL import Image
             os.makedirs(ic["out_dir"], exist_ok=True)
             path = os.path.join(
                 ic["out_dir"], f"{ic['filename_hint']}_raw.png",
             )
-            Image.new("RGB", (ic["width"], ic["height"]), (100, 150, 200)).save(
-                path, "PNG"
-            )
-
-            class _ImgResult:
+            Image.new("RGB", (ic["width"], ic["height"]),
+                      (100, 150, 200)).save(path, "PNG")
+            class _R:
                 status = "completed"
-                result = {
-                    "path": path,
-                    "provider": "pollinations",
-                    "model": "pollinations/flux",
-                }
-            return _ImgResult()
+                # PRODUCTION SHAPE — JSON STRING.
+                result = json.dumps({
+                    "path": path, "provider": "pollinations",
+                    "model": "pollinations/flux", "cost": 0.0,
+                })
+                error = None
+            return _R()
         raise AssertionError(f"unexpected agent_type: {agent_type!r}")
-
     monkeypatch.setattr(
         "mr_roboto.swap_placeholder_images._enqueue_beckman", _fake_enqueue,
     )
 
-    # 3) Dispatch via mr_roboto.run (the real dispatch path).
     import mr_roboto
     task = {
-        "id": 12345,
-        "mission_id": 777,
-        "title": "swap_e2e",
-        "context": {
-            "payload": {
-                "action": "swap_placeholder_images",
-                "design_tokens": {"primary": "#E07A5F"},
-                "brand_voice": "warm, neighborhood coffee shop",
-            },
-        },
+        "id": 12345, "mission_id": 777, "title": "swap_e2e",
+        "context": {"payload": {
+            "action": "swap_placeholder_images",
+            "design_tokens": {"primary": "#E07A5F"},
+            "brand_voice": "warm, neighborhood coffee shop",
+        }},
     }
     action = await mr_roboto.run(task)
 
-    # 4) Assert the result shape.
     assert action.status == "completed"
     res = action.result
     assert res["ok"] is True
@@ -2005,78 +1956,61 @@ async def test_i2p_swap_end_to_end(monkeypatch, tmp_path):
     assert res["skipped_count"] == 0
     assert res["html_files_changed"] == 1
 
-    # 5) 3 PNGs on disk under .web/assets/.
     assets = ws / ".web" / "assets"
     pngs = sorted(p.name for p in assets.glob("*.png"))
-    assert len(pngs) == 3, pngs
-    # Each PNG is a real image, not a 0-byte file.
+    # Stable <pid>.png names (no timestamp suffix).
+    assert pngs == ["home__0.png", "home__1.png", "home__2.png"]
     for png in pngs:
         assert (assets / png).stat().st_size > 0
 
-    # 6) HTML rewritten.
     rewritten = (web / "home.html").read_text(encoding="utf-8")
     assert "placehold.co" not in rewritten
-    assert rewritten.count('src="assets/') == 3
+    assert 'src="assets/home__0.png"' in rewritten
+    assert 'src="assets/home__1.png"' in rewritten
+    assert 'src="assets/home__2.png"' in rewritten
 
-    # 7) Call ordering: prompt_writer once, image three times.
     assert call_log.count("prompt_writer") == 1
     assert call_log.count("image") == 3
 ```
 
-- [ ] **Step 2: Run the test**
+- [ ] **Step 2: Run + smoke**
 
+Run: `.venv/Scripts/python -m pytest tests/integration/test_image_i2p_swap_e2e.py -q`
+Expected: PASS.
+
+Full Plan 3 suite green-check (split per Plan 1 v2 §13 conftest-collision rule):
 ```
-.venv/Scripts/python -m pytest tests/integration/test_image_i2p_swap_e2e.py -q
-```
-Expected: PASS (1 passed).
-
-- [ ] **Step 3: Full green-check across Plan 3's new tests**
-
-Per Plan 1 Task 13's split-invocation rule (root `tests/` + package `packages/*/tests/` must not share a single pytest invocation):
-
-```
-.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py packages/mr_roboto/tests/test_emit_preview_url_assets.py -q
+.venv/Scripts/python -m pytest packages/mr_roboto/tests/test_swap_placeholder_images.py packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py packages/mr_roboto/tests/test_verify_swap_placeholder_images_shape.py packages/mr_roboto/tests/test_emit_preview_url_assets.py -q
 .venv/Scripts/python -m pytest tests/agents/test_prompt_writer.py tests/agents/test_prompt_writer_template.py tests/i2p/test_i2p_swap_step.py tests/integration/test_image_i2p_swap_e2e.py -q
 ```
 Expected: all green.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add tests/integration/test_image_i2p_swap_e2e.py
-git commit -m "test(image): end-to-end i2p swap_placeholder_images host-path"
+git commit -m "test(image): e2e i2p swap with JSON-string TaskResult shape"
 ```
 
 ---
 
-## Plan 3 done-when
+## Plan 3 v2 done-when
 
-- i2p mission reaching phase 5 produces real images for every `placehold.co` `<img>` in `mission_{id}/.web/*.html`, with the HTML rewritten to `src="assets/<id>.png"` and PNGs on disk under `mission_{id}/.web/assets/`.
-- Per-placeholder failures keep the original placeholder (graceful degrade); step `5.35` accepts `skipped_count > 0` as a soft pass — image generation never blocks the mission.
-- The cloudflared preview URL (step `5.40`) now serves real images via the same `.web/` static root (no resolver change required).
-- All new tests green:
-  - `tests/agents/test_prompt_writer.py` (5)
-  - `tests/agents/test_prompt_writer_template.py` (4)
-  - `packages/mr_roboto/tests/test_swap_placeholder_images.py` (9)
-  - `packages/mr_roboto/tests/test_swap_placeholder_images_dispatch.py` (3)
-  - `packages/mr_roboto/tests/test_emit_preview_url_assets.py` (2)
-  - `tests/i2p/test_i2p_swap_step.py` (4)
-  - `tests/integration/test_image_i2p_swap_e2e.py` (1)
-- No new failures in:
-  - `packages/mr_roboto/tests/` (baseline reds per `project_residual_reanalysis_20260521` excepted)
-  - `tests/agents/test_prompt_quality.py` (prompt_writer satisfies the 3 invariants)
-  - `tests/i2p/` (workflow JSON shape sweep)
-- mr_roboto dispatcher knows `swap_placeholder_images` (entry in `_run_dispatch`, `__all__`, `VERB_REVERSIBILITY`); a real i2p mission run would invoke the mechanic at step `5.35`.
+- i2p mission reaching phase 5 produces real images for every `placehold.co` `<img>` in `mission_{id}/.web/**/*.html` (recursive); HTML rewritten to `src="assets/<id>.png"`; PNGs under `mission_{id}/.web/assets/`.
+- Per-placeholder failures keep the original placeholder (graceful degrade); `5.35` accepts `skipped_count > 0` as a soft pass.
+- `5.35.verify` (`verify_swap_placeholder_images_shape`) gates `5.40 emit_preview_url`: the preview only surfaces with a verifier-passed swap.
+- `prompt_writer` enqueue declares `artifact_schema` so workflow_engine's `constrained_emit.maybe_apply` enforces the JSON shape on cheap-tier LLM output.
+- Both `_call_prompt_writer` and `_generate_one_image` go through `_parse_task_result`, which handles the production JSON-string `TaskResult.result` shape (the bug Plan 3 v1 had).
+- `_list_html_files` recurses (`os.walk`), so multi-screen prototypes are covered.
+- All new tests green; no regressions in `packages/mr_roboto/tests/`, `tests/agents/`, `tests/i2p/`.
 
-## Dependencies on other plans
+## Dependencies
+- **Plan 1 v2** MUST be merged first — Plan 3 enqueues `agent_type: "image"` tasks that ride Plan 1 v2's admission + dispatcher branch + telemetry envelope.
+- **Plan 2 v2** is OPTIONAL. When merged, Plan 3's image tasks transparently pick local SDXL when fit/budget says so; no Plan 3 change required.
+- Plan 3 is **file-disjoint** from Plan 2 — they can run in parallel worktrees after Plan 1 v2 lands.
 
-- **Plan 1 (cloud spine)** MUST be merged before Plan 3's mechanic produces real images in production — Plan 3's image enqueues (`agent_type: "image"`, `context.image_call.raw_dispatch=True`) rely on Plan 1's beckman admission branch (`needs_image=True`), Plan 1's dispatcher `_dispatch_image` path, and Plan 1's `paintress` providers. Plan 3's tests mock `beckman.enqueue` so they pass without Plan 1 — but a live mission with Plan 3 alone would degrade every image to "skipped" (no provider) and leave placeholders, which is the spec's intended graceful-degrade behaviour.
-- **Plan 2 (local clair_obscur + GPU handover)** is OPTIONAL. When Plan 2 is also merged, Plan 3's `agent_type: "image"` tasks transparently pick local SDXL via Plan 1's already-extended scorer; no Plan 3 change required.
-- Plan 3 is **file-disjoint** from Plan 2 (see "File ownership" above) — they can run in parallel worktrees and merge in either order.
-
-## Follow-on (after Plan 3 executes)
-
-- **Founder review of generated images.** Spec §8 mentions surfacing the swap result; a follow-up could enqueue a `notify_user` mechanical sibling after `5.35` so the founder sees a preview gallery (similar to the `propose_spec_patch` Apply/Reject pattern in mr_roboto's `_surface_spec_patch_proposal`).
-- **Asset cache across mission re-runs.** Right now a re-run regenerates every image. A cheap content-addressed cache keyed on `(prompt, width, height, provider)` would skip already-generated assets.
-- **Z5 mobile / Expo path.** `.prototype/index.html` (Expo Web) is out of Plan 3 scope. When image gen reaches Z5, mirror the mechanic to scan `.prototype/**.html` and write to `.prototype/assets/`.
-- **Per-screen design context.** Plan 3 passes a single `design_tokens` / `brand_voice` to the prompt_writer. A future refinement could pass per-screen `section_intent` (currently inferred heuristically from `alt` text in `_section_from_alt`) — read directly from the screen_plan artifact for that file.
+## Follow-on
+- Founder review of generated images via a `notify_user` sibling after `5.35.verify`.
+- Asset cache across mission re-runs keyed on `(prompt, width, height, provider)`.
+- Z5 mobile / Expo: mirror the mechanic to scan `.prototype/**/*.html` and write to `.prototype/assets/`.
+- Per-screen `section_intent` read from the screen_plan artifact (replaces the heuristic in `_section_from_alt`).

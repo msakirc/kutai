@@ -12,7 +12,32 @@ Three invariants proved here:
 from __future__ import annotations
 
 import inspect
+import os
+import pathlib
+import subprocess
 import sys
+
+# Worktree root — two levels up from packages/husam/tests/
+_WORKTREE = pathlib.Path(__file__).parent.parent.parent.parent
+
+
+def _make_subprocess_pythonpath() -> str:
+    """Build PYTHONPATH that mirrors conftest.py path injections."""
+    packages = [
+        "fatih_hoca", "nerd_herd", "kuleden_donen_var", "general_beckman",
+        "hallederiz_kadir", "dallama", "dogru_mu_samet", "vecihi",
+        "yasar_usta", "yazbunu", "mr_roboto", "coulson", "sade_kalsin",
+        "c21_paraflow_diff", "intersect", "yalayut", "safety_guard", "husam",
+    ]
+    paths = [str(_WORKTREE)]
+    for pkg in packages:
+        p = _WORKTREE / "packages" / pkg / "src"
+        if p.is_dir():
+            paths.append(str(p))
+    existing = os.environ.get("PYTHONPATH", "")
+    if existing:
+        paths.append(existing)
+    return os.pathsep.join(paths)
 
 
 # ---------------------------------------------------------------------------
@@ -24,13 +49,27 @@ def test_husam_does_not_import_coulson():
 
     husam is the non-agentic single-call worker; coulson owns the ReAct loop.
     The two must never share a transitive import dependency at load time.
-    """
-    # Import husam (may already be cached in the test session — that is fine).
-    import husam  # noqa: F401
 
-    coulson_mods = [m for m in sys.modules if m == "coulson" or m.startswith("coulson.")]
-    assert not coulson_mods, (
-        f"husam import pulled in coulson modules: {coulson_mods}"
+    This test uses a subprocess to avoid cross-test session pollution: if
+    another test already imported coulson into sys.modules before this test
+    runs, checking sys.modules in-process gives a false positive.  The
+    subprocess starts with a clean module graph regardless of test order.
+    """
+    code = (
+        "import husam, sys; "
+        "bad = [m for m in sys.modules if m == 'coulson' or m.startswith('coulson.')]; "
+        "assert not bad, f'husam import pulled in coulson modules: {bad}'"
+    )
+    env = {**os.environ, "PYTHONPATH": _make_subprocess_pythonpath()}
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(_WORKTREE),
+        env=env,
+    )
+    assert r.returncode == 0, (
+        f"subprocess purity check failed:\nstdout: {r.stdout}\nstderr: {r.stderr}"
     )
 
 

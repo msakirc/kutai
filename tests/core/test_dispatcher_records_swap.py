@@ -19,7 +19,8 @@ async def test_dispatcher_records_swap_after_swap(monkeypatch):
     # Patch fatih_hoca.select to return a local model that triggers swap.
     # NOTE: MagicMock's `name` kwarg sets the mock display name, not .name attr.
     fake_model = MagicMock(is_local=True, location="gguf",
-                           provider="local", thinking_model=False)
+                           provider="local", thinking_model=False,
+                           is_loaded=False)
     fake_model.name = "qwen3-8b"
     fake_pick = MagicMock(model=fake_model, min_time_seconds=30)
     fake_result = CallResult(

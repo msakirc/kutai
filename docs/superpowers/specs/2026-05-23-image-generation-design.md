@@ -1,7 +1,7 @@
 # Image Generation — `clair_obscur` + `paintress` + `renoir`
 
 **Date:** 2026-05-23 (deep-dive 05-24/05-25)
-**Status:** design approved (brainstorming), pending spec review → writing-plans
+**Status:** design approved; Plan 1 v2, Plan 2 v2, Plan 3 v2 written (2026-05-25). Plan 1 v2 must merge before Plans 2/3 (file overlap on dispatcher + beckman). Pre-existing 4-file working-tree diff (`record_verdict.py`, `llm_dispatcher.py`, `db.py`, `pick_log.py`) must be resolved before execution since Plan 1 v2 / Plan 2 v2 both edit `llm_dispatcher.py`.
 **Strategic lock:** `project_z1_strategic_locks_20260509` #5 — image generation =
 provider abstraction, parallel shape to existing wrappers, providers local + cloud,
 selection scored on cost/latency/quality/VRAM, local preserves the M3 cost ceiling.
@@ -122,15 +122,21 @@ benchmark-enrichment pipeline must tolerate entries with no benchmark data.
 
 ## 5. Data taxonomy
 
-Extract a shared base; keep the hot LLM path untouched via an alias.
+**No `BaseModelInfo` subclassing.** Initial spec proposed shared base + Text/Image subclasses, but Plan 1 v2's recon confirmed `ModelInfo` has 4 required fields with no defaults at the top of its dataclass (`registry.py:53-56`). Any defaulted parent would crash compile with "non-default argument follows default argument." Cleanest: **`ImageModelInfo` is an independent `@dataclass`; the dispatcher branches on `isinstance(pick.model, ImageModelInfo)`.** Zero touch to the 40-field `ModelInfo` hot path; `Pick.model` stays loosely typed (already `model: object` per `fatih_hoca/types.py:9`).
+
 ```
-BaseModelInfo(name, provider, is_local, ...)
-  TextModelInfo(BaseModelInfo)   # = current ModelInfo + litellm_name, thinking_model, ...
-  ImageModelInfo(BaseModelInfo)  # + endpoint/base_url, quality_rank, cost_per_img, vram_mb, ...
-ModelInfo = TextModelInfo        # alias → every existing call site untouched
+@dataclass
+class ImageModelInfo:
+    name, provider, location, endpoint, api_base, quality_rank,
+    cost_per_image, vram_mb, supports_seed, max_width, max_height,
+    is_loaded, tier, litellm_name  # litellm_name carried for telemetry parity
+    @property is_local              # location in ("local", "ollama")
+    @property supports_image_generation  # always True; ModelInfo overrides False
 ```
-`Pick` stays generic over `model: BaseModelInfo`. Dispatcher branches on
-`isinstance(pick.model, ImageModelInfo)`.
+
+`ImageSpec`: prompt, negative_prompt, width/height, steps, **seed: int|None** (None=random),
+quality_tier ("fast"|"quality"), out_dir, filename_hint.
+`ImageResult`: path, provider, model, cost, latency, **seed_used: int|None**, error.
 
 `ImageSpec`: prompt, negative_prompt, width/height, steps, **seed: int|None** (None=random),
 quality_tier ("fast"|"quality"), out_dir, filename_hint.
@@ -141,7 +147,8 @@ quality_tier ("fast"|"quality"), out_dir, filename_hint.
 - **No killing live LLM calls.** A local-image task waits for the current local-LLM task to finish (natural boundary). It's a normal queued task; beckman admits-or-holds by urgency + pool pressure.
 - **Priority arbitrates the handover.** When the local slot frees, beckman admits the highest-priority waiting *local* task (text or image); a higher-prio image holds the slot against lower-prio LLM work. Cloud tasks (either modality) bypass the local slot entirely.
 - **Dispatcher minor touch** on a local-image dispatch: `dallama.unload()` (then poll `get_vram_free_mb` until the image model fits) → `clair_obscur.start()` → `paintress.generate()`. dallama lazy-reloads on the next LLM task. The *decision* was beckman's; this is mechanical follow-through. Counts as **one swap** against hoca's swap budget (so per-image eviction would correctly trip the thrash guard — batching rewarded).
-- **Warm across a batch:** beckman keeps clair_obscur warm while consecutive higher-prio image tasks run; releases on lane switch. A safety idle-timeout backstop in clair_obscur prevents holding the GPU forever if beckman stalls (beckman's "keep warm" resets the timer).
+- **Warm across a batch:** beckman keeps clair_obscur warm while consecutive higher-prio image tasks run; on lane switch beckman calls `clair_obscur.record_release_hint()` (NOT direct `stop()`). The backstop in `ImageServer._arm_idle_backstop` then fires the actual `stop()` after `idle_release_seconds`. The dispatcher's idempotent `start()` clears the pending hint, so a back-to-back image arriving mid-window reuses the warm server. **No dead code** — the backstop is the normal-path stop trigger, not just safety.
+- **Telemetry parity.** The image lane mirrors the LLM lane's full envelope inside `_dispatch_image`: `begin_call/end_call` (in-flight registry), `_record_pick` on success+failure (`model_pick_log`), `record_call_tokens` (zero tokens for image — row still writes for rollup), `record_call_cost`. All recon-confirmed generic (no LLM-only fields blocking). The local handover + `paintress.generate` are both wrapped in **`heartbeat.keepalive()`** so the 30-60s+ unload+poll+start window never trips the 300s watchdog.
 
 ## 7. Retry (generic)
 
@@ -153,13 +160,15 @@ LLM. Full exhaustion → task fails → consumers degrade: i2p keeps the placeho
 `/image` reports failure.
 
 One plumbing note: an image task triggers a swap like MAIN_WORK but is single-shot
-like OVERHEAD — `CallCategory` needs a third value (or the image lane sidesteps it).
+like OVERHEAD — `CallCategory` gets a third value, `IMAGE`.
+
+**Shared win.** Plan 1 v2's audit + recon found the LLM path **also** lacked inter-task `failed_models` → `failures=` propagation across re-admissions. `on_task_finished` writes `task.context["failed_models"]` (`orchestrator.py:824-828`) but `next_task()` never read it back. Plan 1 v2 introduces `_select_for_admission(spec)` in beckman that reads `failed_models` and forwards it as `failures=` to `fatih_hoca.select(...)` — **benefits both text and image retries**. Without this, a re-admitted text task could re-pick the just-failed model; for image (single-shot, no ReAct loop) the gap was fatal.
 
 ## 8. Consumers
 
-- **Prompt-writing task** (quality): a **beckman-admitted, full-lifecycle coulson task** reads design context (design tokens, screen/section plan, brand voice) and emits an enriched diffusion prompt per placeholder, scaffolded by **templates** to help small/local LLMs. Output feeds the image tasks. (paintress stays LLM-free.)
+- **Prompt-writing task** (quality): a **beckman-admitted, full-lifecycle coulson task** (`prompt_writer` agent, pure-config single-call) reads design context (design tokens, screen/section plan, brand voice) and emits an enriched diffusion prompt per placeholder, scaffolded by **templates** + **few-shot exemplars** to help small/local LLMs. Output feeds the image tasks. (paintress stays LLM-free.) JSON shape enforced via **`artifact_schema` on the i2p step** → `workflow_engine.constrained_emit.maybe_apply` runs a post-emit structured pass with `response_format=json_schema` when the cheap-tier LLM emits malformed JSON. Without the artifact_schema, prompt_writer at `default_tier="cheap"` parses garbage too often to be useful.
 - **`/image <prompt>`**: `beckman.enqueue` an image spec (no direct dispatcher call — `feedback_singular_dispatcher_caller`); reply with the photo. No dedicated rate-limit — beckman + kdv already pace the queue (single-user system); optional deep-queue warning.
-- **i2p prototype swap**: a mr_roboto mechanical (`action == "swap_placeholder_images"`) scans the prototype HTML for placeholder `<img>` (marker convention confirmed against the prototype generator at impl time), enqueues a prompt-writing task then per-placeholder image tasks through beckman, writes assets under `mission_{id}/assets/`, rewrites `src`. Best-effort: if generation is unavailable, keep placeholders (the step's `done_when` must not hard-require real images).
+- **i2p prototype swap**: a mr_roboto mechanical (`action == "swap_placeholder_images"`) **recursively** walks `mission_{id}/.web/**/*.html` (multi-screen prototypes) for placeholder `<img>` matching `^https?://placehold\.co/` (i2p_v3.json step 5.30a convention), enqueues a prompt-writing task then per-placeholder image tasks through beckman, writes assets under `mission_{id}/.web/assets/<placeholder_id>.png` (inside the web-preview served root), rewrites `src` to relative `assets/<id>.png`. Best-effort: per-placeholder failures keep the original `placehold.co` URL (`done_when` accepts `skipped_count > 0`). **Sibling `verify_swap_placeholder_images_shape` post-hook** (Z2/Z3 verify-shape pattern, mirrors `verify_charter_shape`) gates `emit_preview_url` — the preview URL only surfaces with a verifier-passed swap (asserts `replaced_count` agrees with disappeared `placehold.co` URLs, errors-margin for graceful degrade).
 - **`coulson`**: untouched except as the runtime for the prompt-writing task (a normal LLM task).
 
 ## 9. Providers (MVP) — founder bar: cheapest / biggest free
@@ -183,9 +192,11 @@ backend → `clair_obscur.available()` False → hoca filters it out, no crash.
 
 ## 12. MVP scope vs deferred
 **In MVP:** the 3 packages (clair_obscur scaffolded), hoca image scorer, kdv image
-providers + concurrency cap, nerd_herd image-server residency, dispatcher modality
-branch + unload touch, BaseModelInfo taxonomy, Pollinations + HF cloud working,
-prompt-writing task, `/image`, i2p placeholder-swap.
+providers + concurrency cap, nerd_herd `image_server_resident` + `vram_mb` fields,
+dispatcher modality branch + unload touch wrapped in `keepalive()`, **independent
+`ImageModelInfo` + `isinstance` branching** (no BaseModelInfo refactor), Pollinations
++ HF cloud working, `prompt_writer` agent + diffusion template + `artifact_schema`
+constrained-emit pass, `/image`, i2p `swap_placeholder_images` + `verify_swap_placeholder_images_shape` posthook, **shared beckman inter-task `failed_models` propagation** (text + image).
 **Deferred:** real ComfyUI/A1111 install + live local generation + VRAM swap-war
 validation; more cloud providers (Replicate/Together/Cloudflare); perceptual/NSFW in
 renoir.

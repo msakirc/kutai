@@ -3794,6 +3794,24 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         )
         return
 
+    # SP3b — result-REWRITE verdict path. Unlike every other (~40) kind, which
+    # gate (pass/fail → retry/DLQ) or surface (founder_action), the reflection
+    # and constrained_emit post-hooks REWRITE the source's result in place
+    # (reflection's corrected_result; emit's schema-conforming JSON). This
+    # branch runs BEFORE the per-kind gate dispatch; the default action="gate"
+    # leaves all existing kinds untouched. No second idempotency guard is added
+    # here — the SP1/SP3 claim-then-fire CAS already fires this once per child
+    # terminal event, and update_task to the same value is naturally idempotent.
+    # The rewrite only mutates `result`; the ordered chain (Task 6) advances to
+    # the next pending post-hook by leaving the source ungraded.
+    if getattr(a, "action", "gate") == "rewrite" and a.new_result is not None:
+        await update_task(int(a.source_task_id), result=a.new_result)
+        logger.debug(
+            "posthook verdict: rewrote source result",
+            source_id=a.source_task_id, kind=a.kind,
+        )
+        return
+
     ctx = _parse_ctx(source)
     pending = list(ctx.get("_pending_posthooks") or [])
 

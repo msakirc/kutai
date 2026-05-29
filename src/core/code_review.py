@@ -106,6 +106,14 @@ def build_code_review_spec(source: dict, exclusions: list):
     if not result_text or len(str(result_text).strip()) < 10:
         return CodeReviewResult(passed=False, raw="auto-fail: trivial/empty output")
 
+    try:
+        from dogru_mu_samet import assess as cq_assess
+        _cq = cq_assess(str(result_text))
+        if _cq.is_degenerate:
+            return CodeReviewResult(passed=False, raw=f"auto-fail: {_cq.summary}")
+    except Exception:
+        pass
+
     ctx = source.get("context", "{}")
     if isinstance(ctx, str):
         try:

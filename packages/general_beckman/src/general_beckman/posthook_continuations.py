@@ -254,12 +254,52 @@ async def _code_review_resume_err(child_task_id: int, result: dict, state: dict)
     )
 
 
+def _make_summary_verdict(source_task_id, artifact_name: str, passed: bool, summary: str):
+    """Build the PostHookVerdict (kind='summary:<artifact_name>') applied to the source."""
+    from general_beckman.result_router import PostHookVerdict
+    return PostHookVerdict(
+        source_task_id=source_task_id, kind=f"summary:{artifact_name}",
+        passed=passed, raw={"summary": summary, "artifact_name": artifact_name},
+    )
+
+
 async def _summary_resume(child_task_id: int, result: dict, state: dict) -> None:
-    raise NotImplementedError  # Task 7
+    """Resume after an artifact summarizer child completed.
+
+    Parse the child output. passed = len(summary) >= 50 AND not degenerate
+    (mirrors the deleted ArtifactSummarizerAgent output check). On fail the
+    apply layer drains the pending_posthooks entry but the structural summary
+    already stored by post_execute is kept.
+    """
+    source_task_id = state.get("source_task_id")
+    artifact_name = state.get("artifact_name") or ""
+    summary = _extract_content(result).strip()
+    passed = bool(summary) and len(summary) >= 50
+    if passed:
+        try:
+            from dogru_mu_samet import assess as cq_assess
+            if cq_assess(summary).is_degenerate:
+                passed = False
+        except Exception:  # noqa: BLE001
+            pass
+    await _apply_posthook_verdict(
+        {"id": child_task_id},
+        _make_summary_verdict(source_task_id, artifact_name, passed, summary if passed else ""),
+    )
 
 
 async def _summary_resume_err(child_task_id: int, result: dict, state: dict) -> None:
-    raise NotImplementedError  # Task 7
+    """On_error: the summarizer child terminally failed. Drain the pending kind with passed=False.
+
+    The structural summary was already stored by post_execute; the apply layer
+    just drains the pending_posthooks entry so the source can complete.
+    """
+    source_task_id = state.get("source_task_id")
+    artifact_name = state.get("artifact_name") or ""
+    await _apply_posthook_verdict(
+        {"id": child_task_id},
+        _make_summary_verdict(source_task_id, artifact_name, False, ""),
+    )
 
 
 def register_continuations() -> None:

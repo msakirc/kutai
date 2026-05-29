@@ -35,7 +35,7 @@ source task completes
 ```
 
 Live sites (re-confirmed 2026-05-29, line numbers match inventory):
-- **#7 grading** — `src/core/grading.py:373` (`grade_task`), agent `src/agents/grader.py`.
+- **#7 grading** — `grade_task` (`src/core/grading.py:276`; retry loop `:346`, `await_inline` `:373`), agent `src/agents/grader.py`.
 - **#8 code_review** — `src/core/code_review.py:179` (`code_review_task`), agent `CodeReviewerAgent`.
 - **#9 summarize** — `src/workflows/engine/hooks.py:84` (`_llm_summarize`), agent
   `src/agents/artifact_summarizer.py`. **Note:** the *inline* `_llm_summarize` caller in
@@ -94,9 +94,20 @@ source task completes
          parse child output → build PostHookVerdict → _apply_posthook_verdict(child_task, verdict)
 ```
 
+**Deadlock-closure mechanism (precise).** The deadlock dies because Shape B removes the
+**slot-holding-while-blocking parent** (breaks hold-and-wait), NOT because children move to a
+separate lane. The reviewer/summarizer child still `pick_lane`s onto `oneshot` (cap=4) and
+consumes a slot exactly as it did before; `count_in_flight` is kind-agnostic. What changes is
+that no parent now occupies a slot *waiting* on that child. (Note: code_review's parent was a
+`main_work` agent task, not `overhead` — Shape B both removes that cap-counted parent and leaves
+the review as a single `overhead` child. grade/summary parents were `overhead`.) Throughput
+contention on the oneshot cap persists and is out of SP3 scope.
+
 **Phase-2 apply is reused verbatim.** `_apply_posthook_verdict` (`apply.py:3740`) and its
 delegates (`_apply_code_review_verdict` `:2254`; grade fail `:3761` / grade pass `:4211`;
-summary `:4275`) are unchanged. The resume handler's only job is to reconstruct the same
+summary `:4275`) are unchanged. Confirmed: `_apply_posthook_verdict(task, a)` does NOT read its
+first arg `task` anywhere in the body — `source` is re-fetched from `a.source_task_id` (`:3746`).
+The resume handler may pass the reviewer child task (or `{}`); reuse works verbatim. The resume handler's only job is to reconstruct the same
 `PostHookVerdict` the deleted agents used to return and feed it to `_apply_posthook_verdict` —
 exactly the "re-enter routing" the SP1 grading spike proved sufficient.
 
@@ -137,20 +148,62 @@ Mechanical post-hook kinds (`verify_artifacts`, `grounding`, `test_run`, `import
 `pattern_lint`, and the Z3/Z4 reviewer kinds that already run config-only/mechanical) are
 **untouched** — cap-exempt, no deadlock, not in SP3.
 
+**⚠️ Child-spec hygiene (HIGH — caught in review).** grade/code_review children are
+`agent_type="reviewer"` (already in every bookkeeping/no-posthook exclusion set). The summarize
+child is `agent_type="summarizer"`, which is currently in **NONE** of them. **Do NOT set
+`mission_id` (or any workflow-step field) on the LLM child task row** — carry `mission_id` in
+`cont_state` only (matches today's `_llm_summarize`, which sets no `mission_id`, and the SP2
+interview handler, which carries `note_id` in `cont_state`). Otherwise a `summarizer` child with
+`mission_id` triggers: `rewrite.py` Rule 1 spawns a `grade` `RequestPostHook` + `MissionAdvance`
+on the child itself; `determine_posthooks` returns `["grade"]` (judge-of-judge recursion);
+`advance.py:195` may surface the 400-word summary as the mission's delivered message;
+`_send_step_progress` fires a spurious step ping. The `cont_state`-only route avoids all four and
+is strongly preferred.
+
 ### 4. Delete the agent layer
-- Files: `src/agents/grader.py`, `src/agents/code_reviewer.py`, `src/agents/artifact_summarizer.py`.
-- Refs: agent-registry/classifier entries for `grader`/`code_reviewer`/`artifact_summarizer`;
-  `_OVERHEAD_POSTHOOK_AGENTS` membership (`apply.py:1145`); `_posthook_kind` mapping;
-  `_send_step_progress` SP1.1-I6 exclusions (those agent types vanish — the raw_dispatch child's
-  `agent_type="reviewer"`/`"summarizer"` exclusion stays); the schema-validation producer-skip
-  for those agent types (`hooks.py:1465`); the grader-DLQ-cascade (`apply.py:832`) → relocate
-  into `posthook.grade.resume_err`.
+- **Files:** `src/agents/grader.py`, `src/agents/code_reviewer.py`, `src/agents/artifact_summarizer.py`.
+- **Agent registry / classifier:** `src/agents/__init__.py` `AGENT_REGISTRY` entries + imports
+  (`:21-23`, `:50-52`); `src/core/task_classifier.py` router-prompt + keyword-table entries
+  (`:64-67`, `:81-82`, `:407-410`) — leaving these lets a user message route to a deleted agent →
+  `get_agent()` failure.
+- **Beckman post-hook plumbing:** `_OVERHEAD_POSTHOOK_AGENTS` (`apply.py:1145`) + `_posthook_kind`;
+  `_NO_POSTHOOKS_AGENT_TYPES` (`posthooks.py:74`); `rewrite.py` Rule 0 (`:103-105`) + Rule 1
+  `is_bookkeeping` (`:255-259`). NOTE: the `cont_state`-only mission_id rule above means the
+  `summarizer` child is mission-less, so it never reaches Rule 1 / `determine_posthooks` — but
+  still drop the now-dead grader/code_reviewer/artifact_summarizer strings from these sets.
+- **Progress-ping exclusions (THREE sets, SP1.1-I6):** `general_beckman/__init__.py` `:941-944`,
+  `:983`, `:1026-1029`. Correction to an earlier draft: there is **no `summarizer` exclusion
+  today** — grade/code_review children (`reviewer`) are already covered, but if any summarize
+  child ever reaches these (it shouldn't, being mission-less), `summarizer` is absent. Drop the
+  dead agent strings; do not assume a `summarizer` entry exists.
+- **Final-result selection:** `workflow_engine/advance.py:195` `_bookkeeping` set (drop dead
+  strings).
+- **Schema-validation producer-skip** (`hooks.py:1465`) currently lists only
+  `("mechanical", "grader", "artifact_summarizer")` — `code_reviewer` was never here (its child is
+  `reviewer`-typed + carries no produces). Drop grader/artifact_summarizer.
+- **DLQ cascade:** the grader-DLQ-cascade (`apply.py:832`, inside `_posthook_dlq_cascade`,
+  invoked from `_dlq_write` `:557-563`) → relocate its source-permanently-failed semantics into
+  `posthook.grade.resume_err`.
+- **Benign stale data (leave or note, not correctness-critical):** `db.py:7496/7506` cost map,
+  `fatih_hoca/requirements.py:221` `AVG_ITERATIONS_BY_AGENT["grader"]`, `telemetry/rework.py:20`,
+  `coulson/self_critique.py:39` (`code_reviewer` opt-out). The live `reviewer`/`summarizer` types
+  keep full capability + requirements profiles (`fatih_hoca/capabilities.py:185,304`;
+  `requirements.py:175,186`), so child selection is unaffected.
 
 ## Resume handler logic
 
 State (JSON, set at spawn): `{source_task_id, kind, attempt, exclusions, mission_id}`.
 `result` is the child's normalized result dict (the raw reviewer text rides in `result`, decoded
 in-handler per the I5 no-magical-unwrap policy).
+
+**Content-extraction contract (review-confirmed).** The handler must replicate the dual-shape
+decode the SP2 handlers use — `_task_result_to_request_response` alone is insufficient (it reads
+a `TaskResult.result`, a different shape than the `result` dict a continuation handler receives).
+Use `src/app/interview.py:278-310` as the proven template: normal terminal →
+`result["result"]["content"]`; restart-reconcile → top-level `result["content"]`; then
+list→join the content blocks (as `grade_task:389` / `code_review.py:201` do today). The raw
+reviewer text IS persisted in `tasks.result`, so reconcile reconstruction carries it — a
+reconcile test must assert this.
 
 - **`posthook.grade.resume(child_id, result, state)`**
   - `verdict = parse_grade_response(extract_content(result))`.
@@ -199,16 +252,37 @@ in-handler per the I5 no-magical-unwrap policy).
   source-state transitions to the pre-SP3 agent-return path (verdict round-trips per
   `feedback_verify_verdict_roundtrip`).
 
+### Tests to rewrite / remove (review-enumerated — the deletion breaks these)
+"Existing suites green" is unreachable until these are updated; budget for them in the plan:
+- **Delete (test deleted agents/fns):** `tests/test_grader_agent.py`,
+  `tests/test_artifact_summarizer_agent.py`, `tests/test_code_review_posthook.py`,
+  `tests/core/test_grading_enqueue.py` (asserts `grade_task` enqueues `await_inline=True`),
+  `tests/workflows/engine/test_hooks_enqueue.py` (same for `_llm_summarize`).
+- **Update (assert the agent-task path / membership):** `tests/test_lifecycle_fixes.py:144`
+  (`artifact_summarizer in AGENT_REGISTRY`), `tests/agents/test_prompt_quality.py:11-13`
+  (`LOW_TRAFFIC_AGENTS` lists all three → instantiates deleted agents),
+  `tests/test_posthook_kind.py:20-71` (`_posthook_kind("grader")` + grade spawns
+  `agent_type="grader"`), `tests/test_reviewer_no_grade.py:28-37` +
+  `tests/test_beckman_posthooks.py:37-43` (membership returns `[]`),
+  `tests/test_beckman_rewrite.py:103`, `tests/test_beckman_on_task_finished.py:50-85`
+  (`{"mechanical","grader"}` siblings).
+- **Survive untouched:** `tests/test_grading.py` (`parse_grade_response` + `apply_grade_result`,
+  which stays as dead-but-tested code), `tests/core/test_code_review.py` parse tests.
+
 ## Risks
 
-- **`_apply_posthook_verdict(task, a)` first arg.** Today `task` = the grader agent task; the
-  resume handler will pass the reviewer **child** task. Confirm `task` is used only for
-  logging/attribution and that `source` is re-fetched from `a.source_task_id` (it is, at `:3746`).
-  If `task` is read for anything load-bearing, pass a compatible dict.
+- **[RESOLVED in review] `_apply_posthook_verdict(task, a)` first arg.** Confirmed `task` is
+  never read in the body; `source` is re-fetched from `a.source_task_id` (`:3746`). Resume may
+  pass the child task or `{}`.
+- **[HIGH — see Child-spec hygiene] summarize child `agent_type="summarizer"`** is in none of the
+  bookkeeping/no-posthook sets. Mitigated by carrying `mission_id` in `cont_state` only (never on
+  the child row). If that rule is violated → recursion + UI leak. The single most dangerous gap.
 - **Source `ungraded` window** between spawn and resume — identical to the await_inline window
   today; restart is covered by reconcile + alive-aware TTL.
-- **Two summary spawn sites** (`:1211` and `:4217`) must both route through the new helper or one
-  path silently keeps the agent task.
+- **Two summary spawn sites** (`:1211` RequestPostHook + `:4217` grade-pass loop) must both route
+  through the new helper or one path silently keeps the agent task.
+- **code_review parent was `main_work`** (not `overhead`) — Shape B removes a cap-counted
+  `main_work` parent and leaves an `overhead` child. Confirmed by `test_posthook_kind.py:38`.
 
 ## Acceptance
 

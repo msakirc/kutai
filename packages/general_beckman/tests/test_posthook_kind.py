@@ -86,3 +86,21 @@ async def test_grade_posthook_enqueues_reviewer_child_on_overhead_lane(monkeypat
 
     # No legacy grader agent-task row was created.
     assert not any(c.get("agent_type") == "grader" for c in add_task_calls)
+
+
+# ---------------------------------------------------------------------------
+# SP3b Task 3: self_reflect + constrained_emit registry entries
+# ---------------------------------------------------------------------------
+
+def test_reflect_and_emit_kinds_registered():
+    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    assert "self_reflect" in POST_HOOK_REGISTRY
+    assert "constrained_emit" in POST_HOOK_REGISTRY
+    assert POST_HOOK_REGISTRY["constrained_emit"].default_severity == "blocker"
+    assert POST_HOOK_REGISTRY["self_reflect"].default_severity == "warning"
+
+
+def test_reflect_emit_child_types_are_recursion_guarded():
+    from general_beckman.posthooks import _NO_POSTHOOKS_AGENT_TYPES
+    assert "self_reflect" in _NO_POSTHOOKS_AGENT_TYPES
+    assert "constrained_emit" in _NO_POSTHOOKS_AGENT_TYPES

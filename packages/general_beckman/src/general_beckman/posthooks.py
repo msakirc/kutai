@@ -89,6 +89,12 @@ _NO_POSTHOOKS_AGENT_TYPES: frozenset[str] = frozenset({
     # falsification_signal cannot be checked mechanically. Its verdict IS
     # the gate — judge-of-judge would loop forever.
     "adr_drift_judge",
+    # SP3b: self_reflect + constrained_emit are post-hook child tasks
+    # themselves. They must NEVER spawn grade/reflect/emit hooks of their own
+    # — that would create an infinite reflect→grade→reflect or
+    # emit→grade→emit chain.
+    "self_reflect",
+    "constrained_emit",
 })
 
 
@@ -879,6 +885,36 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         description=(
             "Z2 cross-mission learning — pull top mission_lessons rows and "
             "inject them into the next mission's first task context."
+        ),
+    ),
+    # SP3b: constrained_emit — re-emit draft as schema-conforming JSON.
+    # Result-rewriting post-hook (replaces tasks.result). Runs before grade.
+    # Auto-wire is schema-driven (Task 6), not produces-glob — empty triggers.
+    "constrained_emit": PostHookSpec(
+        kind="constrained_emit",
+        verb="constrained_emit",   # routed by _enqueue_posthook_llm_child (Task 5)
+        default_severity="blocker",
+        cost_band="moderate",
+        # Auto-wired by determine_posthooks on steps that declare a constrainable
+        # artifact_schema (Task 6). No glob trigger (schema lives in ctx, not produces).
+        auto_wire_triggers=[],
+        description=(
+            "SP3b: re-emit the draft as schema-conforming JSON (response_format). "
+            "Result-rewriting post-hook (replaces tasks.result). Runs before grade."
+        ),
+    ),
+    # SP3b: self_reflect — role-specific self-review of the draft.
+    # Result-rewriting when verdict=fix (applies corrected_result).
+    # Runs after emit, before grade.
+    "self_reflect": PostHookSpec(
+        kind="self_reflect",
+        verb="self_reflect",
+        default_severity="warning",
+        cost_band="moderate",
+        auto_wire_triggers=[],
+        description=(
+            "SP3b: role-specific self-review of the draft. Result-rewriting when "
+            "verdict=fix (applies corrected_result). Runs after emit, before grade."
         ),
     ),
 }

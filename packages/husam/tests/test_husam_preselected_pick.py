@@ -1,4 +1,9 @@
-"""Dispatcher honours Task.preselected_pick on iteration 0, falls back to Hoca on retries."""
+"""husam.run honours preselected_pick on iteration 0, falls back to Hoca otherwise.
+
+Migrated from tests/core/test_dispatcher_preselected_pick.py (SP3b Task 2). The
+preselected-vs-select branch moved from dispatcher._do_dispatch into husam.run.
+The Beckman-attached Pick rides on the task spec as ``preselected_pick``.
+"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -30,6 +35,7 @@ def _fake_pick(model, composite: float = 0.7):
         model=model,
         composite=composite,
         score=composite,
+        top_summary="",
         min_time_seconds=8.0,
         estimated_load_seconds=0.0,
     )
@@ -51,9 +57,26 @@ def _fake_call_result(model_name: str = "claude-sonnet-4-6") -> CallResult:
     )
 
 
+def _task(preselected_pick=None):
+    return {
+        "context": {"llm_call": {
+            "raw_dispatch": True,
+            "call_category": "main_work",
+            "task": "coder",
+            "agent_type": "",
+            "difficulty": 7,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": None,
+            "failures": [],
+        }},
+        "kind": "main_work",
+        "preselected_pick": preselected_pick,
+    }
+
+
 @pytest.mark.asyncio
 async def test_preselected_pick_skips_first_hoca_call():
-    from src.core.llm_dispatcher import CallCategory, LLMDispatcher
+    import husam
 
     model = _fake_model()
     preselected = _fake_pick(model, composite=0.7)
@@ -62,21 +85,13 @@ async def test_preselected_pick_skips_first_hoca_call():
          patch.object(hallederiz_kadir, "call",
                       new=AsyncMock(return_value=_fake_call_result())), \
          patch("src.infra.pick_log.write_pick_log_row", new=AsyncMock()):
-        d = LLMDispatcher()
-        await d._do_dispatch(
-            category=CallCategory.MAIN_WORK,
-            task="coder",
-            difficulty=7,
-            messages=[{"role": "user", "content": "hi"}],
-            tools=None,
-            preselected_pick=preselected,
-        )
+        await husam.run(_task(preselected_pick=preselected))
     assert select_spy.call_count == 0
 
 
 @pytest.mark.asyncio
 async def test_no_preselected_pick_calls_hoca_normally():
-    from src.core.llm_dispatcher import CallCategory, LLMDispatcher
+    import husam
 
     model = _fake_model()
     pick = _fake_pick(model, composite=0.7)
@@ -85,12 +100,5 @@ async def test_no_preselected_pick_calls_hoca_normally():
          patch.object(hallederiz_kadir, "call",
                       new=AsyncMock(return_value=_fake_call_result())), \
          patch("src.infra.pick_log.write_pick_log_row", new=AsyncMock()):
-        d = LLMDispatcher()
-        await d._do_dispatch(
-            category=CallCategory.MAIN_WORK,
-            task="coder",
-            difficulty=7,
-            messages=[{"role": "user", "content": "hi"}],
-            tools=None,
-        )
+        await husam.run(_task())
     assert select_spy.call_count == 1

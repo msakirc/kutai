@@ -298,7 +298,8 @@ class Orchestrator:
             # ── raw_dispatch sentinel: LLM call routed via beckman.enqueue
             # alias (dispatcher.request → beckman.enqueue → pump → here).
             # These tasks have context.llm_call.raw_dispatch == True and no
-            # matching agent class — send them straight to dispatcher.dispatch().
+            # matching agent class — send them straight to husam.run() (the
+            # non-agentic single-call worker that owns select → execute → map).
             try:
                 _ctx_raw_rd = task.get("context") or "{}"
                 _ctx_rd = json.loads(_ctx_raw_rd) if isinstance(_ctx_raw_rd, str) else _ctx_raw_rd
@@ -309,12 +310,12 @@ class Orchestrator:
             except Exception:
                 _is_raw = False
             if _is_raw:
-                from src.core.llm_dispatcher import get_dispatcher
+                import husam
                 # Forward the in-memory preselected_pick that Beckman attached at
-                # admission so dispatcher.dispatch() can skip re-selection.
-                # Admission gates (fatih_hoca.select, pool_pressure, reserve_task)
-                # already ran in Beckman; dispatcher is pure call-execution here.
-                _dispatch_result = await get_dispatcher().dispatch(
+                # admission so husam can skip re-selection. Admission gates
+                # (fatih_hoca.select, pool_pressure, reserve_task) already ran in
+                # Beckman; husam → dispatcher.execute is pure call-execution here.
+                _dispatch_result = await husam.run(
                     {
                         "context": _ctx_rd,
                         "kind": task.get("kind", "main_work"),

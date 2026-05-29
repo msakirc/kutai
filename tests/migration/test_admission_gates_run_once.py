@@ -1,12 +1,16 @@
 """
 Task 5 — Admission gates run exactly once (in Beckman), not twice.
 
+(SP3b Task 2: the raw_dispatch worker is now ``husam.run`` — the dispatcher's
+``dispatch``/``_do_dispatch`` were deleted. These tests now drive husam.run,
+which honours the Beckman-preselected pick and must NOT re-select.)
+
 Tests verify:
-- fatih_hoca.select() called only in Beckman admission, not again in dispatcher.dispatch()
-- dispatcher.dispatch() receives selected_model in spec (via orchestrator pass-through)
-- in_flight slot reserved by Beckman before dispatcher.dispatch() is called
-- est_tokens shim in dispatcher is gone (begin_call gets 0 from dispatcher, keeps Beckman's value)
-- end-to-end smoke: request() → enqueue → next_task → dispatch() terminates correctly
+- fatih_hoca.select() called only in Beckman admission, not again in husam.run()
+- husam.run() receives selected_model in spec (via orchestrator pass-through)
+- in_flight slot reserved by Beckman before husam.run() is called
+- est_tokens shim is gone (begin_call gets 0 from execute, keeps Beckman's value)
+- Beckman writes selected_model into next_task result
 """
 from __future__ import annotations
 
@@ -95,7 +99,7 @@ def _make_task(task_id=999, agent_type="main_work", pick=None, context_extra=Non
 
 @pytest.mark.asyncio
 async def test_fatih_hoca_select_called_only_in_beckman(tmp_path, monkeypatch):
-    """When a task carries preselected_pick, dispatcher must NOT call fatih_hoca.select again."""
+    """When a task carries preselected_pick, husam must NOT call fatih_hoca.select again."""
     import src.infra.db as _dbmod
     monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
 
@@ -130,8 +134,7 @@ async def test_fatih_hoca_select_called_only_in_beckman(tmp_path, monkeypatch):
         patch("src.core.in_flight._push", new=AsyncMock()),
         patch("src.core.llm_dispatcher.LLMDispatcher._record_pick", new=AsyncMock()),
     ):
-        from src.core.llm_dispatcher import get_dispatcher, CallCategory
-        dispatcher = get_dispatcher()
+        import husam
 
         # Simulate what orchestrator does: build spec with preselected_pick
         spec = {
@@ -151,11 +154,11 @@ async def test_fatih_hoca_select_called_only_in_beckman(tmp_path, monkeypatch):
             "preselected_pick": pick,  # Beckman's in-memory pick
         }
 
-        result = await dispatcher.dispatch(spec)
+        result = await husam.run(spec)
 
-    # select must not have been called from dispatcher — Beckman did it
+    # select must not have been called from husam — Beckman did it
     assert select_call_count["n"] == 0, (
-        f"fatih_hoca.select was called {select_call_count['n']} time(s) from dispatcher "
+        f"fatih_hoca.select was called {select_call_count['n']} time(s) from husam "
         "but should be 0 (Beckman already selected at admission)"
     )
     assert result["content"] == "response"
@@ -165,7 +168,7 @@ async def test_fatih_hoca_select_called_only_in_beckman(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_dispatcher_dispatch_receives_selected_model_in_spec(tmp_path, monkeypatch):
-    """Beckman writes selected_model into llm_call; dispatch() uses it instead of re-selecting."""
+    """Beckman writes selected_model into llm_call; husam uses it instead of re-selecting."""
     import src.infra.db as _dbmod
     monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
 
@@ -196,8 +199,7 @@ async def test_dispatcher_dispatch_receives_selected_model_in_spec(tmp_path, mon
         patch("src.core.in_flight._push", new=AsyncMock()),
         patch("src.core.llm_dispatcher.LLMDispatcher._record_pick", new=AsyncMock()),
     ):
-        from src.core.llm_dispatcher import get_dispatcher
-        dispatcher = get_dispatcher()
+        import husam
 
         spec = {
             "context": {
@@ -216,7 +218,7 @@ async def test_dispatcher_dispatch_receives_selected_model_in_spec(tmp_path, mon
             "preselected_pick": pick,
         }
 
-        await dispatcher.dispatch(spec)
+        await husam.run(spec)
 
     assert captured_model["name"] == "known-model-xyz"
 
@@ -225,7 +227,7 @@ async def test_dispatcher_dispatch_receives_selected_model_in_spec(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_in_flight_slot_reserved_before_dispatch(tmp_path, monkeypatch):
-    """reserve_task must have been called (by Beckman) before dispatcher.dispatch fires."""
+    """reserve_task must have been called (by Beckman) before husam.run fires."""
     import src.infra.db as _dbmod
     monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
 
@@ -263,8 +265,7 @@ async def test_in_flight_slot_reserved_before_dispatch(tmp_path, monkeypatch):
         from src.core.in_flight import reserve_task
         await reserve_task(42, pick, est_tokens=1000)
 
-        from src.core.llm_dispatcher import get_dispatcher
-        dispatcher = get_dispatcher()
+        import husam
         spec = {
             "context": {"llm_call": {
                 "raw_dispatch": True,
@@ -279,7 +280,7 @@ async def test_in_flight_slot_reserved_before_dispatch(tmp_path, monkeypatch):
             "kind": "main_work",
             "preselected_pick": pick,
         }
-        await dispatcher.dispatch(spec)
+        await husam.run(spec)
 
     # reserve must appear before dispatch_call in the events list
     r_idx = next((i for i, e in enumerate(events) if e[0] == "reserve"), None)
@@ -293,8 +294,9 @@ async def test_in_flight_slot_reserved_before_dispatch(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_dispatcher_passes_zero_est_tokens_to_begin_call(tmp_path, monkeypatch):
-    """After Task 5, dispatcher no longer computes est_tokens for begin_call.
+    """After Task 5, the call path no longer computes est_tokens for begin_call.
     It passes 0; begin_call's max(prior, 0) keeps the Beckman-reserved value.
+    (execute() still owns begin_call; husam.run drives it.)
     """
     import src.infra.db as _dbmod
     monkeypatch.setattr(_dbmod, "DB_PATH", str(tmp_path / "test.db"))
@@ -333,8 +335,7 @@ async def test_dispatcher_passes_zero_est_tokens_to_begin_call(tmp_path, monkeyp
         patch("src.core.in_flight._push", new=AsyncMock()),
         patch("src.core.llm_dispatcher.LLMDispatcher._record_pick", new=AsyncMock()),
     ):
-        from src.core.llm_dispatcher import get_dispatcher
-        dispatcher = get_dispatcher()
+        import husam
         spec = {
             "context": {"llm_call": {
                 "raw_dispatch": True,
@@ -345,16 +346,16 @@ async def test_dispatcher_passes_zero_est_tokens_to_begin_call(tmp_path, monkeyp
                 "messages": [{"role": "user", "content": "hi"}],
                 "failures": [],
                 "selected_model": "est-test-model",
-                # Note: estimated_input_tokens NOT passed — dispatcher must not compute from these
+                # Note: estimated_input_tokens NOT passed — execute must not compute from these
             }},
             "kind": "main_work",
             "preselected_pick": pick,
         }
-        await dispatcher.dispatch(spec)
+        await husam.run(spec)
 
-    # Dispatcher must pass 0 (not compute its own shim)
+    # execute() must pass 0 (not compute its own shim)
     assert captured_est["value"] == 0, (
-        f"dispatcher passed est_tokens={captured_est['value']} to begin_call "
+        f"execute passed est_tokens={captured_est['value']} to begin_call "
         "but should pass 0 (Beckman owns est_tokens via reserve_task)"
     )
 

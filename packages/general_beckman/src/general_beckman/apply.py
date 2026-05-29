@@ -16,6 +16,7 @@ before calling `mr_roboto.run`, which routes on `payload["action"]`. Use
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 from typing import Iterable
@@ -43,6 +44,79 @@ def _mechanical_context(action: str, **payload_fields) -> dict:
     }
 
 logger = get_logger("beckman.apply")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# SP3b FIX 2 — per-source verdict serialization.
+#
+# A single source task can have MULTIPLE post-hook children completing
+# concurrently: the chain cursor (emit→reflect→grade) plus independent
+# blockers (grounding / verify_artifacts / test_run / ...). Each completion
+# fires its resume via ``asyncio.create_task`` (continuations.fire_for_task),
+# so several verdict appliers run as separate coroutines and do unserialized
+# read-modify-write on the SAME ``tasks.context`` (``_pending_posthooks`` /
+# ``_posthook_queue``). Lost updates → premature completion OR a permanent
+# 'ungraded' stall.
+#
+# KutAI runs a SINGLE orchestrator process, so one asyncio.Lock per source_id
+# serializes every read-modify-write of that source's context. The dict is
+# unbounded in principle, but post-hook traffic is low and stale locks are
+# cheap (one empty Lock object) — we drop the entry on best-effort cleanup
+# once no applier holds it.
+#
+# Re-entrancy: ``asyncio.Lock`` is NOT reentrant, but the verdict/chain call
+# graph is deeply nested within ONE coroutine chain (e.g.
+# _apply_request_posthook → _advance_posthook_chain → _enqueue_posthook_llm_
+# child → _apply_posthook_verdict auto-fail). A plain ``async with lock`` at
+# every entry would self-deadlock. We track the source_ids the CURRENT task
+# already holds via a contextvar set and make ``_source_verdict_guard`` a
+# no-op re-acquire when already held — a lightweight reentrant lock scoped to
+# the running coroutine chain. Concurrent appliers (separate create_task
+# coroutines) get fresh contextvar copies, so they correctly block.
+# ──────────────────────────────────────────────────────────────────────────
+import contextvars as _contextvars
+from contextlib import asynccontextmanager as _asynccontextmanager
+
+_source_verdict_locks: dict[int, asyncio.Lock] = {}
+_held_source_locks: _contextvars.ContextVar[frozenset[int]] = _contextvars.ContextVar(
+    "_held_source_locks", default=frozenset()
+)
+
+
+def _source_verdict_lock(source_task_id: int) -> asyncio.Lock:
+    """Return (creating on first use) the serialization lock for a source."""
+    sid = int(source_task_id)
+    lock = _source_verdict_locks.get(sid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _source_verdict_locks[sid] = lock
+    return lock
+
+
+@_asynccontextmanager
+async def _source_verdict_guard(source_task_id: int):
+    """Serialize read-modify-write of a source's context across concurrent
+    verdict appliers. Reentrant within a single coroutine chain (see module
+    note): if THIS task already holds the source lock, the inner ``async with``
+    is a no-op pass-through rather than a self-deadlock."""
+    sid = int(source_task_id)
+    held = _held_source_locks.get()
+    if sid in held:
+        # Already held by an enclosing frame in this coroutine chain.
+        yield
+        return
+    lock = _source_verdict_lock(sid)
+    token = _held_source_locks.set(held | {sid})
+    try:
+        async with lock:
+            yield
+    finally:
+        _held_source_locks.reset(token)
+        # Best-effort cleanup: drop the lock object once no one holds it. Safe
+        # because we are outside the ``async with`` and the contextvar no
+        # longer marks it held for this chain.
+        if not lock.locked():
+            _source_verdict_locks.pop(sid, None)
 
 
 async def _record_and_resolve_confidence(
@@ -1134,7 +1208,17 @@ _REWRITE_POSTHOOK_KINDS: frozenset[str] = frozenset(
 
 
 async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
-    """Park the source in `ungraded`, enqueue a post-hook task row."""
+    """Park the source in `ungraded`, enqueue a post-hook task row.
+
+    SP3b FIX 2 — the entire park-then-spawn region reads + rewrites the source
+    ``context`` (``_pending_posthooks`` / ``_posthook_queue``). Serialize it
+    against concurrent verdict appliers on the same source.
+    """
+    async with _source_verdict_guard(a.source_task_id):
+        await _apply_request_posthook_locked(task, a)
+
+
+async def _apply_request_posthook_locked(task: dict, a: RequestPostHook) -> None:
     import json as _json
     from src.infra.db import add_task, get_task, update_task
 
@@ -1184,7 +1268,8 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
             status="ungraded",
             context=_json.dumps(ctx),
         )
-        await _advance_posthook_chain(a.source_task_id)
+        # We already hold the source guard — call the unlocked body directly.
+        await _advance_posthook_chain_locked(a.source_task_id)
         return
 
     ctx = _parse_ctx(source)
@@ -1249,7 +1334,16 @@ async def _advance_posthook_chain(source_task_id: int) -> None:
     — no child is spawned. In that case we MUST advance to the next kind in the
     same call so the source never stalls in 'ungraded' with a dead cursor. Loop
     until a child is actually spawned or the queue drains.
+
+    SP3b FIX 2 — the cursor pop is a read-modify-write of the source context;
+    serialize it against concurrent verdict appliers (reentrant within this
+    coroutine chain, so callers that already hold the guard re-enter freely).
     """
+    async with _source_verdict_guard(source_task_id):
+        await _advance_posthook_chain_locked(source_task_id)
+
+
+async def _advance_posthook_chain_locked(source_task_id: int) -> None:
     import json as _json
     from src.infra.db import get_task, update_task
 
@@ -1258,6 +1352,20 @@ async def _advance_posthook_chain(source_task_id: int) -> None:
         if source is None:
             logger.warning("posthook chain: source missing",
                            source_id=source_task_id)
+            return
+        # SP3b FIX 3 — status re-check. An independent blocker (e.g. grounding /
+        # test_run) may have failed concurrently and re-pended the source
+        # ('pending' for retry, or 'failed'/'completed' via its own gate). If the
+        # source is no longer 'ungraded', BAIL: spawning the next chain child
+        # (e.g. a grade) would grade a stale draft against a task that already
+        # moved on. The chain is abandoned safely — the blocker now owns the
+        # source's fate, and a restart reconcile only re-drives genuinely-stuck
+        # 'ungraded' rows.
+        if source.get("status") != "ungraded":
+            logger.debug(
+                "posthook chain: source no longer ungraded, abandoning cursor",
+                source_id=source_task_id, status=source.get("status"),
+            )
             return
         ctx = _parse_ctx(source)
         queue = list(ctx.get("_posthook_queue") or [])
@@ -1283,6 +1391,98 @@ async def _advance_posthook_chain(source_task_id: int) -> None:
         # Skipped rewriter (no child) — drain to the next kind immediately.
         logger.debug("posthook chain: kind skipped, advancing",
                      source_id=source_task_id, kind=head)
+
+
+async def reconcile_stranded_posthook_chains() -> int:
+    """SP3b FIX 4 — re-drive post-hook chains stranded by a mid-advance crash.
+
+    ``_advance_posthook_chain`` persists the shortened ``_posthook_queue`` in its
+    OWN commit BEFORE ``_enqueue_posthook_llm_child`` writes the child's
+    continuation row. A crash in that window leaves the source 'ungraded' with a
+    non-empty queue, NO child task, and NO pending continuation — no event will
+    ever re-drive it, so the source (and its mission step) hangs forever.
+
+    This additive startup/periodic sweep finds those rows and re-calls
+    ``_advance_posthook_chain`` (which re-reads the queue, re-persists, and
+    spawns the head). It runs ALONGSIDE ``continuations.reconcile_continuations``
+    — that pass recovers in-flight children whose continuation row DOES exist;
+    this pass recovers the gap where it does NOT.
+
+    Double-spawn guard (load-bearing): a source is re-driven ONLY when there is
+    NO pending post-hook continuation referencing it. If a child IS in flight
+    (continuation row pending), the queue is already advanced past its head and
+    that child's resume will continue the chain — re-driving here would spawn a
+    SECOND head and grade a stale draft twice. The per-source verdict guard
+    additionally serializes this against any concurrent live advance.
+
+    Returns the number of chains re-driven (for logging / tests).
+    """
+    import json as _json
+    from src.infra.db import get_db
+
+    db = await get_db()
+
+    # 1. Candidate sources: ungraded with a non-empty _posthook_queue. The
+    #    JSON LIKE is a cheap pre-filter; we re-parse to confirm below.
+    cur = await db.execute(
+        "SELECT id, context FROM tasks "
+        "WHERE status='ungraded' AND context LIKE '%_posthook_queue%'"
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        return 0
+
+    # 2. Source ids that already have a pending post-hook child in flight. Such
+    #    chains are NOT stranded — the child's resume owns the next advance.
+    ccur = await db.execute(
+        "SELECT state_json FROM continuations "
+        "WHERE status='pending' AND resume_name LIKE 'posthook.%'"
+    )
+    in_flight: set[int] = set()
+    for (sj,) in await ccur.fetchall():
+        try:
+            st = _json.loads(sj) if isinstance(sj, str) else (sj or {})
+        except (ValueError, TypeError):
+            continue
+        sid = st.get("source_task_id")
+        if sid is not None:
+            try:
+                in_flight.add(int(sid))
+            except (ValueError, TypeError):
+                pass
+
+    redriven = 0
+    for (tid, raw_ctx) in rows:
+        try:
+            ctx = _json.loads(raw_ctx) if isinstance(raw_ctx, str) else (raw_ctx or {})
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(ctx, dict):
+            continue
+        queue = ctx.get("_posthook_queue") or []
+        if not queue:
+            continue  # LIKE false-positive (key present but empty/elsewhere)
+        sid = int(tid)
+        if sid in in_flight:
+            continue  # a child IS in flight — do NOT double-spawn
+        logger.warning(
+            "reconcile: re-driving stranded post-hook chain",
+            source_id=sid, queue=list(queue),
+        )
+        try:
+            # Public guard-wrapped entry: re-reads + re-checks status under the
+            # per-source lock, so a concurrent live advance can't race it.
+            await _advance_posthook_chain(sid)
+            redriven += 1
+        except Exception as exc:  # noqa: BLE001 — one bad row must not abort the sweep
+            logger.warning(
+                "reconcile: stranded-chain re-drive failed",
+                source_id=sid, error=str(exc),
+            )
+    if redriven:
+        logger.info("reconcile: re-drove stranded post-hook chains",
+                    count=redriven)
+    return redriven
 
 
 async def _complete_source_if_no_pending(source_task_id: int, ctx: dict) -> None:
@@ -1496,8 +1696,16 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
     else:
         raise ValueError(f"_enqueue_posthook_llm_child: unsupported kind {kind!r}")
 
+    # SP3b CRITICAL FIX: post-hook children MUST ride the oneshot lane. The lane
+    # system only has oneshot/ongoing (lanes.py); the pump (next_task → pick_ready
+    # _top_k(lane=LANE_ONESHOT)) only selects lane=='oneshot'. add_task persists an
+    # unknown lane verbatim, so lane="overhead" produced rows the pump NEVER
+    # dispatched — orphaning every emit/reflect/grade/code_review child and
+    # stranding the source 'ungraded' forever. These are OVERHEAD-category LLM
+    # calls (call_category lives in context.llm_call), which is orthogonal to the
+    # admission lane — they belong on oneshot per SP3 design intent.
     await enqueue(built, parent_id=source_id, on_complete=on_complete,
-                  on_error=on_error, cont_state=cont_state, lane="overhead")
+                  on_error=on_error, cont_state=cont_state, lane="oneshot")
     return True  # child task enqueued
 
 
@@ -4023,7 +4231,23 @@ async def _maybe_spawn_integration_bisect(
 
 
 async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
-    """Apply a post-hook verdict back to the source task."""
+    """Apply a post-hook verdict back to the source task.
+
+    SP3b FIX 2 — every per-kind verdict handler below does a read-modify-write
+    of the source ``context`` (drains ``_pending_posthooks`` / rewrites
+    ``result``). Concurrent appliers (the chain grade child + an independent
+    blocker like grounding, each fired in its own ``asyncio.create_task``) would
+    otherwise clobber each other's pending-list updates → premature completion
+    or a permanent 'ungraded' stall. Serialize on the source. The guard is
+    reentrant within a coroutine chain, so the auto-fail short-circuit inside
+    ``_enqueue_posthook_llm_child`` (which already holds the guard) re-enters
+    freely without self-deadlock.
+    """
+    async with _source_verdict_guard(a.source_task_id):
+        await _apply_posthook_verdict_locked(task, a)
+
+
+async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None:
     import json as _json
     from src.infra.db import get_task, update_task, add_task
     from src.workflows.engine.artifacts import ArtifactStore

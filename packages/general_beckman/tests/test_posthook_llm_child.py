@@ -30,8 +30,8 @@ async def _async_noop(*a, **k):
 async def test_emit_child_spec_is_raw_dispatch(monkeypatch):
     """Calling _enqueue_posthook_llm_child("constrained_emit", ...) builds a
     raw_dispatch=True spec whose messages contain the schema + draft, with a
-    response_format set, and enqueues it on the overhead lane with the emit
-    resume continuation."""
+    response_format set, and enqueues it on the oneshot lane (the only lane the
+    pump dispatches) with the emit resume continuation."""
     import general_beckman.apply as apply_mod
 
     # KutAI artifact_schema dialect: top-level keys are artifact NAMES; each
@@ -63,7 +63,7 @@ async def test_emit_child_spec_is_raw_dispatch(monkeypatch):
     assert "connection_verified" in joined  # schema field surfaced
     assert "the connection is verified" in joined  # draft surfaced
 
-    assert kwargs["lane"] == "overhead"
+    assert kwargs["lane"] == "oneshot"
     assert kwargs["on_complete"] == "posthook.constrained_emit.resume"
     assert kwargs["parent_id"] == 42
     # mission_id rides in cont_state, never on the child row.
@@ -73,8 +73,9 @@ async def test_emit_child_spec_is_raw_dispatch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reflect_child_spec_is_raw_dispatch(monkeypatch):
-    """self_reflect spawns a raw_dispatch reflection child on the overhead
-    lane with the reflect resume continuation."""
+    """self_reflect spawns a raw_dispatch reflection child on the oneshot
+    lane (the only lane the pump dispatches) with the reflect resume
+    continuation."""
     import general_beckman.apply as apply_mod
 
     draft = (
@@ -100,7 +101,7 @@ async def test_reflect_child_spec_is_raw_dispatch(monkeypatch):
     assert llm["raw_dispatch"] is True
     joined = "\n".join(m["content"] for m in llm["messages"])
     assert "signed session tokens" in joined  # draft surfaced to reviewer
-    assert kwargs["lane"] == "overhead"
+    assert kwargs["lane"] == "oneshot"
     assert kwargs["on_complete"] == "posthook.self_reflect.resume"
     assert kwargs["parent_id"] == 55
 

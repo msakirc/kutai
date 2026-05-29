@@ -1,21 +1,28 @@
-"""Post-hook grade/summarize work must land on the OVERHEAD lane.
+"""Post-hook grade/summarize work must land on a pump-dispatchable lane.
 
 Bug (2026-05-26): the generic post-hook spawner (apply._apply_request_posthook)
 called add_task() without kind=, so grade/summarize post-hooks defaulted to
 kind='main_work' → runner='react'. As main_work they picked CLOUD models and
 rode the 600s wall-clock cap; under network instability a cloud call hung the
 full 600s → bare TimeoutError → DLQ at 6/6. These are single-call LLM
-evaluation work and belong on the OVERHEAD lane (loaded local model, direct
-runner).
+evaluation work and belong on the OVERHEAD *category* (loaded local model,
+direct runner) — which lives in context.llm_call.call_category, NOT the
+admission lane.
 
 SP3 reality: grade / code_review / summary post-hooks no longer flow through
 add_task() at all. They are enqueued as raw_dispatch reviewer/summarizer
-CHILDREN via general_beckman.enqueue(..., lane="overhead") with a durable
-continuation. ``_posthook_kind`` therefore now returns ``"main_work"``
-unconditionally — it only serves the mechanical post-hook branch that still
-reaches add_task() (those route via agent_type='mechanical'). The OVERHEAD
-lane assignment moved from the spawned task's ``kind`` to the explicit
-``lane="overhead"`` argument on enqueue().
+CHILDREN via general_beckman.enqueue(...) with a durable continuation.
+``_posthook_kind`` therefore now returns ``"main_work"`` unconditionally — it
+only serves the mechanical post-hook branch that still reaches add_task()
+(those route via agent_type='mechanical').
+
+SP3b CRITICAL FIX (lane bug): the child was originally enqueued with
+``lane="overhead"`` — but the lane system has ONLY oneshot/ongoing, and the
+pump (next_task → pick_ready_top_k(lane=LANE_ONESHOT)) only selects
+lane=='oneshot'. add_task persists an unknown lane verbatim, so "overhead"
+rows were NEVER dispatched, orphaning every post-hook child and stranding the
+source 'ungraded' forever. The child now rides ``lane="oneshot"``; the OVERHEAD
+category is expressed purely in context (call_category), orthogonal to the lane.
 """
 from __future__ import annotations
 
@@ -36,10 +43,13 @@ def test_posthook_kind_is_always_main_work():
 
 
 @pytest.mark.asyncio
-async def test_grade_posthook_enqueues_reviewer_child_on_overhead_lane(monkeypatch):
+async def test_grade_posthook_enqueues_reviewer_child_on_oneshot_lane(monkeypatch):
     """End-to-end: a grade post-hook spawns a raw_dispatch reviewer CHILD via
-    general_beckman.enqueue(lane="overhead") with the durable grade
-    continuation — NOT an add_task(agent_type='grader', kind='overhead') row."""
+    general_beckman.enqueue(lane="oneshot") with the durable grade
+    continuation — NOT an add_task(agent_type='grader', kind='overhead') row.
+
+    The child MUST ride the oneshot lane (the only lane the pump selects);
+    "overhead" was a phantom lane that orphaned the child (SP3b lane bug)."""
     import general_beckman.apply as apply_mod
 
     add_task_calls: list = []
@@ -75,13 +85,14 @@ async def test_grade_posthook_enqueues_reviewer_child_on_overhead_lane(monkeypat
     with patch.object(apply_mod, "enqueue", AsyncMock(return_value=999)) as enq:
         await apply_mod._apply_request_posthook({"id": 1}, _A())
 
-    # The reviewer child was enqueued on the OVERHEAD lane via CPS.
+    # The reviewer child was enqueued on the ONESHOT lane via CPS.
     enq.assert_awaited_once()
     spec = enq.call_args.args[0]
     kwargs = enq.call_args.kwargs
     assert spec["agent_type"] == "reviewer"
-    assert kwargs["lane"] == "overhead", \
-        f"grade post-hook must enqueue on the overhead lane, got {kwargs.get('lane')!r}"
+    assert kwargs["lane"] == "oneshot", \
+        f"grade post-hook must enqueue on the oneshot lane (the pump only "\
+        f"dispatches oneshot), got {kwargs.get('lane')!r}"
     assert kwargs["on_complete"] == "posthook.grade.resume"
 
     # No legacy grader agent-task row was created.

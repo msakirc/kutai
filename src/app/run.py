@@ -386,6 +386,14 @@ async def main():
         )
         register_startup_handlers()
         await reconcile_continuations()
+        # SP3b FIX 4 — re-drive post-hook chains stranded by a mid-advance crash
+        # (queue shortened + committed, child never enqueued). Additive to the
+        # continuation reconcile above, which only recovers in-flight children.
+        try:
+            from general_beckman.apply import reconcile_stranded_posthook_chains
+            await reconcile_stranded_posthook_chains()
+        except Exception as exc:
+            _log.warning("Stranded post-hook chain reconcile failed: %s", exc)
         _log.info("Continuation recovery pass complete")
     except Exception as exc:
         _log.warning("Continuation reconcile failed (non-critical): %s", exc)
@@ -398,12 +406,18 @@ async def main():
     # background maintenance tasks in run.py.
     async def _periodic_continuation_reconcile():
         from general_beckman.continuations import reconcile_continuations
+        from general_beckman.apply import reconcile_stranded_posthook_chains
         while True:
             await asyncio.sleep(300)  # 5 minutes
             try:
                 await reconcile_continuations()
             except Exception as exc:
                 _log.warning("periodic reconcile failed: %s", exc)
+            try:
+                # SP3b FIX 4 — also sweep stranded post-hook chains mid-day.
+                await reconcile_stranded_posthook_chains()
+            except Exception as exc:
+                _log.warning("periodic stranded-chain reconcile failed: %s", exc)
 
     # Save the handle to a closure-captured variable so asyncio doesn't GC the
     # task while it's sleeping (Python asyncio docs: "Save a reference to the

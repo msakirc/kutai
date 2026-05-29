@@ -115,7 +115,11 @@ async def llm_synthesize(raw_text: str, source_meta: dict) -> dict:
                 },
                 "kind": "overhead",
             },
-            lane="overhead",
+            # The pump only dispatches lane=='oneshot'; "overhead" was a phantom
+            # lane the pump never selected (SP3b lane bug). Harmless here because
+            # await_inline=True blocks on the continuation directly rather than
+            # the pump, but corrected for consistency.
+            lane="oneshot",
             await_inline=True,
         )
         raw = result.get("result") if isinstance(result, dict) else result

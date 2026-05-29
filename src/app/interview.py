@@ -261,7 +261,10 @@ async def summarize_interview(note_id: int, product_id: str) -> dict:
         on_complete="interview.summary_persist_resume",
         on_error="interview.summary_persist_err",
         cont_state={"note_id": note_id, "product_id": product_id},
-        lane="overhead",
+        # The pump only dispatches lane=='oneshot'; "overhead" was a phantom lane
+        # that never got selected (SP3b lane bug). OVERHEAD category lives in
+        # context, not the admission lane.
+        lane="oneshot",
     )
     logger.info(
         "interview: summarize enqueued (CPS)",

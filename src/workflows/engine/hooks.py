@@ -1502,7 +1502,9 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     # their LLM siblings (2923, 2924) had already produced the artifacts.
     #
     # Right gate: validate only when this task IS the artifact producer
-    # (no executor, agent isn't mechanical/grader/artifact_summarizer).
+    # (no executor, agent isn't mechanical). SP3: grader/artifact_summarizer
+    # agent classes removed — post-hook grading/summarize now run as
+    # continuation handlers, not as tasks in the queue.
     # For producer tasks, an empty output is still a real failure (not
     # the silent bypass that let task 2921 ghost-complete on attempt 2).
     artifact_schema = ctx.get("artifact_schema")
@@ -1510,7 +1512,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     _executor = (task.get("executor") or ctx.get("executor") or "")
     _is_producer = (
         _executor != "mechanical"
-        and _agent_type not in ("mechanical", "grader", "artifact_summarizer")
+        and _agent_type not in ("mechanical",)
     )
     # Skip schema validation when the agent emitted a clarify action on a
     # ``triggers_clarification`` step. Such steps produce a HUMAN

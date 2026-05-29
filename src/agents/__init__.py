@@ -18,9 +18,6 @@ from .shopping_advisor import ShoppingAdvisorAgent
 from .product_researcher import ProductResearcherAgent
 from .deal_analyst import DealAnalystAgent
 from .shopping_clarifier import ShoppingClarifierAgent
-from .grader import GraderAgent
-from .code_reviewer import CodeReviewerAgent
-from .artifact_summarizer import ArtifactSummarizerAgent
 from .integration_reviewer import IntegrationReviewerAgent
 from .adr_drift_judge import AdrDriftJudgeAgent
 from .oncall_agent import OncallAgent
@@ -47,9 +44,6 @@ AGENT_REGISTRY = {
     "product_researcher": ProductResearcherAgent(),
     "deal_analyst": DealAnalystAgent(),
     "shopping_clarifier": ShoppingClarifierAgent(),
-    "grader": GraderAgent(),
-    "code_reviewer": CodeReviewerAgent(),
-    "artifact_summarizer": ArtifactSummarizerAgent(),
     "integration_reviewer": IntegrationReviewerAgent(),
     "adr_drift_judge": AdrDriftJudgeAgent(),
     "oncall_agent": OncallAgent(),

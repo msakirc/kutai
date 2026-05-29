@@ -62,9 +62,7 @@ CODING CLUSTER:
 
 REVIEW CLUSTER:
 - "reviewer": Pick for general code/content quality review, "review this PR", "check for issues", critique, structured review. NOT for numeric scoring.
-- "code_reviewer": Pick for strict code-specific review with pass/fail verdict, "code review", "audit this PR". More stringent than reviewer. NOT for numeric scoring.
 - "integration_reviewer": Pick for cross-file / cross-module consistency checks — "check integration", "verify signatures match", "cross-module consistency", "caller callee alignment", "migration model alignment", "interface contract", "type contract across modules", "check boundary". NOT for single-file reviews.
-- "grader": Pick when output is a numeric score, pass/fail, yes/no judgment — "score", "grade", "rate", "0-10", "evaluate answer quality". NOT for open-ended critique.
 
 RESEARCH & ANALYSIS CLUSTER:
 - "researcher": Pick for general web-search synthesis, "research X", "find information about", "look up", non-shopping topics. NOT for structured data analysis.
@@ -79,7 +77,6 @@ SHOPPING CLUSTER:
 CONTENT CREATION CLUSTER:
 - "writer": Pick for prose, docs, markdown — "write blog post", "write docs", "draft an article", "write an email". NOT for code.
 - "summarizer": Pick for condensing long content — "summarize", "TLDR", "shorten", "key points", "condense". NOT for creating new content.
-- "artifact_summarizer": Pick for summarizing a specific workflow artifact or multi-step mission output. Typically called from a workflow post-hook, not directly by users.
 
 PLANNING & DESIGN CLUSTER:
 - "planner": Pick for decomposing missions into ordered subtasks — "plan", "break down", "decompose", "roadmap", "step ordering". NOT for system design.
@@ -404,8 +401,6 @@ _KEYWORD_RULES: list[tuple[str, int, list[str]]] = [
                             "make a ", "refactor", "new project"]),
     ("implementer",    5, ["follow plan", "implement plan", "step by step", "execute plan",
                             "implement the ", "from architecture.md", "from spec"]),
-    ("grader",         3, ["score this", "grade this", "rate this", "0-10",
-                            "pass or fail", "yes or no judgment", "numeric score"]),
     ("summarizer",     3, ["summarize", "tldr", "key points", "condense", "shorten"]),
     ("reviewer",       5, ["review", "audit", "critique", "check for issues"]),
     ("planner",        5, ["plan ", "roadmap", "schema", "decompose", "break down",

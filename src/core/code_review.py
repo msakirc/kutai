@@ -95,6 +95,56 @@ def parse_code_review_response(raw: str) -> CodeReviewResult:
     return CodeReviewResult(passed=passed, issues=bullets[:30], raw=raw)
 
 
+def build_code_review_spec(source: dict, exclusions: list):
+    """Pure builder for the code-review reviewer child (SP3). Returns a spec
+    dict, or a CodeReviewResult auto-fail for trivial/degenerate source."""
+    import json as _json
+    import time as _time
+    import uuid as _uuid
+
+    result_text = source.get("result", "")
+    if not result_text or len(str(result_text).strip()) < 10:
+        return CodeReviewResult(passed=False, raw="auto-fail: trivial/empty output")
+
+    ctx = source.get("context", "{}")
+    if isinstance(ctx, str):
+        try:
+            ctx = _json.loads(ctx)
+        except (ValueError, TypeError):
+            ctx = {}
+    produces = ctx.get("produces") or []
+
+    messages = [
+        {"role": "system", "content": CODE_REVIEW_SYSTEM},
+        {"role": "user", "content": CODE_REVIEW_PROMPT.format(
+            title=str(source.get("title", ""))[:100],
+            description=str(source.get("description", ""))[:500],
+            produces=_json.dumps(produces),
+            response=str(result_text)[:30000],
+        )},
+    ]
+    _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
+    return {
+        "title": f"code_reviewer:task#{source.get('id')}:{_suffix}",
+        "description": "Code review of build-step output",
+        "agent_type": "reviewer",
+        "kind": "overhead",
+        "priority": 1,
+        "context": {"llm_call": {
+            "raw_dispatch": True,
+            "call_category": "overhead",
+            "task": "reviewer",
+            "agent_type": "reviewer",
+            "difficulty": 4,
+            "messages": messages,
+            "failures": [],
+            "estimated_input_tokens": 1500,
+            "estimated_output_tokens": 800,
+            "exclude_models": list(exclusions),
+        }},
+    }
+
+
 async def code_review_task(source: dict) -> CodeReviewResult:
     """Run an LLM code review over ``source``'s emitted output.
 

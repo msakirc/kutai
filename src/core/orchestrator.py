@@ -270,7 +270,11 @@ class Orchestrator:
                         # execution path below reads the same context.
                         task["context"] = json.dumps(_refl_ctx)
         except Exception as _e:
-            logger.debug(f"self_reflect bridge failed #{task_id}: {_e}")
+            logger.warning(
+                "self_reflect bridge failed task #%s (agent_type=%s) — "
+                "self-reflection will be skipped for this task: %s",
+                task_id, agent_type, _e,
+            )
 
         try:
             task = await inject_chain_context(task)
@@ -355,6 +359,7 @@ class Orchestrator:
                         "context": _ctx_rd,
                         "kind": task.get("kind", "main_work"),
                         "preselected_pick": task.get("preselected_pick"),
+                        "mission_id": task.get("mission_id"),
                     }
                 )
                 return {

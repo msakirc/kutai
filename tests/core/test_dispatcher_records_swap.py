@@ -8,9 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 @pytest.mark.asyncio
 async def test_dispatcher_records_swap_after_swap(monkeypatch):
-    """After dispatcher triggers a local swap via ensure_local_model,
+    """After husam.run triggers a local swap via ensure_local_model,
     nerd_herd.record_swap must be called with the loaded model name."""
-    from src.core.llm_dispatcher import LLMDispatcher, CallCategory
+    import src.core.llm_dispatcher as mod
+    mod._dispatcher = None
+    d = mod.get_dispatcher()
+
     from hallederiz_kadir import CallResult
 
     # Patch fatih_hoca.select to return a local model that triggers swap.
@@ -26,14 +29,28 @@ async def test_dispatcher_records_swap_after_swap(monkeypatch):
         is_local=True, provider="local", task="coder",
     )
 
+    task_spec = {
+        "context": {
+            "llm_call": {
+                "raw_dispatch": True,
+                "call_category": "main_work",
+                "task": "coder",
+                "agent_type": "",
+                "difficulty": 5,
+                "messages": [],
+                "tools": None,
+                "failures": [],
+            }
+        },
+        "kind": "main_work",
+        "preselected_pick": None,
+    }
+
     with patch("fatih_hoca.select", return_value=fake_pick), \
          patch("nerd_herd.record_swap") as mock_record, \
          patch("hallederiz_kadir.call", new=AsyncMock(return_value=fake_result)):
-        d = LLMDispatcher()
+        import husam
         # Arrange: ensure_local_model returns True + reports swap_happened=True
         d._ensure_local_model = AsyncMock(return_value=(True, True))
-        await d._do_dispatch(
-            category=CallCategory.MAIN_WORK,
-            task="coder", difficulty=5, messages=[], tools=None,
-        )
+        await husam.run(task_spec)
         mock_record.assert_called_once_with("qwen3-8b")

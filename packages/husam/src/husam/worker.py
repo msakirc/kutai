@@ -17,13 +17,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.infra.logging_config import get_logger
-
-logger = get_logger("husam.worker")
-
-# Dispatcher instance call counters live here so the dispatcher's get_stats()
-# stays accurate after _do_dispatch moved out. We bump the dispatcher's
-# attributes directly (they were incremented in _do_dispatch historically).
+# Dispatcher instance call counters are bumped here (they live on the dispatcher
+# singleton so get_stats() stays accurate). We bump the dispatcher's attributes
+# directly (they were incremented in _do_dispatch historically).
 
 
 async def _remaining_budget(mission_id: int | None) -> float | None:

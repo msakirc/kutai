@@ -164,7 +164,7 @@ async def test_fatih_hoca_select_called_only_in_beckman(tmp_path, monkeypatch):
     assert result["content"] == "response"
 
 
-# ── Test 2: dispatcher.dispatch receives selected_model in spec ────────────
+# ── Test 2: husam.run receives selected_model in spec ────────────
 
 @pytest.mark.asyncio
 async def test_dispatcher_dispatch_receives_selected_model_in_spec(tmp_path, monkeypatch):
@@ -223,7 +223,7 @@ async def test_dispatcher_dispatch_receives_selected_model_in_spec(tmp_path, mon
     assert captured_model["name"] == "known-model-xyz"
 
 
-# ── Test 3: in_flight slot reserved before dispatcher.dispatch ────────────────
+# ── Test 3: in_flight slot reserved before husam.run ────────────────
 
 @pytest.mark.asyncio
 async def test_in_flight_slot_reserved_before_dispatch(tmp_path, monkeypatch):

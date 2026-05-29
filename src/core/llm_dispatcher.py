@@ -61,7 +61,7 @@ def _request_kwargs_to_spec(category: "CallCategory", **kwargs) -> dict:
     The call payload (messages, tools, flags, etc.) is stuffed into
     ``spec["context"]["llm_call"]``.  The sentinel ``raw_dispatch=True``
     tells the orchestrator pump to route this task directly to
-    ``dispatcher.dispatch()`` instead of an agent class.
+    ``husam.run()`` instead of an agent class.
     """
     import uuid as _uuid
     import time as _time
@@ -137,8 +137,8 @@ def _request_kwargs_to_spec(category: "CallCategory", **kwargs) -> dict:
 def _task_result_to_request_response(result: "TaskResult") -> dict:
     """Map a TaskResult back to the legacy response dict expected by all callers.
 
-    Callers expect at minimum ``{"content": str, ...}``.  dispatch() stores
-    its full _result_to_dict() output under TaskResult.result.  On_task_finished
+    Callers expect at minimum ``{"content": str, ...}``.  husam.run stores
+    its full husam.mapping.result_to_dict() output under TaskResult.result.  On_task_finished
     serialises that into a JSON string before passing it to TaskResult, so we
     handle both dict and JSON-string shapes.
     """
@@ -314,7 +314,7 @@ class LLMDispatcher:
 
         Phase C primitive — the public entry that runtime/coulson will call
         per-iter once the per-iter Hoca selection lands in coulson.react
-        (C.2b). Today only `_do_dispatch` calls it.
+        (C.2b). Today called by `husam.run`.
 
         Returns ``hallederiz_kadir.CallResult`` on success or
         ``hallederiz_kadir.CallError`` on a load/transport failure. The

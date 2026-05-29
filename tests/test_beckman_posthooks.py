@@ -1,5 +1,6 @@
 """Post-hook pipeline tests: actions, policy, apply, migrations."""
 import pytest
+from unittest.mock import AsyncMock, patch
 from general_beckman.result_router import (
     Action, RequestPostHook, PostHookVerdict,
 )
@@ -34,13 +35,18 @@ def test_shopping_pipeline_task_needs_no_posthooks():
     assert determine_posthooks(task, {}, {}) == []
 
 
-def test_grader_task_needs_no_posthooks():
-    task = {"agent_type": "grader"}
+def test_reviewer_task_needs_no_posthooks():
+    # SP3: grade / code_review post-hook children run as raw_dispatch
+    # "reviewer" tasks. A reviewer must never get a grade post-hook
+    # (judge-of-judge / infinite recursion guard).
+    task = {"agent_type": "reviewer"}
     assert determine_posthooks(task, {}, {}) == []
 
 
-def test_artifact_summarizer_task_needs_no_posthooks():
-    task = {"agent_type": "artifact_summarizer"}
+def test_summarizer_task_needs_no_posthooks():
+    # SP3: the summary post-hook child runs as a raw_dispatch "summarizer"
+    # task — it must never get a grade post-hook.
+    task = {"agent_type": "summarizer"}
     assert determine_posthooks(task, {}, {}) == []
 
 
@@ -62,7 +68,14 @@ from general_beckman.apply import _apply_one
 
 
 @pytest.mark.asyncio
-async def test_apply_request_posthook_grade_enqueues_grader_and_parks_source(tmp_path, monkeypatch):
+async def test_apply_request_posthook_grade_spawns_reviewer_child_and_parks_source(tmp_path, monkeypatch):
+    """SP3: a grade post-hook parks the source `ungraded` AND spawns a
+    raw_dispatch ``reviewer`` child via general_beckman.enqueue with a durable
+    posthook.grade.resume continuation — NOT a cap-counted agent_type='grader'
+    task row. The lower-level spawn shape is covered in
+    tests/beckman/test_posthook_spawn_cps.py; this asserts the full
+    _apply_one → _apply_request_posthook integration parks + spawns."""
+    from unittest.mock import AsyncMock
     # Set up a throwaway DB.
     db_path = str(tmp_path / "test.db")
     monkeypatch.setenv("DB_PATH", db_path)
@@ -72,7 +85,7 @@ async def test_apply_request_posthook_grade_enqueues_grader_and_parks_source(tmp
         await _db_mod._db_connection.close()
         _db_mod._db_connection = None
 
-    from src.infra.db import init_db, add_task, get_task
+    from src.infra.db import init_db, add_task, get_task, get_db
     await init_db()
     source_id = await add_task(
         title="source work",
@@ -83,6 +96,10 @@ async def test_apply_request_posthook_grade_enqueues_grader_and_parks_source(tmp
         # passing a pre-dumped string double-encodes (production passes a dict).
         context={"generating_model": "qwen-7b"},
     )
+    # Give the source a non-trivial result so build_grading_spec does not
+    # short-circuit to an auto-fail verdict (which would skip the child).
+    from src.infra.db import update_task
+    await update_task(source_id, result="a" * 200)
 
     source_task = await get_task(source_id)
     action = RequestPostHook(
@@ -90,25 +107,32 @@ async def test_apply_request_posthook_grade_enqueues_grader_and_parks_source(tmp
         kind="grade",
         source_ctx=json.loads(source_task["context"]),
     )
-    await _apply_one(source_task, action)
 
+    from general_beckman import apply as _apply_mod
+    with patch.object(_apply_mod, "enqueue", AsyncMock(return_value=999)) as enq:
+        await _apply_one(source_task, action)
+
+    # Source parked ungraded with a pending grade post-hook.
     refreshed = await get_task(source_id)
     assert refreshed["status"] == "ungraded"
     ctx = json.loads(refreshed["context"])
     assert ctx["_pending_posthooks"] == ["grade"]
 
-    # Grader task exists.
-    from src.infra.db import get_db
+    # The reviewer child was enqueued via CPS (no agent_type='grader' row).
+    enq.assert_awaited_once()
+    spec = enq.call_args.args[0]
+    kwargs = enq.call_args.kwargs
+    assert spec["agent_type"] == "reviewer"
+    assert kwargs["on_complete"] == "posthook.grade.resume"
+    assert kwargs["on_error"] == "posthook.grade.resume_err"
+    assert kwargs["cont_state"]["source_task_id"] == source_id
+
+    # No legacy grader agent-task row was created.
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id, agent_type, mission_id, context FROM tasks "
-        "WHERE agent_type = 'grader'"
+        "SELECT id FROM tasks WHERE agent_type = 'grader'"
     )
-    rows = list(await cursor.fetchall())
-    assert len(rows) == 1
-    grader_ctx = json.loads(rows[0]["context"])
-    assert grader_ctx["source_task_id"] == source_id
-    assert grader_ctx["generating_model"] == "qwen-7b"
+    assert list(await cursor.fetchall()) == []
 
 
 @pytest.mark.asyncio
@@ -181,26 +205,39 @@ async def test_grade_pass_spawns_summary_for_large_artifact(tmp_path, monkeypatc
 
     from general_beckman.result_router import PostHookVerdict
     from general_beckman.apply import _apply_one
+    from unittest.mock import AsyncMock
     verdict = PostHookVerdict(
         source_task_id=source_id, kind="grade", passed=True, raw={},
     )
-    grade_row = {"id": 999, "mission_id": 1, "agent_type": "grader"}
-    await _apply_one(grade_row, verdict)
+    # SP3: grade-PASS for a large artifact spawns a raw_dispatch "summarizer"
+    # CHILD via general_beckman.enqueue (posthook.summary.resume continuation),
+    # NOT an agent_type='artifact_summarizer' task row.
+    from general_beckman import apply as _apply_mod
+    grade_row = {"id": 999, "mission_id": 1, "agent_type": "reviewer"}
+    with patch.object(_apply_mod, "enqueue", AsyncMock(return_value=999)) as enq:
+        await _apply_one(grade_row, verdict)
 
     refreshed = await get_task(source_id)
     assert refreshed["status"] == "ungraded"
     ctx = json.loads(refreshed["context"])
     assert ctx["_pending_posthooks"] == ["summary:big_out"]
 
+    # A summarizer child was enqueued with the durable summary continuation.
+    enq.assert_awaited_once()
+    spec = enq.call_args.args[0]
+    kwargs = enq.call_args.kwargs
+    assert spec["agent_type"] == "summarizer"
+    assert kwargs["on_complete"] == "posthook.summary.resume"
+    cs = kwargs["cont_state"]
+    assert cs["source_task_id"] == source_id
+    assert cs["artifact_name"] == "big_out"
+
+    # No legacy artifact_summarizer agent-task row was created.
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id, context FROM tasks WHERE agent_type='artifact_summarizer'"
+        "SELECT id FROM tasks WHERE agent_type='artifact_summarizer'"
     )
-    rows = list(await cursor.fetchall())
-    assert len(rows) == 1
-    sum_ctx = json.loads(rows[0]["context"])
-    assert sum_ctx["source_task_id"] == source_id
-    assert sum_ctx["artifact_name"] == "big_out"
+    assert list(await cursor.fetchall()) == []
 
 
 @pytest.mark.asyncio
@@ -334,17 +371,33 @@ async def test_on_task_finished_routes_completed_result_through_rewrite(tmp_path
     )
 
     import general_beckman
+    # SP3: a non-trivial, non-degenerate result so build_grading_spec does NOT
+    # short-circuit to an auto-fail verdict (trivial OR low-entropy/repetitive
+    # output auto-fails) — the grade post-hook is requested and parks the
+    # source `ungraded`, spawning the reviewer child via enqueue (patched).
     result = {
-        "status": "completed", "result": "out",
+        "status": "completed",
+        "result": (
+            "The project requires careful planning of the database schema, the "
+            "API surface, and the frontend components before any implementation "
+            "begins in earnest."
+        ),
         "model": "qwen-7b", "cost": 0.001, "iterations": 1,
         "generating_model": "qwen-7b",
     }
-    await general_beckman.on_task_finished(source_id, result)
+    from unittest.mock import AsyncMock
+    from general_beckman import apply as _apply_mod
+    with patch.object(_apply_mod, "enqueue", AsyncMock(return_value=999)) as enq:
+        await general_beckman.on_task_finished(source_id, result)
 
     source = await get_task(source_id)
     assert source["status"] == "ungraded"
     ctx = json.loads(source["context"])
     assert ctx["_pending_posthooks"] == ["grade"]
+    # The grade reviewer child was spawned through CPS.
+    enq.assert_awaited_once()
+    assert enq.call_args.args[0]["agent_type"] == "reviewer"
+    assert enq.call_args.kwargs["on_complete"] == "posthook.grade.resume"
 
 
 @pytest.mark.asyncio
@@ -360,10 +413,12 @@ async def test_beckman_on_model_swap_calls_accelerate_retries(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_grader_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
+async def test_reviewer_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
+    # SP3: grade / code_review post-hook children run as "reviewer" tasks; the
+    # progress-ping suppression set now excludes reviewer (not grader).
     class FakeTG:
         async def send_notification(self, text):
-            raise AssertionError("grader task should not ping")
+            raise AssertionError("reviewer task should not ping")
 
     monkeypatch.setattr(
         "src.app.telegram_bot.get_telegram",
@@ -372,78 +427,22 @@ async def test_grader_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
     from general_beckman import _send_step_progress
     task = {
         "id": 500, "title": "Grade task #1",
-        "mission_id": 1, "agent_type": "grader",
+        "mission_id": 1, "agent_type": "reviewer",
     }
     await _send_step_progress(task, "completed", {"status": "completed"})
 
 
-@pytest.mark.asyncio
-async def test_grader_dlq_fails_source_permanently(tmp_path, monkeypatch):
-    db_path = str(tmp_path / "test.db")
-    monkeypatch.setenv("DB_PATH", db_path)
-    from src.infra import db as _db_mod
-    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
-    if _db_mod._db_connection is not None:
-        await _db_mod._db_connection.close()
-        _db_mod._db_connection = None
-
-    from src.infra.db import init_db, add_task, get_task, update_task
-    await init_db()
-    source_id = await add_task(
-        title="source", description="", agent_type="writer", mission_id=1,
-        context=json.dumps({"_pending_posthooks": ["grade"]}),
-    )
-    await update_task(source_id, status="ungraded")
-    grader_id = await add_task(
-        title=f"Grade task #{source_id}", description="",
-        agent_type="grader", mission_id=1,
-        context={"source_task_id": source_id, "generating_model": "qwen-7b"},
-    )
-    grader_row = await get_task(grader_id)
-
-    from general_beckman.apply import _dlq_write
-    await _dlq_write(grader_row, error="no grader succeeded",
-                     category="exhausted", attempts=3)
-
-    source = await get_task(source_id)
-    assert source["status"] == "failed"
-    assert "grade DLQ" in (source["error"] or "")
-    ctx = json.loads(source["context"])
-    assert ctx["_pending_posthooks"] == []
-
-
-@pytest.mark.asyncio
-async def test_summary_dlq_completes_source_with_structural_fallback(tmp_path, monkeypatch):
-    db_path = str(tmp_path / "test.db")
-    monkeypatch.setenv("DB_PATH", db_path)
-    from src.infra import db as _db_mod
-    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
-    if _db_mod._db_connection is not None:
-        await _db_mod._db_connection.close()
-        _db_mod._db_connection = None
-
-    from src.infra.db import init_db, add_task, get_task, update_task
-    await init_db()
-    source_id = await add_task(
-        title="source", description="", agent_type="writer", mission_id=1,
-        context=json.dumps({"_pending_posthooks": ["summary:big_out"]}),
-    )
-    await update_task(source_id, status="ungraded")
-    sum_id = await add_task(
-        title=f"Summarize 'big_out' for #{source_id}", description="",
-        agent_type="artifact_summarizer", mission_id=1,
-        context={"source_task_id": source_id, "artifact_name": "big_out"},
-    )
-    sum_row = await get_task(sum_id)
-
-    from general_beckman.apply import _dlq_write
-    await _dlq_write(sum_row, error="LLM 3x failed",
-                     category="exhausted", attempts=3)
-
-    source = await get_task(source_id)
-    assert source["status"] == "completed"
-    ctx = json.loads(source["context"])
-    assert ctx["_pending_posthooks"] == []
+# SP3: the grader-specific and summary-specific DLQ cascades on
+# _dlq_write are GONE. A failed grade/summary CHILD (raw_dispatch
+# reviewer/summarizer task) now fires posthook.grade.resume_err /
+# posthook.summary.resume_err, which applies an auto-fail / drain verdict that
+# drives the source through NORMAL retry/DLQ — there is no immediate
+# permanent-fail or structural-fallback-complete keyed on a grader/
+# artifact_summarizer agent-task row anymore. The two tests that pinned that
+# removed cascade were deleted here. The surviving CPS behaviour is covered by
+# tests/beckman/test_posthook_grade_resume.py and
+# tests/beckman/test_posthook_summary_resume.py (resume_err handlers), plus
+# test_summary_fail_keeps_structural_and_completes_source above (verdict apply).
 
 
 @pytest.mark.asyncio
@@ -481,7 +480,10 @@ async def test_sweep_skips_ungraded_with_pending_posthooks(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_artifact_summarizer_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
+async def test_summarizer_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
+    # SP3: the summary post-hook child runs as a "summarizer" task; the
+    # progress-ping suppression set now excludes summarizer (not
+    # artifact_summarizer).
     class FakeTG:
         async def send_notification(self, text):
             raise AssertionError("summarizer task should not ping")
@@ -493,6 +495,6 @@ async def test_artifact_summarizer_task_does_not_emit_progress_ping(tmp_path, mo
     from general_beckman import _send_step_progress
     task = {
         "id": 123, "title": "Summarize 'x' for #1",
-        "mission_id": 1, "agent_type": "artifact_summarizer",
+        "mission_id": 1, "agent_type": "summarizer",
     }
     await _send_step_progress(task, "completed", {"status": "completed"})

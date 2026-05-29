@@ -7,10 +7,14 @@ but the grader was second-guessing the rubric. Reviewers ARE the
 quality judge; grading them is double-judgment that burns retry
 budget on style.
 
-Architectural fix: ``reviewer`` joins ``grader`` and
-``artifact_summarizer`` in ``_NO_POSTHOOKS_AGENT_TYPES``. Reviewer
-steps complete on their own verdict; downstream consumers act on
-``verdict + issues``.
+Architectural fix: ``reviewer`` is a member of
+``_NO_POSTHOOKS_AGENT_TYPES``. Reviewer steps complete on their own
+verdict; downstream consumers act on ``verdict + issues``.
+
+SP3: the deleted ``grader`` / ``artifact_summarizer`` agent types are no
+longer the bookkeeping types — the grade / code_review / summary post-hook
+children now run as ``reviewer`` / ``summarizer`` raw_dispatch tasks, both of
+which are in ``_NO_POSTHOOKS_AGENT_TYPES`` (judge-of-judge / recursion guard).
 """
 from __future__ import annotations
 
@@ -25,15 +29,16 @@ def test_reviewer_no_grade():
     assert determine_posthooks(task, ctx, {"status": "completed"}) == []
 
 
-def test_grader_no_grade():
-    """Existing behaviour preserved."""
-    task = {"agent_type": "grader"}
+def test_summarizer_no_grade():
+    """SP3: the summary post-hook child runs as a ``summarizer`` task — it
+    must never get a grade post-hook (would loop grade→summary→grade)."""
+    task = {"agent_type": "summarizer"}
     assert determine_posthooks(task, {}, {}) == []
 
 
-def test_artifact_summarizer_no_grade():
-    """Existing behaviour preserved."""
-    task = {"agent_type": "artifact_summarizer"}
+def test_integration_reviewer_no_grade():
+    """A config-only LLM reviewer's verdict IS the gate — no judge-of-judge."""
+    task = {"agent_type": "integration_reviewer"}
     assert determine_posthooks(task, {}, {}) == []
 
 

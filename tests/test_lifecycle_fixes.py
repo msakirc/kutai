@@ -40,23 +40,30 @@ class TestPostHookNoLLM:
 
 
 class TestNoInlineGrading:
-    """agent.execute() must always defer grading — never call grade_task inline."""
+    """The agent execution loop must always defer grading — never call
+    grade_task inline.
 
-    def test_execute_does_not_reference_grade_task(self):
-        """_execute_react_loop should not import or call grade_task."""
+    SP3: the inline grade_task() function is DELETED entirely (grading now runs
+    as a raw_dispatch reviewer child + posthook.grade.resume continuation), so
+    "no inline grade_task" is now a global guarantee, not a per-loop scan. The
+    ReAct loop also moved out of the deleted BaseAgent into coulson.react.run.
+    """
+
+    def test_grade_task_symbol_is_deleted(self):
+        """grade_task must no longer be importable from src.core.grading."""
+        import src.core.grading as grading
+        assert not hasattr(grading, "grade_task"), \
+            "grade_task should be deleted in SP3 (grading is a CPS post-hook now)"
+
+    def test_react_loop_does_not_reference_grade_task_or_can_grade_now(self):
+        """The coulson ReAct loop must not reference inline-grading symbols."""
         import inspect
-        from src.agents.base import BaseAgent
-        source = inspect.getsource(BaseAgent._execute_react_loop)
+        from coulson import react
+        source = inspect.getsource(react.run)
         assert "grade_task" not in source, \
-            "agent._execute_react_loop still references grade_task — inline grading not removed"
-
-    def test_execute_does_not_reference_can_grade_now(self):
-        """can_grade_now variable should be fully removed."""
-        import inspect
-        from src.agents.base import BaseAgent
-        source = inspect.getsource(BaseAgent._execute_react_loop)
+            "coulson.react.run still references grade_task — inline grading not removed"
         assert "can_grade_now" not in source, \
-            "can_grade_now still exists in _execute_react_loop"
+            "coulson.react.run still references can_grade_now — inline grading not removed"
 
 
 class TestPrevOutputInjection:
@@ -141,10 +148,21 @@ class TestSummaryViaBeckmanPostHook:
         assert not hasattr(hooks, "drain_pending_summaries"), \
             "drain_pending_summaries should be removed (queue-driven now)"
 
-    def test_artifact_summarizer_agent_exists(self):
+    def test_summarizer_and_reviewer_agents_exist(self):
+        """SP3: the deleted artifact_summarizer/grader/code_reviewer wrapper
+        agents are replaced by the raw_dispatch ``summarizer`` (consumes
+        RequestPostHook('summary:*')) and ``reviewer`` (consumes grade /
+        code_review) agent configs, whose verdicts apply via the durable
+        posthook.summary.resume / posthook.grade.resume continuations."""
         from src.agents import AGENT_REGISTRY
-        assert "artifact_summarizer" in AGENT_REGISTRY, \
-            "ArtifactSummarizerAgent must be registered to consume RequestPostHook('summary:*')"
+        assert "summarizer" in AGENT_REGISTRY, \
+            "SummarizerAgent must be registered to consume RequestPostHook('summary:*')"
+        assert "reviewer" in AGENT_REGISTRY, \
+            "ReviewerAgent must be registered to consume grade / code_review post-hooks"
+        # The deleted wrapper agents must NOT be registered.
+        assert "artifact_summarizer" not in AGENT_REGISTRY
+        assert "grader" not in AGENT_REGISTRY
+        assert "code_reviewer" not in AGENT_REGISTRY
 
 class TestCheckpointResume:
     """Checkpoints must persist across retries and only clear on final completion."""

@@ -588,19 +588,25 @@ class TestApplyGradeResultFail:
         assert args == (52, "pending")
 
 
-class TestGradeTaskAutoFail:
-    @pytest.mark.asyncio
-    async def test_empty_result_auto_fails(self):
-        from src.core.grading import grade_task
-        task = {"title": "Test", "description": "Test", "result": "", "context": "{}"}
-        result = await grade_task(task)
+class TestBuildGradingSpecAutoFail:
+    """SP3: the auto-fail-on-trivial-output short-circuit moved from the deleted
+    grade_task() into build_grading_spec(). When the source output is empty or
+    too short, the builder returns a GradeResult(passed=False) auto-fail verdict
+    instead of a Beckman spec, so the caller applies the fail without enqueueing
+    a reviewer child."""
+
+    def test_empty_result_auto_fails(self):
+        from src.core.grading import build_grading_spec
+        source = {"id": 1, "title": "Test", "description": "Test", "result": ""}
+        result = build_grading_spec(source, exclusions=[])
+        assert isinstance(result, GradeResult)
         assert result.passed is False
         assert "auto-fail" in result.raw
 
-    @pytest.mark.asyncio
-    async def test_short_result_auto_fails(self):
-        from src.core.grading import grade_task
-        task = {"title": "Test", "description": "Test", "result": "ok", "context": "{}"}
-        result = await grade_task(task)
+    def test_short_result_auto_fails(self):
+        from src.core.grading import build_grading_spec
+        source = {"id": 1, "title": "Test", "description": "Test", "result": "ok"}
+        result = build_grading_spec(source, exclusions=[])
+        assert isinstance(result, GradeResult)
         assert result.passed is False
         assert "auto-fail" in result.raw

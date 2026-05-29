@@ -47,43 +47,78 @@ async def test_completed_result_marks_task_completed(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mission_task_complete_spawns_workflow_advance_and_grader(tmp_path, monkeypatch):
+async def test_mission_task_complete_spawns_workflow_advance_and_reviewer(tmp_path, monkeypatch):
+    """SP3: a completed mission task parks the parent `ungraded` and spawns
+    two siblings — the workflow_advance mechanical task AND the grade post-hook
+    CHILD, which now runs as a raw_dispatch ``reviewer`` task (not a
+    cap-counted ``grader`` agent task) with a durable posthook.grade.resume
+    continuation. The reviewer child carries the source reference in its
+    continuation cont_state (mission_id never on the child row)."""
     await _fresh_db(tmp_path, monkeypatch)
     try:
         tid = await add_task(title="mt", description="", agent_type="coder",
                              mission_id=9)
-        await on_task_finished(tid, {"status": "completed", "result": "ok"})
-        # Parent task is parked in ungraded until the grader post-hook verdict lands.
+        # Non-trivial, non-degenerate result so build_grading_spec does not
+        # short-circuit to an auto-fail verdict (which would skip the child).
+        await on_task_finished(tid, {"status": "completed", "result": (
+            "Implemented the order service with idempotent payment capture and "
+            "a reconciliation job that sweeps stuck transactions hourly."
+        )})
+        # Parent task is parked in ungraded until the grade post-hook verdict lands.
         parent = await get_task(tid)
         assert parent["status"] == "ungraded"
         ctx = json.loads(parent["context"] or "{}")
         assert ctx.get("_pending_posthooks") == ["grade"]
 
-        # Two siblings in the mission: the workflow_advance mechanical task
-        # AND the grader post-hook task.
+        # Sibling 1 — the workflow_advance mechanical task carries mission_id=9
+        # and keeps its canonical mechanical shape.
         conn = await get_db()
         cursor = await conn.execute(
-            """SELECT agent_type, context FROM tasks
+            """SELECT id, agent_type, context FROM tasks
                WHERE mission_id = 9 AND id != ? ORDER BY id""", (tid,),
         )
-        rows = list(await cursor.fetchall())
-        agent_types = {r["agent_type"] for r in rows}
-        assert agent_types == {"mechanical", "grader"}, (
-            f"expected workflow_advance + grader siblings, got {agent_types}"
+        mission_rows = list(await cursor.fetchall())
+        assert {r["agent_type"] for r in mission_rows} == {"mechanical"}, (
+            "expected exactly the workflow_advance mechanical mission sibling, "
+            f"got {[r['agent_type'] for r in mission_rows]}"
         )
-
-        # workflow_advance row keeps its canonical mechanical shape.
-        wa = next(r for r in rows if r["agent_type"] == "mechanical")
+        wa = mission_rows[0]
         wa_ctx = json.loads(wa["context"])
         assert wa_ctx["executor"] == "mechanical"
         assert wa_ctx["payload"]["action"] == "workflow_advance"
         assert wa_ctx["payload"]["mission_id"] == 9
         assert wa_ctx["payload"]["completed_task_id"] == tid
 
-        # Grader row carries the source reference.
-        grader = next(r for r in rows if r["agent_type"] == "grader")
-        g_ctx = json.loads(grader["context"])
-        assert g_ctx["source_task_id"] == tid
+        # Sibling 2 — the grade post-hook reviewer CHILD. SP3 child-spec
+        # hygiene: mission_id rides ONLY in cont_state, never on the child row,
+        # so the reviewer task has mission_id IS NULL and is linked by
+        # parent_task_id, not mission_id.
+        cur_child = await conn.execute(
+            """SELECT id, agent_type, mission_id FROM tasks
+               WHERE parent_task_id = ?""", (tid,),
+        )
+        child_rows = list(await cur_child.fetchall())
+        assert len(child_rows) == 1, (
+            f"expected one grade reviewer child, got {child_rows}"
+        )
+        reviewer = child_rows[0]
+        assert reviewer["agent_type"] == "reviewer"
+        assert reviewer["mission_id"] is None, \
+            "mission_id must ride in cont_state, never on the child row"
+
+        # The reviewer child carries the source reference + grade continuation
+        # in its cont_state (NOT the context column).
+        cur2 = await conn.execute(
+            "SELECT resume_name, state_json FROM continuations "
+            "WHERE child_task_id = ?",
+            (reviewer["id"],),
+        )
+        cont = await cur2.fetchone()
+        assert cont is not None, "reviewer child must have a registered continuation"
+        assert cont["resume_name"] == "posthook.grade.resume"
+        cs = json.loads(cont["state_json"])
+        assert cs["source_task_id"] == tid
+        assert cs["mission_id"] == 9
     finally:
         await _close_db()
 

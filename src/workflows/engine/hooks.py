@@ -17,16 +17,14 @@ from .quality_gates import evaluate_gate, format_gate_result
 
 logger = get_logger("workflows.engine.hooks")
 
-async def _llm_summarize(text: str, artifact_name: str) -> str | None:
-    """Summarize a large artifact using the LLM (OVERHEAD call)."""
-    import general_beckman
+def build_summary_spec(text: str, artifact_name: str) -> dict:
+    """Pure builder for the summarizer child (SP3). No mission_id/parent on the
+    spec — those travel in continuation state. No input degenerate check (the
+    output degeneracy check lives in the resume handler)."""
     import time as _time
     import uuid as _uuid
-    from ...core.llm_dispatcher import _task_result_to_request_response
 
-    max_input = 16000
-    truncated_text = text[:max_input]
-
+    truncated = text[:16000]
     messages = [
         {
             "role": "system",
@@ -41,64 +39,30 @@ async def _llm_summarize(text: str, artifact_name: str) -> str | None:
             "content": (
                 f"Summarize this '{artifact_name}' artifact. Keep every "
                 f"important fact, number, name, and decision:\n\n"
-                f"{truncated_text}"
+                f"{truncated}"
             ),
         },
     ]
-
-    # Resolve parent_id from the orchestrator's per-task ContextVar.
-    # _llm_summarize is always called from within a running task's execution
-    # context, so current_task_id is set by the orchestrator at dispatch time.
-    _parent_id = None
-    try:
-        from ...core.heartbeat import current_task_id as _ctid
-        _parent_id = _ctid.get()
-    except Exception:
-        pass
-
     _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
-    spec = {
+    return {
         "title": f"summarizer:{artifact_name}:{_suffix}",
         "description": f"LLM summarization of artifact '{artifact_name}'",
         "agent_type": "summarizer",
         "kind": "overhead",
-        "context": {
-            "llm_call": {
-                "raw_dispatch": True,
-                "call_category": "overhead",
-                "task": "summarizer",
-                "agent_type": "summarizer",
-                "difficulty": 2,
-                "messages": messages,
-                "failures": [],
-                "prefer_speed": True,
-                "prefer_local": True,
-                "estimated_input_tokens": min(len(text) // 4, 4000),
-                "estimated_output_tokens": 500,
-            },
-        },
+        "context": {"llm_call": {
+            "raw_dispatch": True,
+            "call_category": "overhead",
+            "task": "summarizer",
+            "agent_type": "summarizer",
+            "difficulty": 2,
+            "messages": messages,
+            "failures": [],
+            "prefer_speed": True,
+            "prefer_local": True,
+            "estimated_input_tokens": min(len(text) // 4, 4000),
+            "estimated_output_tokens": 500,
+        }},
     }
-    task_result = await general_beckman.enqueue(
-        spec,
-        parent_id=_parent_id,
-        await_inline=True,
-    )
-
-    if task_result.status == "failed":
-        logger.warning(
-            f"[LLM Summary] enqueue failed for '{artifact_name}': {task_result.error}"
-        )
-        return None
-
-    response = _task_result_to_request_response(task_result)
-    summary = response.get("content", "").strip()
-    if summary and len(summary) > 50:
-        from dogru_mu_samet import assess as cq_assess
-        cq = cq_assess(summary)
-        if not cq.is_degenerate:
-            return summary
-        logger.warning(f"[LLM Summary] degenerate output for '{artifact_name}': {cq.summary}")
-    return None
 
 
 def _extract_json_string_field(text: str, key: str) -> str | None:
@@ -1454,7 +1418,9 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     # their LLM siblings (2923, 2924) had already produced the artifacts.
     #
     # Right gate: validate only when this task IS the artifact producer
-    # (no executor, agent isn't mechanical/grader/artifact_summarizer).
+    # (no executor, agent isn't mechanical). SP3: grader/artifact_summarizer
+    # agent classes removed — post-hook grading/summarize now run as
+    # continuation handlers, not as tasks in the queue.
     # For producer tasks, an empty output is still a real failure (not
     # the silent bypass that let task 2921 ghost-complete on attempt 2).
     artifact_schema = ctx.get("artifact_schema")
@@ -1462,7 +1428,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     _executor = (task.get("executor") or ctx.get("executor") or "")
     _is_producer = (
         _executor != "mechanical"
-        and _agent_type not in ("mechanical", "grader", "artifact_summarizer")
+        and _agent_type not in ("mechanical",)
     )
     # Skip schema validation when the agent emitted a clarify action on a
     # ``triggers_clarification`` step. Such steps produce a HUMAN

@@ -1,4 +1,4 @@
-"""Post-hook grade/summarize tasks must spawn as OVERHEAD, not main_work.
+"""Post-hook grade/summarize work must land on the OVERHEAD lane.
 
 Bug (2026-05-26): the generic post-hook spawner (apply._apply_request_posthook)
 called add_task() without kind=, so grade/summarize post-hooks defaulted to
@@ -6,51 +6,59 @@ kind='main_work' → runner='react'. As main_work they picked CLOUD models and
 rode the 600s wall-clock cap; under network instability a cloud call hung the
 full 600s → bare TimeoutError → DLQ at 6/6. These are single-call LLM
 evaluation work and belong on the OVERHEAD lane (loaded local model, direct
-runner) — matching the inline grade (grading.py) and _llm_summarize (hooks.py)
-which already use kind='overhead'. Mechanical post-hooks (verify_artifacts/
-test_run/pattern_lint) route via agent_type='mechanical' and are untouched.
+runner).
+
+SP3 reality: grade / code_review / summary post-hooks no longer flow through
+add_task() at all. They are enqueued as raw_dispatch reviewer/summarizer
+CHILDREN via general_beckman.enqueue(..., lane="overhead") with a durable
+continuation. ``_posthook_kind`` therefore now returns ``"main_work"``
+unconditionally — it only serves the mechanical post-hook branch that still
+reaches add_task() (those route via agent_type='mechanical'). The OVERHEAD
+lane assignment moved from the spawned task's ``kind`` to the explicit
+``lane="overhead"`` argument on enqueue().
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 
-def test_grader_posthook_is_overhead():
+def test_posthook_kind_is_always_main_work():
+    """SP3: _posthook_kind no longer routes grade/summary to 'overhead' — the
+    LLM post-hooks bypass add_task() entirely. The only kind it returns now is
+    'main_work' (mechanical post-hooks route via agent_type='mechanical')."""
     from general_beckman.apply import _posthook_kind
-    assert _posthook_kind("grader") == "overhead"
-
-
-def test_artifact_summarizer_posthook_is_overhead():
-    from general_beckman.apply import _posthook_kind
-    assert _posthook_kind("artifact_summarizer") == "overhead"
-
-
-def test_mechanical_posthook_is_not_overhead():
-    from general_beckman.apply import _posthook_kind
+    assert _posthook_kind("reviewer") == "main_work"
+    assert _posthook_kind("summarizer") == "main_work"
     assert _posthook_kind("mechanical") == "main_work"
-
-
-def test_reviewer_posthook_is_not_overhead():
-    """Reviewers may need tools/ReAct — leave them main_work (out of scope)."""
-    from general_beckman.apply import _posthook_kind
-    assert _posthook_kind("code_reviewer") == "main_work"
+    assert _posthook_kind("anything") == "main_work"
 
 
 @pytest.mark.asyncio
-async def test_grade_posthook_spawns_with_kind_overhead(monkeypatch):
-    """End-to-end: a grade post-hook must add_task(kind='overhead')."""
+async def test_grade_posthook_enqueues_reviewer_child_on_overhead_lane(monkeypatch):
+    """End-to-end: a grade post-hook spawns a raw_dispatch reviewer CHILD via
+    general_beckman.enqueue(lane="overhead") with the durable grade
+    continuation — NOT an add_task(agent_type='grader', kind='overhead') row."""
     import general_beckman.apply as apply_mod
 
-    captured: dict = {}
+    add_task_calls: list = []
 
     async def fake_add_task(**kw):
-        captured.update(kw)
+        add_task_calls.append(kw)
         return 1
 
     async def fake_get_task(tid):
-        return {"id": tid, "mission_id": 5, "context": "{}"}
+        # Non-trivial, non-degenerate result so build_grading_spec does not
+        # short-circuit to an auto-fail verdict (which would skip the child).
+        return {
+            "id": tid, "mission_id": 5,
+            "result": (
+                "The service exposes a REST API backed by a normalized SQLite "
+                "schema, with auth handled by signed session tokens."
+            ),
+            "context": "{}",
+        }
 
     async def fake_update_task(*a, **k):
         return None
@@ -64,8 +72,17 @@ async def test_grade_posthook_spawns_with_kind_overhead(monkeypatch):
         source_task_id = 100
         source_ctx: dict = {}
 
-    await apply_mod._apply_request_posthook({"id": 1}, _A())
+    with patch.object(apply_mod, "enqueue", AsyncMock(return_value=999)) as enq:
+        await apply_mod._apply_request_posthook({"id": 1}, _A())
 
-    assert captured.get("agent_type") == "grader"
-    assert captured.get("kind") == "overhead", \
-        f"grade post-hook must spawn overhead, got kind={captured.get('kind')!r}"
+    # The reviewer child was enqueued on the OVERHEAD lane via CPS.
+    enq.assert_awaited_once()
+    spec = enq.call_args.args[0]
+    kwargs = enq.call_args.kwargs
+    assert spec["agent_type"] == "reviewer"
+    assert kwargs["lane"] == "overhead", \
+        f"grade post-hook must enqueue on the overhead lane, got {kwargs.get('lane')!r}"
+    assert kwargs["on_complete"] == "posthook.grade.resume"
+
+    # No legacy grader agent-task row was created.
+    assert not any(c.get("agent_type") == "grader" for c in add_task_calls)

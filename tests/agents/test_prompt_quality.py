@@ -8,14 +8,19 @@ ACTIVE_AGENTS = [
 ]
 
 LOW_TRAFFIC_AGENTS = [
-    "assistant", "grader", "code_reviewer", "visual_reviewer",
+    # SP3: the grader / code_reviewer / artifact_summarizer wrapper agents are
+    # DELETED. Grading / code-review / summarization now run as the
+    # raw_dispatch reviewer (in ACTIVE_AGENTS) / summarizer (in ACTIVE_AGENTS)
+    # agent configs + posthook.*.resume continuations — there is no standalone
+    # grader/code_reviewer/artifact_summarizer prompt to vet anymore.
+    "assistant", "visual_reviewer",
     "shopping_advisor", "shopping_clarifier", "deal_analyst",
-    "product_researcher", "artifact_summarizer", "integration_reviewer",
+    "product_researcher", "integration_reviewer",
     "growth_digest_synthesizer",  # Z9 T2C — weekly growth digest synthesis
     "signal_classifier",  # Z9 T3B — growth signal classifier
 ]
 
-ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 23 total
+ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 20 total
 
 @pytest.mark.parametrize("name", ALL_AGENTS)
 def test_prompt_has_role_primer(name):

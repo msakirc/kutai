@@ -97,30 +97,26 @@ def test_mechanical_task_complete_emits_no_posthook():
     assert "MissionAdvance" not in kinds
 
 
-from general_beckman.result_router import Complete, PostHookVerdict
+from general_beckman.result_router import Complete
 
 
-def test_grader_task_complete_emits_posthook_verdict():
-    task = {"id": 500, "mission_id": 1, "agent_type": "grader"}
+def test_reviewer_task_complete_is_bookkeeping_no_advance_no_posthook():
+    """SP3: the old rewrite Rule 0 that translated a `grader` agent task's
+    posthook_verdict payload into a PostHookVerdict is GONE — the grade verdict
+    is now built by the posthook.grade.resume continuation (see
+    tests/beckman/test_posthook_grade_resume.py), not at the rewrite layer.
+
+    What the rewrite layer DOES enforce post-SP3: a grade/code_review child
+    runs as a ``reviewer`` task, which Rule 1 treats as BOOKKEEPING — even a
+    mission-bearing reviewer Complete emits neither a MissionAdvance (it is not
+    a mission step) nor a recursive grade RequestPostHook."""
+    task = {"id": 500, "mission_id": 1, "agent_type": "reviewer"}
     ctx = {}
-    raw = {
-        "status": "completed",
-        "result": "grade json",
-        "posthook_verdict": {
-            "kind": "grade",
-            "source_task_id": 100,
-            "passed": True,
-            "raw": {"score": 0.95},
-        },
-    }
-    complete = Complete(task_id=500, result="grade json", iterations=1, metadata={}, raw=raw)
+    complete = Complete(task_id=500, result="grade json", iterations=1,
+                        metadata={}, raw={"status": "completed"})
     out = rewrite_actions(task, ctx, [complete])
     kinds = [type(a).__name__ for a in out]
     assert "Complete" in kinds
-    assert "PostHookVerdict" in kinds
-    # Bookkeeping → no MissionAdvance.
+    # Bookkeeping → no MissionAdvance and no (recursive) grade post-hook.
     assert "MissionAdvance" not in kinds
-    verdict = next(a for a in out if isinstance(a, PostHookVerdict))
-    assert verdict.kind == "grade"
-    assert verdict.source_task_id == 100
-    assert verdict.passed is True
+    assert "RequestPostHook" not in kinds

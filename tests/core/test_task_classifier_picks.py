@@ -14,13 +14,16 @@ from unittest.mock import patch, AsyncMock
 import json
 
 
+# SP3: the `grader` agent is deleted — "score this answer 0-10" is no longer a
+# user-classifiable task type. Grading runs as a CPS post-hook (reviewer child
+# + posthook.grade.resume), not via the task classifier, and `grader` was
+# removed from CLASSIFIER_PROMPT. The grader pick case is dropped here.
 PICK_CASES = [
     ("find me a coffee machine under 5000 TL", "shopping_advisor"),
     ("write a parser for JSON logs", "coder"),
     ("implement the User model from ARCHITECTURE.md", "implementer"),
     ("fix the auth bug from review feedback", "fixer"),
     ("review this PR for security issues", "reviewer"),
-    ("score this answer 0-10", "grader"),
     ("what's the capital of Turkey", "assistant"),
     ("research climate impact of EVs", "researcher"),
     ("design the auth module", "architect"),

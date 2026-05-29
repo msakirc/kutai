@@ -96,28 +96,12 @@ def rewrite_actions(
 
 
 def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
-    # Rule 0: post-hook task (grader/artifact_summarizer/code_reviewer)
-    # completion → translate its posthook_verdict payload into a
-    # PostHookVerdict action. Bookkeeping tasks never fire MissionAdvance
-    # or RequestPostHook.
-    if isinstance(a, Complete) and task.get("agent_type") in (
-        "grader", "artifact_summarizer", "code_reviewer",
-    ):
-        raw = a.raw or {}
-        verdict_payload = raw.get("posthook_verdict") if isinstance(raw, dict) else None
-        if isinstance(verdict_payload, dict):
-            return [
-                a,
-                PostHookVerdict(
-                    source_task_id=verdict_payload["source_task_id"],
-                    kind=verdict_payload["kind"],
-                    passed=bool(verdict_payload.get("passed")),
-                    raw=verdict_payload.get("raw") or {},
-                ),
-            ]
-        # No posthook_verdict payload — treat as regular Complete (bookkeeping),
-        # fall through to existing logic which won't emit MissionAdvance because
-        # agent_type in the skip list.
+    # SP3: the old Rule 0 (grader/artifact_summarizer/code_reviewer agent
+    # tasks → translate their posthook_verdict payload into a PostHookVerdict)
+    # is gone. Those wrapper agent classes are deleted; grade / code_review /
+    # summary now run as raw_dispatch reviewer/summarizer CHILDREN whose
+    # verdict is applied via the durable posthook.*.resume continuation, not
+    # via this rewrite-layer translation.
 
     # Rule 0d: config-only LLM reviewer post-hook completion → synthesise a
     # PostHookVerdict from the {verdict, findings} JSON the reviewer emits.
@@ -254,7 +238,10 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
     )
     is_bookkeeping = (
         payload_action == "workflow_advance"
-        or agent_type in {"grader", "artifact_summarizer", "code_reviewer"}
+        # SP3: reviewer = grade/code_review child; summarizer = summary child.
+        # Both are bookkeeping — a mission-bearing edge case must not let a
+        # summary/grade child spawn MissionAdvance or a recursive grade hook.
+        or agent_type in {"reviewer", "summarizer"}
         or is_posthook_task  # mechanical/reviewer posthook tasks shouldn't recurse
     )
 

@@ -1,10 +1,15 @@
 """Coverage for the code_review post-hook end-to-end:
 - determine_posthooks accepts code_review in ctx.post_hooks
-- _posthook_agent_and_payload routes code_review to code_reviewer agent
-- rewrite Rule 0 translates code_reviewer Complete to PostHookVerdict
-- _apply_code_review_verdict pass/fail behaviour
-- DLQ cascade gate widens to code_review post-hooks
+- determine_posthooks suppresses the implicit grade for reviewer tasks (SP3)
+- _apply_code_review_verdict pass/fail behaviour (unchanged by SP3)
 - parse_code_review_response extracts VERDICT + bullet issues
+
+SP3 note: the code_review post-hook no longer spawns a code_reviewer agent
+task nor flows through rewrite Rule 0. It is intercepted in
+_apply_request_posthook and enqueued as a raw_dispatch "reviewer" child whose
+verdict is applied via the posthook.code_review.resume continuation. That CPS
+spawn path is covered by tests/beckman/test_posthook_spawn_cps.py and
+tests/core/test_build_code_review_spec.py.
 """
 from __future__ import annotations
 
@@ -15,14 +20,12 @@ import pytest
 
 from general_beckman.posthooks import determine_posthooks
 from general_beckman.apply import (
-    _posthook_agent_and_payload,
     _posthook_title,
     _apply_code_review_verdict,
 )
 from general_beckman.result_router import (
-    Complete, MissionAdvance, RequestPostHook, PostHookVerdict,
+    RequestPostHook, PostHookVerdict,
 )
-from general_beckman.rewrite import rewrite_actions
 from src.core.code_review import (
     parse_code_review_response, CodeReviewResult,
 )
@@ -93,114 +96,44 @@ def test_determine_posthooks_combinable_with_verify_artifacts():
     assert kinds == ["grade", "verify_artifacts", "code_review"]
 
 
-def test_determine_posthooks_excludes_implicit_grade_for_code_reviewer():
-    """A code_reviewer task gets no IMPLICIT grade hook (judge-of-judge).
+def test_determine_posthooks_excludes_implicit_grade_for_reviewer():
+    """A reviewer task gets no IMPLICIT grade hook (judge-of-judge).
 
-    Z7 B3 corrected contract: excluded agent types suppress only the
-    implicit `grade` hook — an explicitly declared post-hook is still
-    honoured. A code_reviewer task that declares no post_hooks therefore
+    SP3: the code_review post-hook child runs as a raw_dispatch ``reviewer``
+    task (the deleted ``code_reviewer`` agent type no longer exists), so the
+    judge-of-judge suppression that used to key on ``code_reviewer`` now keys
+    on ``reviewer``. Z7 B3 corrected contract: excluded agent types suppress
+    only the implicit ``grade`` hook — an explicitly declared post-hook is
+    still honoured. A reviewer task that declares no post_hooks therefore
     yields an empty list (the implicit grade is dropped).
     """
-    task = {"id": 1, "agent_type": "code_reviewer"}
+    task = {"id": 1, "agent_type": "reviewer"}
     assert determine_posthooks(task, {}, {}) == []
     # requires_grading explicitly True still does not re-add grade.
     assert determine_posthooks(task, {"requires_grading": True}, {}) == []
 
 
-# ── _posthook_agent_and_payload ──────────────────────────────────────────
-
-def test_agent_and_payload_code_review_uses_code_reviewer_agent():
-    a = RequestPostHook(source_task_id=42, kind="code_review", source_ctx={})
-    source = {"id": 42, "mission_id": 7}
-    source_ctx = {
-        "produces": ["backend/app/main.py", "backend/app/routes.py"],
-        "review_excluded_models": ["model-x"],
-    }
-    agent, payload = _posthook_agent_and_payload(a, source, source_ctx)
-    assert agent == "code_reviewer"
-    assert payload["source_task_id"] == 42
-    assert payload["posthook_kind"] == "code_review"
-    assert payload["produces"] == source_ctx["produces"]
-    assert payload["review_excluded_models"] == ["model-x"]
-
+# ── _posthook_title ───────────────────────────────────────────────────────
+# SP3: code_review no longer flows through _posthook_agent_and_payload. The
+# kind is intercepted in _apply_request_posthook and spawned as a raw_dispatch
+# "reviewer" child via _enqueue_posthook_llm_child (on_complete=
+# posthook.code_review.resume). That CPS spawn path is covered by
+# tests/beckman/test_posthook_spawn_cps.py and tests/core/test_build_code_review_spec.py;
+# the deleted code_reviewer agent-routing test was removed here.
 
 def test_posthook_title_code_review():
     a = RequestPostHook(source_task_id=42, kind="code_review", source_ctx={})
     assert _posthook_title(a, {}) == "Code review for #42"
 
 
-# ── rewrite Rule 0: code_reviewer Complete → PostHookVerdict ─────────────
-
-def test_rewrite_code_reviewer_complete_synthesises_verdict_pass():
-    task = {
-        "id": 99, "agent_type": "code_reviewer",
-        "context": json.dumps({
-            "source_task_id": 42, "posthook_kind": "code_review",
-        }),
-        "mission_id": 7,
-    }
-    raw = {
-        "status": "completed",
-        "result": json.dumps({"passed": True, "issues": []}),
-        "posthook_verdict": {
-            "kind": "code_review", "source_task_id": 42, "passed": True,
-            "raw": {"passed": True, "issues": []},
-        },
-    }
-    actions = [Complete(task_id=99, result=raw["result"], raw=raw)]
-    ctx = {"source_task_id": 42, "posthook_kind": "code_review"}
-    out = rewrite_actions(task, ctx, actions)
-    verdicts = [a for a in out if isinstance(a, PostHookVerdict)]
-    assert len(verdicts) == 1
-    assert verdicts[0].kind == "code_review"
-    assert verdicts[0].passed is True
-
-
-def test_rewrite_code_reviewer_complete_synthesises_verdict_fail_with_issues():
-    issues = ["app/x.py:1: hardcoded secret", "app/y.py: no auth"]
-    task = {
-        "id": 99, "agent_type": "code_reviewer",
-        "context": json.dumps({
-            "source_task_id": 42, "posthook_kind": "code_review",
-        }),
-        "mission_id": 7,
-    }
-    raw = {
-        "status": "completed",
-        "result": json.dumps({"passed": False, "issues": issues}),
-        "posthook_verdict": {
-            "kind": "code_review", "source_task_id": 42, "passed": False,
-            "raw": {"passed": False, "issues": issues},
-        },
-    }
-    actions = [Complete(task_id=99, result=raw["result"], raw=raw)]
-    ctx = {"source_task_id": 42, "posthook_kind": "code_review"}
-    out = rewrite_actions(task, ctx, actions)
-    verdicts = [a for a in out if isinstance(a, PostHookVerdict)]
-    assert verdicts[0].passed is False
-    assert verdicts[0].raw["issues"] == issues
-
-
-def test_rewrite_code_reviewer_does_not_emit_mission_advance():
-    task = {
-        "id": 99, "agent_type": "code_reviewer",
-        "context": json.dumps({
-            "source_task_id": 42, "posthook_kind": "code_review",
-        }),
-        "mission_id": 7,
-    }
-    raw = {
-        "status": "completed",
-        "result": "{}",
-        "posthook_verdict": {
-            "kind": "code_review", "source_task_id": 42, "passed": True, "raw": {},
-        },
-    }
-    actions = [Complete(task_id=99, result="{}", raw=raw)]
-    ctx = {"source_task_id": 42, "posthook_kind": "code_review"}
-    out = rewrite_actions(task, ctx, actions)
-    assert not any(isinstance(a, MissionAdvance) for a in out)
-    assert not any(isinstance(a, RequestPostHook) for a in out)
+# ── rewrite Rule 0 (REMOVED in SP3) ──────────────────────────────────────
+# SP3 deleted the old rewrite Rule 0 that translated a code_reviewer agent
+# task's posthook_verdict payload into a PostHookVerdict. The code_reviewer
+# wrapper agent is gone; code_review now runs as a raw_dispatch "reviewer"
+# child whose verdict is built and applied via the durable
+# posthook.code_review.resume continuation (see posthook_continuations.py),
+# not via this rewrite-layer translation. The three tests that pinned the
+# removed Rule 0 code_reviewer path were deleted here.
 
 
 # ── _apply_code_review_verdict ───────────────────────────────────────────

@@ -187,12 +187,13 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
         # For workflows without an explicit delivery step, falls through to
         # the summary-only message.
         final_result = ""
-        # Bookkeeping agents run AFTER the real final step (grader scores
-        # it, summarizer condenses artifacts). Their results are JSON
-        # verdicts / structural summaries, not user-facing content —
+        # Bookkeeping agents run AFTER the real final step (the reviewer
+        # grades it, the summarizer condenses artifacts). Their results are
+        # JSON verdicts / structural summaries, not user-facing content —
         # skipping them prevents the verdict JSON from leaking out as
-        # the mission's delivered message.
-        _bookkeeping = {"mechanical", "grader", "artifact_summarizer"}
+        # the mission's delivered message. (reviewer/summarizer children are
+        # mission-less so they don't normally reach here — kept for defence.)
+        _bookkeeping = {"mechanical", "reviewer", "summarizer"}
         for t in sorted(tasks, key=lambda x: x.get("id") or 0, reverse=True):
             if t.get("agent_type") in _bookkeeping:
                 continue

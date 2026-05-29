@@ -74,13 +74,13 @@ _DEFAULT_DIAL_CONTEXT: MissionDialContext = MissionDialContext()
 _NO_POSTHOOKS_AGENT_TYPES: frozenset[str] = frozenset({
     "mechanical",
     "shopping_pipeline_v2",
-    "grader",
-    "artifact_summarizer",
+    # SP3: grade / code_review post-hook children both run as raw_dispatch
+    # "reviewer" tasks; spawning a grade on a reviewer is judge-of-judge.
     "reviewer",
-    # CodeReviewerAgent runs as a post-hook over a build step's output.
-    # Spawning a grader on it would be judge-of-judge — same reasoning
-    # as for "reviewer" above. Its verdict IS the gate.
-    "code_reviewer",
+    # SP3: the summary post-hook child runs as a raw_dispatch "summarizer"
+    # task. This is the recursion guard — a summarizer child must NEVER get a
+    # grade post-hook (it would spawn an endless grade→summary→grade chain).
+    "summarizer",
     # IntegrationReviewerAgent is a cross-file consistency reviewer.
     # Its verdict IS the gate — same judge-of-judge reasoning as
     # code_reviewer. Chain another reviewer-typed step for extra QA.
@@ -233,6 +233,10 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     ),
     "code_review": PostHookSpec(
         kind="code_review",
+        # Descriptive metadata only — NOT read for routing. SP3: the code_review
+        # LLM hook is spawned as a raw_dispatch "reviewer" child by
+        # apply._enqueue_posthook_llm_child; this field is retained for the
+        # historical registry contract (test_z2_t1_posthook_registry).
         verb="code_reviewer",
         default_severity="blocker",
         cost_band="moderate",

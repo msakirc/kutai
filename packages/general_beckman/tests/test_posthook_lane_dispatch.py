@@ -400,6 +400,89 @@ async def test_reconcile_redrives_stranded_chain(tmp_path, monkeypatch):
         await _close_db()
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# FIX 2 (3-applier regression) — SP3b race: eviction reopened the race under
+# 3+ concurrent verdict appliers.  Two appliers were enough to test basic
+# serialization (test_concurrent_simple_blockers_both_drain above), but the
+# eviction bug only manifests when a THIRD applier arrives while applier A is
+# releasing and applier B is queued: A pops the dict → C creates a new Lock →
+# B (old Lock) and C (new Lock) run concurrently.  Three concurrent appliers
+# are the minimal reproducer.
+# ──────────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_three_concurrent_appliers_no_lost_update(tmp_path, monkeypatch):
+    """Three independent PASS-blocker verdicts applied concurrently via
+    asyncio.gather() on ONE source.  Each drains its own kind from
+    _pending_posthooks in a read-modify-write of the SAME source context.
+
+    With the eviction (``if not lock.locked(): _source_verdict_locks.pop(sid, None)``):
+    - Applier A releases its lock; B is queued on the old Lock but the dict
+      entry is popped while lock.locked() is briefly False.
+    - Applier C creates a SECOND distinct Lock for the same source.
+    - B (old Lock) and C (new Lock) run concurrently → lost update.
+
+    Without the eviction (FIX): the Lock object for a given source is STABLE
+    — B waits on the SAME object A held, then C waits behind B → all three
+    run sequentially → all three drains land → _pending_posthooks is empty
+    and the source completes exactly once.
+    """
+    await _fresh_db(tmp_path, monkeypatch)
+    try:
+        import general_beckman.apply as apply_mod
+        from general_beckman.result_router import PostHookVerdict
+
+        kinds = ["integration_review", "security_review", "contract_review"]
+        source_id = await _add_source(
+            context={"_pending_posthooks": list(kinds)},
+        )
+        await _set_status(source_id, "ungraded")
+
+        completions: list[int] = []
+
+        async def _count_complete(source, payload):
+            completions.append(int(source.get("id")))
+
+        monkeypatch.setattr(
+            apply_mod, "_spawn_workflow_advance_if_mission", _count_complete,
+        )
+
+        async def apply_pass(kind):
+            await apply_mod._apply_posthook_verdict(
+                {"id": source_id},
+                PostHookVerdict(
+                    source_task_id=source_id, kind=kind, passed=True,
+                    raw={"verdict": "pass", "findings": []},
+                ),
+            )
+
+        # Fire all three concurrently — the minimal reproducer for the
+        # eviction race (two appliers miss it because the third is the one
+        # that creates the second Lock object during A's release window).
+        await asyncio.gather(
+            apply_pass(kinds[0]),
+            apply_pass(kinds[1]),
+            apply_pass(kinds[2]),
+        )
+
+        src = await _task(source_id)
+        ctx = json.loads(src["context"]) if isinstance(src["context"], str) else src["context"]
+        pending = ctx.get("_pending_posthooks") or []
+        assert pending == [], (
+            f"3-applier race: a kind was lost in a concurrent drain → still "
+            f"pending: {pending!r}.  Eviction in _source_verdict_guard reopened "
+            f"the race under 3+ concurrent appliers."
+        )
+        assert src["status"] == "completed", (
+            f"source should complete when all three blockers pass, got {src['status']!r}"
+        )
+        assert len(completions) == 1, (
+            f"source completed {len(completions)} times (expected exactly 1): "
+            f"double-completion indicates the lost-update race is still active"
+        )
+    finally:
+        await _close_db()
+
+
 @pytest.mark.asyncio
 async def test_reconcile_does_not_double_spawn_when_child_in_flight(tmp_path, monkeypatch):
     """If a post-hook child IS in flight (pending continuation referencing the

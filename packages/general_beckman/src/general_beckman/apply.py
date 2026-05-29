@@ -112,11 +112,17 @@ async def _source_verdict_guard(source_task_id: int):
             yield
     finally:
         _held_source_locks.reset(token)
-        # Best-effort cleanup: drop the lock object once no one holds it. Safe
-        # because we are outside the ``async with`` and the contextvar no
-        # longer marks it held for this chain.
-        if not lock.locked():
-            _source_verdict_locks.pop(sid, None)
+        # NOTE: intentionally NO eviction of _source_verdict_locks[sid] here.
+        # CPython 3.10: Lock.release() clears _locked and *then* schedules the
+        # next waiter.  In the window between those two steps lock.locked()
+        # returns False while a waiter (applier B) is still queued on the OLD
+        # Lock object.  Popping the dict entry in that window lets a new
+        # applier C create a SECOND distinct Lock for the same source; B (old)
+        # and C (new) then run their read-modify-write concurrently → lost
+        # update → stranded 'ungraded' or double-completion.  This is the
+        # exact race the lock was added to prevent.  Leaking one empty
+        # asyncio.Lock per source-task-id is the intended cheap trade-off
+        # (the module comment already concedes stale locks are cheap).
 
 
 async def _record_and_resolve_confidence(

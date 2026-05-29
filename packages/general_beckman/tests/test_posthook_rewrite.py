@@ -114,10 +114,60 @@ async def test_rewrite_is_idempotent(monkeypatch):
 @pytest.mark.asyncio
 async def test_gate_default_action_unchanged(monkeypatch):
     """Regression: a verdict with the default action ("gate") must NOT touch
-    result via the rewrite path. constrained_emit's gate-shaped verdict (no
-    new_result) falls through to the existing per-kind dispatch."""
+    result via the rewrite path. A gate-shaped verdict (action="gate", the
+    default) for kind="grade"/passed=True falls through to the existing
+    per-kind dispatch — the rewrite branch must be inert.
+
+    Behavioral assertion: after calling _apply_posthook_verdict with a gate
+    verdict, update_task is never called with result=<anything> (the rewrite
+    branch's signature call). The source task's result stays "ORIGINAL".
+    """
     import general_beckman.apply as apply_mod
     from general_beckman.result_router import PostHookVerdict
+
+    ORIGINAL_RESULT = "ORIGINAL"
+
+    store = {
+        3: {
+            "id": 3,
+            "status": "ungraded",
+            "result": ORIGINAL_RESULT,
+            "context": "{}",
+            "worker_attempts": 0,
+            "max_worker_attempts": 15,
+            "title": "test-task",
+        }
+    }
+
+    # Track every update_task call so we can inspect kwargs.
+    update_calls: list[dict] = []
+
+    async def fake_get_task(tid):
+        return store.get(int(tid))
+
+    async def recording_update_task(tid, **kwargs):
+        update_calls.append({"tid": int(tid), "kwargs": kwargs})
+        row = store.get(int(tid))
+        if row is not None:
+            row.update(kwargs)
+
+    monkeypatch.setattr("src.infra.db.get_task", fake_get_task)
+    monkeypatch.setattr("src.infra.db.update_task", recording_update_task)
+
+    # Stub out downstream helpers that the grade+pass path calls — we only
+    # care about the rewrite branch, not the full grade dispatch.
+    async def _noop_summary_kinds(source, ctx):
+        return []
+
+    async def _noop_spawn(*args, **kwargs):
+        pass
+
+    async def _noop_confidence(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(apply_mod, "_summary_kinds_for_source", _noop_summary_kinds)
+    monkeypatch.setattr(apply_mod, "_spawn_workflow_advance_if_mission", _noop_spawn)
+    monkeypatch.setattr(apply_mod, "_record_and_resolve_confidence", _noop_confidence)
 
     # Default action is "gate"; new_result defaults to None.
     verdict = PostHookVerdict(
@@ -128,3 +178,18 @@ async def test_gate_default_action_unchanged(monkeypatch):
     )
     assert verdict.action == "gate"
     assert verdict.new_result is None
+
+    # --- BEHAVIORAL ASSERTION ---
+    await apply_mod._apply_posthook_verdict(store[3], verdict)
+
+    # The rewrite branch calls update_task(id, result=new_result) then returns.
+    # Verify no call carried result= — the rewrite branch was not taken.
+    rewrite_calls = [c for c in update_calls if "result" in c["kwargs"]]
+    assert rewrite_calls == [], (
+        f"Rewrite branch fired unexpectedly: {rewrite_calls}"
+    )
+
+    # Double-check via the store: the source result is still ORIGINAL.
+    assert store[3]["result"] == ORIGINAL_RESULT, (
+        f"Source result was mutated: {store[3]['result']!r}"
+    )

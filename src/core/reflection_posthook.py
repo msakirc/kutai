@@ -28,10 +28,6 @@ from __future__ import annotations
 
 import json
 
-from src.infra.logging_config import get_logger
-
-logger = get_logger("core.reflection_posthook")
-
 
 # ────────────────────────────────────────────────────────────────────────────
 # Stack-aware prompt fragments — Z2 T4C

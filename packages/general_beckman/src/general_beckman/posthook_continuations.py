@@ -336,8 +336,7 @@ async def _constrained_emit_resume_err(child_task_id: int, result: dict, state: 
     err = (result or {}).get("error", "unknown")
     logger.warning("constrained_emit child failed terminally — keeping draft",
                    source_id=source_task_id, error=str(err)[:200])
-    # No verdict applied → source draft survives, ordered chain advances when
-    # the apply layer drains the pending kind (handled by the gate path).
+    # No verdict applied → source draft survives.
 
 
 async def _self_reflect_resume(child_task_id: int, result: dict, state: dict) -> None:

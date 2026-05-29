@@ -28,7 +28,7 @@ logger = get_logger("coulson.reflection")
 # dropped then if no external importer remains.
 # ────────────────────────────────────────────────────────────────────────────
 
-from src.core.reflection_posthook import (  # noqa: E402,F401
+from src.core.reflection_posthook import (  # noqa: F401
     STACK_BLOCKS,
     LAYER_BLOCKS,
     REFLECTION_BLOCKS,

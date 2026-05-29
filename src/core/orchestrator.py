@@ -237,6 +237,41 @@ class Orchestrator:
         except Exception as _e:
             logger.debug(f"agent_type refresh failed #{task_id}: {_e}")
 
+        # ── Bridge profile.enable_self_reflection → task context ──
+        # SP3b Task 7 moved per-agent self-reflection from coulson's inline
+        # path (which fired on the agent CLASS attr profile.enable_self_reflection)
+        # to a Beckman post-hook gated by determine_posthooks(). But that gate
+        # reads the DB task row + parsed context — it has no access to the agent
+        # profile object. The flag lives ONLY on the class (e.g.
+        # CoderAgent.enable_self_reflection = True), so it was never visible to
+        # the completion path → self_reflect NEVER spawned (reflection silently
+        # dead for every code-emitting agent). Bridge it here: get_agent() has
+        # the resolved profile, and on_task_finished re-reads the row via
+        # get_task() AFTER dispatch — so PERSIST it to the context column now.
+        # Only stamp True; never clutter context with False. Skip mechanical
+        # tasks entirely — they go through mr_roboto (no agent profile, never
+        # self-reflect), so touching get_agent for them is pointless work.
+        try:
+            _refl_ctx = parse_context(task)
+            _is_mech_dispatch = (
+                task.get("runner") == "mechanical"
+                or task.get("executor") == "mechanical"
+                or _refl_ctx.get("executor") == "mechanical"
+                or agent_type == "mechanical"
+            )
+            if not _is_mech_dispatch:
+                _profile = get_agent(agent_type)
+                if getattr(_profile, "enable_self_reflection", False):
+                    if _refl_ctx.get("enable_self_reflection") is not True:
+                        _refl_ctx["enable_self_reflection"] = True
+                        from src.infra.db import update_task as _ut_refl
+                        await _ut_refl(task_id, context=json.dumps(_refl_ctx))
+                        # Keep the in-memory task dict consistent so the agent
+                        # execution path below reads the same context.
+                        task["context"] = json.dumps(_refl_ctx)
+        except Exception as _e:
+            logger.debug(f"self_reflect bridge failed #{task_id}: {_e}")
+
         try:
             task = await inject_chain_context(task)
         except Exception as e:
@@ -298,7 +333,8 @@ class Orchestrator:
             # ── raw_dispatch sentinel: LLM call routed via beckman.enqueue
             # alias (dispatcher.request → beckman.enqueue → pump → here).
             # These tasks have context.llm_call.raw_dispatch == True and no
-            # matching agent class — send them straight to dispatcher.dispatch().
+            # matching agent class — send them straight to husam.run() (the
+            # non-agentic single-call worker that owns select → execute → map).
             try:
                 _ctx_raw_rd = task.get("context") or "{}"
                 _ctx_rd = json.loads(_ctx_raw_rd) if isinstance(_ctx_raw_rd, str) else _ctx_raw_rd
@@ -309,12 +345,12 @@ class Orchestrator:
             except Exception:
                 _is_raw = False
             if _is_raw:
-                from src.core.llm_dispatcher import get_dispatcher
+                import husam
                 # Forward the in-memory preselected_pick that Beckman attached at
-                # admission so dispatcher.dispatch() can skip re-selection.
-                # Admission gates (fatih_hoca.select, pool_pressure, reserve_task)
-                # already ran in Beckman; dispatcher is pure call-execution here.
-                _dispatch_result = await get_dispatcher().dispatch(
+                # admission so husam can skip re-selection. Admission gates
+                # (fatih_hoca.select, pool_pressure, reserve_task) already ran in
+                # Beckman; husam → dispatcher.execute is pure call-execution here.
+                _dispatch_result = await husam.run(
                     {
                         "context": _ctx_rd,
                         "kind": task.get("kind", "main_work"),

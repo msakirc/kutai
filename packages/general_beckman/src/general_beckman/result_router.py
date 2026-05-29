@@ -6,7 +6,7 @@ Phase 2b: these become Decision emissions consumed by orchestrator's switch.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import Any, Literal, Union
 
 
 @dataclass(frozen=True)
@@ -85,11 +85,26 @@ class RequestPostHook:
 
 @dataclass(frozen=True)
 class PostHookVerdict:
-    """Apply the result of a completed post-hook task back to the source."""
+    """Apply the result of a completed post-hook task back to the source.
+
+    Two verdict shapes:
+
+    - ``action="gate"`` (default) — the historical behaviour: ``passed``
+      drives the source's pass/fail gate (retry / DLQ / complete). Every one
+      of the ~40 existing post-hook kinds uses this; defaulting ``action`` to
+      "gate" keeps them all unchanged.
+    - ``action="rewrite"`` (SP3b) — the post-hook REWRITES the source task's
+      ``result`` in place with ``new_result`` (reflection's corrected_result;
+      constrained_emit's schema-conforming JSON), then the ordered chain
+      advances to the next post-hook. This is the only verdict path that
+      mutates the source's result rather than gating or surfacing it.
+    """
     source_task_id: int
     kind: str
     passed: bool
     raw: dict
+    action: Literal["gate", "rewrite"] = "gate"   # "gate" (existing) | "rewrite" (SP3b)
+    new_result: str | None = None
 
 
 Action = Union[

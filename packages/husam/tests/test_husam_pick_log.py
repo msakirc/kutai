@@ -1,4 +1,10 @@
-"""Dispatcher writes model_pick_log rows post-iteration (success + failure)."""
+"""husam.run writes model_pick_log rows post-execute (success + failure).
+
+Migrated from tests/core/test_dispatcher_pick_log.py (SP3b Task 2): the
+select → execute → map flow moved into husam.run. The pick_log write itself
+still fires inside ``LLMDispatcher.execute`` (a surviving dumb-pipe helper);
+these tests confirm husam → execute still produces the same rows.
+"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -53,9 +59,26 @@ def _fake_call_result(model_name: str = "claude-sonnet-4-6") -> CallResult:
     )
 
 
+def _task(task="coder", difficulty=7, tools=None):
+    return {
+        "context": {"llm_call": {
+            "raw_dispatch": True,
+            "call_category": "main_work",
+            "task": task,
+            "agent_type": "",
+            "difficulty": difficulty,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": tools,
+            "failures": [],
+        }},
+        "kind": "main_work",
+        "preselected_pick": None,
+    }
+
+
 @pytest.mark.asyncio
-async def test_dispatcher_writes_pick_log_on_success():
-    from src.core.llm_dispatcher import CallCategory, LLMDispatcher
+async def test_husam_writes_pick_log_on_success():
+    import husam
 
     model = _fake_model("claude-sonnet-4-6")
     pick = _fake_pick(model, composite=0.65)
@@ -71,14 +94,7 @@ async def test_dispatcher_writes_pick_log_on_success():
              new=AsyncMock(return_value=_fake_call_result()),
          ), \
          patch("src.infra.pick_log.write_pick_log_row", new=fake_write):
-        d = LLMDispatcher()
-        result = await d._do_dispatch(
-            category=CallCategory.MAIN_WORK,
-            task="coder",
-            difficulty=7,
-            messages=[{"role": "user", "content": "hi"}],
-            tools=None,
-        )
+        result = await husam.run(_task())
 
     assert result["content"] == "hi"
     assert len(writes) == 1
@@ -86,19 +102,14 @@ async def test_dispatcher_writes_pick_log_on_success():
     assert writes[0]["success"] is True
     assert writes[0]["task_name"] == "coder"
     assert writes[0]["category"] == "main_work"
-    # Score from Pick.score (post-utilization composite). Pre-2026-05-04
-    # the dispatcher read pick.composite which never existed on Pick →
-    # picked_score=0.0 every row, silent observability hole.
     assert writes[0]["picked_score"] == pytest.approx(0.65)
-    # Top-N candidate summary from select() lands as snapshot_summary
-    # so offline analysis can see runner-up scores.
     assert writes[0]["snapshot_summary"] == "claude-sonnet-4-6=8.4, gpt-4o=7.2"
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_writes_pick_log_on_failure():
+async def test_husam_writes_pick_log_on_failure():
     """Non-retryable error path must still write a pick_log row with success=False."""
-    from src.core.llm_dispatcher import CallCategory, LLMDispatcher
+    import husam
     from src.core.router import ModelCallFailed
 
     model = _fake_model("claude-sonnet-4-6")
@@ -114,15 +125,8 @@ async def test_dispatcher_writes_pick_log_on_failure():
     with patch("fatih_hoca.select", return_value=pick), \
          patch.object(hallederiz_kadir, "call", new=AsyncMock(return_value=err)), \
          patch("src.infra.pick_log.write_pick_log_row", new=fake_write):
-        d = LLMDispatcher()
         with pytest.raises(ModelCallFailed):
-            await d._do_dispatch(
-                category=CallCategory.MAIN_WORK,
-                task="coder",
-                difficulty=7,
-                messages=[{"role": "user", "content": "hi"}],
-                tools=None,
-            )
+            await husam.run(_task())
 
     assert len(writes) == 1
     assert writes[0]["success"] is False
@@ -131,9 +135,9 @@ async def test_dispatcher_writes_pick_log_on_failure():
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_writes_pick_log_on_raw_exception():
+async def test_husam_writes_pick_log_on_raw_exception():
     """hallederiz_kadir raising raw exception must still produce a pick_log row."""
-    from src.core.llm_dispatcher import CallCategory, LLMDispatcher
+    import husam
 
     model = _fake_model("claude-sonnet-4-6")
     pick = _fake_pick(model, composite=0.65)
@@ -149,15 +153,8 @@ async def test_dispatcher_writes_pick_log_on_raw_exception():
     with patch("fatih_hoca.select", return_value=pick), \
          patch.object(hallederiz_kadir, "call", new=raise_boom), \
          patch("src.infra.pick_log.write_pick_log_row", new=fake_write):
-        d = LLMDispatcher()
         with pytest.raises(RuntimeError, match="boom"):
-            await d._do_dispatch(
-                category=CallCategory.MAIN_WORK,
-                task="coder",
-                difficulty=7,
-                messages=[{"role": "user", "content": "hi"}],
-                tools=None,
-            )
+            await husam.run(_task())
 
     assert len(writes) == 1
     assert writes[0]["success"] is False

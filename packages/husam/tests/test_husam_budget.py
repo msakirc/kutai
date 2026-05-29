@@ -1,9 +1,14 @@
-"""Tests: dispatcher passes remaining_budget_usd to fatih_hoca.select() and
-pauses the mission when SelectionFailure(reason='budget') is returned."""
+"""husam.run passes remaining_budget_usd to fatih_hoca.select() and pauses the
+mission on SelectionFailure(reason='budget').
+
+Migrated from tests/core/test_dispatcher_budget.py (SP3b Task 2). The budget
+helper (_remaining_budget) and the select call moved from the dispatcher into
+husam.run; mission_id now rides on the husam task spec (top-level).
+"""
 from __future__ import annotations
 
-import pytest
 import aiosqlite
+import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 
@@ -34,12 +39,31 @@ def _fake_pick(model_name: str = "local-test"):
     return m
 
 
+def _task(mission_id):
+    return {
+        "context": {"llm_call": {
+            "raw_dispatch": True,
+            "call_category": "main_work",
+            "task": "coder",
+            "agent_type": "coder",
+            "difficulty": 5,
+            "messages": [],
+            "tools": None,
+            "failures": [],
+        }},
+        "kind": "main_work",
+        "preselected_pick": None,
+        "mission_id": mission_id,
+    }
+
+
 # ─── test 1: budget passed correctly ────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_passes_remaining_budget(tmp_path, monkeypatch):
-    """_do_dispatch passes remaining_budget_usd = ceiling - spent to select()."""
+async def test_husam_passes_remaining_budget(tmp_path, monkeypatch):
+    """husam.run passes remaining_budget_usd = ceiling - spent to select()."""
+    import husam
     import src.infra.db as db_module
     db_path = str(tmp_path / "kutai.db")
     monkeypatch.setenv("DB_PATH", db_path)
@@ -63,9 +87,6 @@ async def test_dispatcher_passes_remaining_budget(tmp_path, monkeypatch):
 
     _reset_db(db_module, db_path)
 
-    fake_call_result = MagicMock()
-    fake_call_result.__class__.__name__ = "CallResult"
-
     import hallederiz_kadir
 
     with patch("fatih_hoca.select", fake_select), \
@@ -80,20 +101,8 @@ async def test_dispatcher_passes_remaining_budget(tmp_path, monkeypatch):
         mgr.keep_alive = MagicMock()
         mock_mgr.return_value = mgr
 
-        from src.core.llm_dispatcher import LLMDispatcher, CallCategory
-        dispatcher = LLMDispatcher()
         try:
-            await dispatcher._do_dispatch(
-                category=CallCategory.MAIN_WORK,
-                task="coder",
-                agent_type="coder",
-                difficulty=5,
-                messages=[],
-                tools=None,
-                failures=[],
-                preselected_pick=None,
-                mission_id=mid,
-            )
+            await husam.run(_task(mid))
         except Exception:
             pass  # downstream may raise; we only care select was called
 
@@ -105,8 +114,9 @@ async def test_dispatcher_passes_remaining_budget(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_passes_none_when_no_ceiling(tmp_path, monkeypatch):
+async def test_husam_passes_none_when_no_ceiling(tmp_path, monkeypatch):
     """When mission has no cost_ceiling_usd, remaining_budget_usd=None is passed."""
+    import husam
     import src.infra.db as db_module
     db_path = str(tmp_path / "kutai2.db")
     monkeypatch.setenv("DB_PATH", db_path)
@@ -142,20 +152,8 @@ async def test_dispatcher_passes_none_when_no_ceiling(tmp_path, monkeypatch):
         mgr.keep_alive = MagicMock()
         mock_mgr.return_value = mgr
 
-        from src.core.llm_dispatcher import LLMDispatcher, CallCategory
-        dispatcher = LLMDispatcher()
         try:
-            await dispatcher._do_dispatch(
-                category=CallCategory.MAIN_WORK,
-                task="coder",
-                agent_type="coder",
-                difficulty=5,
-                messages=[],
-                tools=None,
-                failures=[],
-                preselected_pick=None,
-                mission_id=mid,
-            )
+            await husam.run(_task(mid))
         except Exception:
             pass
 
@@ -167,8 +165,9 @@ async def test_dispatcher_passes_none_when_no_ceiling(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_pauses_mission_on_budget_failure(tmp_path, monkeypatch):
+async def test_husam_pauses_mission_on_budget_failure(tmp_path, monkeypatch):
     """SelectionFailure(reason='budget') causes emit_pause and raises."""
+    import husam
     import src.infra.db as db_module
     db_path = str(tmp_path / "kutai3.db")
     monkeypatch.setenv("DB_PATH", db_path)
@@ -194,20 +193,8 @@ async def test_dispatcher_pauses_mission_on_budget_failure(tmp_path, monkeypatch
     with patch("fatih_hoca.select", fake_select), \
          patch("src.core.in_flight.begin_call", new=AsyncMock(return_value="cid")), \
          patch("src.core.in_flight.end_call", new=AsyncMock()):
-        from src.core.llm_dispatcher import LLMDispatcher, CallCategory
-        dispatcher = LLMDispatcher()
         with pytest.raises(Exception, match="budget|selection failed"):
-            await dispatcher._do_dispatch(
-                category=CallCategory.MAIN_WORK,
-                task="coder",
-                agent_type="coder",
-                difficulty=5,
-                messages=[],
-                tools=None,
-                failures=[],
-                preselected_pick=None,
-                mission_id=mid,
-            )
+            await husam.run(_task(mid))
 
     _reset_db(db_module, db_path)
     async with aiosqlite.connect(db_path) as db:

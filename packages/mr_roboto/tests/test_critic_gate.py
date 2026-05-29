@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import mr_roboto
 import mr_roboto.critic_gate as CRITIC_MODULE
@@ -92,22 +92,23 @@ def test_opt_out_default_on(monkeypatch):
 # ─── Unit: critic_gate happy paths ───────────────────────────────────────
 
 
+# SP3b Task 8: the LLM hop now travels through ``husam.run`` (the admitted
+# single-call worker), NOT ``LLMDispatcher().request(...)``. These behavioral
+# tests are repointed to patch ``husam.run`` accordingly.
+
+
 @pytest.mark.asyncio
 async def test_critic_gate_pass_branch(monkeypatch):
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
     fake_resp = {"content": '{"verdict": "pass", "reasons": []}'}
-    fake_dispatcher = MagicMock()
-    fake_dispatcher.request = AsyncMock(return_value=fake_resp)
-    with patch(
-        "src.core.llm_dispatcher.LLMDispatcher",
-        return_value=fake_dispatcher,
-    ), patch(_PERSIST_PATCH, new_callable=AsyncMock):
+    husam_run = AsyncMock(return_value=fake_resp)
+    with patch("husam.run", husam_run), patch(_PERSIST_PATCH, new_callable=AsyncMock):
         result = await critic_gate(
             "git_commit", {"commit_message": "fix typo", "diff": "+ 1 line"}
         )
     assert result["verdict"] == "pass"
     assert result["bypassed"] is False
-    fake_dispatcher.request.assert_awaited_once()
+    husam_run.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -116,12 +117,8 @@ async def test_critic_gate_veto_branch(monkeypatch):
     fake_resp = {
         "content": '{"verdict": "veto", "reasons": ["leaks API key"]}'
     }
-    fake_dispatcher = MagicMock()
-    fake_dispatcher.request = AsyncMock(return_value=fake_resp)
-    with patch(
-        "src.core.llm_dispatcher.LLMDispatcher",
-        return_value=fake_dispatcher,
-    ), patch(_PERSIST_PATCH, new_callable=AsyncMock):
+    husam_run = AsyncMock(return_value=fake_resp)
+    with patch("husam.run", husam_run), patch(_PERSIST_PATCH, new_callable=AsyncMock):
         result = await critic_gate(
             "notify_user",
             {"message": "Your token is sk-abc123", "chat_id": 1},
@@ -133,28 +130,21 @@ async def test_critic_gate_veto_branch(monkeypatch):
 @pytest.mark.asyncio
 async def test_critic_gate_opt_out_short_circuits(monkeypatch):
     monkeypatch.setenv("KUTAI_CRITIC_GATE", "off")
-    with patch(
-        "src.core.llm_dispatcher.LLMDispatcher"
-    ) as mock_dispatcher_cls, patch(
-        _PERSIST_PATCH, new_callable=AsyncMock
-    ):
+    husam_run = AsyncMock()
+    with patch("husam.run", husam_run), patch(_PERSIST_PATCH, new_callable=AsyncMock):
         result = await critic_gate("git_commit", {"x": 1})
-    # Dispatcher should NEVER be constructed when opted out
-    mock_dispatcher_cls.assert_not_called()
+    # The worker should NEVER be called when opted out.
+    husam_run.assert_not_awaited()
     assert result["verdict"] == "pass"
     assert result["bypassed"] is True
 
 
 @pytest.mark.asyncio
 async def test_critic_gate_dispatcher_failure_default_passes(monkeypatch):
-    """When the critic dispatcher itself raises, default-pass — never block."""
+    """When the critic producer call itself raises, default-pass — never block."""
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
-    fake_dispatcher = MagicMock()
-    fake_dispatcher.request = AsyncMock(side_effect=RuntimeError("model down"))
-    with patch(
-        "src.core.llm_dispatcher.LLMDispatcher",
-        return_value=fake_dispatcher,
-    ), patch(_PERSIST_PATCH, new_callable=AsyncMock):
+    husam_run = AsyncMock(side_effect=RuntimeError("model down"))
+    with patch("husam.run", husam_run), patch(_PERSIST_PATCH, new_callable=AsyncMock):
         result = await critic_gate("git_commit", {"x": 1})
     assert result["verdict"] == "pass"
     assert any("model down" in r for r in result["reasons"])
@@ -166,21 +156,16 @@ async def test_critic_gate_redacts_payload_before_sending(monkeypatch):
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
     captured = {}
 
-    async def _capture(**kwargs):
-        captured["messages"] = kwargs.get("messages")
+    async def _capture(spec):
+        captured["spec"] = spec
         return {"content": '{"verdict": "pass", "reasons": []}'}
 
-    fake_dispatcher = MagicMock()
-    fake_dispatcher.request = _capture
-    with patch(
-        "src.core.llm_dispatcher.LLMDispatcher",
-        return_value=fake_dispatcher,
-    ), patch(_PERSIST_PATCH, new_callable=AsyncMock):
+    with patch("husam.run", _capture), patch(_PERSIST_PATCH, new_callable=AsyncMock):
         await critic_gate(
             "notify_user",
             {"message": "your api_key=sk-1234567890abcdef1234567890abcdef"},
         )
-    sent = str(captured["messages"])
+    sent = str(captured["spec"]["context"]["llm_call"]["messages"])
     assert "sk-1234567890abcdef1234567890abcdef" not in sent
     assert "REDACTED" in sent
 

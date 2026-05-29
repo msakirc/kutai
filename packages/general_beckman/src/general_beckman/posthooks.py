@@ -89,6 +89,12 @@ _NO_POSTHOOKS_AGENT_TYPES: frozenset[str] = frozenset({
     # falsification_signal cannot be checked mechanically. Its verdict IS
     # the gate — judge-of-judge would loop forever.
     "adr_drift_judge",
+    # SP3b: self_reflect + constrained_emit are post-hook child tasks
+    # themselves. They must NEVER spawn grade/reflect/emit hooks of their own
+    # — that would create an infinite reflect→grade→reflect or
+    # emit→grade→emit chain.
+    "self_reflect",
+    "constrained_emit",
 })
 
 
@@ -881,6 +887,36 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "inject them into the next mission's first task context."
         ),
     ),
+    # SP3b: constrained_emit — re-emit draft as schema-conforming JSON.
+    # Result-rewriting post-hook (replaces tasks.result). Runs before grade.
+    # Auto-wire is schema-driven (Task 6), not produces-glob — empty triggers.
+    "constrained_emit": PostHookSpec(
+        kind="constrained_emit",
+        verb="constrained_emit",   # routed by _enqueue_posthook_llm_child (Task 5)
+        default_severity="blocker",
+        cost_band="moderate",
+        # Auto-wired by determine_posthooks on steps that declare a constrainable
+        # artifact_schema (Task 6). No glob trigger (schema lives in ctx, not produces).
+        auto_wire_triggers=[],
+        description=(
+            "SP3b: re-emit the draft as schema-conforming JSON (response_format). "
+            "Result-rewriting post-hook (replaces tasks.result). Runs before grade."
+        ),
+    ),
+    # SP3b: self_reflect — role-specific self-review of the draft.
+    # Result-rewriting when verdict=fix (applies corrected_result).
+    # Runs after emit, before grade.
+    "self_reflect": PostHookSpec(
+        kind="self_reflect",
+        verb="self_reflect",
+        default_severity="warning",
+        cost_band="moderate",
+        auto_wire_triggers=[],
+        description=(
+            "SP3b: role-specific self-review of the draft. Result-rewriting when "
+            "verdict=fix (applies corrected_result). Runs after emit, before grade."
+        ),
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -898,6 +934,27 @@ POST_HOOK_KINDS: frozenset[str] = frozenset(POST_HOOK_REGISTRY.keys())
 _KNOWN_EXTRA_KINDS: frozenset[str] = POST_HOOK_KINDS
 
 
+def _emit_is_constrainable(artifact_schema: dict, task_ctx: dict) -> bool:
+    """True when *artifact_schema* can be turned into a json_schema
+    response_format (i.e. has at least one object/array artifact).
+
+    Reuses ``src.core.reflection_posthook.schema_response_format`` — the same
+    constrainable check the emit child itself applies (None ⇒ markdown/string ⇒
+    skip the emit, let the validator cover shape). Best-effort: if the helper
+    can't be imported (lean test env), fall back to a light object/array probe
+    so the ordering still wires emit ahead of grade.
+    """
+    try:
+        from src.core.reflection_posthook import schema_response_format
+        step_id = task_ctx.get("workflow_step_id") or "artifact"
+        return schema_response_format(artifact_schema, step_id) is not None
+    except Exception:  # noqa: BLE001 — never let a constrainability probe crash
+        return any(
+            isinstance(r, dict) and r.get("type") in ("object", "array")
+            for r in artifact_schema.values()
+        )
+
+
 def determine_posthooks(
     task: dict, task_ctx: dict, result: dict,
 ) -> list[str]:
@@ -913,14 +970,48 @@ def determine_posthooks(
     Extra kinds are validated against ``POST_HOOK_REGISTRY`` (derived from
     the registry, not hardcoded) so new T2/T3 kinds are accepted as soon as
     they register a row.
+
+    SP3b Task 6 ordering — the two RESULT-REWRITING post-hooks run FIRST so
+    their rewrites land on the source before the terminal grade gate reads it:
+      1. ``constrained_emit`` — when the step declares a *constrainable*
+         artifact_schema (object/array; markdown/string is unconstrainable and
+         covered by the validator instead).
+      2. ``self_reflect`` — when the step opted into self-reflection.
+      3. ``grade`` — the existing terminal gate, always AFTER the rewriters.
+      4. explicit extras (verify_artifacts/...), unchanged tail position.
+    The apply layer sequences 1→2→3 as a cursor walk (``_posthook_queue``); the
+    rewriters do not gate, only grade + extras do.
     """
     agent_type = task.get("agent_type", "")
     no_posthooks = agent_type in _NO_POSTHOOKS_AGENT_TYPES
 
     kinds: list[str] = []
-    # Default `grade` hook — suppressed for the no-posthooks agent types
+
+    # 1) constrained_emit — rewrite the draft as schema-conforming JSON.
+    # Auto-wired only when the step carries a CONSTRAINABLE artifact_schema
+    # (object/array). schema_response_format returns None for markdown/string
+    # schemas — those are not re-emittable, so the emit kind is skipped and the
+    # downstream validator covers shape. Recursion-guarded agent types
+    # (constrained_emit/self_reflect children) never re-wire emit on themselves.
+    if not no_posthooks:
+        artifact_schema = task_ctx.get("artifact_schema")
+        if isinstance(artifact_schema, dict) and artifact_schema:
+            if _emit_is_constrainable(artifact_schema, task_ctx):
+                kinds.append("constrained_emit")
+
+    # 2) self_reflect — role-specific self-review of the draft. Opt-in via the
+    # task row or its context. Warning severity: rewrites only on verdict=fix,
+    # never fails the source.
+    if not no_posthooks and (
+        task.get("enable_self_reflection")
+        or task_ctx.get("enable_self_reflection")
+    ):
+        kinds.append("self_reflect")
+
+    # 3) Default `grade` hook — suppressed for the no-posthooks agent types
     # (mechanical / reviewers etc.: a grader on a mechanical result is
-    # pointless, a grader on a reviewer is judge-of-judge).
+    # pointless, a grader on a reviewer is judge-of-judge). Always AFTER the
+    # rewriters so it grades the rewritten result.
     if not no_posthooks and task_ctx.get("requires_grading") is not False:
         kinds.append("grade")
 

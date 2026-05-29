@@ -206,12 +206,52 @@ async def _grade_resume_err(child_task_id: int, result: dict, state: dict) -> No
     )
 
 
+def _make_cr_verdict(source_task_id, passed: bool, raw: dict):
+    """Build a PostHookVerdict for kind='code_review'."""
+    from general_beckman.result_router import PostHookVerdict
+    return PostHookVerdict(source_task_id=source_task_id, kind="code_review",
+                           passed=passed, raw=raw)
+
+
 async def _code_review_resume(child_task_id: int, result: dict, state: dict) -> None:
-    raise NotImplementedError  # Task 6
+    """Resume after a code_review child completed (single-shot — no chaining).
+
+    Parses the child output with parse_code_review_response, builds a
+    PostHookVerdict whose raw dict mirrors the original CodeReviewerAgent
+    shape (keys: passed / issues / raw) so _apply_code_review_verdict can
+    read raw.get("issues") for retry feedback, then re-enters
+    _apply_posthook_verdict.
+    """
+    from src.core.code_review import parse_code_review_response
+
+    source_task_id = state.get("source_task_id")
+    raw_text = _extract_content(result)
+    cr = parse_code_review_response(raw_text)
+    await _apply_posthook_verdict(
+        {"id": child_task_id},
+        _make_cr_verdict(
+            source_task_id,
+            cr.passed,
+            {"passed": cr.passed, "issues": list(cr.issues), "raw": cr.raw},
+        ),
+    )
 
 
 async def _code_review_resume_err(child_task_id: int, result: dict, state: dict) -> None:
-    raise NotImplementedError  # Task 6
+    """On_error: the code_review child terminally failed. Auto-fail the source."""
+    source_task_id = state.get("source_task_id")
+    err = (result or {}).get("error", "unknown")
+    logger.warning("code_review child failed terminally — auto-failing source",
+                   source_id=source_task_id, error=str(err)[:200])
+    await _apply_posthook_verdict(
+        {"id": child_task_id},
+        _make_cr_verdict(
+            source_task_id,
+            False,
+            {"passed": False, "issues": [],
+             "raw": f"auto-fail: code-review call failed ({err})"},
+        ),
+    )
 
 
 async def _summary_resume(child_task_id: int, result: dict, state: dict) -> None:

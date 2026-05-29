@@ -23,6 +23,16 @@ from general_beckman.result_router import (
 from general_beckman.posthooks import determine_posthooks
 
 
+#: SP3b Task 6 — the ordered RESULT-REWRITE → GATE chain. determine_posthooks
+#: returns these (when applicable) in this exact order; rewrite.py sequences the
+#: subset as a single cursor-headed RequestPostHook so the apply layer walks
+#: them one at a time (rewriters land BEFORE grade) instead of fanning out in
+#: parallel. ``grade`` is the terminal gate and always last.
+_POSTHOOK_CHAIN_ORDER: tuple[str, ...] = (
+    "constrained_emit", "self_reflect", "grade",
+)
+
+
 def _is_workflow_step(task_ctx: dict) -> bool:
     return bool(task_ctx.get("workflow_step") or task_ctx.get("is_workflow_step"))
 
@@ -290,18 +300,52 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
                         # top-level a.raw scalars (rare) take precedence over
                         # the nested executor-result scalars.
                         _result_scalars.setdefault(_rk, _rv)
-        for kind in determined:
+        # SP3b Task 6 — partition the rewrite→grade chain from the independent
+        # (mechanical) post-hooks. The chain (constrained_emit / self_reflect /
+        # grade) must run SEQUENTIALLY so the rewriters land on the source
+        # before grade reads it; emit it as a SINGLE cursor-headed
+        # RequestPostHook. Everything else keeps the existing parallel fan-out.
+        chain = [k for k in _POSTHOOK_CHAIN_ORDER if k in determined]
+        # A chain that's only ["grade"] (no rewriter ahead of it) is the legacy
+        # grade-only case — emit grade as a plain post-hook (no queue) so its
+        # behaviour is byte-identical to pre-Task-6. Sequencing only matters
+        # when at least one rewriter precedes grade.
+        has_rewriter = any(k != "grade" for k in chain)
+
+        def _build_ctx() -> dict:
             # Using setdefault means task_ctx values win (they were set
             # intentionally); result scalars fill only fields the task didn't
             # set.
-            _posthook_ctx = dict(task_ctx)
+            _c = dict(task_ctx)
             for _rk, _rv in _result_scalars.items():
-                _posthook_ctx.setdefault(_rk, _rv)
+                _c.setdefault(_rk, _rv)
+            return _c
+
+        if has_rewriter:
+            # One RequestPostHook for the chain HEAD, carrying the ordered queue.
+            # The apply layer (_apply_request_posthook) reads _posthook_queue,
+            # parks only the gating kinds (grade) in _pending_posthooks, and
+            # walks the cursor (skip-draining no-op rewriters).
+            head_ctx = _build_ctx()
+            head_ctx["_posthook_queue"] = list(chain)
+            result_actions.append(
+                RequestPostHook(
+                    source_task_id=a.task_id,
+                    kind=chain[0],
+                    source_ctx=head_ctx,
+                )
+            )
+
+        # Independent / mechanical post-hooks (verify_artifacts, grounding, ...)
+        # and — when there is no rewriter — a plain grade keep the parallel path.
+        for kind in determined:
+            if kind in chain and has_rewriter:
+                continue  # owned by the sequential chain above
             result_actions.append(
                 RequestPostHook(
                     source_task_id=a.task_id,
                     kind=kind,
-                    source_ctx=_posthook_ctx,
+                    source_ctx=_build_ctx(),
                 )
             )
         return result_actions

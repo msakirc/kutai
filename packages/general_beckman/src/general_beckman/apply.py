@@ -1123,6 +1123,16 @@ def _posthook_kind(agent_type: str) -> str:
     return "main_work"
 
 
+#: SP3b Task 6 — the RESULT-REWRITING post-hooks. Unlike every other (~40)
+#: kind, these REWRITE the source's result in place rather than gating it, and
+#: they must run BEFORE the terminal grade gate. They are NOT added to
+#: ``_pending_posthooks`` (they gate nothing); the chain's ``_posthook_queue``
+#: cursor sequences them ahead of grade instead.
+_REWRITE_POSTHOOK_KINDS: frozenset[str] = frozenset(
+    {"constrained_emit", "self_reflect"}
+)
+
+
 async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
     """Park the source in `ungraded`, enqueue a post-hook task row."""
     import json as _json
@@ -1131,6 +1141,50 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
     source = await get_task(a.source_task_id)
     if source is None:
         logger.warning("posthook: source missing", source_id=a.source_task_id)
+        return
+
+    # Use a.source_ctx (built by rewrite.py with result scalars merged in, e.g.
+    # "draft" from incident/draft_update) rather than the DB-read ctx.  The DB
+    # ctx is intentionally not updated with result scalars — it stores the task's
+    # original input context.  a.source_ctx is the enriched view that posthook
+    # handlers need to read fields like "draft", "incident_id", "status_kind".
+    # ctx above is still used for _pending_posthooks tracking + update_task only.
+    posthook_ctx = a.source_ctx if a.source_ctx else None
+
+    # SP3b Task 6 — ordered rewrite→grade chain. When rewrite.py partitions the
+    # constrained_emit→self_reflect→grade trio it emits a SINGLE RequestPostHook
+    # for the chain HEAD, carrying the ordered ``_posthook_queue`` in source_ctx.
+    # Sequence it as a cursor walk: stash the queue + park ONLY the gating kinds
+    # (grade) in _pending_posthooks, then advance the cursor (spawns the head
+    # with skip-drain). The rewriters never enter _pending_posthooks — they
+    # rewrite, they don't gate, so grade-PASS still drains pending to empty.
+    chain_queue = list((posthook_ctx or {}).get("_posthook_queue") or [])
+    if chain_queue:
+        ctx = _parse_ctx(source)
+        pending = list(ctx.get("_pending_posthooks") or [])
+        # Only the GATING members of the chain (grade + anything that isn't a
+        # pure rewriter) go in pending — the source stays ungraded until those
+        # resolve. Rewriters are sequenced by the queue cursor, not pending.
+        for k in chain_queue:
+            if k in _REWRITE_POSTHOOK_KINDS:
+                continue
+            if k not in pending:
+                pending.append(k)
+        ctx["_pending_posthooks"] = pending
+        # Persist the ordered cursor (full source ctx survives the DB round-trip
+        # as JSON) so resume continuations can advance after a restart.
+        ctx["_posthook_queue"] = chain_queue
+        # Carry the enriched scalars (draft/etc.) the rewriters' children read.
+        for _k, _v in (posthook_ctx or {}).items():
+            if _k in ("_posthook_queue", "_pending_posthooks"):
+                continue
+            ctx.setdefault(_k, _v)
+        await update_task(
+            a.source_task_id,
+            status="ungraded",
+            context=_json.dumps(ctx),
+        )
+        await _advance_posthook_chain(a.source_task_id)
         return
 
     ctx = _parse_ctx(source)
@@ -1145,20 +1199,21 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
         context=_json.dumps(ctx),
     )
 
-    # Use a.source_ctx (built by rewrite.py with result scalars merged in, e.g.
-    # "draft" from incident/draft_update) rather than the DB-read ctx.  The DB
-    # ctx is intentionally not updated with result scalars — it stores the task's
-    # original input context.  a.source_ctx is the enriched view that posthook
-    # handlers need to read fields like "draft", "incident_id", "status_kind".
-    # ctx above is still used for _pending_posthooks tracking + update_task only.
-    posthook_ctx = a.source_ctx if a.source_ctx else ctx
+    if posthook_ctx is None:
+        posthook_ctx = ctx
 
-    # SP3: the three LLM post-hook kinds (grade / code_review / summary:*) spawn
-    # the raw_dispatch reviewer/summarizer CHILD directly with a durable
+    # SP3: the LLM post-hook kinds (grade / code_review / summary:* and the SP3b
+    # rewriters constrained_emit / self_reflect) spawn the raw_dispatch
+    # reviewer/summarizer/emit/reflect CHILD directly with a durable
     # continuation — no cap-counted grader/code_reviewer/artifact_summarizer
     # agent task. Mechanical kinds (verify_artifacts/grounding/imports_check/
     # test_run/pattern_lint/...) keep the agent-task enqueue path below intact.
-    if a.kind == "grade" or a.kind == "code_review" or a.kind.startswith("summary:"):
+    if (
+        a.kind == "grade"
+        or a.kind == "code_review"
+        or a.kind.startswith("summary:")
+        or a.kind in _REWRITE_POSTHOOK_KINDS
+    ):
         await _enqueue_posthook_llm_child(a.kind, source, posthook_ctx)
         return
 
@@ -1180,6 +1235,94 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
     )
 
 
+async def _advance_posthook_chain(source_task_id: int) -> None:
+    """Spawn the HEAD of the source's ordered ``_posthook_queue`` cursor.
+
+    SP3b Task 6 — the constrained_emit→self_reflect→grade trio is sequenced,
+    not fanned out: this function pops the queue head, persists the shortened
+    queue, and enqueues that kind's child. Each rewriter's resume continuation
+    calls back here after applying its verdict, spawning the NEXT kind; grade is
+    the terminal entry and never chains further.
+
+    Skip-drain (handoff #2): ``_enqueue_posthook_llm_child`` returns ``False``
+    when a rewriter is a no-op (draft already conforms / empty / unconstrainable)
+    — no child is spawned. In that case we MUST advance to the next kind in the
+    same call so the source never stalls in 'ungraded' with a dead cursor. Loop
+    until a child is actually spawned or the queue drains.
+    """
+    import json as _json
+    from src.infra.db import get_task, update_task
+
+    while True:
+        source = await get_task(source_task_id)
+        if source is None:
+            logger.warning("posthook chain: source missing",
+                           source_id=source_task_id)
+            return
+        ctx = _parse_ctx(source)
+        queue = list(ctx.get("_posthook_queue") or [])
+        if not queue:
+            # Cursor drained. In the normal trio the terminal entry is grade,
+            # which owns source completion via its gate verdict — nothing to do
+            # here. But a chain that has rewriters with NO grade (e.g. a
+            # requires_grading=False step that still opted into emit/reflect)
+            # would otherwise strand the source in 'ungraded' forever. If no
+            # gating post-hook remains pending, complete the source now.
+            await _complete_source_if_no_pending(source_task_id, ctx)
+            return
+        head = queue[0]
+        remaining = queue[1:]
+        # Persist the shortened cursor BEFORE spawning the child so a restart
+        # mid-spawn doesn't replay the head, and so the child's resume reads the
+        # already-advanced queue.
+        ctx["_posthook_queue"] = remaining
+        await update_task(source_task_id, context=_json.dumps(ctx))
+        spawned = await _enqueue_posthook_llm_child(head, source, ctx)
+        if spawned:
+            return
+        # Skipped rewriter (no child) — drain to the next kind immediately.
+        logger.debug("posthook chain: kind skipped, advancing",
+                     source_id=source_task_id, kind=head)
+
+
+async def _complete_source_if_no_pending(source_task_id: int, ctx: dict) -> None:
+    """Complete an ungraded source whose post-hook chain drained with no gating
+    kind left pending.
+
+    Only fires when ``_pending_posthooks`` is empty — i.e. there is no grade or
+    mechanical blocker still in flight. Mirrors the grade-PASS completion path
+    (clear failure metadata, fire workflow_advance, surface step progress) so a
+    grade-less rewrite chain doesn't strand the source. Idempotent: no-ops once
+    the source is no longer 'ungraded'.
+    """
+    import json as _json
+    from src.infra.db import get_task, update_task
+
+    fresh = await get_task(source_task_id)
+    if fresh is None or fresh.get("status") != "ungraded":
+        return
+    pending = list(ctx.get("_pending_posthooks") or [])
+    if pending:
+        return  # a gating post-hook (grade / mechanical) still owns completion
+    await update_task(
+        source_task_id, status="completed",
+        context=_json.dumps(ctx),
+        error=None, error_category=None,
+        next_retry_at=None, retry_reason=None, failed_in_phase=None,
+    )
+    try:
+        await _spawn_workflow_advance_if_mission(fresh, {})
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from general_beckman import _send_step_progress
+        again = await get_task(source_task_id)
+        if again:
+            await _send_step_progress(again, "completed", {})
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # Module-level name so tests can ``patch.object(apply, "enqueue", ...)`` and so
 # _enqueue_posthook_llm_child resolves the (patchable) module global rather than
 # a fresh per-call local. Lazily bound on first use to avoid the
@@ -1188,11 +1331,17 @@ enqueue = None  # noqa: F811 — populated lazily by _enqueue_posthook_llm_child
 
 
 async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
-                                      *, exclusions=None, attempt: int = 0) -> None:
+                                      *, exclusions=None, attempt: int = 0) -> bool:
     """Enqueue the raw_dispatch reviewer/summarizer child with a durable
     continuation (CPS). mission_id rides in cont_state ONLY (never on the child
     row — SP3 child-spec hygiene). A trivial/degenerate source short-circuits to
-    a verdict applied directly (no child)."""
+    a verdict applied directly (no child).
+
+    Returns ``True`` when a child task was actually enqueued, ``False`` when the
+    spawn was a no-op (grade/code_review auto-fail short-circuit, or an SP3b
+    rewriter that skipped because the draft already conforms / is empty /
+    unconstrainable). The Task 6 cursor walk (``_advance_posthook_chain``) uses
+    this to drain past a skipped rewriter without stalling the source."""
     global enqueue
     if enqueue is None:  # lazy bind: avoid __init__<->apply cycle at load time
         from general_beckman import enqueue as _enqueue
@@ -1212,7 +1361,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 {"id": source_id},
                 PostHookVerdict(source_task_id=source_id, kind="grade", passed=False,
                                 raw={"passed": False, "raw": built.raw}))
-            return
+            return False  # verdict applied directly — no child spawned
         cont_state = {"source_task_id": source_id, "kind": "grade",
                       "attempt": attempt, "exclusions": excl, "mission_id": mission_id}
 
@@ -1227,7 +1376,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 {"id": source_id},
                 PostHookVerdict(source_task_id=source_id, kind="code_review", passed=False,
                                 raw={"passed": False, "issues": [], "raw": built.raw}))
-            return
+            return False  # verdict applied directly — no child spawned
         cont_state = {"source_task_id": source_id, "kind": "code_review",
                       "attempt": attempt, "exclusions": excl, "mission_id": mission_id}
 
@@ -1258,18 +1407,18 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         )
         draft = source.get("result")
         if not isinstance(draft, str) or not draft.strip():
-            return  # nothing to emit — leave source untouched
+            return False  # nothing to emit — leave source untouched
         artifact_schema = source_ctx.get("artifact_schema")
         if not isinstance(artifact_schema, dict):
-            return  # no constrainable schema — emit is a no-op
+            return False  # no constrainable schema — emit is a no-op
         step_id = source_ctx.get("workflow_step_id") or "artifact"
         response_format = schema_response_format(artifact_schema, step_id)
         if response_format is None:
-            return  # unconstrainable (markdown/string) — validator covers it
+            return False  # unconstrainable (markdown/string) — validator covers it
         if should_skip_emit(draft, artifact_schema):
             # Draft already parses with all required keys — re-emitting would
             # compress, not reshape. Skip the child entirely (no rewrite).
-            return
+            return False
         messages = build_emit_messages(draft, response_format)
         spec = {
             "title": f"emit:task#{source_id}",
@@ -1310,7 +1459,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         )
         draft = source.get("result")
         if not isinstance(draft, str) or not draft.strip():
-            return  # nothing to reflect on — leave source untouched
+            return False  # nothing to reflect on — leave source untouched
         agent_name = (
             source_ctx.get("agent_type") or source.get("agent_type") or "executor"
         )
@@ -1349,6 +1498,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
 
     await enqueue(built, parent_id=source_id, on_complete=on_complete,
                   on_error=on_error, cont_state=cont_state, lane="overhead")
+    return True  # child task enqueued
 
 
 def _posthook_agent_and_payload(

@@ -45,6 +45,21 @@ async def _apply_posthook_verdict(child_task: dict, verdict) -> None:
     await _impl(child_task, verdict)
 
 
+async def _advance_posthook_chain(source_task_id) -> None:
+    """Spawn the NEXT kind in the source's ordered post-hook cursor.
+
+    SP3b Task 6 — after a rewriter (constrained_emit / self_reflect) resume has
+    applied its verdict (rewrite or no-op), advance the ``_posthook_queue``
+    cursor so the next kind (self_reflect → grade) is spawned. Re-enters the
+    apply-layer cursor walk, which skip-drains any no-op rewriter and lands on
+    the terminal grade gate. Module-level so tests can patch it.
+    """
+    if source_task_id is None:
+        return
+    from general_beckman.apply import _advance_posthook_chain as _impl
+    await _impl(int(source_task_id))
+
+
 def _parse_ctx(source: dict) -> dict:
     """Decode a task's context column (str JSON | dict | None) to a dict."""
     import json as _json
@@ -314,6 +329,7 @@ async def _constrained_emit_resume(child_task_id: int, result: dict, state: dict
     if not emitted:
         logger.warning("constrained_emit produced empty output — keeping draft",
                        source_id=source_task_id)
+        await _advance_posthook_chain(source_task_id)
         return
     # Cheap shape check: must parse as JSON. The schema-validation hook does
     # the deeper required-field check on the next pass.
@@ -322,11 +338,14 @@ async def _constrained_emit_resume(child_task_id: int, result: dict, state: dict
     except (ValueError, TypeError):
         logger.warning("constrained_emit produced non-JSON output — keeping draft",
                        source_id=source_task_id)
+        await _advance_posthook_chain(source_task_id)
         return
     await _apply_posthook_verdict(
         {"id": child_task_id},
         _make_rewrite_verdict(source_task_id, "constrained_emit", emitted),
     )
+    # SP3b Task 6 — rewrite landed; advance the cursor to self_reflect / grade.
+    await _advance_posthook_chain(source_task_id)
 
 
 async def _constrained_emit_resume_err(child_task_id: int, result: dict, state: dict) -> None:
@@ -336,30 +355,29 @@ async def _constrained_emit_resume_err(child_task_id: int, result: dict, state: 
     err = (result or {}).get("error", "unknown")
     logger.warning("constrained_emit child failed terminally — keeping draft",
                    source_id=source_task_id, error=str(err)[:200])
-    # No verdict applied → source draft survives.
+    # No verdict applied → source draft survives. The cursor must still advance
+    # to the next post-hook so the source isn't stranded in 'ungraded'.
+    await _advance_posthook_chain(source_task_id)
 
 
-async def _self_reflect_resume(child_task_id: int, result: dict, state: dict) -> None:
-    """Resume after a self_reflect child completed.
+def _reflect_corrected_or_none(raw_text: str, source_task_id) -> str | None:
+    """Return a usable corrected_result for a rewrite, or None for a no-op.
 
-    Parse the reviewer verdict JSON. Rewrite the source result ONLY when
-    verdict=="fix" AND corrected_result is non-empty AND non-degenerate
-    (dogru_mu_samet). Otherwise no-op — warning severity must NEVER fail the
-    source.
+    Rewrite ONLY when verdict=="fix" AND corrected_result is non-empty AND
+    non-degenerate (dogru_mu_samet). ok / unparseable / no-correction / degenerate
+    → None (keep the draft). Warning severity must NEVER fail the source.
     """
     import json as _json
 
-    source_task_id = state.get("source_task_id")
-    raw_text = _extract_content(result).strip()
     try:
         parsed = _json.loads(raw_text)
     except (ValueError, TypeError):
         parsed = None
     if not isinstance(parsed, dict) or parsed.get("verdict") != "fix":
-        return  # ok / unparseable → keep the draft
+        return None  # ok / unparseable → keep the draft
     corrected = parsed.get("corrected_result")
     if not isinstance(corrected, str) or not corrected.strip():
-        return  # fix without a usable correction → keep the draft
+        return None  # fix without a usable correction → keep the draft
     try:
         from dogru_mu_samet import assess as cq_assess
         if cq_assess(corrected).is_degenerate:
@@ -367,13 +385,29 @@ async def _self_reflect_resume(child_task_id: int, result: dict, state: dict) ->
                 "self_reflect corrected_result degenerate — keeping draft",
                 source_id=source_task_id,
             )
-            return
+            return None
     except Exception:  # noqa: BLE001
         pass
-    await _apply_posthook_verdict(
-        {"id": child_task_id},
-        _make_rewrite_verdict(source_task_id, "self_reflect", corrected),
-    )
+    return corrected
+
+
+async def _self_reflect_resume(child_task_id: int, result: dict, state: dict) -> None:
+    """Resume after a self_reflect child completed.
+
+    Rewrite the source on a usable "fix"; otherwise no-op. EITHER way the Task 6
+    cursor must advance to the next post-hook (grade) so the source isn't
+    stranded in 'ungraded'.
+    """
+    source_task_id = state.get("source_task_id")
+    raw_text = _extract_content(result).strip()
+    corrected = _reflect_corrected_or_none(raw_text, source_task_id)
+    if corrected is not None:
+        await _apply_posthook_verdict(
+            {"id": child_task_id},
+            _make_rewrite_verdict(source_task_id, "self_reflect", corrected),
+        )
+    # SP3b Task 6 — advance the cursor whether or not the rewrite landed.
+    await _advance_posthook_chain(source_task_id)
 
 
 async def _self_reflect_resume_err(child_task_id: int, result: dict, state: dict) -> None:
@@ -383,7 +417,9 @@ async def _self_reflect_resume_err(child_task_id: int, result: dict, state: dict
     err = (result or {}).get("error", "unknown")
     logger.warning("self_reflect child failed terminally — keeping draft",
                    source_id=source_task_id, error=str(err)[:200])
-    # No verdict applied → source draft survives.
+    # No verdict applied → source draft survives. Advance the cursor so the
+    # source isn't stranded in 'ungraded'.
+    await _advance_posthook_chain(source_task_id)
 
 
 def register_continuations() -> None:

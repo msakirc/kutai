@@ -17,6 +17,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
+async def _async_noop(*a, **k):
+    """No-op coroutine — stubs the Task 6 chain-advance in verdict-shape tests."""
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Step 1 (TDD) — child-spec is a raw_dispatch task carrying schema + draft.
 # ---------------------------------------------------------------------------
@@ -116,6 +121,10 @@ async def test_emit_resume_produces_rewrite_verdict(monkeypatch):
         captured.append(verdict)
 
     monkeypatch.setattr(pc, "_apply_posthook_verdict", fake_apply)
+    # SP3b Task 6 — the resume handlers now advance the post-hook chain cursor
+    # after applying their verdict. That hits the real DB; these tests only
+    # assert the rewrite-VERDICT shape, so stub the advance to a no-op.
+    monkeypatch.setattr(pc, "_advance_posthook_chain", _async_noop)
 
     emitted = '{"connection_verified": true}'
     result = {"result": {"content": emitted, "model": "qwen"}}
@@ -142,6 +151,10 @@ async def test_emit_resume_non_json_no_rewrite(monkeypatch):
         captured.append(verdict)
 
     monkeypatch.setattr(pc, "_apply_posthook_verdict", fake_apply)
+    # SP3b Task 6 — the resume handlers now advance the post-hook chain cursor
+    # after applying their verdict. That hits the real DB; these tests only
+    # assert the rewrite-VERDICT shape, so stub the advance to a no-op.
+    monkeypatch.setattr(pc, "_advance_posthook_chain", _async_noop)
 
     result = {"result": {"content": "sorry, I cannot do that", "model": "x"}}
     state = {"source_task_id": 42, "kind": "constrained_emit", "mission_id": 7}
@@ -169,6 +182,10 @@ async def test_reflect_resume_fix_rewrites(monkeypatch):
         captured.append(verdict)
 
     monkeypatch.setattr(pc, "_apply_posthook_verdict", fake_apply)
+    # SP3b Task 6 — the resume handlers now advance the post-hook chain cursor
+    # after applying their verdict. That hits the real DB; these tests only
+    # assert the rewrite-VERDICT shape, so stub the advance to a no-op.
+    monkeypatch.setattr(pc, "_advance_posthook_chain", _async_noop)
 
     corrected = (
         "Implemented the auth router with signed session tokens, added the "
@@ -201,6 +218,10 @@ async def test_reflect_resume_ok_noop(monkeypatch):
         captured.append(verdict)
 
     monkeypatch.setattr(pc, "_apply_posthook_verdict", fake_apply)
+    # SP3b Task 6 — the resume handlers now advance the post-hook chain cursor
+    # after applying their verdict. That hits the real DB; these tests only
+    # assert the rewrite-VERDICT shape, so stub the advance to a no-op.
+    monkeypatch.setattr(pc, "_advance_posthook_chain", _async_noop)
 
     verdict_json = json.dumps({"verdict": "ok"})
     result = {"result": {"content": verdict_json, "model": "qwen"}}
@@ -226,6 +247,10 @@ async def test_reflect_resume_degenerate_corrected_noop(monkeypatch):
         raise AssertionError("sync assess expected")
 
     monkeypatch.setattr(pc, "_apply_posthook_verdict", fake_apply)
+    # SP3b Task 6 — the resume handlers now advance the post-hook chain cursor
+    # after applying their verdict. That hits the real DB; these tests only
+    # assert the rewrite-VERDICT shape, so stub the advance to a no-op.
+    monkeypatch.setattr(pc, "_advance_posthook_chain", _async_noop)
 
     # Force dogru_mu_samet.assess to report degenerate.
     import dogru_mu_samet
@@ -264,6 +289,10 @@ async def test_emit_resume_err_no_rewrite(monkeypatch):
         captured.append(verdict)
 
     monkeypatch.setattr(pc, "_apply_posthook_verdict", fake_apply)
+    # SP3b Task 6 — the resume handlers now advance the post-hook chain cursor
+    # after applying their verdict. That hits the real DB; these tests only
+    # assert the rewrite-VERDICT shape, so stub the advance to a no-op.
+    monkeypatch.setattr(pc, "_advance_posthook_chain", _async_noop)
 
     result = {"error": "no candidates"}
     state = {"source_task_id": 42, "kind": "constrained_emit", "mission_id": 7}
@@ -285,6 +314,10 @@ async def test_reflect_resume_err_no_rewrite(monkeypatch):
         captured.append(verdict)
 
     monkeypatch.setattr(pc, "_apply_posthook_verdict", fake_apply)
+    # SP3b Task 6 — the resume handlers now advance the post-hook chain cursor
+    # after applying their verdict. That hits the real DB; these tests only
+    # assert the rewrite-VERDICT shape, so stub the advance to a no-op.
+    monkeypatch.setattr(pc, "_advance_posthook_chain", _async_noop)
 
     result = {"error": "infra"}
     state = {"source_task_id": 55, "kind": "self_reflect", "mission_id": 9}

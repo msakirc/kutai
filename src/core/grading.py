@@ -273,6 +273,56 @@ def parse_grade_response(raw: str) -> GradeResult:
     raise ValueError(f"grader incapable: could not parse VERDICT, RELEVANT, or COMPLETE from output: {raw[:150]}")
 
 
+def build_grading_spec(source: dict, exclusions: list):
+    """Pure builder for the grading reviewer child (SP3).
+
+    Returns a ready Beckman spec dict when the source is gradeable, OR a
+    GradeResult (auto-fail) when the source is trivial/empty/degenerate
+    (caller short-circuits to apply that verdict without enqueueing a child).
+    """
+    import time as _time
+    import uuid as _uuid
+
+    result_text = source.get("result", "")
+    if not result_text or len(str(result_text).strip()) < 10:
+        return GradeResult(passed=False, raw="auto-fail: trivial/empty output")
+
+    from dogru_mu_samet import assess as cq_assess
+    _cq = cq_assess(str(result_text))
+    if _cq.is_degenerate:
+        return GradeResult(passed=False, raw=f"auto-fail: {_cq.summary}")
+
+    messages = [
+        {"role": "system", "content": GRADING_SYSTEM},
+        {"role": "user", "content": GRADING_PROMPT.format(
+            title=str(source.get("title", ""))[:100],
+            description=str(source.get("description", ""))[:500],
+            response=str(result_text)[:30000],
+        )},
+    ]
+    _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
+    return {
+        "title": f"grader:task#{source.get('id')}:{_suffix}",
+        "description": "Grading review of task output",
+        "agent_type": "reviewer",
+        "kind": "overhead",
+        "priority": 1,
+        "context": {"llm_call": {
+            "raw_dispatch": True,
+            "call_category": "overhead",
+            "task": "reviewer",
+            "agent_type": "reviewer",
+            "difficulty": 3,
+            "messages": messages,
+            "failures": [],
+            "estimated_input_tokens": 800,
+            "estimated_output_tokens": 600,
+            "prefer_speed": True,
+            "exclude_models": list(exclusions),
+        }},
+    }
+
+
 async def grade_task(task: dict) -> GradeResult:
     """Grade a task's output via dispatcher OVERHEAD.
 

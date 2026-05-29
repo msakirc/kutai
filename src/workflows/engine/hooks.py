@@ -101,6 +101,54 @@ async def _llm_summarize(text: str, artifact_name: str) -> str | None:
     return None
 
 
+def build_summary_spec(text: str, artifact_name: str) -> dict:
+    """Pure builder for the summarizer child (SP3). No mission_id/parent on the
+    spec — those travel in continuation state. No input degenerate check (the
+    output degeneracy check lives in the resume handler)."""
+    import time as _time
+    import uuid as _uuid
+
+    truncated = text[:16000]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a concise summarizer. Produce a summary that "
+                "preserves ALL key facts, decisions, and data points. "
+                "Target: under 400 words. No filler."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Summarize this '{artifact_name}' artifact. Keep every "
+                f"important fact, number, name, and decision:\n\n"
+                f"{truncated}"
+            ),
+        },
+    ]
+    _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
+    return {
+        "title": f"summarizer:{artifact_name}:{_suffix}",
+        "description": f"LLM summarization of artifact '{artifact_name}'",
+        "agent_type": "summarizer",
+        "kind": "overhead",
+        "context": {"llm_call": {
+            "raw_dispatch": True,
+            "call_category": "overhead",
+            "task": "summarizer",
+            "agent_type": "summarizer",
+            "difficulty": 2,
+            "messages": messages,
+            "failures": [],
+            "prefer_speed": True,
+            "prefer_local": True,
+            "estimated_input_tokens": min(len(text) // 4, 4000),
+            "estimated_output_tokens": 500,
+        }},
+    }
+
+
 def _extract_json_string_field(text: str, key: str) -> str | None:
     """Recover a string field's value from possibly-truncated JSON.
 

@@ -112,6 +112,67 @@ async def test_rewrite_is_idempotent(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_empty_string_rewrite_does_not_clear_result(monkeypatch):
+    """SP3b Task 5 hardening: an empty-string rewrite must NOT silently clear
+    the source result. The rewrite branch guards on ``bool(new_result)``
+    (truthy), not ``is not None`` — so action="rewrite" with new_result="" must
+    fall through and leave the draft intact.
+
+    Because the empty rewrite falls through to the gate path, this verdict is
+    shaped as kind="self_reflect" (a warning-severity, no-pending kind) so the
+    gate path is a clean no-op rather than a grade FAIL retry.
+    """
+    import general_beckman.apply as apply_mod
+    from general_beckman.result_router import PostHookVerdict
+
+    DRAFT = "the original good draft"
+    store = {
+        11: {
+            "id": 11,
+            "status": "ungraded",
+            "result": DRAFT,
+            "context": "{}",
+        }
+    }
+
+    update_calls: list[dict] = []
+
+    async def fake_get_task(tid):
+        return store.get(int(tid))
+
+    async def recording_update_task(tid, **kwargs):
+        update_calls.append({"tid": int(tid), "kwargs": kwargs})
+        row = store.get(int(tid))
+        if row is not None:
+            row.update(kwargs)
+
+    monkeypatch.setattr("src.infra.db.get_task", fake_get_task)
+    monkeypatch.setattr("src.infra.db.update_task", recording_update_task)
+
+    verdict = PostHookVerdict(
+        source_task_id=11,
+        kind="self_reflect",
+        passed=True,
+        raw={},
+        action="rewrite",
+        new_result="",  # empty → must NOT clear the draft
+    )
+
+    await apply_mod._apply_posthook_verdict(store[11], verdict)
+
+    # The rewrite branch must not have fired with result="" .
+    rewrite_calls = [
+        c for c in update_calls if c["kwargs"].get("result") == ""
+    ]
+    assert rewrite_calls == [], (
+        f"Empty rewrite cleared the source result: {rewrite_calls}"
+    )
+    assert store[11]["result"] == DRAFT, (
+        f"Source draft was clobbered: {store[11]['result']!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_gate_default_action_unchanged(monkeypatch):
     """Regression: a verdict with the default action ("gate") must NOT touch
     result via the rewrite path. A gate-shaped verdict (action="gate", the

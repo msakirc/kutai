@@ -6,7 +6,7 @@ Phase 2b: these become Decision emissions consumed by orchestrator's switch.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import Any, Literal, Union
 
 
 @dataclass(frozen=True)
@@ -103,7 +103,7 @@ class PostHookVerdict:
     kind: str
     passed: bool
     raw: dict
-    action: str = "gate"            # "gate" (existing) | "rewrite" (SP3b)
+    action: Literal["gate", "rewrite"] = "gate"   # "gate" (existing) | "rewrite" (SP3b)
     new_result: str | None = None
 
 

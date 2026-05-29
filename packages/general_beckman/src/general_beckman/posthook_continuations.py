@@ -280,6 +280,113 @@ async def _summary_resume_err(child_task_id: int, result: dict, state: dict) -> 
     )
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# SP3b — constrained_emit + self_reflect resume handlers (rewrite verdict).
+#
+# Unlike grade / code_review (which GATE) and summary (which stores), these
+# two REWRITE the source's result in place via the Task 4 verdict path:
+#   PostHookVerdict(action="rewrite", new_result=<str>).
+# A child that produces unusable output (non-JSON emit / ok-or-degenerate
+# reflect / terminal error) must NEVER rewrite — the source draft survives.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _make_rewrite_verdict(source_task_id, kind: str, new_result: str):
+    """Build a PostHookVerdict(action="rewrite") for the source task."""
+    from general_beckman.result_router import PostHookVerdict
+    return PostHookVerdict(
+        source_task_id=source_task_id, kind=kind, passed=True,
+        raw={}, action="rewrite", new_result=new_result,
+    )
+
+
+async def _constrained_emit_resume(child_task_id: int, result: dict, state: dict) -> None:
+    """Resume after a constrained_emit child completed.
+
+    The child re-emitted the draft as schema-conforming JSON. Rewrite the
+    source result with the emitted JSON. On unusable output (empty / non-JSON)
+    leave the draft — never corrupt the source.
+    """
+    import json as _json
+
+    source_task_id = state.get("source_task_id")
+    emitted = _extract_content(result).strip()
+    if not emitted:
+        logger.warning("constrained_emit produced empty output — keeping draft",
+                       source_id=source_task_id)
+        return
+    # Cheap shape check: must parse as JSON. The schema-validation hook does
+    # the deeper required-field check on the next pass.
+    try:
+        _json.loads(emitted)
+    except (ValueError, TypeError):
+        logger.warning("constrained_emit produced non-JSON output — keeping draft",
+                       source_id=source_task_id)
+        return
+    await _apply_posthook_verdict(
+        {"id": child_task_id},
+        _make_rewrite_verdict(source_task_id, "constrained_emit", emitted),
+    )
+
+
+async def _constrained_emit_resume_err(child_task_id: int, result: dict, state: dict) -> None:
+    """On_error: the emit child failed terminally. Leave the draft untouched —
+    constrained_emit is best-effort; a failed emit is never a source failure."""
+    source_task_id = state.get("source_task_id")
+    err = (result or {}).get("error", "unknown")
+    logger.warning("constrained_emit child failed terminally — keeping draft",
+                   source_id=source_task_id, error=str(err)[:200])
+    # No verdict applied → source draft survives, ordered chain advances when
+    # the apply layer drains the pending kind (handled by the gate path).
+
+
+async def _self_reflect_resume(child_task_id: int, result: dict, state: dict) -> None:
+    """Resume after a self_reflect child completed.
+
+    Parse the reviewer verdict JSON. Rewrite the source result ONLY when
+    verdict=="fix" AND corrected_result is non-empty AND non-degenerate
+    (dogru_mu_samet). Otherwise no-op — warning severity must NEVER fail the
+    source.
+    """
+    import json as _json
+
+    source_task_id = state.get("source_task_id")
+    raw_text = _extract_content(result).strip()
+    try:
+        parsed = _json.loads(raw_text)
+    except (ValueError, TypeError):
+        parsed = None
+    if not isinstance(parsed, dict) or parsed.get("verdict") != "fix":
+        return  # ok / unparseable → keep the draft
+    corrected = parsed.get("corrected_result")
+    if not isinstance(corrected, str) or not corrected.strip():
+        return  # fix without a usable correction → keep the draft
+    try:
+        from dogru_mu_samet import assess as cq_assess
+        if cq_assess(corrected).is_degenerate:
+            logger.warning(
+                "self_reflect corrected_result degenerate — keeping draft",
+                source_id=source_task_id,
+            )
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    await _apply_posthook_verdict(
+        {"id": child_task_id},
+        _make_rewrite_verdict(source_task_id, "self_reflect", corrected),
+    )
+
+
+async def _self_reflect_resume_err(child_task_id: int, result: dict, state: dict) -> None:
+    """On_error: the reflect child failed terminally. Leave the draft untouched —
+    self_reflect is warning severity; a failed reflection is never a source fail."""
+    source_task_id = state.get("source_task_id")
+    err = (result or {}).get("error", "unknown")
+    logger.warning("self_reflect child failed terminally — keeping draft",
+                   source_id=source_task_id, error=str(err)[:200])
+    # No verdict applied → source draft survives.
+
+
 def register_continuations() -> None:
     """Register SP3 post-hook CPS handlers. Idempotent."""
     try:
@@ -290,6 +397,11 @@ def register_continuations() -> None:
         register_resume("posthook.code_review.resume_err", _code_review_resume_err)
         register_resume("posthook.summary.resume", _summary_resume)
         register_resume("posthook.summary.resume_err", _summary_resume_err)
+        # SP3b — emit/reflect rewrite resumes.
+        register_resume("posthook.constrained_emit.resume", _constrained_emit_resume)
+        register_resume("posthook.constrained_emit.resume_err", _constrained_emit_resume_err)
+        register_resume("posthook.self_reflect.resume", _self_reflect_resume)
+        register_resume("posthook.self_reflect.resume_err", _self_reflect_resume_err)
     except Exception as exc:  # noqa: BLE001
         logger.debug("posthook continuation registration deferred", error=str(exc))
 

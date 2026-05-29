@@ -1248,6 +1248,102 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         cont_state = {"source_task_id": source_id, "kind": kind, "attempt": attempt,
                       "exclusions": [], "mission_id": mission_id,
                       "artifact_name": artifact_name}
+
+    elif kind == "constrained_emit":
+        # SP3b: re-emit the draft as schema-conforming JSON. The child is a
+        # raw_dispatch OVERHEAD emit task (runs on husam); the resume handler
+        # REWRITES the source result with the emitted JSON (Task 4 verdict).
+        from src.core.reflection_posthook import (
+            schema_response_format, should_skip_emit, build_emit_messages,
+        )
+        draft = source.get("result")
+        if not isinstance(draft, str) or not draft.strip():
+            return  # nothing to emit — leave source untouched
+        artifact_schema = source_ctx.get("artifact_schema")
+        if not isinstance(artifact_schema, dict):
+            return  # no constrainable schema — emit is a no-op
+        step_id = source_ctx.get("workflow_step_id") or "artifact"
+        response_format = schema_response_format(artifact_schema, step_id)
+        if response_format is None:
+            return  # unconstrainable (markdown/string) — validator covers it
+        if should_skip_emit(draft, artifact_schema):
+            # Draft already parses with all required keys — re-emitting would
+            # compress, not reshape. Skip the child entirely (no rewrite).
+            return
+        messages = build_emit_messages(draft, response_format)
+        spec = {
+            "title": f"emit:task#{source_id}",
+            "description": "Constrained re-emit of step output",
+            "agent_type": "constrained_emit",
+            "kind": "overhead",
+            "priority": 1,
+            "context": {"llm_call": {
+                "raw_dispatch": True,
+                "call_category": "overhead",
+                "task": "structured_emit",
+                "agent_type": "constrained_emit",
+                "difficulty": 3,
+                "messages": messages,
+                "failures": [],
+                "estimated_input_tokens": max(1000, len(messages[1]["content"]) // 4),
+                "estimated_output_tokens": min(
+                    16000, max(2000, len(draft[:30000]) // 3),
+                ),
+                "prefer_speed": True,
+                "response_format": response_format,
+            }},
+        }
+        on_complete = "posthook.constrained_emit.resume"
+        on_error = "posthook.constrained_emit.resume_err"
+        cont_state = {"source_task_id": source_id, "kind": "constrained_emit",
+                      "attempt": attempt, "exclusions": [], "mission_id": mission_id}
+        built = spec
+
+    elif kind == "self_reflect":
+        # SP3b: role-specific self-review of the draft. The child is a
+        # raw_dispatch OVERHEAD reviewer task (runs on husam); the resume
+        # handler REWRITES the source result only when verdict=="fix" with a
+        # non-degenerate corrected_result (warning severity — never fails the
+        # source).
+        from src.core.reflection_posthook import (
+            build_reflect_messages, build_reflection_prompt,
+        )
+        draft = source.get("result")
+        if not isinstance(draft, str) or not draft.strip():
+            return  # nothing to reflect on — leave source untouched
+        agent_name = (
+            source_ctx.get("agent_type") or source.get("agent_type") or "executor"
+        )
+        checklist = build_reflection_prompt(
+            agent_name, iteration=1,
+            stack=source_ctx.get("stack"), layer=source_ctx.get("layer"),
+        )
+        messages = build_reflect_messages(source, draft, checklist=checklist)
+        spec = {
+            "title": f"reflect:task#{source_id}",
+            "description": "Self-reflection review of step output",
+            "agent_type": "self_reflect",
+            "kind": "overhead",
+            "priority": 1,
+            "context": {"llm_call": {
+                "raw_dispatch": True,
+                "call_category": "overhead",
+                "task": "reviewer",
+                "agent_type": "self_reflect",
+                "difficulty": 6,
+                "messages": messages,
+                "failures": [],
+                "estimated_input_tokens": 800,
+                "estimated_output_tokens": 500,
+                "prefer_speed": True,
+            }},
+        }
+        on_complete = "posthook.self_reflect.resume"
+        on_error = "posthook.self_reflect.resume_err"
+        cont_state = {"source_task_id": source_id, "kind": "self_reflect",
+                      "attempt": attempt, "exclusions": [], "mission_id": mission_id}
+        built = spec
+
     else:
         raise ValueError(f"_enqueue_posthook_llm_child: unsupported kind {kind!r}")
 
@@ -3804,7 +3900,10 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     # terminal event, and update_task to the same value is naturally idempotent.
     # The rewrite only mutates `result`; the ordered chain (Task 6) advances to
     # the next pending post-hook by leaving the source ungraded.
-    if getattr(a, "action", "gate") == "rewrite" and a.new_result is not None:
+    # Truthy guard (not ``is not None``): an empty-string rewrite must never
+    # silently clear the source result — fall through to the gate path so the
+    # original draft survives.
+    if getattr(a, "action", "gate") == "rewrite" and bool(a.new_result):
         await update_task(int(a.source_task_id), result=a.new_result)
         logger.debug(
             "posthook verdict: rewrote source result",

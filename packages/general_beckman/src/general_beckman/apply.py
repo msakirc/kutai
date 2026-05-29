@@ -4299,18 +4299,7 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
         new_summary_kinds = await _summary_kinds_for_source(source, ctx)
         for kind in new_summary_kinds:
             pending.append(kind)
-            await add_task(
-                title=f"Summarize '{kind.split(':',1)[1]}' for #{a.source_task_id}",
-                description="",
-                agent_type="artifact_summarizer",
-                kind=_posthook_kind("artifact_summarizer"),
-                mission_id=source.get("mission_id"),
-                depends_on=[],
-                context={
-                    "source_task_id": a.source_task_id,
-                    "artifact_name": kind.split(":", 1)[1],
-                },
-            )
+            await _enqueue_posthook_llm_child(kind, source, ctx)
         ctx["_pending_posthooks"] = pending
         if not pending:
             # Clear stale failure metadata on grade-PASS completion (B).

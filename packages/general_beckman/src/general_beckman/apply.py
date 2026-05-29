@@ -553,11 +553,15 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
     # in 'ungraded' forever. Detected by ctx.source_task_id presence
     # rather than agent_type, so mechanical posthooks (verify_artifacts)
     # cascade without listing every agent_type that might run a posthook.
+    # SP3: the LLM posthook CHILDREN (reviewer/summarizer raw_dispatch) carry
+    # source_task_id/mission_id in cont_state ONLY — their DLQ is handled by the
+    # posthook.*.resume_err continuation (auto-fail verdict drives the source's
+    # normal retry/DLQ), not by this cascade. Mechanical posthook tasks still
+    # carry source_task_id+posthook_kind in their context and cascade here.
     _ctx_for_cascade = _parse_ctx(task)
     if (
-        task.get("agent_type") in ("grader", "artifact_summarizer")
-        or (_ctx_for_cascade.get("source_task_id") is not None
-            and _ctx_for_cascade.get("posthook_kind"))
+        _ctx_for_cascade.get("source_task_id") is not None
+        and _ctx_for_cascade.get("posthook_kind")
     ):
         try:
             await _posthook_dlq_cascade(task, error)
@@ -826,24 +830,14 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
         return
 
     source_ctx = _parse_ctx(source)
-    pending = list(source_ctx.get("_pending_posthooks") or [])
-    agent_type = task.get("agent_type")
 
-    if agent_type == "grader":
-        # Permanent failure: no grader could produce a verdict.
-        source_ctx["_pending_posthooks"] = []
-        source_ctx["_grade_dlq_reason"] = error[:300]
-        await update_task(
-            source_id,
-            status="failed",
-            error=f"grade DLQ: {error[:400]}",
-            failed_in_phase="grading",
-            context=_json.dumps(source_ctx),
-        )
-        logger.warning("grader DLQ cascaded source to failed",
-                       source_id=source_id, grader_task_id=task["id"])
-        return
-
+    # SP3: the grader-specific DLQ cascade is gone. A failed grade CHILD
+    # (agent_type 'reviewer', mission-less, source_task_id in cont_state) now
+    # fires posthook.grade.resume_err, which applies an auto-fail verdict that
+    # drives the source's normal retry/DLQ. The same holds for the summary
+    # child (agent_type 'summarizer'): its DLQ is handled by
+    # posthook.summary.resume_err, not here. Only mechanical posthook tasks —
+    # which carry posthook_kind in their own context — still cascade below.
     posthook_kind = ctx.get("posthook_kind")
     if posthook_kind == "code_review":
         # Code reviewer task itself DLQ'd (e.g. all reviewer models failed,
@@ -1114,40 +1108,19 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
                        source_id=source_id, posthook_task_id=task["id"])
         return
 
-    if agent_type == "artifact_summarizer":
-        artifact_name = ctx.get("artifact_name") or ""
-        kind = f"summary:{artifact_name}"
-        pending = [k for k in pending if k != kind]
-        source_ctx["_pending_posthooks"] = pending
-        if not pending:
-            await update_task(
-                source_id, status="completed",
-                context=_json.dumps(source_ctx),
-            )
-        else:
-            await update_task(
-                source_id, context=_json.dumps(source_ctx),
-            )
-        logger.info("summary DLQ falls back to structural",
-                    source_id=source_id, artifact=artifact_name)
 
 
-# Post-hook agent_types that are single-call LLM evaluation work (no tools,
-# no ReAct loop). They belong on the OVERHEAD lane (loaded local model,
-# runner='direct') — NOT main_work, where they pick a cloud model and ride
-# the 600s wall-clock cap. Bug 2026-05-26: spawned without kind=, grade/
-# summarize post-hooks defaulted to kind='main_work' → cloud → a
-# connection-phase hang ran the full 600s → bare TimeoutError → DLQ at 6/6.
-# The inline grade (grading.py) and _llm_summarize (hooks.py) already use
-# kind='overhead'; this aligns the post-hook spawn path with them. Mechanical
-# post-hooks (verify_artifacts/test_run/pattern_lint) route via
-# agent_type='mechanical' (runner='mechanical') and are unaffected.
-_OVERHEAD_POSTHOOK_AGENTS = frozenset({"grader", "artifact_summarizer"})
-
-
+# SP3: the LLM evaluation post-hooks (grade / code_review / summary:*) are now
+# enqueued as raw_dispatch reviewer/summarizer CHILDREN with kind='overhead'
+# directly by _enqueue_posthook_llm_child — they no longer flow through
+# _posthook_agent_and_payload, so the old _OVERHEAD_POSTHOOK_AGENTS frozenset
+# (grader/artifact_summarizer) is gone. _posthook_kind now only serves the
+# mechanical post-hook branches that still reach add_task() below; mechanical
+# post-hooks (verify_artifacts/test_run/pattern_lint/...) route via
+# agent_type='mechanical' (runner='mechanical') on the main_work kind.
 def _posthook_kind(agent_type: str) -> str:
-    """Task ``kind`` for a spawned post-hook of the given agent_type."""
-    return "overhead" if agent_type in _OVERHEAD_POSTHOOK_AGENTS else "main_work"
+    """Task ``kind`` for a spawned (mechanical) post-hook of the given agent_type."""
+    return "main_work"
 
 
 async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
@@ -1285,18 +1258,11 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
 def _posthook_agent_and_payload(
     a: RequestPostHook, source: dict, source_ctx: dict,
 ) -> tuple[str, dict]:
-    if a.kind == "grade":
-        return ("grader", {
-            "source_task_id": a.source_task_id,
-            "generating_model": source_ctx.get("generating_model", ""),
-            "excluded_models": list(source_ctx.get("grade_excluded_models") or []),
-        })
-    if a.kind.startswith("summary:"):
-        artifact_name = a.kind.split(":", 1)[1]
-        return ("artifact_summarizer", {
-            "source_task_id": a.source_task_id,
-            "artifact_name": artifact_name,
-        })
+    # SP3: grade / summary:* / code_review are handled before this function is
+    # reached — _apply_request_posthook returns early for those kinds and
+    # spawns the raw_dispatch reviewer/summarizer child via
+    # _enqueue_posthook_llm_child. Only mechanical post-hook kinds fall through
+    # to the branches below.
     if a.kind == "verify_artifacts":
         # Mechanical post-hook: mr_roboto resolves declared ``produces`` paths
         # under the mission workspace, checks file exists + non-empty +
@@ -1331,18 +1297,6 @@ def _posthook_agent_and_payload(
                 "produces": produces,
                 "tool_calls": tool_calls,
             },
-        })
-    if a.kind == "code_review":
-        # LLM post-hook: a code-review-flavoured reviewer judges the source's
-        # emitted code. Its verdict (PASS/FAIL) drives the same retry-with-
-        # feedback path as verify_artifacts. Issue list is fed back via
-        # _schema_error so the source's next attempt sees what to fix.
-        produces = list(source_ctx.get("produces") or [])
-        return ("code_reviewer", {
-            "source_task_id": a.source_task_id,
-            "posthook_kind": "code_review",
-            "produces": produces,
-            "review_excluded_models": list(source_ctx.get("review_excluded_models") or []),
         })
     if a.kind == "imports_check":
         produces = list(source_ctx.get("produces") or [])

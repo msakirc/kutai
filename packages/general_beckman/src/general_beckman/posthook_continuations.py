@@ -102,15 +102,12 @@ async def _enqueue_grade_child(source_task_id: int, *, exclusions: list, attempt
     """Chain a follow-up grade reviewer child (attempt 1) via the durable
     continuation substrate, with the failed grader model excluded.
 
-    Builds the grading reviewer spec (src.core.grading.build_grading_spec) for
-    the source task and enqueues it with on_complete/on_error pointing back at
-    these handlers. cont_state carries source_task_id / attempt / exclusions so
-    the resume sees the same parent state. build_grading_spec may return a
-    GradeResult instead of a spec (trivial / degenerate source) — in that case
-    apply the auto-fail verdict directly without enqueueing.
+    SP3 single-spawn path: delegates to the canonical apply-layer helper
+    ``_enqueue_posthook_llm_child`` rather than duplicating the build+enqueue.
+    The helper short-circuits to an auto-fail verdict when the source is
+    trivial/degenerate (build_grading_spec returns a GradeResult).
     """
-    import general_beckman
-    from src.core.grading import build_grading_spec, GradeResult
+    from general_beckman.apply import _enqueue_posthook_llm_child
     from src.infra.db import get_task
 
     source = await get_task(source_task_id)
@@ -118,28 +115,9 @@ async def _enqueue_grade_child(source_task_id: int, *, exclusions: list, attempt
         logger.warning("grade chain: source missing", source_id=source_task_id)
         return
 
-    built = build_grading_spec(source, list(exclusions))
-    if isinstance(built, GradeResult):
-        # Short-circuit auto-fail (trivial/empty/degenerate) — apply directly.
-        await _apply_posthook_verdict(
-            {"id": source_task_id},
-            _make_grade_verdict(source_task_id, bool(built.passed),
-                                _grade_raw_dict(built)),
-        )
-        return
-
-    await general_beckman.enqueue(
-        built,
-        parent_id=source_task_id,
-        on_complete="posthook.grade.resume",
-        on_error="posthook.grade.resume_err",
-        cont_state={
-            "source_task_id": source_task_id,
-            "attempt": attempt,
-            "exclusions": list(exclusions),
-            "mission_id": mission_id if mission_id is not None
-            else source.get("mission_id"),
-        },
+    await _enqueue_posthook_llm_child(
+        "grade", source, _parse_ctx(source),
+        exclusions=list(exclusions), attempt=attempt,
     )
 
 

@@ -1179,6 +1179,16 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
     # handlers need to read fields like "draft", "incident_id", "status_kind".
     # ctx above is still used for _pending_posthooks tracking + update_task only.
     posthook_ctx = a.source_ctx if a.source_ctx else ctx
+
+    # SP3: the three LLM post-hook kinds (grade / code_review / summary:*) spawn
+    # the raw_dispatch reviewer/summarizer CHILD directly with a durable
+    # continuation — no cap-counted grader/code_reviewer/artifact_summarizer
+    # agent task. Mechanical kinds (verify_artifacts/grounding/imports_check/
+    # test_run/pattern_lint/...) keep the agent-task enqueue path below intact.
+    if a.kind == "grade" or a.kind == "code_review" or a.kind.startswith("summary:"):
+        await _enqueue_posthook_llm_child(a.kind, source, posthook_ctx)
+        return
+
     agent_type, payload = _posthook_agent_and_payload(a, source, posthook_ctx)
 
     # Z3 T2C: For integration_review, run the mechanical AST pre-check here
@@ -1195,6 +1205,81 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
         depends_on=[],
         context=payload,
     )
+
+
+# Module-level name so tests can ``patch.object(apply, "enqueue", ...)`` and so
+# _enqueue_posthook_llm_child resolves the (patchable) module global rather than
+# a fresh per-call local. Lazily bound on first use to avoid the
+# general_beckman.__init__ <-> apply import cycle at module-load time.
+enqueue = None  # noqa: F811 — populated lazily by _enqueue_posthook_llm_child
+
+
+async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
+                                      *, exclusions=None, attempt: int = 0) -> None:
+    """Enqueue the raw_dispatch reviewer/summarizer child with a durable
+    continuation (CPS). mission_id rides in cont_state ONLY (never on the child
+    row — SP3 child-spec hygiene). A trivial/degenerate source short-circuits to
+    a verdict applied directly (no child)."""
+    global enqueue
+    if enqueue is None:  # lazy bind: avoid __init__<->apply cycle at load time
+        from general_beckman import enqueue as _enqueue
+        enqueue = _enqueue
+    source_id = source.get("id")
+    mission_id = source.get("mission_id")
+    gen_model = source_ctx.get("generating_model") or ""
+
+    if kind == "grade":
+        from src.core.grading import build_grading_spec, GradeResult
+        excl = list(exclusions) if exclusions is not None else \
+            list({m for m in [gen_model, *(source_ctx.get("grade_excluded_models") or [])] if m})
+        built = build_grading_spec(source, excl)
+        on_complete, on_error = "posthook.grade.resume", "posthook.grade.resume_err"
+        if isinstance(built, GradeResult):
+            await _apply_posthook_verdict(
+                {"id": source_id},
+                PostHookVerdict(source_task_id=source_id, kind="grade", passed=False,
+                                raw={"passed": False, "raw": built.raw}))
+            return
+        cont_state = {"source_task_id": source_id, "kind": "grade",
+                      "attempt": attempt, "exclusions": excl, "mission_id": mission_id}
+
+    elif kind == "code_review":
+        from src.core.code_review import build_code_review_spec, CodeReviewResult
+        excl = list(exclusions) if exclusions is not None else \
+            list({m for m in [gen_model, *(source_ctx.get("review_excluded_models") or [])] if m})
+        built = build_code_review_spec(source, excl)
+        on_complete, on_error = "posthook.code_review.resume", "posthook.code_review.resume_err"
+        if isinstance(built, CodeReviewResult):
+            await _apply_posthook_verdict(
+                {"id": source_id},
+                PostHookVerdict(source_task_id=source_id, kind="code_review", passed=False,
+                                raw={"passed": False, "issues": [], "raw": built.raw}))
+            return
+        cont_state = {"source_task_id": source_id, "kind": "code_review",
+                      "attempt": attempt, "exclusions": excl, "mission_id": mission_id}
+
+    elif kind.startswith("summary:"):
+        artifact_name = kind.split(":", 1)[1]
+        from src.workflows.engine.hooks import build_summary_spec
+        from src.workflows.engine.artifacts import ArtifactStore
+        text = ""
+        if mission_id is not None:
+            try:
+                val = await ArtifactStore().retrieve(mission_id, artifact_name)
+                if isinstance(val, str):
+                    text = val
+            except Exception:  # noqa: BLE001
+                pass
+        built = build_summary_spec(text, artifact_name)
+        on_complete, on_error = "posthook.summary.resume", "posthook.summary.resume_err"
+        cont_state = {"source_task_id": source_id, "kind": kind, "attempt": attempt,
+                      "exclusions": [], "mission_id": mission_id,
+                      "artifact_name": artifact_name}
+    else:
+        raise ValueError(f"_enqueue_posthook_llm_child: unsupported kind {kind!r}")
+
+    await enqueue(built, parent_id=source_id, on_complete=on_complete,
+                  on_error=on_error, cont_state=cont_state, lane="overhead")
 
 
 def _posthook_agent_and_payload(

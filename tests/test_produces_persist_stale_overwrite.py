@@ -66,8 +66,19 @@ def test_empty_existing_is_stale():
 
 
 def test_rich_markdown_artifact_is_preserved():
-    """intake #73: a real agent-written artifact must NEVER be clobbered."""
-    rich = "# Real Charter\n\n## Positioning\n" + ("detailed content. " * 200)
+    """intake #73: a real agent-written artifact must NEVER be clobbered.
+
+    Body is genuine, varied prose (not repeated filler) so it is neither an
+    envelope nor degenerate — exactly the case the preserve guard protects."""
+    rich = (
+        "# Real Charter\n\n## Positioning\n"
+        "HabitFlow targets ambitious professionals who abandon goals within weeks. "
+        "We compete in habit-tracking but win on gamified errand management.\n\n"
+        "## Brand Keywords\n* Motivating — turns chores into rewarding streaks.\n"
+        "* Integrated — habits, tasks, and errands in one workflow.\n\n"
+        "## Core Problem\nMost productivity tools treat habits as obligations, "
+        "so motivation decays and users churn back to spreadsheets.\n"
+    )
     assert _produces_file_is_stale(rich, _GOOD_SCRIPT) is False
 
 

@@ -22,7 +22,21 @@ import json
 from src.workflows.engine.hooks import _produces_file_is_stale
 
 
-_GOOD_SCRIPT = "# Interview Script\n\n" + ("## Q1\nQuestion text here.\n" * 30)
+# A substantial, NON-repetitive replacement artifact. Must not itself trip the
+# dogru_mu_samet degeneracy check (the source refuses to replace junk with junk),
+# so each line is distinct.
+_GOOD_SCRIPT = "# Interview Script\n\n" + "\n".join(
+    f"## Q{i} — {topic}\nProbe the user about {topic.lower()} and record specifics."
+    for i, topic in enumerate(
+        [
+            "Onboarding", "Daily Habit", "Streak Recovery", "Gamification Appeal",
+            "Errand Tracking", "Notification Tolerance", "Social Accountability",
+            "Switching Trigger", "Privacy Concerns", "Pricing Sensitivity",
+            "Feature Gaps", "Retention Risk",
+        ],
+        start=1,
+    )
+)
 
 
 def test_fenced_truncated_final_answer_envelope_is_stale():

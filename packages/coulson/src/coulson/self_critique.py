@@ -18,6 +18,7 @@ check_self_critique_sub_iter()   — guard entry-point; returns GuardCorrection
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 from .guards import GuardCorrection
 
@@ -185,4 +186,131 @@ def check_self_critique_sub_iter(
     return GuardCorrection(
         guard_name="self_critique",
         message=message,
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Reply resolution — what to do with the agent's answer to the critique prompt
+# ────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class SelfCritiqueResolution:
+    """Decision derived from the agent's reply to a self-critique prompt.
+
+    ``is_verdict``    — the reply WAS a recognizable verdict envelope (had a
+                        ``verdict`` key). When False the agent ignored the
+                        critique schema and re-sent real content — the react
+                        loop must KEEP that reply as the result, NOT restore.
+    ``is_clean``      — no actionable issue (keep / restore the artifact).
+                        When ``is_verdict`` and ``is_clean`` are both True the
+                        loop restores the pre-critique artifact (the verdict
+                        envelope must never become the task result).
+    ``findings``      — parsed actionable findings (only when not clean).
+    ``fix_message``   — when not clean, the re-emit prompt to feed back so the
+                        agent re-produces the COMPLETE corrected artifact.
+                        None when clean.
+    """
+    is_clean: bool
+    findings: list
+    fix_message: str | None = None
+    is_verdict: bool = False
+
+
+def _extract_balanced_json(text: str) -> dict | None:
+    """Pull the first balanced ``{...}`` object out of ``text`` and json-load it.
+
+    Tolerant of prose / ```json fences around the object. Returns None when
+    no parseable object is present (e.g. the agent re-sent raw markdown).
+    """
+    if not isinstance(text, str):
+        return None
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth, end = 0, -1
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end == -1:
+        return None
+    try:
+        obj = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def build_self_critique_fix_message(findings: list, produces: list[str]) -> str:
+    """Build the re-emit prompt fed back when the critic found real issues.
+
+    Critical contract: the agent must re-emit the COMPLETE corrected artifact
+    (and overwrite the declared path on disk), NOT a verdict envelope — the
+    react loop takes this next reply as the task's final result.
+    """
+    if not isinstance(produces, list):
+        produces = []
+    paths_block = "\n".join(f"  - {p}" for p in produces) or "  (none declared)"
+    lines = []
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
+        sev = f.get("severity", "issue")
+        fpath = f.get("file", "")
+        why = f.get("why") or f.get("reason") or f.get("issue") or ""
+        lines.append(f"  - [{sev}] {fpath}: {why}".rstrip())
+    findings_block = "\n".join(lines) or "  (no specific findings provided)"
+    return (
+        "Your self-review found problems with the work you just produced:\n"
+        f"{findings_block}\n\n"
+        "Fix every issue above, then RE-EMIT THE COMPLETE corrected artifact. "
+        "Call write_file to overwrite the declared output path(s):\n"
+        f"{paths_block}\n\n"
+        "Respond with your normal final_answer containing the FULL corrected "
+        "content — do NOT respond with a verdict / review summary."
+    )
+
+
+def parse_self_critique_verdict(
+    reply_text: str | None,
+    *,
+    produces: list[str] | None = None,
+) -> SelfCritiqueResolution:
+    """Interpret the agent's reply to the self-critique prompt.
+
+    FAIL OPEN: a malformed / non-verdict / empty reply resolves to *clean* so
+    a good artifact is never destroyed because the critic reply didn't parse.
+    Only an explicit ``verdict == "issues"`` WITH at least one actionable
+    finding triggers a re-emit.
+    """
+    produces = produces or []
+    obj = _extract_balanced_json(reply_text or "")
+    # Not a verdict envelope → the agent re-sent real content; keep it as-is.
+    if obj is None or "verdict" not in obj:
+        return SelfCritiqueResolution(
+            is_clean=True, findings=[], fix_message=None, is_verdict=False,
+        )
+    verdict = obj.get("verdict")
+    findings = obj.get("findings")
+    if not isinstance(findings, list):
+        findings = []
+    actionable = [f for f in findings if isinstance(f, dict) and (
+        f.get("why") or f.get("reason") or f.get("issue") or f.get("file")
+    )]
+    if isinstance(verdict, str) and verdict.strip().lower() == "issues" and actionable:
+        return SelfCritiqueResolution(
+            is_clean=False,
+            findings=actionable,
+            fix_message=build_self_critique_fix_message(actionable, produces),
+            is_verdict=True,
+        )
+    # Verdict envelope with no actionable issue → restore the pre-critique
+    # artifact (the envelope itself must not survive as the result).
+    return SelfCritiqueResolution(
+        is_clean=True, findings=[], fix_message=None, is_verdict=True,
     )

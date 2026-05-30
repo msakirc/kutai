@@ -344,6 +344,16 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
     # Self-critique sub-iteration counter.  Uses its own budget separate
     # from MAX_SUB_CORRECTIONS so critique passes don't burn correction slots.
     self_critique_passes = 0
+    # When a self_critique pass is issued we stash the pre-critique
+    # final_answer so the agent's *reply to the critique prompt* (a
+    # ``{"verdict": ...}`` envelope) can never become the task result. The
+    # reply is parsed as a verdict (parse_self_critique_verdict): clean →
+    # restore the stashed artifact; issues → re-emit. (mission_79 step 0.1
+    # DLQ: the "clean" envelope clobbered the product charter, grade then
+    # evaluated the envelope instead of the charter and failed every attempt.)
+    _awaiting_critique_reply = False
+    _pre_critique_parsed = None
+    _pre_critique_content = ""
 
     # Per-iter transport-failure accumulator. Phase C.2b: coulson owns the
     # failures list, passes to ``fatih_hoca.select`` on retry so failure-
@@ -762,6 +772,50 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             except ValueError as exc:
                 logger.warning(f"[Task #{task_id}] Action validation warning: {exc}")
 
+            # ── SELF-CRITIQUE REPLY RESOLUTION ──
+            # This response is the agent's answer to the self_critique prompt.
+            # Resolve it as a verdict BEFORE auto-persist/final so the verdict
+            # envelope never gets written to disk or returned as the result.
+            if _awaiting_critique_reply:
+                _awaiting_critique_reply = False
+                from .self_critique import parse_self_critique_verdict
+                _crit_reply = content
+                if isinstance(parsed, dict) and parsed.get("action", "final_answer") == "final_answer":
+                    _crit_reply = parsed.get("result", content)
+                    if not isinstance(_crit_reply, str):
+                        _crit_reply = json.dumps(_crit_reply, ensure_ascii=False)
+                _crit_produces = _task_ctx.get("produces") if isinstance(_task_ctx, dict) else None
+                _crit = parse_self_critique_verdict(_crit_reply, produces=_crit_produces)
+                if _crit.is_verdict and _crit.is_clean:
+                    # Clean verdict → restore the pre-critique artifact; the
+                    # envelope must not survive as the result.
+                    parsed = _pre_critique_parsed
+                    content = _pre_critique_content
+                    logger.info(
+                        f"[Task #{task_id}] [self_critique] clean → "
+                        f"restored pre-critique artifact"
+                    )
+                elif not _crit.is_clean:
+                    # Real issues → re-emit the FULL corrected artifact.
+                    if sub_corrections < MAX_SUB_CORRECTIONS:
+                        sub_corrections += 1
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _crit.fix_message})
+                        logger.warning(
+                            f"[Task #{task_id}] [self_critique] issues → "
+                            f"re-emit requested ({len(_crit.findings)} finding(s))"
+                        )
+                        continue  # inner loop — re-prompt LLM for full artifact
+                    # No budget to re-emit → restore artifact, don't keep envelope
+                    parsed = _pre_critique_parsed
+                    content = _pre_critique_content
+                    logger.warning(
+                        f"[Task #{task_id}] [self_critique] issues but no "
+                        f"correction budget → restored pre-critique artifact"
+                    )
+                # else: not a verdict envelope (agent re-sent real content) →
+                # keep `parsed`/`content` as-is.
+
             # ── AUTO-PERSIST RECOVERY ──
             # When the agent emits final_answer with a declared text artifact
             # dumped inline in `result` but never called write_file for the
@@ -827,6 +881,12 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 # so the critique pass does NOT consume a MAX_SUB_CORRECTIONS slot.
                 if correction.guard_name == "self_critique":
                     self_critique_passes += 1
+                    # Stash the pre-critique artifact. The next reply is the
+                    # agent answering the critique prompt — it must NOT survive
+                    # as the result; resolved below (before auto-persist).
+                    _pre_critique_parsed = parsed
+                    _pre_critique_content = content
+                    _awaiting_critique_reply = True
                     logger.warning(
                         f"[Task #{task_id}] [self_critique] "
                         f"pass {self_critique_passes} (own budget, not consuming sub_corrections)"

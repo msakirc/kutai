@@ -19,12 +19,53 @@ from typing import Optional
 
 logger = logging.getLogger("models.local_model_manager")
 
-# Floor for dynamically-sized local context windows (intake #73). The dynamic
-# calc can collapse to a few-thousand-token window when free system RAM is
-# transiently tight; every local load is floored to this (capped by the model's
-# registry ceiling) so common agent prompts fit on first load and mid-mission
-# context-expansion reloads stay rare. Overridable via env for tight hosts.
+# ── Local context sizing: need-ctx (2026-05-31) ──────────────────────────────
+#
+# A local model loads at the call's REAL need, not at a VRAM-derived size bumped
+# to a fixed floor. `--fit` (default-on) then fits GPU layers to that ctx + live
+# VRAM, so a small need fits comfortably even under a transient VRAM spike — no
+# VRAM math here to get wrong. This inverts the old model (ctx derived from VRAM,
+# then floored to 16384) that OOM'd a 9B and starved the researcher (mission_79).
+# Direction + rationale: docs/handoff/2026-05-31-load-mode-redesign-ideas.md.
+#
+#   need_ctx = clamp(ceil_2048(task_min_ctx or MIN_CTX), MIN_CTX, model.context_length)
+#
+# Why MIN_CTX = 8192 (kutai.jsonl 05-29/30): smallest genuine task need = 4412,
+# bottom cluster 4412–10207; 8192 covers it, 4096 has zero margin. The only
+# reloads ever observed were upward from ≥16384 (18k–28k tasks that carry their
+# own min_context) — handled by the reload-on-expansion guard in ensure_model.
+MIN_CTX = int(os.environ.get("LLAMA_MIN_CTX", "8192"))
+
+
+def _need_ctx(task_min_ctx: int, model_ctx_ceiling: int) -> int:
+    """Context a local load actually needs: the task requirement floored to
+    MIN_CTX, rounded up to a 2048-block (KV alignment / anti-churn), capped at
+    the model's trained window. No VRAM math — `--fit` owns layer fitting.
+    """
+    need = max(task_min_ctx if task_min_ctx > 0 else MIN_CTX, MIN_CTX)
+    need = ((need + 2047) // 2048) * 2048
+    return min(need, model_ctx_ceiling) if model_ctx_ceiling > 0 else need
+
+
+# ── DEPRECATED (retired 2026-05-31, replaced by need-ctx above) ───────────────
+# `BASELINE_LOCAL_CTX` + `_floored_baseline_ctx` were the intake-#73 anti-churn
+# floor plus its mission_79 VRAM-aware stopgap. The whole VRAM-derived-ctx-then-
+# floor model was inverted: it forced every load toward ~16384 and OOM'd a 9B
+# under a transient VRAM spike. Superseded by `_need_ctx`. Kept (UNCALLED) only
+# so stale imports don't crash and test_local_ctx_floor.py still resolves.
+# DO NOT wire back in — delete once nothing imports them.
 BASELINE_LOCAL_CTX = int(os.environ.get("LLAMA_BASELINE_CTX", "16384"))
+
+
+def _floored_baseline_ctx(  # DEPRECATED 2026-05-31 — no longer called; see note above.
+    dynamic_ctx: int,
+    *,
+    baseline: int,
+    model_ctx_ceiling: int,
+    vram_ctx_ceiling: int,
+) -> int:
+    target = min(baseline, model_ctx_ceiling, vram_ctx_ceiling)
+    return max(dynamic_ctx, target)
 
 # Strong-reference sets so fire-and-forget tasks are not GC'd.
 _pending_swap_notification_tasks: set[asyncio.Task] = set()
@@ -256,86 +297,22 @@ class LocalModelManager:
             logger.error("Model '%s' not found in registry or not local", model_name)
             return False
 
-        # Dynamic context recalculation — use a LOCAL variable so we never
-        # mutate the shared ModelInfo in the registry.  Previous code did
-        # `info.context_length = new_ctx` which permanently poisoned the
-        # registry entry with a stale dynamic value.
-        from .model_registry import calculate_dynamic_context
+        # need-ctx (2026-05-31): load at the task's real need, not a VRAM-derived
+        # size. `--fit` (default-on) fits GPU layers to this ctx + live VRAM, so a
+        # small need fits comfortably even under a transient VRAM spike — no VRAM
+        # math here to get wrong. The old dynamic-calc + anti-churn floor were
+        # inverted and OOM'd a 9B (mission_79, 2026-05-30). An explicit
+        # models.yaml `context_length` override still wins (pinned, no resize).
         registry_overrides = registry.get_overrides(model_name)
-        context_length = info.context_length  # start from registry default
-
-        if "context_length" not in registry_overrides:
-            from .gpu_monitor import get_gpu_monitor
-            gpu_monitor = get_gpu_monitor()
-            gpu_monitor.invalidate_cache()
-            fresh_state = gpu_monitor.get_state()
-
-            current_model_name = self._dallama.status.model_name
-            if current_model_name is not None and fresh_state.gpu.available:
-                # A model IS loaded — VRAM reading is polluted by its footprint.
-                # Best estimate: total VRAM minus ~700MB baseline (CUDA + desktop).
-                # Everything else currently used belongs to the loaded model and
-                # will be reclaimed after stop().
-                baseline_vram_mb = 700
-                projected_vram_free = max(
-                    fresh_state.gpu.vram_free_mb,
-                    fresh_state.gpu.vram_total_mb - baseline_vram_mb,
-                )
-                logger.debug(
-                    "VRAM projection: total=%dMB - baseline=%dMB = projected_free=%dMB "
-                    "(current_free=%dMB)",
-                    fresh_state.gpu.vram_total_mb, baseline_vram_mb,
-                    projected_vram_free, fresh_state.gpu.vram_free_mb,
-                )
-            else:
-                # No model loaded → VRAM reading is accurate as-is
-                projected_vram_free = fresh_state.gpu.vram_free_mb
-
-            new_ctx = calculate_dynamic_context(
-                file_size_mb=info.file_size_mb,
-                n_layers=info.total_layers,
-                gpu_layers=info.gpu_layers,
-                available_ram_mb=fresh_state.ram_available_mb,
-                available_vram_mb=projected_vram_free,
-                family_key=info.family,
-                thinking=enable_thinking and bool(info.thinking_model),
-            )
-            if new_ctx != context_length:
+        if "context_length" in registry_overrides:
+            context_length = int(registry_overrides["context_length"])
+        else:
+            context_length = _need_ctx(min_context, info.context_length)
+            if context_length != info.context_length:
                 logger.info(
-                    "Dynamic context: %d -> %d (RAM free: %dMB, VRAM projected free: %dMB)",
-                    context_length, new_ctx,
-                    fresh_state.ram_available_mb, projected_vram_free,
+                    "need-ctx: loading %s at %d (task min_context=%d, model ceiling=%d)",
+                    model_name, context_length, min_context, info.context_length,
                 )
-                context_length = new_ctx
-
-        # Use task's min_context as a floor — if dynamic calc returned less
-        # than the task needs, bump up.  llama-server will try to fit it;
-        # if VRAM is truly insufficient it OOMs and the circuit breaker
-        # handles it, same outcome as refusing but with a chance of success.
-        if min_context > 0 and context_length < min_context:
-            logger.info(
-                "Bumping context %d -> %d to meet task min_context",
-                context_length, min_context,
-            )
-            context_length = min_context
-
-        # Hardening (intake #73): calculate_dynamic_context bounds context by
-        # *instantaneous* free system RAM (CPU-offloaded KV layers), so the same
-        # model swings wildly across loads with transient RAM pressure (observed
-        # Qwen3.5-9B: 5786 one load, 48293 another). A load that lands below the
-        # common agent-prompt size forces a context-expansion reload mid-mission.
-        # Floor every local load at a generous baseline — capped by the model's
-        # registry/family ceiling so we never exceed its trained window — so
-        # ordinary prompts fit on first load and reloads stay rare. Same OOM
-        # contract as the min_context floor above: if the floored window truly
-        # won't fit, llama-server's --fit + the circuit breaker handle it.
-        baseline_ctx = min(BASELINE_LOCAL_CTX, info.context_length)
-        if context_length < baseline_ctx:
-            logger.info(
-                "Flooring context %d -> %d (baseline; dynamic calc was RAM-starved)",
-                context_length, baseline_ctx,
-            )
-            context_length = baseline_ctx
 
         # gpu_layers: explicit models.yaml override wins and is forced
         # on the first attempt; otherwise we let llama-server's --fit

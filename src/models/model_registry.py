@@ -4,6 +4,7 @@ from fatih_hoca.registry import (  # noqa: F401
     ModelRegistry,
     scan_model_directory,
     calculate_dynamic_context,
+    vram_context_ceiling,
     calculate_gpu_layers,
     detect_vision_support,
     find_mmproj_path,

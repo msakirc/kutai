@@ -270,6 +270,41 @@ def test_calculate_dynamic_context_positive():
     assert ctx >= 4096
 
 
+def test_vram_context_ceiling_tight_vram_caps_below_baseline():
+    # mission_79 (2026-05-30): 9B (~5800MB) at 27 GPU layers, thinking, only
+    # ~4.2GB free → weights+reserve consume all VRAM, no room for KV. The
+    # GPU-tier ceiling must drop well below the 16384 anti-churn baseline so
+    # the floor can't push context into a CUDA-OOM load.
+    from fatih_hoca.registry import vram_context_ceiling
+    ceiling = vram_context_ceiling(
+        file_size_mb=5800, n_layers=48, gpu_layers=27,
+        available_vram_mb=4200, thinking=True,
+    )
+    assert ceiling < 16384
+
+
+def test_vram_context_ceiling_ample_vram_allows_baseline():
+    # Plenty of free VRAM → the ceiling is high enough to honour the 16384
+    # baseline floor.
+    from fatih_hoca.registry import vram_context_ceiling
+    ceiling = vram_context_ceiling(
+        file_size_mb=5800, n_layers=48, gpu_layers=27,
+        available_vram_mb=24000, thinking=True,
+    )
+    assert ceiling >= 16384
+
+
+def test_vram_context_ceiling_cpu_only_no_vram_pressure():
+    # No GPU-offloaded layers → no VRAM KV pressure → effectively unbounded,
+    # so the baseline floor is never blocked by a VRAM limit that isn't there.
+    from fatih_hoca.registry import vram_context_ceiling
+    ceiling = vram_context_ceiling(
+        file_size_mb=5800, n_layers=48, gpu_layers=0,
+        available_vram_mb=512, thinking=False,
+    )
+    assert ceiling >= 32768
+
+
 def test_detect_function_calling_known_family():
     from fatih_hoca.registry import detect_function_calling
     assert detect_function_calling("qwen3", {}) is True

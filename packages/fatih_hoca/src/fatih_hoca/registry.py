@@ -448,6 +448,14 @@ def calculate_dynamic_context(
 ) -> int:
     """Calculate max context length based on available memory.
 
+    .. deprecated:: 2026-05-31
+        RETIRED — replaced by the need-ctx model in
+        ``local_model_manager._need_ctx``. This VRAM-derived sizing (then floored
+        to ~16384) was the inverted model that OOM'd a 9B and starved the
+        researcher (mission_79). No longer called by the loader. Kept only so
+        stale imports resolve; do NOT wire back in. See
+        docs/handoff/2026-05-31-load-mode-redesign-ideas.md.
+
     KV cache memory grows linearly with context length. We estimate how
     much memory is left after loading model weights and pick the largest
     context that fits (capped at the family default).
@@ -528,6 +536,40 @@ def calculate_dynamic_context(
     # Round down to nearest 2048 and clamp
     result = (max_ctx_from_memory // 2048) * 2048
     return max(4096, min(result, max_ctx))
+
+
+def vram_context_ceiling(
+    file_size_mb: float,
+    n_layers: int,
+    gpu_layers: int,
+    available_vram_mb: int,
+    *,
+    thinking: bool = False,
+) -> int:
+    """Max context the GPU-tier KV cache alone can hold given live free VRAM.
+
+    .. deprecated:: 2026-05-31
+        RETIRED with :func:`calculate_dynamic_context` — the need-ctx model
+        (``local_model_manager._need_ctx``) lets ``--fit`` own VRAM fitting, so
+        this ceiling is no longer consulted. Kept only so stale imports resolve.
+
+    Companion to :func:`calculate_dynamic_context`, mirroring its VRAM arm
+    exactly. The baseline context floor in ``local_model_manager`` (intake #73)
+    papers over the *volatile RAM* bound, but must never raise context above
+    this *hard VRAM* limit — exceeding it is a CUDA OOM at load (mission_79,
+    2026-05-30: 9B floored to 16384 OOM'd in ~4.2GB free), not a swappable RAM
+    bound. Returns a large sentinel when no layers are GPU-offloaded (no VRAM
+    KV pressure at all), so the floor is never blocked by an absent limit.
+    """
+    if n_layers <= 0 or file_size_mb <= 0 or gpu_layers <= 0:
+        return 10 ** 9
+    weight_per_layer_mb = file_size_mb / n_layers
+    vram_used_by_weights = gpu_layers * weight_per_layer_mb
+    vram_reserve_mb = 1800 if thinking else 1300
+    free_vram = max(0, available_vram_mb - vram_used_by_weights - vram_reserve_mb) * 0.85
+    kv_per_1k_gpu_mb = gpu_layers * 1.0  # KV_PER_LAYER_PER_1K_MB
+    ceiling = int((free_vram / kv_per_1k_gpu_mb) * 1024)
+    return (ceiling // 2048) * 2048
 
 
 # ─── GPU Layer Calculator ───────────────────────────────────────────────────

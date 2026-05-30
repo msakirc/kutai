@@ -864,6 +864,17 @@ def _grader_verdict_text(raw, *, source_title: str = "") -> str:
         ]
         if failed_axes:
             return "grader rejected: " + ", ".join(failed_axes)
+        # Auto-fail verdicts (grade child couldn't get a model, or grader
+        # incapable after retries) carry their message ONLY under ``raw`` —
+        # _grade_resume_err / _grade_resume build {"passed": False, "raw":
+        # "auto-fail: grader call failed (...)"}. Without reading ``raw`` the
+        # real reason ("No model candidates available") was dropped and every
+        # such DLQ showed the opaque "grader verdict unavailable" sentinel
+        # (mission_79 #225586, 2026-05-30 — an availability failure hiding as
+        # a grade DLQ). Read it as the last meaningful-text candidate.
+        raw_val = candidate.get("raw")
+        if _is_meaningful_text(raw_val) and not _is_title_echo(raw_val, source_title):
+            return raw_val.strip()[:140]
         return "grader verdict unavailable"
     if raw is None or (isinstance(raw, str) and raw.strip().lower() in _NULLISH_STRINGS):
         return "grader verdict unavailable"

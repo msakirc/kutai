@@ -118,8 +118,17 @@ def prior_art_min_coverage(
                 "queries + >=20 inspected"
             )
 
-    # Rule 2 — every URL non-empty + scheme valid
+    # Rule 2 — every URL non-empty + scheme valid. A non-dict entry (e.g. the
+    # model emitted ``attempted_solutions: ["Habitica", ...]`` bare strings) is
+    # malformed — flag it, never call .get on it (mission_79 2026-05-30:
+    # 'str' object has no attribute 'get').
     for i, sol in enumerate(attempted):
+        if not isinstance(sol, dict):
+            problems.append(
+                f"attempted_solutions[{i}] is not an object "
+                f"(got {type(sol).__name__}): {str(sol)[:60]!r}"
+            )
+            continue
         url = sol.get("url")
         if not _looks_like_url(url):
             problems.append(
@@ -137,6 +146,8 @@ def prior_art_min_coverage(
     # Rule 4 — dead/dormant entries need Wayback OR HN evidence
     suspicious: list[str] = []
     for sol in attempted:
+        if not isinstance(sol, dict):
+            continue  # already flagged in Rule 2
         if sol.get("status") in ("dead", "dormant"):
             sources = sol.get("sources") or []
             wb = sol.get("wayback_first_capture")

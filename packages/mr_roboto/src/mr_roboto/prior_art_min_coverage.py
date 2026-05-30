@@ -37,18 +37,43 @@ def _has_hn_reference(sources: list[Any]) -> bool:
     return False
 
 
+def _resolve_report_path(report_path: str | None) -> str | None:
+    """Resolve a workspace-relative report path against WORKSPACE_DIR.
+
+    Mechanical executors run with cwd = repo root, but the post-hook payload
+    carries a workspace-relative path (e.g.
+    ``mission_79/.research/prior_art_report.json``). Without this join
+    ``os.path.isfile`` is False and the report is reported missing even
+    though it is present on disk (mission_79 #225583/#226311, 2026-05-30).
+    """
+    if not report_path or os.path.isabs(report_path) or os.path.isfile(report_path):
+        return report_path
+    try:
+        from src.tools.workspace import WORKSPACE_DIR
+        cand = os.path.join(WORKSPACE_DIR, report_path)
+        if os.path.isfile(cand):
+            return cand
+    except Exception:
+        pass
+    return report_path
+
+
 def _load_report(
     report: dict[str, Any] | None,
     report_path: str | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    if isinstance(report, dict):
+    # A non-empty inline report wins; an empty/None inline report must NOT
+    # shadow a good report_path (the producer's stored result is often null
+    # when its write_file side-effect landed the file but its result did not).
+    if isinstance(report, dict) and report:
         return report, None
-    if report_path and os.path.isfile(report_path):
+    rp = _resolve_report_path(report_path)
+    if rp and os.path.isfile(rp):
         try:
-            with open(report_path, encoding="utf-8") as fh:
+            with open(rp, encoding="utf-8") as fh:
                 return json.load(fh), None
         except Exception as e:
-            return None, f"failed to read {report_path}: {e}"
+            return None, f"failed to read {rp}: {e}"
     return None, "no report payload provided"
 
 
@@ -67,7 +92,12 @@ def prior_art_min_coverage(
 
     problems: list[str] = []
     verdict = payload.get("verdict")
-    summary = payload.get("search_summary") or {}
+    # search_summary is prose (str) in real reports — only an object form
+    # carries queries_run / total_results_inspected. Guard so a string
+    # summary doesn't AttributeError on .get (mission_79, 2026-05-30).
+    summary = payload.get("search_summary")
+    if not isinstance(summary, dict):
+        summary = {}
     queries = summary.get("queries_run") or []
     inspected = int(summary.get("total_results_inspected") or 0)
     attempted = payload.get("attempted_solutions") or []

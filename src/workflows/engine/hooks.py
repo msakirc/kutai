@@ -218,6 +218,26 @@ def _unwrap_envelope(text) -> str:
     try:
         obj = json.loads(stripped)
         if isinstance(obj, dict):
+            # CallResult / structured_emit envelope — the HaLLederiz Kadir
+            # response dict {"content": "<artifact>", "model": ...,
+            # "usage": ..., "task": "structured_emit", ...} where the real
+            # array/object artifact is DOUBLE-ENCODED as a JSON string under
+            # "content". Peel it and recurse (content may itself be a bare
+            # array/object, or — rarely — a nested final_answer). Guard
+            # tightly: require a str content AND >=2 CallResult-only sibling
+            # markers AND no result/action keys, so a legit artifact that
+            # merely has a "content" field is not mistaken for an envelope.
+            # (mission_79 2026-05-30: every array/object artifact persisted
+            # as this envelope → validators counted ~0 items / missing field.)
+            _CR_MARKERS = ("model", "model_name", "usage", "cost", "latency",
+                           "ran_on", "provider", "is_local", "capability_score")
+            if (
+                "result" not in obj
+                and "action" not in obj
+                and isinstance(obj.get("content"), str)
+                and sum(1 for k in _CR_MARKERS if k in obj) >= 2
+            ):
+                return _unwrap_envelope(obj["content"])
             # final_answer envelope
             if "result" in obj:
                 val = obj["result"]

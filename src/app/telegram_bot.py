@@ -10459,6 +10459,36 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "files": [rel for rel, _ in (files or [])],
         }
 
+    @staticmethod
+    def _regen_step_from_task_context(ctx) -> str:
+        """Pull the durable ``regenerate_step_id`` from a confirm task's context.
+
+        The step id is persisted in the confirm task's
+        ``context.payload.regenerate_step_id`` (the workflow expander / clarify
+        executor write it there). The ephemeral ``_pending_action[chat_id]``
+        slot ALSO carried it, but that single-slot dict gets clobbered by any
+        other Telegram action between sending the confirm card and the founder
+        pressing ♻️ Regenerate — leaving the step empty so the message showed
+        "step `?`" and only the confirm task itself was reset (no real
+        regeneration; the same on-disk artifact re-fired instantly). Reading
+        from the DB context makes the resolution robust to that clobber.
+        """
+        import json as _json
+        if isinstance(ctx, str):
+            try:
+                ctx = _json.loads(ctx)
+            except (ValueError, TypeError):
+                return ""
+        if not isinstance(ctx, dict):
+            return ""
+        payload = ctx.get("payload")
+        if isinstance(payload, dict):
+            step = payload.get("regenerate_step_id")
+            if isinstance(step, str) and step:
+                return step
+        step = ctx.get("regenerate_step_id")
+        return step if isinstance(step, str) and step else ""
+
     async def _handle_artifact_confirm_callback(self, update, context):
         """Dispatch rpc:OK / rpc:RE / rpc:ED for artifact-confirm flow."""
         query = update.callback_query
@@ -10479,11 +10509,29 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         chat_id = query.message.chat_id
 
         pending = self._pending_action.get(chat_id) or {}
-        regen_step = pending.get("regenerate_step_id") or ""
         files = pending.get("files") or []
 
-        from src.infra.db import get_db, update_task
+        from src.infra.db import get_db, update_task, get_task
         db = await get_db()
+
+        # Resolve the regenerate step id DURABLY from the confirm task's
+        # context (payload.regenerate_step_id), not the ephemeral
+        # _pending_action slot — that single-slot dict is clobbered by any
+        # other Telegram action before the founder presses ♻️, which left the
+        # step empty ("step `?`") so Regenerate reset only the confirm task and
+        # re-fired the same artifact instantly. Fall back to pending only if
+        # the DB lookup yields nothing.
+        regen_step = ""
+        try:
+            _confirm_task = await get_task(task_id)
+            if _confirm_task:
+                regen_step = self._regen_step_from_task_context(
+                    _confirm_task.get("context")
+                )
+        except Exception as exc:
+            logger.debug(f"rpc regen-step DB lookup failed for #{task_id}: {exc}")
+        if not regen_step:
+            regen_step = pending.get("regenerate_step_id") or ""
 
         if verb == "OK":
             await update_task(task_id, status="completed", result='{"confirmed": true}')

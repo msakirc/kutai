@@ -384,6 +384,42 @@ async def _apply_exhausted(task: dict, a: Exhausted) -> None:
     await _retry_or_dlq(task, category="exhausted", error=a.error)
 
 
+# Unambiguous availability markers in a failure's error text. An availability
+# failure (no model candidates / rate limit / daily quota / all models failed)
+# must ride the backoff ladder and wait for capacity to return — it must NEVER
+# take decide_retry's quality fast-path (immediate retry, no backoff) and burn
+# worker_attempts to DLQ inside the quota-reset window. We sniff the text as a
+# last line of defence because the upstream error_category is sometimes lost
+# (mission_79 2026-05-30 task #225600: ModelCallFailed(error_category=
+# "availability") raised in coulson, but _apply_failed received a stale
+# "quality" category from the prior grader-FAIL row → fast-DLQ'd in seconds).
+# Kept narrow: bare "unavailable" is excluded (it appears in "grader verdict
+# unavailable", a genuine quality failure).
+_AVAILABILITY_MARKERS: tuple[str, ...] = (
+    "no model candidates",
+    "no models available",
+    "no models matched",
+    "no candidates available",
+    "all models failed",
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "daily",
+    "quota",
+)
+
+
+def _classify_availability_text(error: str | None) -> str | None:
+    """Return "availability" if the error text unambiguously signals an
+    availability/capacity failure, else None. Pure; safe on None/empty."""
+    if not error or not isinstance(error, str):
+        return None
+    e = error.lower()
+    if any(m in e for m in _AVAILABILITY_MARKERS):
+        return "availability"
+    return None
+
+
 async def _apply_failed(task: dict, a: Failed) -> None:
     # Category precedence: this attempt's result wins over the stale row.
     # The orchestrator stamps `error_category=availability` on the result
@@ -401,6 +437,21 @@ async def _apply_failed(task: dict, a: Failed) -> None:
         or task.get("error_category")
         or "worker"
     )
+    # Text sniff overrides a stale/wrong category: an availability failure
+    # must never wear a "quality" (or any non-availability) label, or
+    # decide_retry fast-DLQs it instead of backing off until capacity
+    # returns (mission_79 #225600: "No model candidates available" carried
+    # error_category="quality" → DLQ in seconds against daily-exhausted
+    # gemini). The error text is the authoritative signal when present.
+    sniffed = _classify_availability_text(a.error)
+    if sniffed and category != "availability":
+        logger.info(
+            "availability sniff override",
+            task_id=task.get("id"),
+            stale_category=category,
+            error=(a.error or "")[:120],
+        )
+        category = sniffed
     await _retry_or_dlq(task, category=category, error=a.error)
 
 

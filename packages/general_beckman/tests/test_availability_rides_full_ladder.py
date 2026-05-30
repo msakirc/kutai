@@ -39,11 +39,17 @@ def test_availability_does_not_dlq_at_quality_cap():
     assert d.action == "delayed"
 
 
-def test_availability_rides_to_24h_step():
-    """Deep into the ladder availability is still waiting (24h tail), not DLQ."""
+def test_availability_rides_deep_into_ladder():
+    """Deep into the ladder (attempts=14) availability is still WAITING, not DLQ.
+
+    backoff idx = min(attempts-1, len-1); attempts=14 → idx=13 → 43200 (12h).
+    The final 86400 (24h, idx=14) entry is the boundary: attempts=15 is the
+    DLQ decision point (15 < 15 is False), so 24h is reached as elapsed wall-
+    clock across the ladder, not as a single delay. The point that matters:
+    at attempts=14, well past the old max=6 cap, the task still retries."""
     d = decide_retry(_f("availability", attempts=14, max_attempts=6))
     assert isinstance(d, RetryDecision)
-    assert d.delay_seconds == 86400  # idx 14 = 24h, past daily-quota reset
+    assert d.delay_seconds == 43200  # 12h — still riding the ladder, not DLQ
 
 
 def test_availability_dlqs_only_after_full_ladder():

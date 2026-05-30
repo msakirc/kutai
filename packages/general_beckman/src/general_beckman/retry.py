@@ -78,6 +78,23 @@ def decide_retry(
     max_attempts = int(failure.get("max_worker_attempts", 3))
     category = failure.get("category", "unknown")
 
+    # Transient / availability failures must ride the WHOLE backoff ladder
+    # (tail = 24h, past a daily-quota reset) so a task that can't get capacity
+    # WAITS for it instead of DLQ'ing. The add_task default cap (6) is sized
+    # for quality retries; with it the ladder bottoms out at idx 5 (300s, ~9min
+    # cumulative) and an availability failure DLQ'd long before a daily-exhausted
+    # provider could reset (mission_79 2026-05-30 reviewer #225600: max=6 →
+    # DLQ in minutes against daily-exhausted gemini). Give transient categories
+    # an effective cap of the ladder length; quality/deterministic keep the
+    # task's own (smaller) cap — retrying a deterministic failure 15× just burns
+    # tokens on the same output.
+    _TRANSIENT = {
+        "availability", "daily_exhausted", "rate_limited", "no_model",
+        "timeout", "loading", "server_error",
+    }
+    if category in _TRANSIENT:
+        max_attempts = max(max_attempts, len(_BACKOFF_SECONDS))
+
     if attempts < max_attempts:
         # Quality / deterministic failures: immediate retry, no backoff.
         # The next attempt benefits from the per-artifact retry-hint

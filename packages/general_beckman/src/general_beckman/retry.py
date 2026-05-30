@@ -32,6 +32,35 @@ _BACKOFF_SECONDS = [
 ]
 _MAX_BONUS = 2
 
+# Failure categories where waiting lets the underlying condition clear, so the
+# task must ride the full backoff ladder (tail = 24h, past a daily-quota reset)
+# rather than DLQ at the quality-sized worker-attempt cap. A task that can't get
+# capacity WAITS for it. Shared by decide_retry, the admission cap-guard, and
+# sweep section 8 so all three agree on when a transient task is truly exhausted.
+TRANSIENT_CATEGORIES: frozenset[str] = frozenset({
+    "availability", "daily_exhausted", "rate_limited", "no_model",
+    "timeout", "loading", "server_error",
+})
+
+
+def effective_max_attempts(category, max_attempts: int) -> int:
+    """Effective worker-attempt ceiling for a failure category.
+
+    Transient/availability categories get ``max(cap, len(ladder))`` so they
+    ride the whole backoff ladder; everything else keeps its raw cap (retrying
+    a deterministic failure 15× just burns tokens on the same output). The
+    ``max_att <= 0`` "no cap" sentinel is preserved for non-transient (returns
+    0 unchanged); for transient it floors at the ladder length so an
+    unconfigured row still rides out a quota reset.
+    """
+    try:
+        cap = int(max_attempts)
+    except (TypeError, ValueError):
+        cap = 0
+    if category in TRANSIENT_CATEGORIES:
+        return max(cap, len(_BACKOFF_SECONDS))
+    return cap
+
 
 @dataclass(frozen=True)
 class RetryDecision:
@@ -80,20 +109,11 @@ def decide_retry(
 
     # Transient / availability failures must ride the WHOLE backoff ladder
     # (tail = 24h, past a daily-quota reset) so a task that can't get capacity
-    # WAITS for it instead of DLQ'ing. The add_task default cap (6) is sized
-    # for quality retries; with it the ladder bottoms out at idx 5 (300s, ~9min
-    # cumulative) and an availability failure DLQ'd long before a daily-exhausted
-    # provider could reset (mission_79 2026-05-30 reviewer #225600: max=6 →
-    # DLQ in minutes against daily-exhausted gemini). Give transient categories
-    # an effective cap of the ladder length; quality/deterministic keep the
-    # task's own (smaller) cap — retrying a deterministic failure 15× just burns
-    # tokens on the same output.
-    _TRANSIENT = {
-        "availability", "daily_exhausted", "rate_limited", "no_model",
-        "timeout", "loading", "server_error",
-    }
-    if category in _TRANSIENT:
-        max_attempts = max(max_attempts, len(_BACKOFF_SECONDS))
+    # WAITS for it instead of DLQ'ing. effective_max_attempts() centralizes
+    # this so the admission cap-guard and sweep section 8 enforce the SAME cap
+    # (mission_79 2026-05-30 reviewer #225600: classified availability, yet
+    # DLQ'd "6/6" at the admission gate because that gate used the raw cap).
+    max_attempts = effective_max_attempts(category, max_attempts)
 
     if attempts < max_attempts:
         # Quality / deterministic failures: immediate retry, no backoff.

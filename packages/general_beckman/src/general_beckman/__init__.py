@@ -434,6 +434,13 @@ async def next_task(lane: str | None = None):
         # (Handoff item A.)
         attempts = int(task.get("worker_attempts") or 0)
         max_att = int(task.get("max_worker_attempts") or 15)
+        # Transient/availability failures ride the full backoff ladder — use
+        # the SAME effective cap decide_retry uses, or this gate force-DLQs an
+        # availability task at the raw quality cap (6) even though decide_retry
+        # would keep retrying it (mission_79 #225600: cat=availability, DLQ'd
+        # "6/6" here while waiting for a daily-quota reset).
+        from general_beckman.retry import effective_max_attempts
+        max_att = effective_max_attempts(task.get("error_category"), max_att)
         if (
             task.get("agent_type") != "mechanical"
             and max_att > 0

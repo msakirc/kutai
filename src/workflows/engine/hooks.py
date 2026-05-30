@@ -269,6 +269,71 @@ def _unwrap_envelope(text) -> str:
     return stripped
 
 
+def _produces_file_is_stale(existing_raw: str, new_value: str) -> bool:
+    """True when an existing produces file should be OVERWRITTEN by new_value.
+
+    The produces-persist block normally "only fills missing" files so a rich
+    agent-written artifact is never clobbered by a thin result summary
+    (intake #73). But that guard also locked in JUNK: when an early attempt
+    persisted a raw / truncated LLM envelope to the produces path, every later
+    good attempt skipped the existing file and the shape validator failed
+    forever (mission_79 2026-05-30: .intake/interview_script.md held a
+    truncated ``{"action": "final_answer", ...}`` wrapper while the good 5KB
+    script sat at the mission-root path).
+
+    Narrowly widen the guard: replace ONLY when the existing file is junk —
+    a raw LLM envelope (final_answer / tool_call / CallResult) or degenerate /
+    empty — AND new_value is substantial and itself clean. Rich/valid
+    artifacts (including bare JSON with no envelope markers) are preserved.
+    """
+    if not isinstance(new_value, str) or len(new_value.strip()) < 120:
+        return False
+    existing = (existing_raw or "").strip()
+    if not existing:
+        return True  # empty file → fill
+
+    probe = existing
+    if probe.startswith("```"):
+        probe = probe.split("\n", 1)[1] if "\n" in probe else probe[3:]
+        probe = probe.rsplit("```", 1)[0].strip()
+
+    is_junk = False
+    try:
+        obj = json.loads(probe)
+        if isinstance(obj, dict):
+            if obj.get("action") in ("final_answer", "tool_call"):
+                is_junk = True
+            elif isinstance(obj.get("content"), str) and any(
+                k in obj for k in ("model", "model_name", "usage", "ran_on", "provider")
+            ):
+                is_junk = True
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # Truncated / unclosed wrapper — detect the envelope prefix.
+        head = probe[:80]
+        if probe.startswith("{") and ('"action"' in head or '"content"' in head):
+            is_junk = True
+
+    if not is_junk:
+        try:
+            from dogru_mu_samet import assess as _cq
+            if _cq(existing).is_degenerate:
+                is_junk = True
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not is_junk:
+        return False  # rich / valid artifact → preserve (intake #73)
+
+    # Never replace junk with junk — the new value must itself be clean.
+    try:
+        from dogru_mu_samet import assess as _cq
+        if _cq(new_value).is_degenerate:
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def _top_level_required_field_names(rule: dict) -> list[str]:
     """Return required (non-optional) top-level field names from an object rule.
 
@@ -1413,7 +1478,21 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                     continue
                 _fp = _entry if _os.path.isabs(_entry) else _os.path.join(_WS_DIR, _entry)
                 if _os.path.isfile(_fp):
-                    continue  # agent / prior step already wrote it — preserve
+                    # Preserve a rich/valid existing artifact (intake #73), but
+                    # overwrite a stale junk file — a raw/truncated LLM envelope
+                    # an earlier attempt persisted that every shape check then
+                    # fails on (mission_79 .intake/interview_script.md).
+                    try:
+                        with open(_fp, encoding="utf-8") as _ef:
+                            _existing = _ef.read()
+                    except OSError:
+                        _existing = ""
+                    if not _produces_file_is_stale(_existing, output_value):
+                        continue  # agent / prior step already wrote it — preserve
+                    logger.info(
+                        f"[Workflow Hook] Overwriting stale produces artifact "
+                        f"-> {_fp} ({len(_existing)} junk -> {len(output_value)} chars)"
+                    )
                 _os.makedirs(_os.path.dirname(_fp), exist_ok=True)
                 with open(_fp, "w", encoding="utf-8") as _f:
                     _f.write(output_value)

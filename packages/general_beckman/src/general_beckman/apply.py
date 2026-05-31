@@ -420,6 +420,29 @@ def _classify_availability_text(error: str | None) -> str | None:
     return None
 
 
+def _grade_verdict_is_availability(verdict) -> bool:
+    """True when a grade FAIL verdict is an AUTO-FAIL caused because the grade
+    CHILD couldn't get a model (cloud daily-exhausted / no candidates / load
+    fail) — NOT a genuine quality rejection of the source artifact.
+
+    posthook_continuations._grade_resume_err / _grade_resume build the auto-fail
+    shape ``{"passed": False, "raw": "auto-fail: grader call failed (...)"}`` —
+    the reason lives ONLY under the ``raw`` key behind an ``auto-fail:`` prefix.
+    We require BOTH that shape AND an availability marker so a grader's free-text
+    verdict (insight/strategy/...) that merely mentions "daily" / "quota" /
+    "rate limit" about the artifact's CONTENT is never misread as availability —
+    a raw sniff of the whole verdict text would false-positive (the genuine
+    quality path must stay immediate-retry, not back off). Pure; safe on any
+    shape. See project_grader_verdict_autofail_20260530 (PART 2)."""
+    raw = getattr(verdict, "raw", None)
+    if not isinstance(raw, dict):
+        return False
+    msg = raw.get("raw")
+    if not _is_meaningful_text(msg) or "auto-fail" not in msg.lower():
+        return False
+    return _classify_availability_text(msg) == "availability"
+
+
 async def _apply_failed(task: dict, a: Failed) -> None:
     # Category precedence: this attempt's result wins over the stale row.
     # The orchestrator stamps `error_category=availability` on the result
@@ -4370,6 +4393,32 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
         error_str = _grader_verdict_text(
             a.raw, source_title=source.get("title", "") or "",
         )[:500]
+
+        # Availability masquerade (PART 2). When the grade CHILD itself
+        # couldn't get a model, the auto-fail verdict is an AVAILABILITY
+        # failure, not a quality rejection — the source artifact was never
+        # judged. Hardcoding error_category="quality" below burned the
+        # quality-sized worker-attempt cap and fast-DLQ'd against an
+        # exhausted pool (mission_79 #225586/#225597, 2026-05-30). Founder
+        # principle: can't get capacity → WAIT, not DLQ. Route through the
+        # shared availability machinery (_retry_or_dlq → decide_retry, whose
+        # effective_max_attempts floors the cap at the 15-step ladder so it
+        # rides the backoff to a quota reset instead of DLQ'ing at max=6).
+        # We do NOT add the generator to grade_excluded_models/failed_models
+        # (no model misbehaved — it was capacity) and clear pending posthooks
+        # so the re-run re-attaches a fresh grade. Guarded on the auto-fail
+        # SHAPE in _grade_verdict_is_availability so a grader insight that
+        # merely mentions "daily"/"quota" stays on the immediate quality path.
+        if _grade_verdict_is_availability(a):
+            ctx["_pending_posthooks"] = []
+            await update_task(a.source_task_id, context=_json.dumps(ctx))
+            logger.info(
+                "grade auto-fail is availability — backing off, not quality-DLQ",
+                source_id=a.source_task_id, error=error_str[:120],
+            )
+            await _retry_or_dlq(source, category="availability", error=error_str)
+            return
+
         excluded = list(ctx.get("grade_excluded_models") or [])
         gen_model = ctx.get("generating_model") or ""
         if gen_model and gen_model not in excluded:

@@ -6,6 +6,18 @@
 **Prereq shipped:** P1 need-ctx (commit `2330f1ab`) — OOM fire is out.
 **Mines for evidence only:** `docs/superpowers/specs/2026-05-31-vram-aware-load-sizing-design.md` (its current-state/evidence section; its §B/§C/§D VRAM-cap mechanism is the WRONG lever — ignore).
 
+## 0. Verification status (verified against code 2026-05-31)
+
+Every load-bearing claim below was checked against the source, not docstrings:
+
+- **`pressure_for` IS called for local candidates.** `ranking.py::_apply_utilization_layer` (138-159) calls `snapshot.pressure_for(sm.model, …)` for **every** scored model unconditionally. New local-only signals will fire. ✓ (this is the linchpin — design dies without it)
+- **Admission gate** = `threshold = max(-1.0, -0.5 - 0.5*urgency)`; admit iff `urgency >= threshold and urgency > -1.0` (`selector.py:326,335`). A `−10` sentinel clamps the scalar to `−1.0` → fails `> -1.0` → blocked even at max urgency. Hard-veto mechanism confirmed. ✓
+- **Local pressure ≈ S9 only today.** Local model → `provider=""` → empty matrix → S1-S8,S10,S11 return 0; only S9 fires. New signals are the first real local-sensing expansion. ✓
+- **Fatih has the data for need-ctx.** `select()` returns `Pick(...)` at `selector.py:426`; `reqs.effective_context_needed` + `best.model.context_length` available there. Dispatcher recursion calls `select()` directly, so a `need_ctx` Pick field reaches both admission + retry. ✓
+- **Load mode is fully severed** — `_check_eligibility` has NO VRAM-budget filter (only `vram_available_mb==0 → no_vram_available`, `selector.py:628`). The `ranking.py:309` comment claiming "selector already filtered VRAM budget" is **false/stale**. Nothing enforces budget anywhere. ✓
+- **`snapshot()` is sync, once per admission** (`nerd_herd.py:140`, called at `selector.py:90`). RAM (`SystemState` already has `ram_available_mb`, ~1ms) + presence (`GetLastInputInfo`, ~1ms) are cheap per-snapshot. External-GPU (`gpu.py::detect_external_gpu_usage`, pynvml ~10-20ms) is **already throttled to a 30s `_auto_detect_loop`** — read its cached result, do NOT re-detect per snapshot. ✓
+- **`load_mode` is NOT on `SystemSnapshot`** today (it lives in `LoadManager._mode`, `load.py:69`). Must add a `load_mode` field, populate in `snapshot()`, so `pressure_for` (a `SystemSnapshot` method) reads `self.load_mode`. ✓
+
 ---
 
 ## 1. The problem
@@ -54,10 +66,12 @@ Codebase discipline = **one signal, one contract** (S1-stock and S9-timing were 
   - User idle/away (idle > threshold, e.g. 300s) → `0.0` (no penalty; full local send).
 
 - **S13 — machine-contention** (the machine-busy axis; can fire while the user is away, e.g. an overnight render)
-  Inputs: RAM pressure (`psutil.virtual_memory().percent`) + external-GPU fraction (promote existing `detect_external_gpu_usage`).
+  Inputs (both already collected — no new sensor): RAM (`SystemState.ram_available_mb`, already gathered) + external-GPU fraction (`ExternalGPUUsage.external_vram_fraction`, already maintained by the 30s `_auto_detect_loop`). S13 reads the **cached** external-GPU value from the snapshot — it does NOT call `detect_external_gpu_usage` itself (pynvml ~10-20ms too costly per admission).
   - external-GPU heavy (another CUDA/render/game process owns the GPU) → **hard veto** `−10.0`.
   - RAM pressure high (loading another model / CPU-offload would thrash) → graded negative scaled on `% used` above a threshold (e.g. 80% → 0, 95% → −1.0).
   - otherwise → `0.0`.
+
+**Net new sensing: only user-presence (S12).** RAM + external-GPU already collected; the work is plumbing them onto `SystemSnapshot` and into S13.
 
 Both sit in `OTHER_BUCKET`. Worst-of-negatives means the strongest yield signal dominates (if the user is gaming, that veto wins regardless of RAM headroom) — correct.
 
@@ -74,7 +88,9 @@ Load mode stops being a VRAM-% and becomes a **per-signal weight on S12/S13**, m
 
 Flat pool-level scalar rejected: too blunt to express "ignore presence but keep the external-GPU hard-veto." Per-signal weight is the right granularity and matches the existing modifier pattern. **This is how load mode finally reaches live selection** — through the pressure engine, replacing the severed `router.py` path.
 
-The current load mode is held in `nerd_herd/load.py` (`self._mode`); `pressure_for` reads it (or receives it on the snapshot) and applies M4.
+The current load mode is held in `nerd_herd/load.py` (`LoadManager._mode`) but is **not** on `SystemSnapshot`. Add a `load_mode: str` field to `SystemSnapshot`, populate it in `snapshot()` from `get_load_mode()`, so `pressure_for` (a `SystemSnapshot` method) reads `self.load_mode` and applies M4.
+
+**Bonus — the auto-detect loop becomes useful for free.** `load.py::_auto_detect_loop` (30s) already senses external-GPU and downgrades the mode (`suggest_mode_for_external_usage`). Today that mode change drives nothing (selection is mode-blind). Once M4 wires mode → pressure, this *existing* loop becomes a live external-GPU→cloud-bias path with zero new code. Keep it.
 
 ### 3.3 Hard veto mechanism (reuse, don't invent)
 
@@ -112,9 +128,9 @@ Fatih pick:     also returns need_ctx           → DaLLaMa loads at need_ctx, -
 
 Audit call sites (not docstrings) first, then remove:
 
-- `src/infra/load_manager.py` sync stubs `is_local_inference_allowed()` / `get_vram_budget_fraction()` (no-op `True`/`1.0`).
-- `VRAM_BUDGETS` cap path in `packages/nerd_herd/src/nerd_herd/load.py` (the % map; the mode string survives, the budget fractions die).
-- `src/core/router.py:233-247,317` load-mode enforcement (dead; router selection is itself dead per root-debt-map).
+- `src/infra/load_manager.py` sync stubs `is_local_inference_allowed()` / `get_vram_budget_fraction()` (no-op `True`/`1.0`). **VERIFIED safe** — only callers are the dead `router.py` lines below.
+- **`VRAM_BUDGETS` — do NOT blanket-delete (audit surprise).** It is LIVE: `load.py::_auto_detect_loop` + `exposition.py` (Prometheus) read it. The **budget-fraction-as-VRAM-cap semantics** die (no more capping VRAM); the **mode-transition thresholds** inside `suggest_mode_for_external_usage` and the auto-detect loop **stay** (that's the external-GPU sensor we keep, §3.2). Plan must separate the two uses surgically, not `rm` the dict.
+- `src/core/router.py:233-247,317` load-mode enforcement (**VERIFIED dead** — `select_model`/`select_for_task` have zero live callers; root-debt-map confirmed).
 - the load-mode-blind comment + dead VRAM-penalty branch in `fatih_hoca/ranking.py:309-310`.
 - dispatcher context-size computation (moves to Fatih per §3.4).
 - P1 dead symbols already flagged for removal: `calculate_dynamic_context`, `vram_context_ceiling`, `BASELINE_LOCAL_CTX`, `_floored_baseline_ctx` and their re-exports + tests (`tests/test_local_ctx_floor.py`, ctx tests in `fatih_hoca/tests/test_registry.py`).
@@ -135,6 +151,7 @@ Audit call sites (not docstrings) first, then remove:
 - **Presence detection cost** — `GetLastInputInfo` is a cheap WinAPI call; fullscreen detect via foreground-window + monitor-rect compare, or nvidia-smi utilization as a coarse proxy. Sample on the existing snapshot cadence, not a hot loop.
 - **S12/S13 thresholds** (idle-away cutoff, RAM %, graded-negative slopes) are starting guesses — tune against real `kutai.jsonl` once live, like the S1/S9 thresholds were.
 - **M3 ⊗ M4 composition** — both produce per-signal weight dicts; multiply them (M4 only touches S12/S13, M3 doesn't, so no collision). Confirm the multiply, not overwrite, in `pressure_for`.
-- **Snapshot freshness** — presence/RAM must be read per-snapshot (they change fast); ensure `nerd_herd.snapshot()` collects them each tick, not cached stale.
-- **need-ctx threading** — confirm the pick→DaLLaMa path carries `need_ctx` through the task/context DB round-trip if admission and load are separated in time.
+- **Snapshot freshness vs cost (resolved by audit)** — presence (`GetLastInputInfo` ~1ms) + RAM (~1ms) read fresh per-snapshot. External-GPU (pynvml ~10-20ms) is **NOT** per-snapshot — read the 30s `_auto_detect_loop` cached value. Don't add `detect_external_gpu_usage` to the per-admission `snapshot()` hot path.
+- **Minimal-mode mechanism** — there is no `cloud_only` today (only `local_only` rejecting cloud, `selector.py:474`). Minimal = a NEW local hard-veto. Cleanest as an eligibility reason (`load_mode_minimal`) in `_check_eligibility` for local models, OR an M4 sentinel — plan picks. Eligibility-reason is structurally cleaner (local simply ineligible) and gives a clear diag.
+- **need-ctx threading** — confirm the pick→DaLLaMa path carries `need_ctx` through the task/context DB round-trip if admission and load are separated in time. `select()` returns it on `Pick`; dispatcher reads `pick.need_ctx` (replaces the `_min_ctx` heuristic at `llm_dispatcher.py:386-388`, kept only as fallback).
 ```

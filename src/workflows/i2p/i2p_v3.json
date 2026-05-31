@@ -2072,7 +2072,9 @@
             "verdict": {
               "type": "string",
               "equals": [
-                "pass"
+                "pass",
+                "fail",
+                "needs_minor_fixes"
               ]
             },
             "issues": {}

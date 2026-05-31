@@ -69,7 +69,20 @@ def _mech_action_to_result(action) -> dict:
             "result": json.dumps(action.result),
             "error": action.error or "",
         }
-    return {"status": "failed", "error": action.error or "mechanical failed"}
+    # Carry the verdict payload on the failed path too. A mechanical VALIDATOR
+    # that RAN its check and returned a negative verdict bails as
+    # Action(status="failed", result={"ok": False, ...}); rewrite Rule 0c needs
+    # that result to tell a check-fail VERDICT (→ validator goes terminal, only
+    # the producer re-runs) from a genuine executor error (no verdict-shaped
+    # result → stays retryable). Dropping it here made the validator self-retry
+    # against the same artifact 5× and DLQ as noise (mission_79 #225576/#227677,
+    # 2026-05-31). An empty default result ({}) carries no verdict keys, so the
+    # executor-error path stays retryable.
+    return {
+        "status": "failed",
+        "error": action.error or "mechanical failed",
+        "result": json.dumps(action.result) if action.result is not None else None,
+    }
 
 
 async def _check_mcp_idle_sweep() -> None:

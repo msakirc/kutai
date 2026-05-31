@@ -1456,7 +1456,7 @@
       "artifact_schema": {
         "direct_competitors_list": {
           "type": "array",
-          "min_items": 1,
+          "min_items": 3,
           "item_fields": [
             "name",
             "website_url",

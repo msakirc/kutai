@@ -228,15 +228,51 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
         and task_ctx.get("source_task_id") is not None
         and task_ctx.get("posthook_kind")
     ):
-        return [
-            a,
-            PostHookVerdict(
-                source_task_id=int(task_ctx["source_task_id"]),
-                kind=str(task_ctx["posthook_kind"]),
-                passed=False,
-                raw={"error": a.error, "missing": [], "failed": []},
-            ),
-        ]
+        verdict = PostHookVerdict(
+            source_task_id=int(task_ctx["source_task_id"]),
+            kind=str(task_ctx["posthook_kind"]),
+            passed=False,
+            raw={"error": a.error, "missing": [], "failed": []},
+        )
+        # A MECHANICAL validator that actually RAN its check and returned a
+        # negative verdict ({"ok"/"passed"/"all_ok": False, ...}) has DONE its
+        # job — the fail is a VERDICT for the producer (carried above), not a
+        # failure of the validator TASK. Keeping the Failed action sent the
+        # validator down normal retry/DLQ handling: it re-ran the same
+        # deterministic check against the same artifact 5× and DLQ'd as
+        # "Worker attempts exceeded: 5/6" noise (mission_79 #225576
+        # interview_script_shape, #227677 prior_art_min_coverage, 2026-05-31).
+        # Convert it to a terminal Complete so only the producer re-runs.
+        #
+        # An EXECUTOR error (exception / "no paths supplied") returns
+        # status=failed with NO verdict-shaped result — that stays a retryable
+        # Failed (transient input/IO can clear). Config-only reviewers that
+        # EXHAUSTED also stay retryable (iteration-budget, not a verdict). The
+        # producer verdict above is byte-identical to before either way —
+        # only the validator's own action changes.
+        inner = (a.raw or {}).get("result") if isinstance(a.raw, dict) else None
+        if isinstance(inner, str):
+            try:
+                inner = _json.loads(inner)
+            except (ValueError, TypeError):
+                inner = None
+        is_mechanical_checkfail = (
+            task.get("agent_type") == "mechanical"
+            and isinstance(inner, dict)
+            and any(k in inner for k in ("ok", "passed", "all_ok"))
+        )
+        if is_mechanical_checkfail:
+            return [
+                Complete(
+                    task_id=a.task_id,
+                    result=inner,
+                    iterations=0,
+                    metadata={},
+                    raw=a.raw if isinstance(a.raw, dict) else {},
+                ),
+                verdict,
+            ]
+        return [a, verdict]
 
     # Rule 1: mission-task clean completion → emit MissionAdvance (unless
     # bookkeeping) and RequestPostHook (unless policy says no).

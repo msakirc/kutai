@@ -163,7 +163,11 @@ class TestIntegrationReviewVerdictHandled:
         integration_review, else its verdict hits 'unknown kind'."""
         import inspect
         from general_beckman import apply as apply_module
-        src = inspect.getsource(apply_module._apply_posthook_verdict)
+        # The dispatch logic lives in the locked impl; the public
+        # _apply_posthook_verdict is just the _source_verdict_guard wrapper
+        # (lock-split landed in a prior session — this guard previously
+        # inspected the wrapper and silently went stale).
+        src = inspect.getsource(apply_module._apply_posthook_verdict_locked)
         # The simple-blocker dispatch tuple must include integration_review.
         assert '"integration_review"' in src
 

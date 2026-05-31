@@ -407,15 +407,28 @@ async def sweep_queue() -> None:
         attempts = int(task.get("worker_attempts") or 0)
         max_att = int(task.get("max_worker_attempts") or 15)
         category = task.get("error_category") or "worker"
+        # Transient/availability failures ride the full backoff ladder — apply
+        # the SAME effective cap decide_retry and the admission cap-guard use, or
+        # this sweep force-DLQs an availability task at the raw quality cap (6)
+        # while it is correctly waiting out a daily-quota reset. The SQL above
+        # pre-selects on the RAW column (a function can't run in SQLite); the
+        # effective check has to happen here (mission_79 #225600: cat=availability
+        # sat pending 6/6 and the sweep killed it "Worker attempts exceeded: 6/6"
+        # — the "3-site unification" wired decide_retry + admission but missed
+        # this SQL). See general_beckman/retry.py::effective_max_attempts.
+        from general_beckman.retry import effective_max_attempts
+        eff_max = effective_max_attempts(category, max_att)
+        if eff_max > 0 and attempts < eff_max:
+            continue
         logger.warning(
             f"[Sweep] Task #{task['id']} pending past cap "
-            f"({attempts}/{max_att}) — forcing DLQ (category={category})"
+            f"({attempts}/{eff_max}) — forcing DLQ (category={category})"
         )
         fresh = dict(task)
         fresh["failed_in_phase"] = "worker"
         await _dlq_write(
             fresh,
-            error=f"Worker attempts exceeded: {attempts}/{max_att}",
+            error=f"Worker attempts exceeded: {attempts}/{eff_max}",
             category=category,
             attempts=attempts,
         )

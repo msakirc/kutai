@@ -463,6 +463,27 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "risk_if_wrong / validation_method / falsification_signal."
         ),
     ),
+    # Mechanical SHAPE-CHECK verbs — converted from standalone `.verify`
+    # workflow steps that dead-ended (a failed standalone verify only blocked
+    # its dependents and waited for a human; the producer stayed `completed`
+    # and was never re-run). As producer post-hooks they route through the
+    # same rail as grounding / verify_artifacts: a failed shape check re-pends
+    # the producer with feedback via _apply_simple_blocker_verdict. Each verb
+    # is its own named kind (distinct DLQ text + telemetry, like grounding vs
+    # verify_artifacts); the apply layer shares ONE generic payload builder
+    # (_SHAPE_CHECK_SPECS) + ONE verdict branch (_SHAPE_CHECK_KINDS). Add a
+    # verb here + a payload row in apply._SHAPE_CHECK_SPECS to convert it.
+    "verify_interview_script_shape": PostHookSpec(
+        kind="verify_interview_script_shape",
+        verb="verify_interview_script_shape",
+        default_severity="blocker",
+        auto_wire_triggers=[],
+        description=(
+            "Z1 A4 — assert the producer emitted a well-formed interview "
+            "script (front matter, Logistics, 5-7 Q blocks each with "
+            "Question/Probes/Looking-for). Fail re-pends the producer."
+        ),
+    ),
     # Z1 T5C (B4) — standalone critic-gate post-hook. Inline critic-gate
     # already fires inside git_commit + notify_user; this slot lets a
     # workflow step declare `post_hooks: ["critic_gate"]` to bolt the gate

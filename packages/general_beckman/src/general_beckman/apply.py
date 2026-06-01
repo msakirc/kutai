@@ -1800,9 +1800,43 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
     return True  # child task enqueued
 
 
+# Mechanical SHAPE-CHECK verbs converted from standalone `.verify` steps.
+# Each row is DATA: the mr_roboto verb + which produces-derived key carries the
+# artifact path(s) + static param defaults. The generic payload builder below
+# reads this table, so converting a new verb needs only a registry row
+# (posthooks.py) + a row here + the JSON rewire — no new handler code.
+#   path_key:  payload key the verb reads the artifact path under
+#              (the verb's own inline workflow payload already names it)
+#   defaults:  static params (min/max bounds etc.) merged under the path
+_SHAPE_CHECK_SPECS: dict[str, dict] = {
+    "verify_interview_script_shape": {
+        "path_key": "script_paths",
+        "defaults": {"min_questions": 5, "max_questions": 7},
+    },
+}
+_SHAPE_CHECK_KINDS: frozenset[str] = frozenset(_SHAPE_CHECK_SPECS)
+
+
 def _posthook_agent_and_payload(
     a: RequestPostHook, source: dict, source_ctx: dict,
 ) -> tuple[str, dict]:
+    if a.kind in _SHAPE_CHECK_KINDS:
+        # Generic mechanical shape-check payload. The artifact path(s) come from
+        # the producer's declared ``produces``; static params (min/max bounds)
+        # come from the step's own inline ``payload`` when present, else the
+        # table defaults. One branch serves every shape-check verb.
+        spec = _SHAPE_CHECK_SPECS[a.kind]
+        produces = list(source_ctx.get("produces") or [])
+        step_payload = source_ctx.get("payload") or {}
+        inner: dict = {"action": a.kind, spec["path_key"]: produces}
+        for k, default in spec["defaults"].items():
+            inner[k] = step_payload.get(k, default)
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": inner,
+        })
     # SP3: grade / summary:* / code_review are handled before this function is
     # reached — _apply_request_posthook returns early for those kinds and
     # spawns the raw_dispatch reviewer/summarizer child via
@@ -3954,6 +3988,40 @@ def _posthook_title(a: RequestPostHook, source: dict) -> str:
     return f"Posthook {a.kind} for #{a.source_task_id}"
 
 
+def _adapt_shape_findings(verdict: PostHookVerdict) -> None:
+    """Map a shape verb's problem lists into the ``findings`` simple_blocker reads.
+
+    Shape verbs return ``{ok, question_problems|problems|missing|placeholders}``
+    rather than the ``{findings:[...]}`` _apply_simple_blocker_verdict builds its
+    retry feedback from. Without this map the producer's retry feedback summary
+    is empty and the model re-emits the same bad shape. Mutates ``verdict.raw``
+    in place; no-op when ``findings`` is already present.
+    """
+    raw = dict(verdict.raw or {})
+    if raw.get("findings"):
+        object.__setattr__(verdict, "raw", raw)
+        return
+    findings: list[dict] = []
+    for p in (raw.get("question_problems") or []):
+        if isinstance(p, dict):
+            miss = p.get("missing_fields") or p.get("issues") or []
+            findings.append({"why": f"{p.get('header', '?')}: {miss}"})
+        else:
+            findings.append({"why": str(p)})
+    for p in (raw.get("problems") or []):
+        findings.append(
+            {"why": (p.get("why") or str(p)) if isinstance(p, dict) else str(p)}
+        )
+    for m in (raw.get("missing") or [])[:8]:
+        findings.append({"why": f"missing: {m}"})
+    for ph in (raw.get("placeholders") or [])[:5]:
+        findings.append({"why": f"placeholder text: {ph}"})
+    if not findings and raw.get("error"):
+        findings.append({"why": str(raw["error"])})
+    raw["findings"] = findings
+    object.__setattr__(verdict, "raw", raw)
+
+
 async def _apply_simple_blocker_verdict(
     kind: str,
     source: dict,
@@ -4680,6 +4748,18 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
     if a.kind in ("openapi_sync", "typescript_sync"):
         await _apply_type_sync_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+        )
+        return
+
+    if a.kind in _SHAPE_CHECK_KINDS:
+        # Mechanical shape-check (converted standalone .verify step). Adapt the
+        # verb's problem lists into `findings`, then share the existing
+        # re-pend-with-feedback rail. Blocker semantics: a failed shape check
+        # re-pends the PRODUCER (not the validator) with the actual problems.
+        _adapt_shape_findings(a)
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix=f"{a.kind.replace('_', ' ')} gate",
         )
         return
 

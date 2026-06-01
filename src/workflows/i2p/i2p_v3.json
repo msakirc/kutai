@@ -1048,8 +1048,11 @@
       "produces": [
         "mission_{mission_id}/.intake/interview_script.md"
       ],
-      "instruction": "Generate `mission_{mission_id}/.intake/interview_script.md` (Z1 A4) — a neutral, non-leading interview script targeting the 5-7 highest-`risk_if_wrong` assumptions from `assumption_list`. Use the product_charter (when present) to identify target personas.\n\nFormat the file EXACTLY:\n\n```\n---\n_schema_version: \"1\"\nmission_id: <id>\ntarget_assumptions: [A-001, A-002, ...]\ntarget_personas: [<persona names>]\nquestion_count: <5..7>\n---\n\n# Interview Script\n\n## Logistics\n- Length: 25-35 min\n- Format: 1:1 video; record with consent\n- Sample size minimum: 3 per persona\n\n## Questions\n\n### Q1 — <short topic for the assumption being probed>\n**Question:** <neutral wording — never leading, never suggesting an answer>\n**Probes:**\n- <follow-up>\n- <follow-up>\n**Looking for:** <what answer pattern would FALSIFY the assumption>\n\n### Q2 — ...\n```\n\nQuestion-writing rules:\n1. Never lead the witness — no \"don't you think...\", no \"wouldn't it be great if...\".\n2. Each question targets ONE assumption (cite the assumption_id in the topic).\n3. \"Looking for\" must describe the FALSIFYING answer pattern, not the confirming one — interview value is in disconfirmation.\n4. 5-7 questions total. More than 7 burns attention budget; fewer than 5 isn't a real script.\n\nMechanical post-hook `0.0c.verify` will reject the file if the front matter is malformed, the question count is out of range, or any question is missing Question/Probes/Looking-for fields.",
-      "done_when": "interview_script.md exists with valid front matter, Logistics section, and 5-7 well-formed Q blocks. Verified by 0.0c.verify.",
+      "post_hooks": [
+        "verify_interview_script_shape"
+      ],
+      "instruction": "Generate `mission_{mission_id}/.intake/interview_script.md` (Z1 A4) — a neutral, non-leading interview script targeting the 5-7 highest-`risk_if_wrong` assumptions from `assumption_list`. Use the product_charter (when present) to identify target personas.\n\nFormat the file EXACTLY:\n\n```\n---\n_schema_version: \"1\"\nmission_id: <id>\ntarget_assumptions: [A-001, A-002, ...]\ntarget_personas: [<persona names>]\nquestion_count: <5..7>\n---\n\n# Interview Script\n\n## Logistics\n- Length: 25-35 min\n- Format: 1:1 video; record with consent\n- Sample size minimum: 3 per persona\n\n## Questions\n\n### Q1 — <short topic for the assumption being probed>\n**Question:** <neutral wording — never leading, never suggesting an answer>\n**Probes:**\n- <follow-up>\n- <follow-up>\n**Looking for:** <what answer pattern would FALSIFY the assumption>\n\n### Q2 — ...\n```\n\nQuestion-writing rules:\n1. Never lead the witness — no \"don't you think...\", no \"wouldn't it be great if...\".\n2. Each question targets ONE assumption (cite the assumption_id in the topic).\n3. \"Looking for\" must describe the FALSIFYING answer pattern, not the confirming one — interview value is in disconfirmation.\n4. 5-7 questions total. More than 7 burns attention budget; fewer than 5 isn't a real script.\n\nThe `verify_interview_script_shape` post-hook will reject the file (and force this step to regenerate) if the front matter is malformed, the question count is out of range, or any question is missing Question/Probes/Looking-for fields.",
+      "done_when": "interview_script.md exists with valid front matter, Logistics section, and 5-7 well-formed Q blocks. Verified by the verify_interview_script_shape post-hook.",
       "artifact_schema": {
         "interview_script": {
           "type": "markdown",
@@ -1066,36 +1069,6 @@
       "reversibility": "full"
     },
     {
-      "id": "0.0c.verify",
-      "phase": "phase_0",
-      "name": "interview_script_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "0.0c"
-      ],
-      "input_artifacts": [
-        "interview_script"
-      ],
-      "output_artifacts": [
-        "interview_script_shape_result"
-      ],
-      "payload": {
-        "action": "verify_interview_script_shape",
-        "script_paths": [
-          "mission_{mission_id}/.intake/interview_script.md"
-        ],
-        "min_questions": 5,
-        "max_questions": 7
-      },
-      "instruction": "Mechanical post-check that 0.0c produced a well-formed interview script (Z1 A4). No LLM. Asserts front matter (_schema_version=1, mission_id, target_assumptions non-empty), Logistics section present, 5-7 Q blocks each with Question/Probes (with bullets)/Looking-for fields, no placeholder text. Failure forces 0.0c to regenerate.",
-      "done_when": "verify_interview_script_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
       "id": "0.0c.request",
       "phase": "phase_0",
       "name": "request_interview_data",
@@ -1104,7 +1077,7 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "0.0c.verify"
+        "0.0c"
       ],
       "may_need_clarification": true,
       "input_artifacts": [

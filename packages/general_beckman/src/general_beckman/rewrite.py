@@ -228,11 +228,32 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
         and task_ctx.get("source_task_id") is not None
         and task_ctx.get("posthook_kind")
     ):
+        # Parse the verb's verdict-shaped result FIRST so its structured
+        # detail (e.g. question_problems / missing_fields) can flow into the
+        # producer verdict — otherwise the producer retries blind on a generic
+        # error string (the simple_blocker feedback reads raw.findings/problems).
+        inner = (a.raw or {}).get("result") if isinstance(a.raw, dict) else None
+        if isinstance(inner, str):
+            try:
+                inner = _json.loads(inner)
+            except (ValueError, TypeError):
+                inner = None
+        is_mechanical_checkfail = (
+            task.get("agent_type") == "mechanical"
+            and isinstance(inner, dict)
+            and any(k in inner for k in ("ok", "passed", "all_ok"))
+        )
+        # Build the producer verdict. Carry the parsed verb result when it is a
+        # genuine check-fail (so feedback names what to fix); fall back to the
+        # bare error shape for executor errors with no verdict-shaped result.
+        verdict_raw: dict = {"error": a.error, "missing": [], "failed": []}
+        if is_mechanical_checkfail:
+            verdict_raw = {**inner, "error": a.error}
         verdict = PostHookVerdict(
             source_task_id=int(task_ctx["source_task_id"]),
             kind=str(task_ctx["posthook_kind"]),
             passed=False,
-            raw={"error": a.error, "missing": [], "failed": []},
+            raw=verdict_raw,
         )
         # A MECHANICAL validator that actually RAN its check and returned a
         # negative verdict ({"ok"/"passed"/"all_ok": False, ...}) has DONE its
@@ -250,17 +271,6 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
         # EXHAUSTED also stay retryable (iteration-budget, not a verdict). The
         # producer verdict above is byte-identical to before either way —
         # only the validator's own action changes.
-        inner = (a.raw or {}).get("result") if isinstance(a.raw, dict) else None
-        if isinstance(inner, str):
-            try:
-                inner = _json.loads(inner)
-            except (ValueError, TypeError):
-                inner = None
-        is_mechanical_checkfail = (
-            task.get("agent_type") == "mechanical"
-            and isinstance(inner, dict)
-            and any(k in inner for k in ("ok", "passed", "all_ok"))
-        )
         if is_mechanical_checkfail:
             return [
                 Complete(

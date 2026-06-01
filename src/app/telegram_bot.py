@@ -9026,7 +9026,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 return
             if kind == "a":
                 try:
-                    from src.infra.db import update_mission
+                    # NOTE: do NOT re-import update_mission here. It is already
+                    # module-global (top of file). A local import binds the
+                    # name function-local for the WHOLE handle_callback scope,
+                    # making the earlier m:task:pause / m:task:cancel handlers
+                    # raise UnboundLocalError ("referenced before assignment").
                     await update_mission(mid, status="cancelled")
                     await self._resume_needs_review_tasks(
                         mid, "find_similar_missions", note="founder: abort",

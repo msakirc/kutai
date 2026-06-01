@@ -94,9 +94,9 @@ def _isolate_live_io(tmp_path, monkeypatch):
 class TestKeyboardIntegrity:
     """Data-structure sanity checks — no mocking required."""
 
-    def test_reply_keyboard_has_five_buttons(self):
+    def test_reply_keyboard_has_six_buttons(self):
         texts = _get_all_button_texts(REPLY_KEYBOARD)
-        assert len(texts) == 5
+        assert len(texts) == 6
 
     def test_reply_keyboard_has_two_rows(self):
         assert len(REPLY_KEYBOARD.keyboard) == 2
@@ -104,8 +104,8 @@ class TestKeyboardIntegrity:
     def test_reply_keyboard_first_row_has_three_buttons(self):
         assert len(REPLY_KEYBOARD.keyboard[0]) == 3
 
-    def test_reply_keyboard_second_row_has_two_buttons(self):
-        assert len(REPLY_KEYBOARD.keyboard[1]) == 2
+    def test_reply_keyboard_second_row_has_three_buttons(self):
+        assert len(REPLY_KEYBOARD.keyboard[1]) == 3
 
     def test_all_keyboard_buttons_have_button_actions(self):
         """Every button in every keyboard must be in _BUTTON_ACTIONS."""
@@ -212,8 +212,8 @@ class TestButtonActionRouting:
     def test_hizli_ara_is_cmd_args_shop(self):
         assert _BUTTON_ACTIONS["⚡ Hızlı Ara"] == ("cmd_args", "shop")
 
-    def test_detayli_arastir_is_cmd_args_research(self):
-        assert _BUTTON_ACTIONS["🔬 Detaylı Araştır"] == ("cmd_args", "research_product")
+    def test_detayli_arastir_is_cmd_research(self):
+        assert _BUTTON_ACTIONS["🔬 Detaylı Araştır"] == ("cmd", "research_product")
 
     def test_yeni_ekle_is_cmd_args_todo(self):
         assert _BUTTON_ACTIONS["📝 Yeni Ekle"] == ("cmd_args", "todo")
@@ -227,11 +227,10 @@ class TestButtonActionRouting:
     def test_new_mission_is_special(self):
         assert _BUTTON_ACTIONS["🎯 Yeni Görev"] == ("special", "new_mission")
 
-    def test_restart_is_special(self):
-        assert _BUTTON_ACTIONS["🔄 Yeniden Başlat"] == ("special", "restart")
-
-    def test_stop_is_special(self):
-        assert _BUTTON_ACTIONS["⏹ Durdur"] == ("special", "stop")
+    # NOTE: restart/stop are no longer reply-keyboard buttons (menu redesign —
+    # they live under /restart, /stop commands now). Their _BUTTON_ACTIONS
+    # entries were removed; the old test_restart_is_special / test_stop_is_special
+    # asserted dead labels and were deleted on 2026-06-01.
 
     def test_yuk_modu_is_category(self):
         assert _BUTTON_ACTIONS["🖥 Yük Modu"] == ("category", "yuk_modu")
@@ -860,35 +859,10 @@ class TestCallbackData:
         await bot.handle_callback(update, ctx)
         update.callback_query.edit_message_text.assert_called()
 
-    @pytest.mark.asyncio
-    async def test_confirm_restart_invokes_restart_handler(self):
-        bot = _make_bot()
-        update = self._make_callback_update("m:confirm:restart")
-        ctx = _make_context()
-
-        restart_called = {}
-        async def fake_restart(u, c):
-            restart_called["called"] = True
-        bot.cmd_kutai_restart = fake_restart
-
-        await bot.handle_callback(update, ctx)
-        assert restart_called.get("called"), "Restart handler must be called on m:confirm:restart"
-
-    @pytest.mark.asyncio
-    async def test_confirm_restart_without_handler_shows_error(self):
-        bot = _make_bot()
-        # cmd_kutai_restart may or may not exist; hide it via getattr mock
-        # to simulate missing handler path
-        original = getattr(bot, "cmd_kutai_restart", None)
-        bot.cmd_kutai_restart = None  # type: ignore[assignment]
-        update = self._make_callback_update("m:confirm:restart")
-        ctx = _make_context()
-
-        await bot.handle_callback(update, ctx)
-        # Should send an error message (getattr returns None → branch goes to else)
-        update.callback_query.message.reply_text.assert_called()
-        if original is not None:
-            bot.cmd_kutai_restart = original
+    # NOTE: the "m:confirm:restart" callback was never implemented in prod
+    # (no button emits it, handle_callback has no branch for it, and there is
+    # no cmd_kutai_restart method). Restart is a /restart command. The two
+    # speculative tests for that callback were deleted on 2026-06-01.
 
     @pytest.mark.asyncio
     async def test_task_detail_mission_not_found(self):

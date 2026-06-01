@@ -122,3 +122,30 @@ def test_no_input_rejected():
     res = verify_screen_consistency()
     assert res["ok"] is False
     assert "no input" in str(res["problems"]).lower() or res.get("error")
+
+
+def test_directory_path_globs_md_files(tmp_path: Path):
+    """A directory entry in screen_plan_paths must glob its *.md files.
+
+    The per-screen plans are written under a runtime dir (mission_<id>/.screens/)
+    whose individual filenames are not known at workflow-author time, so the
+    `checks` entry points at the DIRECTORY. The verb must expand it to the
+    contained .md plans rather than failing to open the dir."""
+    fx = _load("good_screen_consistency")
+    d = tmp_path / ".screens"
+    d.mkdir()
+    for sid, md in fx["screen_plans"].items():
+        (d / f"{sid}.md").write_text(md, encoding="utf-8")
+    res = verify_screen_consistency(
+        screen_plan_paths=[str(d)],
+        shared_shell_components=fx["shared_shell_components"],
+    )
+    assert res["ok"] is True, res
+    assert res["mismatches"] == []
+
+
+def test_directory_with_no_md_files_rejected(tmp_path: Path):
+    d = tmp_path / ".screens"
+    d.mkdir()
+    res = verify_screen_consistency(screen_plan_paths=[str(d)])
+    assert res["ok"] is False

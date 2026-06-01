@@ -2024,7 +2024,11 @@
               "type": "string",
               "equals": [
                 "Go",
-                "go"
+                "go",
+                "Conditional",
+                "conditional",
+                "No-Go",
+                "no-go"
               ]
             }
           },
@@ -4811,27 +4815,17 @@
           "payload": {
             "action": "verify_screen_plan_shape"
           }
+        },
+        {
+          "kind": "verify_screen_consistency",
+          "payload": {
+            "action": "verify_screen_consistency",
+            "screen_plan_paths": [
+              "mission_{mission_id}/.screens/"
+            ]
+          }
         }
       ]
-    },
-    {
-      "id": "5.20.verify_consistency",
-      "phase": "phase_5",
-      "name": "verify_screen_plan_consistency",
-      "agent": "mechanical",
-      "depends_on": [
-        "5.20a",
-        "5.20b"
-      ],
-      "executor": "verify_screen_consistency",
-      "payload": {
-        "action": "verify_screen_consistency"
-      },
-      "context": {
-        "estimated_output_tokens": 0
-      },
-      "instruction": "Mechanical sibling — cross-screen `inherits_shell` consistency check across both chunks (B8/C18). Caller wires `screen_plan_paths` (union of both chunks' plans) and `shared_shell_components` from shared_shell.md.",
-      "reversibility": "full"
     },
     {
       "id": "5.30a",
@@ -4844,7 +4838,7 @@
         "write_file"
       ],
       "depends_on": [
-        "5.20.verify_consistency"
+        "5.20b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [

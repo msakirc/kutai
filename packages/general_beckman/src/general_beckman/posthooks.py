@@ -525,6 +525,11 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         "verify_html_prototype_shape", "HTML prototype shape."),
     "verify_premortem_shape": _shape_check_spec(
         "verify_premortem_shape", "Premortem doc shape."),
+    "verify_screen_consistency": _shape_check_spec(
+        "verify_screen_consistency",
+        "Cross-screen inherits_shell consistency across a chunk's screen plans "
+        "(reads the .screens/ dir). Multi-producer: attached to the LAST "
+        "screen-plan producer; reads all sibling plans from the shared dir."),
     "verify_adr_shape": _shape_check_spec(
         "verify_adr_shape", "ADR decision JSON shape (+ schema version)."),
     "verify_cost_curve_present": _shape_check_spec(

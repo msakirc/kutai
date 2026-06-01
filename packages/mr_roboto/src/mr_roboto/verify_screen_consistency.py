@@ -89,7 +89,20 @@ def verify_screen_consistency(
 
     sources: list[tuple[str, str]] = []  # (label, markdown)
     if screen_plan_paths:
+        import os
+        import glob as _glob
+        # Per-screen plans are written under a runtime dir
+        # (mission_<id>/.screens/) whose individual filenames are unknown at
+        # workflow-author time, so a `checks` entry points at the DIRECTORY.
+        # Expand any directory entry to its contained .md files (sorted for
+        # determinism); plain file entries are read directly as before.
+        expanded: list[str] = []
         for p in screen_plan_paths:
+            if os.path.isdir(p):
+                expanded.extend(sorted(_glob.glob(os.path.join(p, "*.md"))))
+            else:
+                expanded.append(p)
+        for p in expanded:
             try:
                 with open(p, encoding="utf-8") as fh:
                     sources.append((p, fh.read()))

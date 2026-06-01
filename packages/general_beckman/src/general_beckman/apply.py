@@ -1800,42 +1800,59 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
     return True  # child task enqueued
 
 
-# Mechanical SHAPE-CHECK verbs converted from standalone `.verify` steps.
-# Each row is DATA: the mr_roboto verb + which produces-derived key carries the
-# artifact path(s) + static param defaults. The generic payload builder below
-# reads this table, so converting a new verb needs only a registry row
-# (posthooks.py) + a row here + the JSON rewire — no new handler code.
-#   path_key:  payload key the verb reads the artifact path under
-#              (the verb's own inline workflow payload already names it)
-#   defaults:  static params (min/max bounds etc.) merged under the path
-_SHAPE_CHECK_SPECS: dict[str, dict] = {
-    "verify_interview_script_shape": {
-        "path_key": "script_paths",
-        "defaults": {"min_questions": 5, "max_questions": 7},
-    },
-}
-_SHAPE_CHECK_KINDS: frozenset[str] = frozenset(_SHAPE_CHECK_SPECS)
+# Parameterized mechanical CHECK verbs — converted from standalone `.verify`
+# workflow steps. Unlike `post_hooks` (a pure list[str] of registry kinds whose
+# payload is standard/derived), a check carries its OWN payload (which file to
+# check, min/max bounds), declared on the producer in a SEPARATE `checks` field:
+#     "checks": [{"kind": "verify_adr_shape", "payload": {...}}]
+# This keeps the two pots unmixed (no str|dict union on post_hooks). The check's
+# kind is registered as a normal PostHookSpec; _CHECK_KINDS is derived from the
+# registry by verb-name convention so converting a verb needs only a registry
+# row + the JSON `checks` entry — no handler code.
+# verify_* kinds that are NOT `checks`-pot members (they predate it / route
+# through other paths): verify_artifacts (own handler, produces-derived) and
+# verify_falsification_present (Z1 blocker path, post_hooks-wired on 3.1-3.7).
+_NON_CHECK_VERIFY_KINDS: frozenset[str] = frozenset({
+    "verify_artifacts",
+    "verify_falsification_present",
+})
+
+
+def _derive_check_kinds() -> frozenset[str]:
+    from general_beckman.posthooks import POST_HOOK_REGISTRY
+    return frozenset(
+        k for k in POST_HOOK_REGISTRY
+        if k.startswith("verify_") and k not in _NON_CHECK_VERIFY_KINDS
+    )
+
+
+_CHECK_KINDS: frozenset[str] = _derive_check_kinds()
+
+
+def _find_check_payload(source_ctx: dict, kind: str) -> dict | None:
+    """Return the declared payload for *kind* from the producer's `checks`."""
+    for entry in (source_ctx.get("checks") or []):
+        if isinstance(entry, dict) and entry.get("kind") == kind:
+            pl = entry.get("payload")
+            if isinstance(pl, dict):
+                return pl
+    return None
 
 
 def _posthook_agent_and_payload(
     a: RequestPostHook, source: dict, source_ctx: dict,
 ) -> tuple[str, dict]:
-    if a.kind in _SHAPE_CHECK_KINDS:
-        # Generic mechanical shape-check payload. The artifact path(s) come from
-        # the producer's declared ``produces``; static params (min/max bounds)
-        # come from the step's own inline ``payload`` when present, else the
-        # table defaults. One branch serves every shape-check verb.
-        spec = _SHAPE_CHECK_SPECS[a.kind]
-        produces = list(source_ctx.get("produces") or [])
-        step_payload = source_ctx.get("payload") or {}
-        inner: dict = {"action": a.kind, spec["path_key"]: produces}
-        for k, default in spec["defaults"].items():
-            inner[k] = step_payload.get(k, default)
+    if a.kind in _CHECK_KINDS:
+        # Parameterized check: use the producer's declared `checks[].payload`
+        # VERBATIM (it already names the exact file + bounds — no derivation
+        # from `produces`, which is over-broad and uses different path strings).
+        payload = _find_check_payload(source_ctx, a.kind) or {}
+        payload = {**payload, "action": a.kind}  # ensure action present
         return ("mechanical", {
             "source_task_id": a.source_task_id,
             "posthook_kind": a.kind,
             "executor": "mechanical",
-            "payload": inner,
+            "payload": payload,
         })
     # SP3: grade / summary:* / code_review are handled before this function is
     # reached — _apply_request_posthook returns early for those kinds and
@@ -4751,11 +4768,11 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
         )
         return
 
-    if a.kind in _SHAPE_CHECK_KINDS:
-        # Mechanical shape-check (converted standalone .verify step). Adapt the
-        # verb's problem lists into `findings`, then share the existing
-        # re-pend-with-feedback rail. Blocker semantics: a failed shape check
-        # re-pends the PRODUCER (not the validator) with the actual problems.
+    if a.kind in _CHECK_KINDS:
+        # Parameterized mechanical check (converted standalone .verify step).
+        # Adapt the verb's problem lists into `findings`, then share the
+        # existing re-pend-with-feedback rail. Blocker semantics: a failed
+        # check re-pends the PRODUCER (not the validator) with the problems.
         _adapt_shape_findings(a)
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,

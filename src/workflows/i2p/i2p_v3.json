@@ -765,35 +765,18 @@
         "ambition_tier_aware": true,
         "estimated_output_tokens": 2000
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "0.0z.verify",
-      "phase": "phase_0",
-      "name": "reverse_pitch_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "0.0z"
-      ],
-      "input_artifacts": [
-        "reverse_pitch"
-      ],
-      "output_artifacts": [
-        "reverse_pitch_shape_result"
-      ],
-      "payload": {
-        "action": "verify_reverse_pitch_shape",
-        "pitch_paths": [
-          "mission_{mission_id}/.charter/reverse_pitch.md"
-        ]
-      },
-      "instruction": "Mechanical post-check that 0.0z produced a paraflow-shape reverse pitch (Z1 A1). No LLM. Failure surfaces missing sections / placeholder text and forces a regenerate.",
-      "done_when": "verify_reverse_pitch_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_reverse_pitch_shape",
+          "payload": {
+            "action": "verify_reverse_pitch_shape",
+            "pitch_paths": [
+              "mission_{mission_id}/.charter/reverse_pitch.md"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "0.0z.confirm",
@@ -804,7 +787,7 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "0.0z.verify"
+        "0.0z"
       ],
       "may_need_clarification": true,
       "input_artifacts": [
@@ -955,38 +938,21 @@
         "find_similar_missions",
         "index_idea_fingerprint"
       ],
-      "reversibility": "full"
-    },
-    {
-      "id": "0.1.verify",
-      "phase": "phase_0",
-      "name": "product_charter_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "0.1"
-      ],
-      "input_artifacts": [
-        "product_charter"
-      ],
-      "output_artifacts": [
-        "product_charter_shape_result"
-      ],
-      "payload": {
-        "action": "verify_charter_shape",
-        "charter_paths": [
-          "mission_{mission_id}/.charter/product_charter.md"
-        ],
-        "min_solutions": 3,
-        "max_solutions": 7,
-        "min_brand_keywords": 5
-      },
-      "instruction": "Mechanical post-check that 0.1 produced a paraflow-shape product charter (Z1 C1+A9+C6+A14). No LLM. Asserts 5 sections + 3-7 solutions each with full sub-shape (boundaries + guiding-principles required) + no placeholder text. Failure forces 0.1 to regenerate.",
-      "done_when": "verify_charter_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_charter_shape",
+          "payload": {
+            "action": "verify_charter_shape",
+            "charter_paths": [
+              "mission_{mission_id}/.charter/product_charter.md"
+            ],
+            "min_solutions": 3,
+            "max_solutions": 7,
+            "min_brand_keywords": 5
+          }
+        }
+      ]
     },
     {
       "id": "0.3",
@@ -1048,8 +1014,18 @@
       "produces": [
         "mission_{mission_id}/.intake/interview_script.md"
       ],
-      "post_hooks": [
-        "verify_interview_script_shape"
+      "checks": [
+        {
+          "kind": "verify_interview_script_shape",
+          "payload": {
+            "action": "verify_interview_script_shape",
+            "script_paths": [
+              "mission_{mission_id}/.intake/interview_script.md"
+            ],
+            "min_questions": 5,
+            "max_questions": 7
+          }
+        }
       ],
       "instruction": "Generate `mission_{mission_id}/.intake/interview_script.md` (Z1 A4) — a neutral, non-leading interview script targeting the 5-7 highest-`risk_if_wrong` assumptions from `assumption_list`. Use the product_charter (when present) to identify target personas.\n\nFormat the file EXACTLY:\n\n```\n---\n_schema_version: \"1\"\nmission_id: <id>\ntarget_assumptions: [A-001, A-002, ...]\ntarget_personas: [<persona names>]\nquestion_count: <5..7>\n---\n\n# Interview Script\n\n## Logistics\n- Length: 25-35 min\n- Format: 1:1 video; record with consent\n- Sample size minimum: 3 per persona\n\n## Questions\n\n### Q1 — <short topic for the assumption being probed>\n**Question:** <neutral wording — never leading, never suggesting an answer>\n**Probes:**\n- <follow-up>\n- <follow-up>\n**Looking for:** <what answer pattern would FALSIFY the assumption>\n\n### Q2 — ...\n```\n\nQuestion-writing rules:\n1. Never lead the witness — no \"don't you think...\", no \"wouldn't it be great if...\".\n2. Each question targets ONE assumption (cite the assumption_id in the topic).\n3. \"Looking for\" must describe the FALSIFYING answer pattern, not the confirming one — interview value is in disconfirmation.\n4. 5-7 questions total. More than 7 burns attention budget; fewer than 5 isn't a real script.\n\nThe `verify_interview_script_shape` post-hook will reject the file (and force this step to regenerate) if the front matter is malformed, the question count is out of range, or any question is missing Question/Probes/Looking-for fields.",
       "done_when": "interview_script.md exists with valid front matter, Logistics section, and 5-7 well-formed Q blocks. Verified by the verify_interview_script_shape post-hook.",
@@ -1203,46 +1179,20 @@
         }
       },
       "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "0.6a.verify",
-      "phase": "phase_0",
-      "name": "non_goals_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "0.6a.draft"
-      ],
-      "input_artifacts": [
-        "non_goals"
-      ],
-      "output_artifacts": [
-        "non_goals_shape_result"
-      ],
-      "payload": {
-        "action": "verify_non_goals_shape",
-        "non_goals_paths": [
-          "mission_{mission_id}/.charter/non_goals.md"
-        ],
-        "min_items": 3,
-        "max_items": 7
-      },
-      "instruction": "Mechanical verifier (Z1 A2): asserts non_goals.md has YAML frontmatter with _schema_version='1', a non_goals array (3-7), '# Non-goals' body heading, 3-7 body bullets, no placeholders.",
-      "done_when": "verify_non_goals_shape returns ok=true.",
-      "artifact_schema": {
-        "non_goals_shape_result": {
-          "type": "object",
-          "required_fields": [
-            "ok"
-          ],
-          "_schema_version": "1"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_non_goals_shape",
+          "payload": {
+            "action": "verify_non_goals_shape",
+            "non_goals_paths": [
+              "mission_{mission_id}/.charter/non_goals.md"
+            ],
+            "min_items": 3,
+            "max_items": 7
+          }
         }
-      },
-      "context": {},
-      "reversibility": "full"
+      ]
     },
     {
       "id": "0.6a",
@@ -1253,7 +1203,7 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "0.6a.verify"
+        "0.6a.draft"
       ],
       "may_need_clarification": true,
       "input_artifacts": [
@@ -1532,35 +1482,18 @@
       "context": {
         "estimated_output_tokens": 4000
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "1.4a.verify",
-      "phase": "phase_1",
-      "name": "competitive_positioning_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "1.4a"
-      ],
-      "input_artifacts": [
-        "competitive_positioning"
-      ],
-      "output_artifacts": [
-        "competitive_positioning_shape_result"
-      ],
-      "payload": {
-        "action": "verify_competitive_positioning_shape",
-        "positioning_paths": [
-          "mission_{mission_id}/.prd/competitive_positioning.md"
-        ]
-      },
-      "instruction": "Mechanical post-check that 1.4a produced a paraflow-PRD-§6-shape positioning doc (Z1 C2). No LLM. Asserts front matter (_schema_version=1, mission_id, named_competitors non-empty), six required sections present and non-empty, no placeholders. Failure forces 1.4a to regenerate.",
-      "done_when": "verify_competitive_positioning_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_competitive_positioning_shape",
+          "payload": {
+            "action": "verify_competitive_positioning_shape",
+            "positioning_paths": [
+              "mission_{mission_id}/.prd/competitive_positioning.md"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "1.5",
@@ -2710,43 +2643,6 @@
       "reversibility": "full"
     },
     {
-      "id": "3.1.verify",
-      "phase": "phase_3",
-      "name": "functional_requirements_falsification_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "3.1"
-      ],
-      "input_artifacts": [
-        "functional_requirements"
-      ],
-      "output_artifacts": [
-        "functional_requirements_falsification_result"
-      ],
-      "payload": {
-        "action": "verify_falsification_present",
-        "artifacts_from_blackboard": [
-          "functional_requirements"
-        ]
-      },
-      "instruction": "Mechanical verifier (Z1 P4): asserts every functional_requirement carries risk_if_wrong + validation_method + falsification_signal, and that risk_if_wrong=critical items name a measurable validation_method.",
-      "done_when": "verify_falsification_present returns ok=true.",
-      "artifact_schema": {
-        "functional_requirements_falsification_result": {
-          "type": "object",
-          "required_fields": [
-            "ok"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
       "id": "3.2",
       "phase": "phase_3",
       "name": "nfr_performance_and_scalability",
@@ -2789,45 +2685,6 @@
             "data_volume",
             "projections",
             "items"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "3.2.verify",
-      "phase": "phase_3",
-      "name": "nfr_perf_scale_falsification_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "3.2"
-      ],
-      "input_artifacts": [
-        "nfr_performance",
-        "nfr_scalability"
-      ],
-      "output_artifacts": [
-        "nfr_perf_scale_falsification_result"
-      ],
-      "payload": {
-        "action": "verify_falsification_present",
-        "artifacts_from_blackboard": [
-          "nfr_performance",
-          "nfr_scalability"
-        ]
-      },
-      "instruction": "Mechanical verifier (Z1 P4): asserts every NFR item under nfr_performance.items and nfr_scalability.items carries the falsification triple.",
-      "done_when": "verify_falsification_present returns ok=true.",
-      "artifact_schema": {
-        "nfr_perf_scale_falsification_result": {
-          "type": "object",
-          "required_fields": [
-            "ok"
           ],
           "_schema_version": "1"
         }
@@ -2880,45 +2737,6 @@
             "authorization",
             "data_protection",
             "items"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "3.3.verify",
-      "phase": "phase_3",
-      "name": "nfr_availability_security_falsification_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "3.3"
-      ],
-      "input_artifacts": [
-        "nfr_availability",
-        "security_requirements"
-      ],
-      "output_artifacts": [
-        "nfr_availability_security_falsification_result"
-      ],
-      "payload": {
-        "action": "verify_falsification_present",
-        "artifacts_from_blackboard": [
-          "nfr_availability",
-          "security_requirements"
-        ]
-      },
-      "instruction": "Mechanical verifier (Z1 P4): asserts every nfr_availability.items and security_requirements.items entry carries the falsification triple.",
-      "done_when": "verify_falsification_present returns ok=true.",
-      "artifact_schema": {
-        "nfr_availability_security_falsification_result": {
-          "type": "object",
-          "required_fields": [
-            "ok"
           ],
           "_schema_version": "1"
         }
@@ -3156,43 +2974,6 @@
             "risk_if_wrong",
             "validation_method",
             "falsification_signal"
-          ],
-          "_schema_version": "1"
-        }
-      },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "3.7.verify",
-      "phase": "phase_3",
-      "name": "business_rules_falsification_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "3.7"
-      ],
-      "input_artifacts": [
-        "business_rules"
-      ],
-      "output_artifacts": [
-        "business_rules_falsification_result"
-      ],
-      "payload": {
-        "action": "verify_falsification_present",
-        "artifacts_from_blackboard": [
-          "business_rules"
-        ]
-      },
-      "instruction": "Mechanical verifier (Z1 P4): asserts every business_rule carries risk_if_wrong + validation_method + falsification_signal, with measurable validation when risk_if_wrong=critical.",
-      "done_when": "verify_falsification_present returns ok=true.",
-      "artifact_schema": {
-        "business_rules_falsification_result": {
-          "type": "object",
-          "required_fields": [
-            "ok"
           ],
           "_schema_version": "1"
         }
@@ -3501,7 +3282,19 @@
         "mission_{mission_id}/.adr/architecture_pattern_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_shape",
+          "payload": {
+            "action": "verify_adr_shape",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/architecture_pattern_decision.json"
+            ],
+            "expected_schema_version": "1"
+          }
+        }
+      ]
     },
     {
       "id": "4.2",
@@ -3561,7 +3354,28 @@
         "mission_{mission_id}/.adr/tech_stack_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_shape",
+          "payload": {
+            "action": "verify_adr_shape",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/tech_stack_decision.json"
+            ],
+            "expected_schema_version": "1"
+          }
+        },
+        {
+          "kind": "verify_cost_curve_present",
+          "payload": {
+            "action": "verify_cost_curve_present",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/tech_stack_decision.json"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "4.3",
@@ -3664,7 +3478,28 @@
         "mission_{mission_id}/.adr/database_schema_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_shape",
+          "payload": {
+            "action": "verify_adr_shape",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/database_schema_decision.json"
+            ],
+            "expected_schema_version": "1"
+          }
+        },
+        {
+          "kind": "verify_cost_curve_present",
+          "payload": {
+            "action": "verify_cost_curve_present",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/database_schema_decision.json"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "4.5a",
@@ -3838,7 +3673,28 @@
         "mission_{mission_id}/.adr/auth_design_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_shape",
+          "payload": {
+            "action": "verify_adr_shape",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/auth_design_decision.json"
+            ],
+            "expected_schema_version": "1"
+          }
+        },
+        {
+          "kind": "verify_cost_curve_present",
+          "payload": {
+            "action": "verify_cost_curve_present",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/auth_design_decision.json"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "4.7",
@@ -3961,7 +3817,28 @@
         "mission_{mission_id}/.adr/third_party_selections_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_shape",
+          "payload": {
+            "action": "verify_adr_shape",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/third_party_selections_decision.json"
+            ],
+            "expected_schema_version": "1"
+          }
+        },
+        {
+          "kind": "verify_cost_curve_present",
+          "payload": {
+            "action": "verify_cost_curve_present",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/third_party_selections_decision.json"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "4.9",
@@ -4041,7 +3918,28 @@
         "mission_{mission_id}/.adr/infrastructure_designs_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_shape",
+          "payload": {
+            "action": "verify_adr_shape",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/infrastructure_designs_decision.json"
+            ],
+            "expected_schema_version": "1"
+          }
+        },
+        {
+          "kind": "verify_cost_curve_present",
+          "payload": {
+            "action": "verify_cost_curve_present",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/infrastructure_designs_decision.json"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "4.10",
@@ -4117,7 +4015,28 @@
         "mission_{mission_id}/.adr/communication_designs_decision.json",
         "mission_{mission_id}/.adr/register.md"
       ],
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_shape",
+          "payload": {
+            "action": "verify_adr_shape",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/communication_designs_decision.json"
+            ],
+            "expected_schema_version": "1"
+          }
+        },
+        {
+          "kind": "verify_cost_curve_present",
+          "payload": {
+            "action": "verify_cost_curve_present",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/communication_designs_decision.json"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "4.11",
@@ -4290,7 +4209,17 @@
       "produces": [
         "mission_{mission_id}/.adr/register.md"
       ],
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_register",
+          "payload": {
+            "action": "verify_adr_register",
+            "register_path": "mission_{mission_id}/.adr/register.md",
+            "adr_dir": "mission_{mission_id}/.adr"
+          }
+        }
+      ]
     },
     {
       "id": "4.15a1",
@@ -4533,27 +4462,16 @@
       "context": {
         "estimated_output_tokens": 3000
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "5.0.verify",
-      "phase": "phase_5",
-      "name": "taste_extraction_verify",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "5.0"
-      ],
-      "payload": {
-        "action": "verify_taste_emphasis_shape",
-        "path": ".style/taste_emphasis.json"
-      },
-      "instruction": "Mechanical shape verification of taste_emphasis.json (required fields, _schema_version, primary_content_type whitelist, 'other' implies populated secondary_emphasis).",
-      "done_when": "Verifier returns ok=true.",
-      "context": {},
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_taste_emphasis_shape",
+          "payload": {
+            "action": "verify_taste_emphasis_shape",
+            "path": ".style/taste_emphasis.json"
+          }
+        }
+      ]
     },
     {
       "id": "5.0.tag_signature",
@@ -4564,7 +4482,7 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "5.0.verify"
+        "5.0"
       ],
       "payload": {
         "action": "derive_token_tag_signature",
@@ -4586,7 +4504,7 @@
         "write_file"
       ],
       "depends_on": [
-        "5.0.verify"
+        "5.0"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -4615,27 +4533,16 @@
       "context": {
         "estimated_output_tokens": 6000
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "5.0a.verify",
-      "phase": "phase_5",
-      "name": "design_tokens_verify",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "5.0a"
-      ],
-      "payload": {
-        "action": "verify_design_tokens_shape",
-        "path": ".style/design_tokens.json"
-      },
-      "instruction": "Mechanical shape verification of design_tokens.json (light + dark present, all required token blocks, no placeholder hex, font_family non-empty, tag_signature present).",
-      "done_when": "Verifier returns ok=true.",
-      "context": {},
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_design_tokens_shape",
+          "payload": {
+            "action": "verify_design_tokens_shape",
+            "path": ".style/design_tokens.json"
+          }
+        }
+      ]
     },
     {
       "id": "5.0b",
@@ -4673,34 +4580,16 @@
         "persist_to": "mission_{mission_id}/.charter/surfaces.json"
       },
       "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "5.0b.verify",
-      "phase": "phase_5",
-      "name": "surfaces_verify",
-      "agent": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "5.0b"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "surfaces_config"
-      ],
-      "output_artifacts": [
-        "surfaces_verify_result"
-      ],
-      "instruction": "Mechanical verify of surfaces.json shape. Asserts non-empty surfaces array, valid surface tokens, primary_surface in list.",
-      "done_when": "surfaces_verify_result.ok == true",
-      "executor": "verify_surfaces_shape",
-      "payload": {
-        "action": "verify_surfaces_shape",
-        "path": ".charter/surfaces.json"
-      },
-      "context": {},
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_surfaces_shape",
+          "payload": {
+            "action": "verify_surfaces_shape",
+            "path": ".charter/surfaces.json"
+          }
+        }
+      ]
     },
     {
       "id": "5.0c",
@@ -4710,7 +4599,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "5.0b.verify"
+        "5.0b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -4738,34 +4627,16 @@
       "context": {
         "estimated_output_tokens": 4000
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "5.0c.verify",
-      "phase": "phase_5",
-      "name": "user_flow_verify",
-      "agent": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "5.0c"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "user_flow"
-      ],
-      "output_artifacts": [
-        "user_flow_verify_result"
-      ],
-      "instruction": "Mechanical verify of user_flow.md shape. Asserts YAML frontmatter and at least one ```mermaid block per declared surface.",
-      "done_when": "user_flow_verify_result.ok == true",
-      "executor": "verify_user_flow_shape",
-      "payload": {
-        "action": "verify_user_flow_shape",
-        "path": ".flow/user_flow.md"
-      },
-      "context": {},
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_user_flow_shape",
+          "payload": {
+            "action": "verify_user_flow_shape",
+            "path": ".flow/user_flow.md"
+          }
+        }
+      ]
     },
     {
       "id": "5.0d",
@@ -4775,7 +4646,7 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "5.0c.verify"
+        "5.0c"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -4812,66 +4683,27 @@
       "context": {
         "estimated_output_tokens": 6000
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "5.0d.verify",
-      "phase": "phase_5",
-      "name": "screen_inventory_and_shell_verify",
-      "agent": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "5.0d"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "screen_inventory",
-        "shared_shell"
-      ],
-      "output_artifacts": [
-        "screen_inventory_verify_result"
-      ],
-      "instruction": "Mechanical verify of screen_inventory.md (chunks math, every screen has route) AND shared_shell.md (header + empty + error + loading present).",
-      "done_when": "both verifies pass",
-      "executor": "verify_screen_inventory_shape",
-      "payload": {
-        "action": "verify_screen_inventory_shape",
-        "path": ".flow/screen_inventory.md",
-        "follow_up": {
-          "action": "verify_shared_shell_shape",
-          "path": ".flow/shared_shell.md"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_screen_inventory_shape",
+          "payload": {
+            "action": "verify_screen_inventory_shape",
+            "path": ".flow/screen_inventory.md",
+            "follow_up": {
+              "action": "verify_shared_shell_shape",
+              "path": ".flow/shared_shell.md"
+            }
+          }
+        },
+        {
+          "kind": "verify_shared_shell_shape",
+          "payload": {
+            "action": "verify_shared_shell_shape",
+            "path": ".flow/shared_shell.md"
+          }
         }
-      },
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "5.0d.verify_shell",
-      "phase": "phase_5",
-      "name": "shared_shell_verify",
-      "agent": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "5.0d"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "shared_shell"
-      ],
-      "output_artifacts": [
-        "shared_shell_verify_result"
-      ],
-      "instruction": "Mechanical verify of shared_shell.md shape (frontmatter + header/empty/error/loading sections present).",
-      "done_when": "shared_shell_verify_result.ok == true",
-      "executor": "verify_shared_shell_shape",
-      "payload": {
-        "action": "verify_shared_shell_shape",
-        "path": ".flow/shared_shell.md"
-      },
-      "context": {},
-      "reversibility": "full"
+      ]
     },
     {
       "id": "5.20a",
@@ -4918,25 +4750,15 @@
       "produces": [
         "mission_{mission_id}/.screens/"
       ],
-      "reversibility": "full"
-    },
-    {
-      "id": "5.20a.verify_shape",
-      "phase": "phase_5",
-      "name": "verify_screen_plan_shape_chunk_a",
-      "agent": "mechanical",
-      "depends_on": [
-        "5.20a"
-      ],
-      "executor": "verify_screen_plan_shape",
-      "payload": {
-        "action": "verify_screen_plan_shape"
-      },
-      "context": {
-        "estimated_output_tokens": 0
-      },
-      "instruction": "Mechanical sibling — assert paraflow shape on every plan produced by 5.20a. Caller wires `plan_paths` from the 5.20a artifact's `plans[].path` list.",
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_screen_plan_shape",
+          "payload": {
+            "action": "verify_screen_plan_shape"
+          }
+        }
+      ]
     },
     {
       "id": "5.20b",
@@ -4982,25 +4804,15 @@
       "produces": [
         "mission_{mission_id}/.screens/"
       ],
-      "reversibility": "full"
-    },
-    {
-      "id": "5.20b.verify_shape",
-      "phase": "phase_5",
-      "name": "verify_screen_plan_shape_chunk_b",
-      "agent": "mechanical",
-      "depends_on": [
-        "5.20b"
-      ],
-      "executor": "verify_screen_plan_shape",
-      "payload": {
-        "action": "verify_screen_plan_shape"
-      },
-      "context": {
-        "estimated_output_tokens": 0
-      },
-      "instruction": "Mechanical sibling — assert paraflow shape on every plan produced by 5.20b.",
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_screen_plan_shape",
+          "payload": {
+            "action": "verify_screen_plan_shape"
+          }
+        }
+      ]
     },
     {
       "id": "5.20.verify_consistency",
@@ -5008,8 +4820,8 @@
       "name": "verify_screen_plan_consistency",
       "agent": "mechanical",
       "depends_on": [
-        "5.20a.verify_shape",
-        "5.20b.verify_shape"
+        "5.20a",
+        "5.20b"
       ],
       "executor": "verify_screen_consistency",
       "payload": {
@@ -5063,25 +4875,15 @@
       "produces": [
         "mission_{mission_id}/.web/"
       ],
-      "reversibility": "full"
-    },
-    {
-      "id": "5.30a.verify_shape",
-      "phase": "phase_5",
-      "name": "verify_html_prototype_shape_chunk_a",
-      "agent": "mechanical",
-      "depends_on": [
-        "5.30a"
-      ],
-      "executor": "verify_html_prototype_shape",
-      "payload": {
-        "action": "verify_html_prototype_shape"
-      },
-      "context": {
-        "estimated_output_tokens": 0
-      },
-      "instruction": "Mechanical sibling — assert paraflow shape on every HTML produced by 5.30a. Caller wires `html_paths` and `design_tokens` (parsed JSON) from the artifact store.",
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_html_prototype_shape",
+          "payload": {
+            "action": "verify_html_prototype_shape"
+          }
+        }
+      ]
     },
     {
       "id": "5.30b",
@@ -5127,25 +4929,15 @@
       "produces": [
         "mission_{mission_id}/.web/"
       ],
-      "reversibility": "full"
-    },
-    {
-      "id": "5.30b.verify_shape",
-      "phase": "phase_5",
-      "name": "verify_html_prototype_shape_chunk_b",
-      "agent": "mechanical",
-      "depends_on": [
-        "5.30b"
-      ],
-      "executor": "verify_html_prototype_shape",
-      "payload": {
-        "action": "verify_html_prototype_shape"
-      },
-      "context": {
-        "estimated_output_tokens": 0
-      },
-      "instruction": "Mechanical sibling — assert paraflow shape on every HTML produced by 5.30b.",
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_html_prototype_shape",
+          "payload": {
+            "action": "verify_html_prototype_shape"
+          }
+        }
+      ]
     },
     {
       "id": "5.30c",
@@ -5153,8 +4945,8 @@
       "name": "annotate_html_oids",
       "agent": "mechanical",
       "depends_on": [
-        "5.30a.verify_shape",
-        "5.30b.verify_shape"
+        "5.30a",
+        "5.30b"
       ],
       "executor": "annotate_html_oids",
       "payload": {
@@ -5566,25 +5358,15 @@
           "_schema_version": "1"
         }
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "6.5z.verify_shape",
-      "phase": "phase_6",
-      "name": "verify_premortem_shape",
-      "agent": "mechanical",
-      "depends_on": [
-        "6.5z"
-      ],
-      "executor": "verify_premortem_shape",
-      "payload": {
-        "action": "verify_premortem_shape"
-      },
-      "context": {
-        "estimated_output_tokens": 0
-      },
-      "instruction": "Mechanical post-hook on 6.5z. Caller wires `premortem_path` (default `mission_{mission_id}/premortem.md`) or `premortem_text`. Asserts the JSON envelope: _schema_version=='1', scenarios>=3, kinds {technical, market, founder} each present, plausibility ∈ [1,5], obituary + cause non-empty.",
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_premortem_shape",
+          "payload": {
+            "action": "verify_premortem_shape"
+          }
+        }
+      ]
     },
     {
       "id": "6.6",
@@ -11375,435 +11157,19 @@
       "context": {
         "estimated_output_tokens": 4000
       },
-      "reversibility": "full"
-    },
-    {
-      "id": "4.1.verify",
-      "phase": "phase_4",
-      "name": "architecture_pattern_decision_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.1"
-      ],
-      "input_artifacts": [
-        "architecture_pattern_decision"
-      ],
-      "output_artifacts": [
-        "architecture_pattern_decision_shape_result"
-      ],
-      "payload": {
-        "action": "verify_adr_shape",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/architecture_pattern_decision.json"
-        ],
-        "expected_schema_version": "1"
-      },
-      "instruction": "Mechanical post-check for step 4.1 (architecture_pattern): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
-      "done_when": "verify_adr_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.2.verify",
-      "phase": "phase_4",
-      "name": "tech_stack_decision_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.2"
-      ],
-      "input_artifacts": [
-        "tech_stack_decision"
-      ],
-      "output_artifacts": [
-        "tech_stack_decision_shape_result"
-      ],
-      "payload": {
-        "action": "verify_adr_shape",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/tech_stack_decision.json"
-        ],
-        "expected_schema_version": "1"
-      },
-      "instruction": "Mechanical post-check for step 4.2 (tech_stack): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
-      "done_when": "verify_adr_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.2.verify_cost_curve",
-      "phase": "phase_4",
-      "name": "tech_stack_decision_cost_curve_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.2.verify"
-      ],
-      "input_artifacts": [
-        "tech_stack_decision"
-      ],
-      "output_artifacts": [
-        "tech_stack_decision_cost_curve_result"
-      ],
-      "payload": {
-        "action": "verify_cost_curve_present",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/tech_stack_decision.json"
-        ]
-      },
-      "instruction": "Mechanical post-check (A8) for stack step 4.2: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
-      "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.4.verify",
-      "phase": "phase_4",
-      "name": "database_schema_decision_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.4"
-      ],
-      "input_artifacts": [
-        "database_schema_decision"
-      ],
-      "output_artifacts": [
-        "database_schema_decision_shape_result"
-      ],
-      "payload": {
-        "action": "verify_adr_shape",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/database_schema_decision.json"
-        ],
-        "expected_schema_version": "1"
-      },
-      "instruction": "Mechanical post-check for step 4.4 (database): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
-      "done_when": "verify_adr_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.4.verify_cost_curve",
-      "phase": "phase_4",
-      "name": "database_schema_decision_cost_curve_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.4.verify"
-      ],
-      "input_artifacts": [
-        "database_schema_decision"
-      ],
-      "output_artifacts": [
-        "database_schema_decision_cost_curve_result"
-      ],
-      "payload": {
-        "action": "verify_cost_curve_present",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/database_schema_decision.json"
-        ]
-      },
-      "instruction": "Mechanical post-check (A8) for stack step 4.4: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
-      "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.6.verify",
-      "phase": "phase_4",
-      "name": "auth_design_decision_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.6"
-      ],
-      "input_artifacts": [
-        "auth_design_decision"
-      ],
-      "output_artifacts": [
-        "auth_design_decision_shape_result"
-      ],
-      "payload": {
-        "action": "verify_adr_shape",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/auth_design_decision.json"
-        ],
-        "expected_schema_version": "1"
-      },
-      "instruction": "Mechanical post-check for step 4.6 (auth): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
-      "done_when": "verify_adr_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.6.verify_cost_curve",
-      "phase": "phase_4",
-      "name": "auth_design_decision_cost_curve_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.6.verify"
-      ],
-      "input_artifacts": [
-        "auth_design_decision"
-      ],
-      "output_artifacts": [
-        "auth_design_decision_cost_curve_result"
-      ],
-      "payload": {
-        "action": "verify_cost_curve_present",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/auth_design_decision.json"
-        ]
-      },
-      "instruction": "Mechanical post-check (A8) for stack step 4.6: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
-      "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.8.verify",
-      "phase": "phase_4",
-      "name": "third_party_selections_decision_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.8"
-      ],
-      "input_artifacts": [
-        "third_party_selections_decision"
-      ],
-      "output_artifacts": [
-        "third_party_selections_decision_shape_result"
-      ],
-      "payload": {
-        "action": "verify_adr_shape",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/third_party_selections_decision.json"
-        ],
-        "expected_schema_version": "1"
-      },
-      "instruction": "Mechanical post-check for step 4.8 (third_party_services): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
-      "done_when": "verify_adr_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.8.verify_cost_curve",
-      "phase": "phase_4",
-      "name": "third_party_selections_decision_cost_curve_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.8.verify"
-      ],
-      "input_artifacts": [
-        "third_party_selections_decision"
-      ],
-      "output_artifacts": [
-        "third_party_selections_decision_cost_curve_result"
-      ],
-      "payload": {
-        "action": "verify_cost_curve_present",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/third_party_selections_decision.json"
-        ]
-      },
-      "instruction": "Mechanical post-check (A8) for stack step 4.8: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
-      "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.9.verify",
-      "phase": "phase_4",
-      "name": "infrastructure_designs_decision_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.9"
-      ],
-      "input_artifacts": [
-        "infrastructure_designs_decision"
-      ],
-      "output_artifacts": [
-        "infrastructure_designs_decision_shape_result"
-      ],
-      "payload": {
-        "action": "verify_adr_shape",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/infrastructure_designs_decision.json"
-        ],
-        "expected_schema_version": "1"
-      },
-      "instruction": "Mechanical post-check for step 4.9 (infrastructure): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
-      "done_when": "verify_adr_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.9.verify_cost_curve",
-      "phase": "phase_4",
-      "name": "infrastructure_designs_decision_cost_curve_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.9.verify"
-      ],
-      "input_artifacts": [
-        "infrastructure_designs_decision"
-      ],
-      "output_artifacts": [
-        "infrastructure_designs_decision_cost_curve_result"
-      ],
-      "payload": {
-        "action": "verify_cost_curve_present",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/infrastructure_designs_decision.json"
-        ]
-      },
-      "instruction": "Mechanical post-check (A8) for stack step 4.9: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
-      "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.10.verify",
-      "phase": "phase_4",
-      "name": "communication_designs_decision_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.10"
-      ],
-      "input_artifacts": [
-        "communication_designs_decision"
-      ],
-      "output_artifacts": [
-        "communication_designs_decision_shape_result"
-      ],
-      "payload": {
-        "action": "verify_adr_shape",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/communication_designs_decision.json"
-        ],
-        "expected_schema_version": "1"
-      },
-      "instruction": "Mechanical post-check for step 4.10 (communication): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
-      "done_when": "verify_adr_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.10.verify_cost_curve",
-      "phase": "phase_4",
-      "name": "communication_designs_decision_cost_curve_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.10.verify"
-      ],
-      "input_artifacts": [
-        "communication_designs_decision"
-      ],
-      "output_artifacts": [
-        "communication_designs_decision_cost_curve_result"
-      ],
-      "payload": {
-        "action": "verify_cost_curve_present",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/communication_designs_decision.json"
-        ]
-      },
-      "instruction": "Mechanical post-check (A8) for stack step 4.10: every option in the ADR has a populated monthly_cost_curve and the ADR carries cost_at_target_users_usd + cost_mitigation_plan.",
-      "done_when": "verify_cost_curve_present returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.2a.verify",
-      "phase": "phase_4",
-      "name": "component_library_decision_shape_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.2a"
-      ],
-      "input_artifacts": [
-        "component_library_decision"
-      ],
-      "output_artifacts": [
-        "component_library_decision_shape_result"
-      ],
-      "payload": {
-        "action": "verify_adr_shape",
-        "adr_paths": [
-          "mission_{mission_id}/.adr/component_library_decision.json"
-        ],
-        "expected_schema_version": "1"
-      },
-      "instruction": "Mechanical post-check for step 4.2a (component_library): asserts the universal-shape ADR fields (P3) are present + well-formed. Failure forces the LLM step to regenerate.",
-      "done_when": "verify_adr_shape returns ok=true.",
-      "context": {},
-      "reversibility": "full"
-    },
-    {
-      "id": "4.14.verify_register",
-      "phase": "phase_4",
-      "name": "adr_register_consistency_check",
-      "agent": "mechanical",
-      "executor": "mechanical",
-      "difficulty": "easy",
-      "tools_hint": [],
-      "depends_on": [
-        "4.14"
-      ],
-      "input_artifacts": [
-        "adrs",
-        "adr_register"
-      ],
-      "output_artifacts": [
-        "adr_register_consistency_result"
-      ],
-      "payload": {
-        "action": "verify_adr_register",
-        "register_path": "mission_{mission_id}/.adr/register.md",
-        "adr_dir": "mission_{mission_id}/.adr"
-      },
-      "instruction": "Mechanical post-check (P3): every ADR id in register.md resolves to a JSON file under mission_{mission_id}/.adr/, and there are no orphan ADR JSONs. Failure forces 4.14 to regenerate the register.",
-      "done_when": "verify_adr_register returns ok=true.",
-      "context": {},
-      "reversibility": "full"
+      "reversibility": "full",
+      "checks": [
+        {
+          "kind": "verify_adr_shape",
+          "payload": {
+            "action": "verify_adr_shape",
+            "adr_paths": [
+              "mission_{mission_id}/.adr/component_library_decision.json"
+            ],
+            "expected_schema_version": "1"
+          }
+        }
+      ]
     }
   ],
   "templates": [

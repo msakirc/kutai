@@ -222,6 +222,20 @@ def _dial_get(ctx, key: str, default):
     return default if val is None else val
 
 
+def _shape_check_spec(name: str, desc: str) -> "PostHookSpec":
+    """A blocker PostHookSpec for a parameterized mechanical `checks` verb.
+
+    Kind == verb (the mr_roboto action name). No auto-wire triggers — checks
+    are declared explicitly on the producer via the `checks` field, never
+    glob-matched. apply._CHECK_KINDS picks these up by the ``verify_*`` name
+    convention; the producer-supplied payload drives the actual check.
+    """
+    return PostHookSpec(
+        kind=name, verb=name, default_severity="blocker",
+        auto_wire_triggers=[], description=desc,
+    )
+
+
 POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     "verify_artifacts": PostHookSpec(
         kind="verify_artifacts",
@@ -463,27 +477,60 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
             "risk_if_wrong / validation_method / falsification_signal."
         ),
     ),
-    # Mechanical SHAPE-CHECK verbs — converted from standalone `.verify`
+    # Parameterized mechanical CHECK verbs — converted from standalone `.verify`
     # workflow steps that dead-ended (a failed standalone verify only blocked
     # its dependents and waited for a human; the producer stayed `completed`
-    # and was never re-run). As producer post-hooks they route through the
-    # same rail as grounding / verify_artifacts: a failed shape check re-pends
-    # the producer with feedback via _apply_simple_blocker_verdict. Each verb
-    # is its own named kind (distinct DLQ text + telemetry, like grounding vs
-    # verify_artifacts); the apply layer shares ONE generic payload builder
-    # (_SHAPE_CHECK_SPECS) + ONE verdict branch (_SHAPE_CHECK_KINDS). Add a
-    # verb here + a payload row in apply._SHAPE_CHECK_SPECS to convert it.
-    "verify_interview_script_shape": PostHookSpec(
-        kind="verify_interview_script_shape",
-        verb="verify_interview_script_shape",
-        default_severity="blocker",
-        auto_wire_triggers=[],
-        description=(
-            "Z1 A4 — assert the producer emitted a well-formed interview "
-            "script (front matter, Logistics, 5-7 Q blocks each with "
-            "Question/Probes/Looking-for). Fail re-pends the producer."
-        ),
+    # and was never re-run). Declared on the producer via the SEPARATE `checks`
+    # field (NOT `post_hooks`, which stays a pure list[str]) so each carries its
+    # own payload (which file + bounds). They route through the same rail as
+    # grounding / verify_artifacts: a failed check re-pends the producer with
+    # feedback via _apply_simple_blocker_verdict. apply._CHECK_KINDS is derived
+    # from these rows by the ``verify_*`` name convention; the apply layer
+    # shares ONE payload builder (reads checks[].payload verbatim) + ONE verdict
+    # branch. Convert a verb = register a row here + move the standalone step's
+    # payload into the producer's `checks`. No handler code.
+    #
+    # NOTE: verify_falsification_present is intentionally NOT in this group —
+    # it predates `checks`, routes through the Z1 blocker path, and is already
+    # wired as a `post_hooks` entry on steps 3.1/3.2/3.3/3.7. _derive_check_kinds
+    # excludes it explicitly.
+    "verify_interview_script_shape": _shape_check_spec(
+        "verify_interview_script_shape",
+        "Z1 A4 — well-formed interview script (front matter, Logistics, 5-7 Q "
+        "blocks with Question/Probes/Looking-for).",
     ),
+    "verify_reverse_pitch_shape": _shape_check_spec(
+        "verify_reverse_pitch_shape", "Reverse-pitch doc shape."),
+    "verify_charter_shape": _shape_check_spec(
+        "verify_charter_shape", "Product-charter doc shape (solutions, brand keywords)."),
+    "verify_non_goals_shape": _shape_check_spec(
+        "verify_non_goals_shape", "Non-goals doc shape (item count bounds)."),
+    "verify_competitive_positioning_shape": _shape_check_spec(
+        "verify_competitive_positioning_shape", "Competitive-positioning doc shape."),
+    "verify_taste_emphasis_shape": _shape_check_spec(
+        "verify_taste_emphasis_shape", "taste_emphasis.json shape."),
+    "verify_design_tokens_shape": _shape_check_spec(
+        "verify_design_tokens_shape", "design_tokens.json shape."),
+    "verify_surfaces_shape": _shape_check_spec(
+        "verify_surfaces_shape", "surfaces.json shape."),
+    "verify_user_flow_shape": _shape_check_spec(
+        "verify_user_flow_shape", "user_flow.md shape."),
+    "verify_screen_inventory_shape": _shape_check_spec(
+        "verify_screen_inventory_shape", "screen_inventory.md shape (+ optional follow_up)."),
+    "verify_shared_shell_shape": _shape_check_spec(
+        "verify_shared_shell_shape", "shared_shell.md shape."),
+    "verify_screen_plan_shape": _shape_check_spec(
+        "verify_screen_plan_shape", "Per-screen plan shape."),
+    "verify_html_prototype_shape": _shape_check_spec(
+        "verify_html_prototype_shape", "HTML prototype shape."),
+    "verify_premortem_shape": _shape_check_spec(
+        "verify_premortem_shape", "Premortem doc shape."),
+    "verify_adr_shape": _shape_check_spec(
+        "verify_adr_shape", "ADR decision JSON shape (+ schema version)."),
+    "verify_cost_curve_present": _shape_check_spec(
+        "verify_cost_curve_present", "ADR carries a cost-curve section."),
+    "verify_adr_register": _shape_check_spec(
+        "verify_adr_register", "ADR register.md is consistent with the .adr dir."),
     # Z1 T5C (B4) — standalone critic-gate post-hook. Inline critic-gate
     # already fires inside git_commit + notify_user; this slot lets a
     # workflow step declare `post_hooks: ["critic_gate"]` to bolt the gate
@@ -1049,5 +1096,20 @@ def determine_posthooks(
             if not isinstance(k, str) or not k.strip():
                 continue
             if k in POST_HOOK_REGISTRY and k not in kinds:
+                kinds.append(k)
+
+    # Separate pot — `checks`: parameterized mechanical verifiers that carry
+    # their own payload (converted standalone `.verify` steps). Each entry is
+    # ``{"kind": ..., "payload": {...}}``; the kind enters the pending list
+    # exactly like an explicit post_hook (payload is read later by the apply
+    # layer from ``checks``). Kept separate from `post_hooks` so that field
+    # stays a pure list[str] — no str|dict union.
+    checks = task_ctx.get("checks") or []
+    if isinstance(checks, list):
+        for entry in checks:
+            if not isinstance(entry, dict):
+                continue
+            k = entry.get("kind")
+            if isinstance(k, str) and k in POST_HOOK_REGISTRY and k not in kinds:
                 kinds.append(k)
     return kinds

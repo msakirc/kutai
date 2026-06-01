@@ -389,6 +389,19 @@ def expand_steps_to_tasks(
         if post_hooks and isinstance(post_hooks, list):
             context["post_hooks"] = [k for k in post_hooks if isinstance(k, str) and k.strip()]
 
+        # `checks` — the separate pot for parameterized mechanical verifiers
+        # (converted standalone `.verify` steps). Each entry is
+        # ``{"kind": <registered verb>, "payload": {...}}``. Kept distinct from
+        # `post_hooks` (pure list[str]) so neither field carries a union type.
+        # determine_posthooks adds each kind to the pending list; the apply
+        # layer reads the matching payload from this field verbatim.
+        checks = step.get("checks")
+        if checks and isinstance(checks, list):
+            context["checks"] = [
+                c for c in checks
+                if isinstance(c, dict) and isinstance(c.get("kind"), str)
+            ]
+
         # Auto-wire post-hooks from registry (T1B).
         # For each registered kind whose auto_wire_triggers are non-empty,
         # prepend that kind when any trigger glob matches any produces entry.

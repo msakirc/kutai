@@ -48,11 +48,18 @@ def test_determine_posthooks_accepts_kind_from_ctx():
 
 # ── payload builder (generic, from producer inputs) ──────────────────────
 
-def test_payload_built_from_producer_produces():
+def test_payload_built_from_checks_field():
     a = RequestPostHook(source_task_id=5, kind=KIND, source_ctx={})
     source_ctx = {
-        "produces": ["mission_5/.intake/interview_script.md"],
-        "payload": {"min_questions": 5, "max_questions": 7},
+        "checks": [{
+            "kind": KIND,
+            "payload": {
+                "action": KIND,
+                "script_paths": ["mission_5/.intake/interview_script.md"],
+                "min_questions": 5,
+                "max_questions": 7,
+            },
+        }],
     }
     agent, spec = _posthook_agent_and_payload(a, {"id": 5}, source_ctx)
     assert agent == "mechanical"

@@ -410,6 +410,44 @@ class TestPendingActionTimeout:
         )
 
 
+# ─── 4b. /cancel aborts pending conversational flow ───────────────────────────
+
+class TestCancelAbortsPendingAction:
+    """`/cancel` (no args) must abort an in-progress flow, not print usage.
+
+    The inline-artifact-edit prompt tells the user to "Send /cancel to abort".
+    `/cancel` is a registered CommandHandler, so it reaches cmd_cancel — never
+    handle_message — and must honour the pending action itself.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cancel_aborts_inline_edit(self):
+        bot = _make_bot()
+        chat_id = 60
+        bot._pending_action[chat_id] = {
+            "kind": "artifact_edit_inline",
+            "mission_id": 1,
+            "task_id": 2,
+            "ts": time.time(),
+        }
+        update = _make_update(chat_id=chat_id, text="/cancel")
+        ctx = _make_context()  # no args
+        await bot.cmd_cancel(update, ctx)
+        assert chat_id not in bot._pending_action, "Inline edit must be cleared"
+        sent = update.message.reply_text.await_args[0][0]
+        assert "cancel" in sent.lower(), f"Expected an abort confirmation, got: {sent}"
+
+    @pytest.mark.asyncio
+    async def test_cancel_no_args_no_pending_shows_usage(self):
+        bot = _make_bot()
+        chat_id = 61
+        update = _make_update(chat_id=chat_id, text="/cancel")
+        ctx = _make_context()  # no args, no pending action
+        await bot.cmd_cancel(update, ctx)
+        sent = update.message.reply_text.await_args[0][0]
+        assert "Usage:" in sent, f"Expected usage hint, got: {sent}"
+
+
 # ─── 5. Workflow Selection Flow Tests ─────────────────────────────────────────
 
 class TestWorkflowSelectionFlow:

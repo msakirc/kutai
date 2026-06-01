@@ -3163,6 +3163,17 @@ class TelegramInterface:
     async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel a task or mission and its children."""
         if not context.args:
+            # `/cancel` (no args) is the documented abort verb for in-progress
+            # conversational flows (e.g. inline artifact edit). Those flows live
+            # in handle_message, but the CommandHandler intercepts `/cancel`
+            # before it ever reaches there — so honour the pending action here.
+            chat_id = update.message.chat_id
+            pending = self._pending_action.pop(chat_id, None)
+            if pending:
+                kind = pending.get("kind") or pending.get("command") or ""
+                msg = "Edit cancelled." if kind == "artifact_edit_inline" else "Cancelled."
+                await self._reply(update, msg)
+                return
             await self._reply(update,
                 "Usage: /cancel <task_id or mission_id>\n"
                 "Cancels a task (and children) or an entire mission."

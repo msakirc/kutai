@@ -2012,7 +2012,7 @@
       "output_artifacts": [
         "go_no_go_decision"
       ],
-      "instruction": "Evaluate all research to produce a Go/No-Go recommendation. Score 1-10: market_attractiveness, competitive_feasibility, technical_feasibility, differentiation_potential, regulatory_risk. Compute weighted_score. Wire indirect_competitors_list into the feasibility assessment. If score > 6: Go. If 4-6: Conditional â€” trigger needs_clarification. If < 4: No-Go.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nZ1 P5 — If `prior_art_report.verdict == 'graveyard_well_populated'`, weight the kill-decision higher; surface `prior_art_report.key_lessons` as additional risks in your reasoning and cite at least one lesson_id explicitly.",
+      "instruction": "Evaluate all research to produce a Go/No-Go recommendation. Emit `scores` as a flat JSON object with exactly these five integer (1-10) keys — downstream steps read `go_no_go_decision.scores.<dimension>` by name, so use them verbatim: market_attractiveness, competitive_feasibility, technical_feasibility, differentiation_potential, regulatory_risk. Compute weighted_score. Wire indirect_competitors_list into the feasibility assessment. If score > 6: Go. If 4-6: Conditional â€” trigger needs_clarification. If < 4: No-Go.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nZ1 P5 — If `prior_art_report.verdict == 'graveyard_well_populated'`, weight the kill-decision higher; surface `prior_art_report.key_lessons` as additional risks in your reasoning and cite at least one lesson_id explicitly.",
       "done_when": "go_no_go_decision exists with scored assessment and clear recommendation.",
       "artifact_schema": {
         "go_no_go_decision": {
@@ -2061,7 +2061,7 @@
         "product_vision",
         "product_mission"
       ],
-      "instruction": "Craft a product vision statement: 'For [target audience] who [need], [product name] is a [category] that [key benefit]. Unlike [competitors], we [key differentiator].' Also write a tagline under 10 words. Then craft a product mission statement: 'We help [specific audience] [achieve specific outcome] by [how the product does it].' Under 30 words. Self-review for alignment with go_no_go_decision and market_research_report.\n\nZ1 P5 — Prior art report's `key_lessons` are positioning constraints — explicitly reference at least one lesson_id in the positioning rationale (justify how this product's differentiator avoids the cited failure mode).",
+      "instruction": "Craft a product vision statement: 'For [target audience] who [need], [product name] is a [category] that [key benefit]. Unlike [competitors], we [key differentiator].' Also write a tagline under 10 words. Then craft a product mission statement: 'We help [specific audience] [achieve specific outcome] by [how the product does it].' Under 30 words.\n\nWEAKNESS-DRIVEN POSITIONING — read `go_no_go_decision.scores`. For EVERY dimension scoring < 5, the positioning MUST directly counter that weakness, and the rationale MUST name the dimension and how it is answered: low `differentiation_potential` → lead the 'Unlike [competitors], we [differentiator]' clause with the single strongest differentiator; low `market_attractiveness` → narrow [target audience] to the highest-intent segment rather than a broad market; low `competitive_feasibility` → frame the wedge/beachhead you can actually win first; high `regulatory_risk` (>= 7) → surface the compliance/trust stance as an explicit positioning pillar. If no dimension scored < 5, state that and align with go_no_go_decision + market_research_report as before.\n\nZ1 P5 — Prior art report's `key_lessons` are positioning constraints — explicitly reference at least one lesson_id in the positioning rationale (justify how this product's differentiator avoids the cited failure mode).",
       "done_when": "product_vision and product_mission exist with vision statement, tagline, and mission.",
       "artifact_schema": {
         "product_vision": {
@@ -3395,7 +3395,8 @@
       "input_artifacts": [
         "tech_stack_decision",
         "architecture_pattern_decision",
-        "requirements_spec"
+        "requirements_spec",
+        "go_no_go_decision"
       ],
       "output_artifacts": [
         "system_architecture"
@@ -3403,7 +3404,7 @@
       "context": {
         "estimated_output_tokens": 12000
       },
-      "instruction": "Design the high-level system architecture.\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys (emit in this order):\n\n{\n  \"components\": [ {\"name\": \"...\", \"role\": \"...\", \"tech\": \"...\", \"interfaces\": [\"...\"]} ],\n  \"databases\": [ {\"name\": \"...\", \"engine\": \"...\", \"purpose\": \"...\"} ],\n  \"external_services\": [ {\"name\": \"...\", \"purpose\": \"...\"} ],\n  \"communication_patterns\": [ {\"from\": \"...\", \"to\": \"...\", \"protocol\": \"REST|gRPC|WS|Queue|Webhook\", \"sync_or_async\": \"sync|async\"} ],\n  \"data_flow\": [ {\"flow_id\": \"...\", \"description\": \"...\"} ],\n  \"network_topology\": \"<short paragraph>\",\n  \"environments\": [ {\"name\": \"dev|staging|prod\", \"notes\": \"...\"} ]\n}\n\nDo NOT emit prose code-style file lists. Cap each array at 12 entries. Total output under 8000 tokens.",
+      "instruction": "Design the high-level system architecture.\n\nDE-RISK FROM ASSESSMENT — read `go_no_go_decision.scores`: if `technical_feasibility` scored < 5, the architecture MUST explicitly de-risk the hardest component (isolate it, name a fallback, or stage it behind a spike); if `regulatory_risk` scored >= 7, bake the relevant control in early (data residency, encryption, audit trail, consent) rather than deferring it. Note in `network_topology` or a component `role` how each such concern is addressed.\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys (emit in this order):\n\n{\n  \"components\": [ {\"name\": \"...\", \"role\": \"...\", \"tech\": \"...\", \"interfaces\": [\"...\"]} ],\n  \"databases\": [ {\"name\": \"...\", \"engine\": \"...\", \"purpose\": \"...\"} ],\n  \"external_services\": [ {\"name\": \"...\", \"purpose\": \"...\"} ],\n  \"communication_patterns\": [ {\"from\": \"...\", \"to\": \"...\", \"protocol\": \"REST|gRPC|WS|Queue|Webhook\", \"sync_or_async\": \"sync|async\"} ],\n  \"data_flow\": [ {\"flow_id\": \"...\", \"description\": \"...\"} ],\n  \"network_topology\": \"<short paragraph>\",\n  \"environments\": [ {\"name\": \"dev|staging|prod\", \"notes\": \"...\"} ]\n}\n\nDo NOT emit prose code-style file lists. Cap each array at 12 entries. Total output under 8000 tokens.",
       "done_when": "system_architecture is a JSON object with `components`, `databases`, `communication_patterns`, `environments` keys populated.",
       "artifact_schema": {
         "system_architecture": {
@@ -5128,12 +5129,13 @@
         "effort_estimates",
         "technical_design_document_summary",
         "third_party_selections",
-        "dependency_graph"
+        "dependency_graph",
+        "go_no_go_decision"
       ],
       "output_artifacts": [
         "risk_assessment"
       ],
-      "instruction": "Identify risks across: technical, integration, scope, dependency, security, operational. Each with: risk_id, description, category, likelihood, impact, risk_score, early_warning_signs, mitigation_strategy, contingency_plan.",
+      "instruction": "Identify risks across: technical, integration, scope, dependency, security, operational. Each with: risk_id, description, category, likelihood, impact, risk_score, early_warning_signs, mitigation_strategy, contingency_plan.\n\nSEED FROM ASSESSMENT — read `go_no_go_decision`: every dimension in `scores` that scored < 5 (and `regulatory_risk` >= 7) MUST appear as at least one risk with a concrete mitigation and contingency — these are the founder-acknowledged weak spots, not optional. Carry forward any kill-lessons surfaced in the go/no-go reasoning.",
       "done_when": "risk_assessment exists with all risks scored, with mitigation and contingency plans.",
       "artifact_schema": {
         "risk_assessment": {

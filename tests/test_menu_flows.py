@@ -65,6 +65,30 @@ def _make_context():
     return ctx
 
 
+@pytest.fixture(autouse=True)
+def _isolate_live_io(tmp_path, monkeypatch):
+    """Safety net: this file builds fake Updates and calls REAL bot methods.
+
+    If any handler falls through to the real classify→enqueue path (as the
+    ``_classify_and_route`` wrong-stub-name bug once did — it let
+    ``handle_message`` reach the real ``_classify_user_message`` →
+    ``general_beckman.enqueue``), it MUST NOT write to the live ``kutai.db``.
+    On 2026-06-01 that leak injected a phantom "kahve makinesi" task #259658
+    into prod and pinged the user mid-mission. Repoint ``DB_PATH`` at a temp
+    file and neuter ``enqueue`` so this file can never touch prod again.
+    """
+    import src.infra.db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "menu_flows_test.db"))
+    monkeypatch.setattr(_db_mod, "_db_connection", None)
+    try:
+        import general_beckman
+        monkeypatch.setattr(
+            general_beckman, "enqueue", AsyncMock(return_value=None),
+        )
+    except Exception:  # noqa: BLE001 — guard is best-effort
+        pass
+
+
 # ─── 1. Keyboard Integrity Tests ──────────────────────────────────────────────
 
 class TestKeyboardIntegrity:
@@ -385,10 +409,14 @@ class TestPendingActionTimeout:
             shop_called["called"] = True
         bot.cmd_shop = fake_shop
 
-        # Patch classifier so it doesn't blow up
-        bot._classify_and_route = AsyncMock()
+        # Stub the REAL classifier entry point. handle_message calls
+        # `_classify_user_message` (NOT `_classify_and_route` — that name
+        # never existed on the bot; the old stub was dead and let the real
+        # enqueue fire into prod). Assert it IS the method that runs.
+        bot._classify_user_message = AsyncMock()
         await bot.handle_message(update, ctx)
         assert not shop_called.get("called"), "Expired pending action must not be processed"
+        bot._classify_user_message.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_button_tap_clears_pending_action(self):

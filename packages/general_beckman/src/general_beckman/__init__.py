@@ -468,6 +468,54 @@ async def next_task(lane: str | None = None):
         agent_type = task.get("agent_type") or ""
         difficulty = task.get("difficulty", 5)
 
+        # ── Hoist OVERHEAD selection hints out of context.llm_call ────────
+        # Post-hook children (self_reflect / constrained_emit / grade ...)
+        # author their overhead intent INSIDE context.llm_call: call_category=
+        # "overhead", a low inner difficulty, prefer_speed=True, and (by the
+        # OVERHEAD rule) needs_thinking=False. But the model is actually picked
+        # HERE at admission, and the husam worker reuses that admission Pick
+        # verbatim on the happy path (worker.py: preselected_pick). Without this
+        # hoist, admission read only the top-level row → scored overhead as
+        # default main_work / difficulty 5 / needs_thinking=True / generic
+        # "assistant" profile, so cloud thinking models (gemini) beat an idle
+        # local for cheap overhead work while local sat idle. Mirror husam
+        # worker's overhead derivation (worker.py:81,95,97,114,130-140) so
+        # admission and the worker retry-path select with identical args.
+        _select_task = agent_type
+        _call_category = "main_work"
+        _needs_thinking = None  # None → selector default (True for main_work)
+        _prefer_speed = None
+        try:
+            import json as _json_h
+            _ctx_raw_h = task.get("context") or "{}"
+            _ctx_h = (
+                _json_h.loads(_ctx_raw_h)
+                if isinstance(_ctx_raw_h, str) else dict(_ctx_raw_h)
+            )
+            _llm_call_h = _ctx_h.get("llm_call") if isinstance(_ctx_h, dict) else None
+        except Exception:
+            _llm_call_h = None
+        if isinstance(_llm_call_h, dict) and _llm_call_h:
+            _cat_h = _llm_call_h.get("call_category") or task.get("kind") or "main_work"
+            if _cat_h in ("main_work", "overhead"):
+                _call_category = _cat_h
+            if _call_category == "overhead":
+                _needs_thinking = False  # OVERHEAD rule: thinking always off
+            elif _llm_call_h.get("needs_thinking") is not None:
+                _needs_thinking = bool(_llm_call_h.get("needs_thinking"))
+            _inner_task_h = _llm_call_h.get("task")
+            if _inner_task_h:
+                _select_task = _inner_task_h  # proper profile (reviewer/structured_emit)
+            _inner_diff_h = _llm_call_h.get("difficulty")
+            if _inner_diff_h is not None:
+                try:
+                    difficulty = int(_inner_diff_h)  # inner overrides top-level default
+                except (TypeError, ValueError):
+                    pass
+            _ps_h = _llm_call_h.get("prefer_speed")
+            if _ps_h is not None:
+                _prefer_speed = bool(_ps_h)
+
         # ── Z6 T1C: real-world bridge admission gate ─────────────────────
         # If the task is flagged needs_real_tools, check that its vendor
         # adapter, credentials, and (for irreversible+cost) founder cost
@@ -578,14 +626,20 @@ async def next_task(lane: str | None = None):
         pick = None
         if fatih_hoca is not None:
             try:
-                pick = fatih_hoca.select(
-                    task=agent_type,
+                _sel_kwargs = dict(
+                    task=_select_task,
                     agent_type=agent_type,
                     difficulty=difficulty,
                     urgency=urgency,
+                    call_category=_call_category,
                     estimated_input_tokens=est_in,
                     estimated_output_tokens=est_out,
                 )
+                if _needs_thinking is not None:
+                    _sel_kwargs["needs_thinking"] = _needs_thinking
+                if _prefer_speed is not None:
+                    _sel_kwargs["prefer_speed"] = _prefer_speed
+                pick = fatih_hoca.select(**_sel_kwargs)
             except Exception as e:
                 select_err = repr(e)
                 pick = None

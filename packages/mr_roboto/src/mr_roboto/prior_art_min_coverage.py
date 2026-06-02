@@ -9,7 +9,7 @@ Rules:
    "blue_ocean_validated"`` AND coverage >= (3 queries, 20 results).
 2. Every ``attempted_solutions`` URL must resolve (non-empty + http/https
    scheme — actual reachability already swept inside
-   ``vecihi.find_prior_art``; we accept ``status == "dead"`` as evidence
+   ``src.research.prior_art.fetch_candidates``; we accept ``status == "dead"`` as evidence
    the sweep ran). A URL of ``""`` or missing is a hard fail.
 3. At least one ``key_lessons`` entry when ``attempted_solutions`` is
    non-empty.

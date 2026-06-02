@@ -20,8 +20,6 @@ from .fetchers import (
     fetch_browser,
     install_browser_error_suppressor,
 )
-from .prior_art import find_prior_art
-
 __all__ = [
     "ScrapeTier",
     "ScrapeResult",
@@ -34,5 +32,4 @@ __all__ = [
     "fetch_stealth",
     "fetch_browser",
     "install_browser_error_suppressor",
-    "find_prior_art",
 ]

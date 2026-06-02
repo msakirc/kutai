@@ -26,23 +26,43 @@ def _step_by_id(workflow: dict, step_id: str) -> dict:
     raise KeyError(f"step {step_id!r} not found")
 
 
-def test_step_1_0_present(workflow):
-    s = _step_by_id(workflow, "1.0")
-    assert s["agent"] == "researcher"  # Q4 lock — reuse, no new agent
+def test_step_1_0a_present(workflow):
+    """1.0a: query_planner produces prior_art_queries for the mechanical fetch."""
+    s = _step_by_id(workflow, "1.0a")
+    assert s["agent"] == "query_planner"
     assert "0.6" in s["depends_on"]
-    assert "find_prior_art" in (s.get("tools_hint") or [])
+    assert "prior_art_queries" in s["output_artifacts"]
+    assert any(
+        "prior_art_queries.json" in p for p in s.get("produces", [])
+    )
+    assert any(
+        p.startswith("mission_{mission_id}/.research/")
+        for p in s.get("produces", [])
+    )
+
+
+def test_step_1_0b_present(workflow):
+    """1.0b: mechanical prior_art_fetch step."""
+    s = _step_by_id(workflow, "1.0b")
+    assert s["agent"] == "mechanical"
+    assert "1.0a" in s["depends_on"]
+    assert "prior_art_candidates" in s["output_artifacts"]
+
+
+def test_step_1_0c_present(workflow):
+    """1.0c: prior_art_synthesizer closes the pipeline; post_hook gates the artifact."""
+    s = _step_by_id(workflow, "1.0c")
+    assert s["agent"] == "prior_art_synthesizer"
+    assert "1.0b" in s["depends_on"]
     assert "prior_art_report" in s["output_artifacts"]
     assert any(
         "prior_art_report.json" in p for p in s.get("produces", [])
     )
-    # Path uses mission_{mission_id}/ prefix, NOT workspace/
     assert any(
         p.startswith("mission_{mission_id}/.research/")
         for p in s.get("produces", [])
     )
     assert "prior_art_min_coverage" in (s.get("post_hooks") or [])
-    # legacy_pre_prior_art gate was removed; step is now unconditional
-    assert not s.get("skip_when") or "legacy_pre_" not in s.get("skip_when", "")
 
 
 def test_step_1_14_consumes_prior_art(workflow):
@@ -58,14 +78,9 @@ def test_step_2_1_consumes_prior_art(workflow):
     assert "key_lessons" in s["instruction"]
 
 
-def test_step_1_0_produces_path_uses_research_subdir(workflow):
-    s = _step_by_id(workflow, "1.0")
-    paths = s.get("produces") or []
-    assert any(".research" in p for p in paths)
-
-
-def test_step_1_0_difficulty_medium(workflow):
-    s = _step_by_id(workflow, "1.0")
+def test_step_1_0c_difficulty_medium(workflow):
+    """1.0c (synthesizer) is the LLM-heavy step — medium difficulty."""
+    s = _step_by_id(workflow, "1.0c")
     assert s.get("difficulty") == "medium"
 
 

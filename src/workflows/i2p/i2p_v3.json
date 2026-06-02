@@ -1227,33 +1227,58 @@
       "reversibility": "full"
     },
     {
-      "id": "1.0",
+      "id": "1.0a",
       "phase": "phase_1",
-      "name": "prior_art_search",
-      "agent": "researcher",
+      "name": "prior_art_query_plan",
+      "agent": "query_planner",
+      "difficulty": "easy",
+      "depends_on": ["0.6"],
+      "input_artifacts": ["idea_brief_final"],
+      "output_artifacts": ["prior_art_queries"],
+      "produces": ["mission_{mission_id}/.research/prior_art_queries.json"],
+      "tools_hint": ["read_file", "write_file"],
+      "instruction": "Read idea_brief_final. Emit 3-5 prior-art SEARCH QUERIES plus domain_keywords that will surface competing and dead/dormant products. Do NOT name specific products yourself. Write {\"queries\":[...],\"domain_keywords\":[...],\"ambition_tier\":context.ambition_tier or 'private_beta'} to the produces path.",
+      "done_when": "prior_art_queries.json exists with >=3 queries.",
+      "artifact_schema": {
+        "prior_art_queries": {
+          "type": "object",
+          "required_fields": ["queries", "domain_keywords"]
+        }
+      },
+      "context": {"estimated_output_tokens": 400},
+      "reversibility": "full"
+    },
+    {
+      "id": "1.0b",
+      "phase": "phase_1",
+      "name": "prior_art_fetch",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": ["1.0a"],
+      "input_artifacts": ["prior_art_queries"],
+      "output_artifacts": ["prior_art_candidates"],
+      "produces": ["mission_{mission_id}/.research/prior_art_candidates.json"],
+      "payload": {
+        "action": "prior_art_fetch",
+        "queries_path": "mission_{mission_id}/.research/prior_art_queries.json",
+        "candidates_path": "mission_{mission_id}/.research/prior_art_candidates.json"
+      },
+      "done_when": "prior_art_candidates.json exists.",
+      "reversibility": "full"
+    },
+    {
+      "id": "1.0c",
+      "phase": "phase_1",
+      "name": "prior_art_synthesize",
+      "agent": "prior_art_synthesizer",
       "difficulty": "medium",
-      "tools_hint": [
-        "find_prior_art",
-        "web_search",
-        "extract_url"
-      ],
-      "depends_on": [
-        "0.6"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "idea_brief_final"
-      ],
-      "output_artifacts": [
-        "prior_art_report"
-      ],
-      "produces": [
-        "mission_{mission_id}/.research/prior_art_report.json"
-      ],
-      "post_hooks": [
-        "prior_art_min_coverage"
-      ],
-      "instruction": "Call find_prior_art(idea_summary=idea_brief_final.summary, domain_keywords=<comma-separated tags from idea_brief_final.domain_tags or Vision keywords>, k=10, ambition_tier=context.ambition_tier or 'private_beta'). Inspect the returned report. If verdict='blue_ocean_validated' but you suspect the agent missed adjacent solutions, broaden domain_keywords once and re-call. Save the final report JSON to the produces path verbatim. Surface dead/dormant entries with Wayback timestamps when present.",
+      "depends_on": ["1.0b"],
+      "input_artifacts": ["idea_brief_final", "prior_art_candidates"],
+      "output_artifacts": ["prior_art_report"],
+      "produces": ["mission_{mission_id}/.research/prior_art_report.json"],
+      "post_hooks": ["prior_art_min_coverage"],
+      "tools_hint": ["read_file", "write_file"],
+      "instruction": "Read prior_art_candidates.json and idea_brief_final. Judge which fetched candidates are real attempted solutions. Every attempted_solutions url+name MUST be copied from a fetched candidate — never invent a product or URL. Extract >=1 key_lesson when attempted_solutions is non-empty. Set verdict. Write the prior_art_report JSON to the produces path verbatim.",
       "done_when": "prior_art_report exists at the produces path and prior_art_min_coverage post-hook returns ok=true.",
       "artifact_schema": {
         "prior_art_report": {
@@ -1268,7 +1293,8 @@
         }
       },
       "context": {
-        "estimated_output_tokens": 3000
+        "estimated_output_tokens": 3000,
+        "candidates_path": "mission_{mission_id}/.research/prior_art_candidates.json"
       },
       "reversibility": "full"
     },

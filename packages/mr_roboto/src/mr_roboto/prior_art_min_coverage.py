@@ -58,6 +58,29 @@ def _resolve_report_path(report_path: str | None) -> str | None:
     return report_path
 
 
+def _load_candidate_urls(candidates_path: str | None) -> set[str] | None:
+    """Return the set of fetched candidate URLs, or None if no path given.
+
+    None means "membership rule disabled" (back-compat). An empty set means
+    the candidates file existed but held no URLs.
+    """
+    if not candidates_path:
+        return None
+    rp = _resolve_report_path(candidates_path)
+    if not rp or not os.path.isfile(rp):
+        return None
+    try:
+        with open(rp, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    urls: set[str] = set()
+    for c in (data.get("candidates") or []):
+        if isinstance(c, dict) and isinstance(c.get("url"), str):
+            urls.add(c["url"].strip())
+    return urls
+
+
 def _load_report(
     report: dict[str, Any] | None,
     report_path: str | None,
@@ -80,6 +103,7 @@ def _load_report(
 def prior_art_min_coverage(
     report: dict[str, Any] | None = None,
     report_path: str | None = None,
+    candidates_path: str | None = None,
 ) -> dict[str, Any]:
     """Validate a prior_art_report against the four rules above.
 
@@ -135,6 +159,21 @@ def prior_art_min_coverage(
                 f"attempted_solutions[{i}].url missing/invalid: {url!r} "
                 f"(name={sol.get('name')!r})"
             )
+
+    # Rule 2b — anti-fabrication: every attempted URL must come from the
+    # fetched candidates set. Disabled when candidates_path is absent.
+    candidate_urls = _load_candidate_urls(candidates_path)
+    if candidate_urls is not None:
+        for i, sol in enumerate(attempted):
+            if not isinstance(sol, dict):
+                continue
+            url = (sol.get("url") or "").strip()
+            if url and url not in candidate_urls:
+                problems.append(
+                    f"attempted_solutions[{i}].url not in fetched candidates: "
+                    f"{url!r} (name={sol.get('name')!r}) — synthesizer may "
+                    f"only cite fetched candidates, not invented products"
+                )
 
     # Rule 3 — at least one key_lesson when attempted is non-empty
     if attempted and not lessons:

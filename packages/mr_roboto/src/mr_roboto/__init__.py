@@ -2157,9 +2157,16 @@ async def _run_dispatch(task: dict) -> Action:
         if gate_enabled:
             text = payload.get("message") or payload.get("text") or ""
             try:
+                # Gate the MESSAGE CONTENT only. The critic judges (a) spec
+                # break, (b) founder fury, (c) secret/PII leak — all properties
+                # of the text. chat_id (the recipient) is irrelevant to those,
+                # and a null chat_id is the NORMAL case (notify_user defaults it
+                # to the admin chat). Passing it in only baited the critic into
+                # spurious "chat_id is null → will fail" validity-vetoes that
+                # DLQ'd valid notifications (task #261969, 2026-06-02).
                 gate_result = await _critic_gate(
                     "notify_user",
-                    {"message": text, "chat_id": payload.get("chat_id")},
+                    {"message": text},
                     mission_id=task.get("mission_id"),
                 )
             except Exception as e:

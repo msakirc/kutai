@@ -24,6 +24,7 @@ from .oncall_agent import OncallAgent
 from .support_tier1 import SupportTier1Agent
 from .growth_digest_synthesizer import GrowthDigestSynthesizerAgent
 from .signal_classifier import SignalClassifierAgent
+from .query_planner import QueryPlannerAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -50,6 +51,7 @@ AGENT_REGISTRY = {
     "support_tier1": SupportTier1Agent(),
     "growth_digest_synthesizer": GrowthDigestSynthesizerAgent(),
     "signal_classifier": SignalClassifierAgent(),
+    "query_planner": QueryPlannerAgent(),
 }
 
 

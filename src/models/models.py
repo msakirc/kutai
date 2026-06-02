@@ -232,7 +232,11 @@ _AGENT_TYPE_CATEGORY: dict[str, str] = {
     "test_generator":  "code",
     "reviewer":        "code",
     "visual_reviewer": "code",
-    "analyst":         "research",
+    # NOTE: analyst is deliberately NOT mapped to "research". Analyst
+    # produces structured deliverables (personas, journeys, competitive
+    # positioning) that legitimately carry no URL/source. The "research"
+    # URL rule is for the web-search researcher role only. Mapping analyst
+    # here DLQ'd i2p step 2.4 (complete personas JSON rejected for no URL).
     "researcher":      "research",
     "planner":         "planner",
     "architect":       "planner",

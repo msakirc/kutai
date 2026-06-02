@@ -49,10 +49,28 @@ class TestValidateTaskOutput(unittest.TestCase):
         errors = validate_task_output("researcher", result)
         self.assertGreater(len(errors), 0)
 
-    def test_analyst_same_rules(self):
-        """Analyst uses same 'research' category."""
+    def test_analyst_with_sources_passes(self):
+        """Analyst output that happens to cite sources still passes."""
         from src.models.models import validate_task_output
         result = "## Analysis\n\n**Sources:**\n- Market data"
+        errors = validate_task_output("analyst", result)
+        self.assertEqual(errors, [])
+
+    def test_analyst_personas_without_url_passes(self):
+        """Analyst produces structured deliverables (personas, journeys,
+        positioning) that legitimately contain no URL or source reference.
+        These must NOT be forced through the researcher's web-source rule.
+        Regression: i2p step 2.4 user_personas_and_journeys DLQ'd because
+        a complete personas JSON was rejected for missing a URL."""
+        from src.models.models import validate_task_output
+        result = json.dumps({
+            "user_personas": [{
+                "name": "Alex Chen", "age": "30",
+                "occupation": "Busy Professional", "tech_savviness": "High",
+                "goals": "Maintain productivity", "frustrations": "Overwhelmed",
+                "quote": "I need to stay on track.", "is_primary": True,
+            }],
+        })
         errors = validate_task_output("analyst", result)
         self.assertEqual(errors, [])
 

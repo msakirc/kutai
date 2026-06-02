@@ -2202,6 +2202,7 @@ def _posthook_agent_and_payload(
             source_ctx.get("report_path")
             or (produces[0] if produces else None)
         )
+        candidates_path = source_ctx.get("candidates_path")
         return ("mechanical", {
             "source_task_id": a.source_task_id,
             "posthook_kind": "prior_art_min_coverage",
@@ -2210,6 +2211,7 @@ def _posthook_agent_and_payload(
                 "action": "prior_art_min_coverage",
                 "report_path": report_path,
                 "report": source_ctx.get("report"),
+                "candidates_path": candidates_path,
             },
         })
     if a.kind == "verify_falsification_present":

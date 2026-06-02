@@ -3007,6 +3007,7 @@ async def _run_dispatch(task: dict) -> Action:
             res = _pa_check(
                 report=payload.get("report"),
                 report_path=payload.get("report_path"),
+                candidates_path=payload.get("candidates_path"),
             )
             if not res.get("ok"):
                 return Action(

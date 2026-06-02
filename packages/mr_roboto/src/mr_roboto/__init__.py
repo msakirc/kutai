@@ -62,6 +62,7 @@ from mr_roboto import init_mission_github_repo as init_mission_github_repo_modul
 from mr_roboto import find_similar_missions as find_similar_missions_module  # noqa: F401
 from mr_roboto import surface_prior_mission_hints as surface_prior_mission_hints_module  # noqa: F401
 from mr_roboto.prior_art_min_coverage import prior_art_min_coverage
+from mr_roboto.prior_art_fetch import prior_art_fetch
 from mr_roboto.pick_recipe import pick_recipe
 # NOTE: do NOT `from mr_roboto.critic_gate import critic_gate` — that would
 # shadow the submodule on the mr_roboto package namespace and break
@@ -157,6 +158,7 @@ __all__ = [
     "verify_premortem_shape",
     "spec_consistency_check",
     "prior_art_min_coverage",
+    "prior_art_fetch",
     "check_imports",
     "regen_and_diff",
     "apply_migration",
@@ -3016,6 +3018,19 @@ async def _run_dispatch(task: dict) -> Action:
                     ),
                     result=res,
                 )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "prior_art_fetch":
+        from mr_roboto.prior_art_fetch import prior_art_fetch as _paf
+        try:
+            res = await _paf(
+                queries_path=payload.get("queries_path"),
+                candidates_path=payload.get("candidates_path"),
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error"), result=res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

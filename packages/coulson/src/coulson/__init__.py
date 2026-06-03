@@ -398,7 +398,15 @@ async def _refresh_workflow_step_config(task: dict, task_ctx: dict) -> None:
             # refreshed in-memory.
             try:
                 from src.infra.db import update_task as _update_task
-                await _update_task(task["id"], context=task["context"])
+                _persist: dict = {"context": task["context"]}
+                # The grader and self_reflect children read tasks.description
+                # straight from the DB. If we only persist context, an edited
+                # workflow instruction reaches the worker (in-memory refresh)
+                # but NOT the grader — which then judges the artifact against
+                # the stale spec and DLQs a correct result (task #259351).
+                if "description" in _changed_fields:
+                    _persist["description"] = task["description"]
+                await _update_task(task["id"], **_persist)
             except Exception as _persist_exc:
                 logger.warning(
                     f"[Task #{task.get('id','?')}] step-refresh "

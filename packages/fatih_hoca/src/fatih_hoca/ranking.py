@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from fatih_hoca.capabilities import TaskRequirements, score_model_for_task
@@ -119,6 +120,9 @@ def _apply_utilization_layer(
     snapshot: SystemSnapshot,
     task_difficulty: int,
     reqs: "ModelRequirements | None" = None,
+    *,
+    now: float | None = None,
+    burn_log=None,
 ) -> None:
     """Apply Phase 2d unified utilization equation.
 
@@ -165,6 +169,25 @@ def _apply_utilization_layer(
         if _has_capacity:
             fleet_consumed[_prov] = _consumed
 
+    # Capable-supply rollup for S6: the set of candidates with their remaining
+    # daily capacity, so a capability-shortage produces conserve-pressure. Built
+    # once here; rpd_remaining is read from the snapshot (authoritative) and
+    # attached so s6._supply_for can sum real capacity in prod AND sim.
+    eligible_models: list = []
+    for _sm in scored:
+        _mdl = _sm.model
+        _prov_name = getattr(_mdl, "provider", "")
+        _ps = snapshot.cloud.get(_prov_name)
+        _ms = _ps.models.get(getattr(_mdl, "name", "")) if _ps else None
+        _rpd_rem = 0
+        if _ms is not None and _ms.limits.rpd is not None:
+            _rpd_rem = _ms.limits.rpd.remaining or 0
+        eligible_models.append(SimpleNamespace(
+            name=getattr(_mdl, "name", ""),
+            capabilities=getattr(_mdl, "capabilities", set()),
+            rpd_remaining=_rpd_rem,
+        ))
+
     for sm in scored:
         pool = classify_pool(sm.model)
         sm.pool = pool.value
@@ -187,6 +210,9 @@ def _apply_utilization_layer(
                                   lambda *_: 0.0)(estimates.in_tokens, estimates.out_tokens),
             cap_needed=CAP_NEEDED_BY_DIFFICULTY.get(task_difficulty, 5.0),
             fleet_consumed=fleet_consumed,
+            now=now,
+            burn_log=burn_log,
+            eligible_models=eligible_models,
         )
         scalar = breakdown.scalar
         # Reuse `urgency` column for pressure scalar — telemetry schema continuity.
@@ -223,6 +249,9 @@ def rank_candidates(
     snapshot: SystemSnapshot,
     failures: list[Failure],
     remaining_budget: float = 0.0,
+    *,
+    now: float | None = None,
+    burn_log=None,
 ) -> list[ScoredModel]:
     """
     Score and rank an already-filtered list of ModelInfo objects.
@@ -688,6 +717,8 @@ def rank_candidates(
         snapshot,
         task_difficulty=reqs.difficulty,
         reqs=reqs,
+        now=now,
+        burn_log=burn_log,
     )
     scored.sort(key=lambda c: -c.score)
 

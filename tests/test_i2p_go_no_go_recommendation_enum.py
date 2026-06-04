@@ -79,6 +79,61 @@ def test_garbage_recommendation_still_rejected():
     assert validate_value(rule, obj, "go_no_go_decision") is not None
 
 
+# ── lenient verdict matching: LLM decorates the token (mission #81) ──
+# mission #81 #291858: the analyst emitted recommendation
+# 'Conditional (needs_clarification)' — the right verdict, decorated with a
+# parenthetical — and exact equals rejected it → DLQ. recommendation is an
+# informational verdict (no downstream gate), so matching tolerates casing and
+# trailing decoration: the leading token must still be one of the allowed set.
+
+
+def test_decorated_recommendation_validates():
+    rule = _decision_rule()
+    base = {"scores": {"market_attractiveness": 5}, "weighted_score": 5.2}
+    for v in (
+        "Conditional (needs_clarification)",
+        "Go (proceed to build)",
+        "No-Go — kill the idea",
+        "conditional",
+        "GO",
+    ):
+        obj = {**base, "recommendation": v}
+        assert validate_value(rule, obj, "go_no_go_decision") is None, v
+
+
+def test_lenient_still_rejects_wrong_verdict():
+    rule = _decision_rule()
+    base = {"scores": {"market_attractiveness": 5}, "weighted_score": 5.2}
+    for v in ("Maybe", "totally_made_up", "proceed"):
+        obj = {**base, "recommendation": v}
+        assert validate_value(rule, obj, "go_no_go_decision") is not None, v
+
+
+def test_recommendation_rule_is_lenient():
+    rule = _decision_rule()
+    assert rule["fields"]["recommendation"].get("equals_lenient") is True
+
+
+# ── schema_dialect: equals_lenient is opt-in; default stays exact ──
+
+
+def _string_rule(**extra):
+    return {"type": "string", "equals": ["Go", "Conditional", "No-Go"], **extra}
+
+
+def test_equals_lenient_normalizes_case_and_decoration():
+    rule = _string_rule(equals_lenient=True)
+    assert validate_value(rule, "Conditional (needs_clarification)") is None
+    assert validate_value(rule, "no-go") is None
+    assert validate_value(rule, "Nope") is not None
+
+
+def test_equals_default_stays_exact():
+    rule = _string_rule()  # no equals_lenient
+    assert validate_value(rule, "Conditional (needs_clarification)") is not None
+    assert validate_value(rule, "Conditional") is None
+
+
 # ── steering: go_no_go_decision.scores must drive downstream, not dead-end ──
 # go_no_go used to be a near-dead artifact: produced at 1.14, weakly read by 2.1,
 # ignored everywhere else. These assert the weak-dimension scores actually steer

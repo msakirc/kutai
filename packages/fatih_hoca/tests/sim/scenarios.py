@@ -1296,10 +1296,19 @@ def assert_s6_conserve() -> list[str]:
 # ── rp5: overdraw early-warning — hammer a tank, load must shift before 0 ─────
 
 def rp5_overdraw_early_warning() -> Scenario:
-    """One mid-cap free giant + one comparable-cap free peer + paid fallback.
-    A steady stream of medium tasks. With S7 de-blinded, sustained burn on the
-    first free pool must raise conserve-pressure and shift share to the peer
-    BEFORE the hammered pool hits 0 (no exhaustion → no 'no candidates')."""
+    """End-to-end fleet-balance + anti-exhaustion + liveness guard under
+    sustained scarce free quota. Two comparable free pools (hot cap 78 / cool
+    cap 77, 45-call tanks) + paid fallback + the always-injected loaded local.
+    100 medium (d=6) tasks. The signals under test (de-blinded S7 burn-rate +
+    S12 fleet-balance) must keep cloud-bound work BALANCED across the two free
+    peers — so neither rides to its 45-cap (exhaustion → the 'no candidates'
+    tail) — while still using free cloud rather than dumping everything on local.
+
+    Note: a pure free-vs-free overdraw isolation isn't achievable in this
+    harness because ``select_for_simulation`` always injects an attractive
+    loaded-local candidate; the S7 de-blinding itself is proven at the unit
+    level (nerd_herd test_s7_continuity). This scenario is the realistic
+    end-to-end regression guard. Measured by PICK COUNTS (reset-proof)."""
     providers = {
         "hot": {"is_free": True, "models": {"hot/m": {"cap_score_100": 78}}},
         "cool": {"is_free": True, "models": {"cool/m": {"cap_score_100": 77}}},
@@ -1307,8 +1316,11 @@ def rp5_overdraw_early_warning() -> Scenario:
     }
     state = SimState()
     state.locals["loaded-local"] = SimLocalModel(is_loaded=True, idle_seconds=300.0, tokens_per_second=15.0)
-    state.time_bucketed["hot/m"] = SimPoolCounter(remaining=60, limit=60, reset_at=7200.0)
-    state.time_bucketed["cool/m"] = SimPoolCounter(remaining=60, limit=60, reset_at=7200.0)
+    # 45-call tanks: a balanced split lands ~30 each (under cap); a monopoly
+    # would push one pool past 45 (exhaustion). reset_at 2h keeps S9's
+    # use-it-or-lose-it pull alive so free cloud is genuinely exercised.
+    state.time_bucketed["hot/m"] = SimPoolCounter(remaining=45, limit=45, reset_at=7200.0)
+    state.time_bucketed["cool/m"] = SimPoolCounter(remaining=45, limit=45, reset_at=7200.0)
     state.per_call["anthropic/claude"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
     tasks = [SimTask(idx=i, difficulty=6, estimated_output_tokens=1500) for i in range(100)]
     return Scenario(
@@ -1321,20 +1333,43 @@ def rp5_overdraw_early_warning() -> Scenario:
 
 
 def assert_rp5(scenario: "Scenario") -> list[str]:
+    """Measured by PICK COUNTS (reset-proof). Four properties:
+      (1) liveness — every task got a model (no 'no candidates' deadlock);
+      (2) no free pool ridden to its cap (exhaustion → warm-fallback loss);
+      (3) the two free peers balanced (S12/S7 don't monopolise one pool);
+      (4) free cloud genuinely used (not all work dumped on local)."""
+    from collections import Counter
     from sim.runner import run_simulation
     run = run_simulation(
         tasks=scenario.tasks, initial_state=scenario.initial_state,
         select_fn=scenario.select_fn, snapshot_factory=scenario.snapshot_factory,
     )
-    hot = run.final_state.time_bucketed.get("hot/m")
-    cool = run.final_state.time_bucketed.get("cool/m")
+    counts = Counter(p.model_name for p in run.picks)
+    hot_picks = counts.get("hot/m", 0)
+    cool_picks = counts.get("cool/m", 0)
+    hot_limit = scenario.initial_state.time_bucketed["hot/m"].limit  # limit never decremented
+
     failures = []
-    if hot and hot.remaining <= 0:
-        failures.append(f"rp5: hot pool exhausted (remaining={hot.remaining}) — S7 did not warn early")
-    hot_used = (hot.limit - hot.remaining) if hot else 0
-    cool_used = (cool.limit - cool.remaining) if cool else 0
-    if cool_used == 0 and hot_used > 0:
-        failures.append("rp5: cool peer never used — load did not spread off the hammered pool")
+    if len(run.picks) != len(scenario.tasks):
+        failures.append(
+            f"rp5: liveness — {len(run.picks)} picks for {len(scenario.tasks)} tasks "
+            "(a task got no model)"
+        )
+    if hot_picks >= hot_limit or cool_picks >= hot_limit:
+        failures.append(
+            f"rp5: a free pool rode to its cap (hot={hot_picks} cool={cool_picks} "
+            f"limit={hot_limit}) — exhaustion instead of early spread"
+        )
+    if min(hot_picks, cool_picks) < 0.5 * max(hot_picks, cool_picks):
+        failures.append(
+            f"rp5: free peers imbalanced (hot={hot_picks} cool={cool_picks}) — "
+            "one free pool monopolised, fleet-balance not holding"
+        )
+    if hot_picks + cool_picks < 30:
+        failures.append(
+            f"rp5: free cloud abandoned (hot+cool={hot_picks + cool_picks} of 100) — "
+            "work dumped on local instead of using available free quota"
+        )
     return failures
 
 

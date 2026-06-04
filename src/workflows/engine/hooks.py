@@ -1191,6 +1191,51 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
             )
 
 
+async def _live_artifact_schema(mission_id, step_id: str):
+    """Return *step_id*'s ``artifact_schema`` from the LIVE workflow JSON.
+
+    ``ctx.artifact_schema`` is frozen into the task at expander time. When the
+    workflow JSON is edited (e.g. go_no_go_decision.recommendation gains
+    ``equals_lenient``), an already-expanded producer task keeps the stale
+    snapshot — and ``advance()`` re-reads that producer row, so a ``/dlq retry``
+    of the workflow_advance task re-validates against the old schema and DLQs a
+    now-valid artifact forever (mission #81, 2026-06-04).
+
+    Mirrors coulson._refresh_workflow_step_config's ``get_step`` lookup, so
+    template-expanded feature steps (whose art_prefix'd ids are not in
+    ``wf.steps``) return None here and keep their prefixed snapshot. Best-effort:
+    returns None on any failure so the caller falls back to the frozen schema.
+    """
+    if not (mission_id and step_id):
+        return None
+    try:
+        from src.infra.db import get_db
+        from src.workflows.engine.loader import load_workflow
+        wf_name = "i2p_v3"
+        try:
+            _db = await get_db()
+            _cur = await _db.execute(
+                "SELECT context FROM missions WHERE id = ?", (mission_id,)
+            )
+            _row = await _cur.fetchone()
+            await _cur.close()
+            if _row and _row[0]:
+                _mctx = json.loads(_row[0])
+                if isinstance(_mctx, str):
+                    _mctx = json.loads(_mctx)
+                if isinstance(_mctx, dict):
+                    wf_name = _mctx.get("workflow_name") or wf_name
+        except Exception:
+            pass
+        _wf = load_workflow(wf_name)
+        _step = _wf.get_step(step_id)
+        if _step and isinstance(_step.get("artifact_schema"), dict):
+            return _step["artifact_schema"]
+    except Exception:
+        return None
+    return None
+
+
 async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     ctx = _parse_context(task)
     if not is_workflow_step(ctx):
@@ -1202,6 +1247,14 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
 
     if not mission_id:
         return
+
+    # Re-sync artifact_schema from the live workflow JSON before the schema
+    # gate below. Without this, a workflow_advance retry validates the produced
+    # artifact against the producer task's frozen schema snapshot — workflow
+    # edits never reach in-flight missions on retry (mission #81 #291858).
+    _live_schema = await _live_artifact_schema(mission_id, step_id)
+    if _live_schema:
+        ctx["artifact_schema"] = _live_schema
 
     store = get_artifact_store()
 

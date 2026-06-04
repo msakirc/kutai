@@ -164,3 +164,63 @@ confirm S7≠0 and S6≠0 in a hammered/shortage scenario first).
 - M1 small-tank-bias re-tune (parent §7 latent; re-tune only if a sim shows it dominating).
 - Discovery `status=ok + models=[]` empty-cache-overwrite guard (`cloud/discovery.py:63-68`).
 - OpenRouter free-catalog upstream rotation.
+
+---
+
+## 8. Implementation outcome (2026-06-05, shipped to `main`)
+
+**Status:** SHIPPED (12 commits `76a78c3a`→`3566f595`, linear on `main`, not pushed).
+**NOT live until KutAI restart** (signal layer loads at process start), same as parent `b6b627bb`.
+
+### What shipped
+| Part | Commits | Effect |
+|---|---|---|
+| Shared curve | `76a78c3a` | `_smoothstep` extracted to `signals/_curves.py`; S7/S6/S12 share one impl. |
+| Prereq seams | `ee72cdf4` | `pressure_for(now, burn_log, eligible_models)` — default-preserving kwargs. |
+| S6 rollup | `cbe2cdeb` | `ranking._apply_utilization_layer` builds `{capabilities, rpd_remaining}` per candidate from the snapshot + threads `now`/`burn_log`. |
+| Sim selector | `4aaa677d` | `select_for_simulation` threads `now`/`burn_log`; pick carries `provider`; stubs carry real caps + `rpd_remaining`. |
+| Sim clock+burn | `7cb09074` | `now = wall_anchor + virtual_clock` threaded in; `reset_at` made absolute (S9 unchanged); per-pick `BurnLog`; `by_capability` demand. |
+| New probes | `3a472a49`, `25a638c2` | S7-continuity, S6-conserve (pressure-only) + rp5 (full-sim fleet-balance/anti-exhaustion/liveness). |
+| **C4 S7** | `63b11459` | S7 `0.70` dead-band → `-smoothstep(min(1, ratio/SAT))`, `SAT=1.0`. |
+| **C4 S6** | `cd51894a` | S6 `0.70` dead-band → same ramp; S6 reactivated (now fed). |
+| **C7 M3** | `3566f595` | **M3 zeroes S7 conserve-weight for PAID models on hard tasks** (see below). |
+
+### Knob: SAT = 1.0 (sweep-insensitive)
+SAT-sweep {0.8, 1.0, 1.2, 1.4}: rp1 free_q invariant at **28.1%**, hard 100%, waste 0%, rp5 PASS
+at every value — because rp1's gemini tanks are tiny (S7 saturates regardless of SAT) and groq is
+huge (S7≈0 regardless), and rp5 balance is S12-driven. SAT=1.0 (spec default) kept; the de-band is
+validated as **non-regressive**, its early-warning value proven at the unit level. The `ratio**2`
+fallback was not needed (no over-penalty observed).
+
+### C7 modifier interaction discovered (the real tuning finding)
+Wiring `burn_log` into the sim made S7 **live in the simulator for the first time** (pre-this-work
+the sim never populated `burn_log`, so S7≡0 there). That exposed a latent gap: on **hard** (d≥7)
+tasks, S7's conserve-pressure fired on the depleting **paid** pool and diverted hard work to
+under-qualified cheaper models → `claude_constrained` hard-task satisfaction fell 100%→70%. Fix
+(`3566f595`): `M3_difficulty_weights` now sets `S7 = 0.0` for `difficulty ≥ 7 and model_is_paid`
+(free/local keep S7=1.0). This mirrors the existing hard-task down-weighting of S6 (0.7) and S12
+(0.5) — "on hard tasks the right tool must win; don't conserve it by failing the task." Halving to
+0.5 was insufficient (worst-wins bucketing still diverted); it must be 0.0.
+
+### rp5 honest scope (downgraded from spec §7 #2)
+A pure free-vs-free **overdraw isolation** scenario is **not achievable** in this harness:
+`select_for_simulation` always injects an attractive loaded-local candidate, so medium work can
+always fall to local — free-vs-free can't be forced. rp5 was therefore redesigned as an end-to-end
+**fleet-balance + anti-exhaustion + liveness** guard (45-call tanks, reset 2h, measured by PICK
+COUNTS — reset-proof): liveness, no free pool at its cap, free peers balanced, free cloud not
+abandoned. The **S7 de-blinding itself is proven at the unit level** (`test_s7_continuity`:
+de-banded ramp nonzero below the old 0.70 gate, monotonic, saturating). Free-vs-free spreading at
+the fleet level is already covered by rp1 (gemini 0→share) and pp9 (anti-monopoly).
+
+### Validation evidence
+- `run_scenarios.py`: rp1 free_q **28.1%** (vs parent 28.4% — within noise), hard 100% on ALL rp*,
+  waste 0%; diverse_pool free_q 93.3%; all PP1–PP9 + s7_continuity + s6_conserve + rp5 PASS.
+- `run_swap_storm_check.py`: clean (0–0.5% swaps; local stickiness intact).
+- Unit suites: **nerd_herd 274**, **fatih_hoca 375 (+1 skipped)**, **kuleden 168** — all green.
+  New tests: `test_curves`, `test_pressure_for_threading`, `test_ranking_s6_rollup`,
+  `test_s7_continuity`, `test_s6_continuity`, `test_m3_zeroes_s7_for_paid_on_hard_tasks`.
+
+### First action next session (restart-gated)
+Confirm live: next mission's `model_pick_log` should show free-provider diversity holding and no
+"No model candidates available" tail. C4/S6 are now sim-tunable (the §6 prereq is done) — future
+S6/S7 tuning re-runs `run_scenarios.py` + `run_swap_storm_check.py` like S12 was.

@@ -49,10 +49,12 @@ def pick_for_iter(
     Every fresh selection is stamped onto ``task["_held_pick"]`` so the
     next no-failure iter reuses the live model, not the stale preselect.
 
-    Mid-task urgency bump (+0.1, capped at 1.0) when failures present —
-    mirrors the policy from the dispatcher's pre-C.2 retry recursion
-    (user design 2026-05-03: "mid task urgency of the task can be a
-    little higher than pre dispatch urgency to help react loops finish").
+    Mid-task urgency is derived via ``fatih_hoca.mid_task_urgency`` from the
+    task's admission urgency (``_admission_urgency``, stamped by Beckman) plus
+    a finish-bias, with an extra bump while failures are being adapted around
+    (user design 2026-05-03: "mid task urgency of the task can be a little
+    higher than pre dispatch urgency to help react loops finish"). A started
+    task is thus never judged stricter than it was at admission.
     """
     if not failures:
         held = task.get("_held_pick") or task.get("preselected_pick")

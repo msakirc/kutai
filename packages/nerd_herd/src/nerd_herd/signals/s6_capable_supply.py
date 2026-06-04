@@ -14,9 +14,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from nerd_herd.signals._curves import smoothstep
 
-THRESHOLD = 0.70
-SLOPE = 2.0
+# Continuous ramp-from-0 (2026-06-05, replaces the 0.70 dead-band) — same shape
+# as S7. SAT = demand/supply ratio at which conserve-pressure saturates.
+SAT = 1.0
 
 
 def _model_capabilities(model: Any) -> set[str]:
@@ -68,10 +70,7 @@ def s6_capable_supply(
         if supply <= 0:
             continue
         ratio = demand / supply
-        excess = max(0.0, ratio - THRESHOLD)
-        if excess <= 0:
-            continue
-        pressure = -min(1.0, excess * SLOPE)
+        pressure = -smoothstep(min(1.0, ratio / SAT))
         if pressure < worst:
             worst = pressure
     return worst

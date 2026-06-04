@@ -1129,6 +1129,81 @@ def rp4_full_cloud_exhaustion() -> Scenario:
     )
 
 
+# ── Scenario PP9: Giant tank vs many small idle tanks (S12 anti-monopoly) ─────
+
+def pp9_giant_vs_small_idle_spread() -> Scenario:
+    """One giant-tank free provider + three small-tank idle free providers,
+    all comparable capability, no local. Before the 2026-06-04 fix, scale-
+    invariant frac-abundance let the giant (which stays near frac=1.0) win
+    everything while the small idle quotas rotted. S12 (fleet under-use,
+    absolute-consumption balance) must spread load across ALL four.
+    """
+    # Comparable, high caps so capability doesn't pick a winner — and above
+    # the sim's loaded-local stub (cap 55) so d=6 work goes to free cloud
+    # (local under-qualified), exercising free-vs-free balancing not local.
+    providers = {
+        "giant": {"is_free": True, "models": {"giant/m": {"cap_score_100": 80}}},
+        "small_a": {"is_free": True, "models": {"small_a/m": {"cap_score_100": 80}}},
+        "small_b": {"is_free": True, "models": {"small_b/m": {"cap_score_100": 79}}},
+        "small_c": {"is_free": True, "models": {"small_c/m": {"cap_score_100": 78}}},
+    }
+    state = SimState()
+    state.time_bucketed["giant/m"] = SimPoolCounter(remaining=14_400, limit=14_400, reset_at=86400.0)
+    state.time_bucketed["small_a/m"] = SimPoolCounter(remaining=200, limit=200, reset_at=86400.0)
+    state.time_bucketed["small_b/m"] = SimPoolCounter(remaining=200, limit=200, reset_at=86400.0)
+    state.time_bucketed["small_c/m"] = SimPoolCounter(remaining=200, limit=200, reset_at=86400.0)
+    tasks = [SimTask(idx=i, difficulty=6, estimated_output_tokens=1000) for i in range(120)]
+    return Scenario(
+        name="pp9_giant_vs_small_idle_spread",
+        tasks=tasks,
+        initial_state=state,
+        snapshot_factory=_build_snapshot_factory(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
+    )
+
+
+def assert_pp9(scenario: "Scenario") -> list[str]:
+    """Pressure-only: S12 must give an UNDER-used free provider more positive
+    pressure than an OVER-used one of identical capability, even though the
+    over-used one is a giant tank still near frac=1.0 (the scale-invariance
+    trap that S1 frac-abundance fell into). Locks the 2026-06-04 anti-monopoly
+    fix at the signal level. (Full-sim spread is shown by rp1 in the realistic
+    distribution table — gemini goes 0 → meaningful share.)
+    """
+    from nerd_herd.types import RateLimit, RateLimitMatrix
+
+    now = _time.time()
+    reset_at = int(now + 86400)
+    # Giant tank, barely dented (frac ≈ 0.99) but has ABSORBED all the work.
+    giant_rl = RateLimit(limit=14_400, remaining=14_300, reset_at=reset_at)
+    # Small tank, fully idle (frac = 1.0), absorbed nothing.
+    small_rl = RateLimit(limit=200, remaining=200, reset_at=reset_at)
+
+    snap = _pressure_snapshot(cloud_models={
+        "giant": {"giant/m": RateLimitMatrix(rpd=giant_rl)},
+        "small": {"small/m": RateLimitMatrix(rpd=small_rl)},
+    })
+    giant_m = _cloud_model_stub(name="giant/m", provider="giant", is_free=True, rpd_remaining=14_300)
+    small_m = _cloud_model_stub(name="small/m", provider="small", is_free=True, rpd_remaining=200)
+
+    # Absolute consumption: giant took 100 calls, small took 0.
+    fleet = {"giant": 100.0, "small": 0.0}
+    g = snap.pressure_for(giant_m, task_difficulty=3, fleet_consumed=fleet)
+    s = snap.pressure_for(small_m, task_difficulty=3, fleet_consumed=fleet)
+
+    failures = []
+    if not (s.scalar > g.scalar):
+        failures.append(
+            f"PP9: idle small ({s.scalar:.3f}) must outpull over-used giant "
+            f"({g.scalar:.3f}) — S12 anti-monopoly"
+        )
+    if s.signals.get("S12", 0.0) <= 0.0:
+        failures.append(f"PP9: S12 for idle small should be > 0, got {s.signals.get('S12')}")
+    if g.signals.get("S12", 0.0) != 0.0:
+        failures.append(f"PP9: S12 for over-used giant should be 0, got {g.signals.get('S12')}")
+    return failures
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 POOL_PRESSURE_SCENARIOS = [
@@ -1140,6 +1215,7 @@ POOL_PRESSURE_SCENARIOS = [
     ("pp6_capability_shortage", pp6_capability_shortage),
     ("pp7_difficulty_lookahead", pp7_difficulty_lookahead),
     ("pp8_equilibrium_mission", pp8_equilibrium_mission),
+    ("pp9_giant_vs_small_idle_spread", pp9_giant_vs_small_idle_spread),
 ]
 
 # Realistic-pool scenarios — distribution observation (no pass/fail
@@ -1162,4 +1238,5 @@ POOL_PRESSURE_ASSERTIONS: dict[str, Callable] = {
     "pp6_capability_shortage": lambda sc: assert_pp6(sc),
     "pp7_difficulty_lookahead": lambda sc: assert_pp7_m3_weights(),
     "pp8_equilibrium_mission": lambda sc: assert_pp8(sc),
+    "pp9_giant_vs_small_idle_spread": lambda sc: assert_pp9(sc),
 }

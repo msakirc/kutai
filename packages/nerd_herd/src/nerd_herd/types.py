@@ -265,8 +265,14 @@ class SystemSnapshot:
         est_call_cost: float = 0.0,
         cap_needed: float = 5.0,
         consecutive_failures: int = 0,
+        fleet_consumed: dict | None = None,
     ):
-        """Compute pressure breakdown via 10 signals + 4 modifiers.
+        """Compute pressure breakdown via signals + modifiers.
+
+        ``fleet_consumed`` ({free-provider -> absolute calls consumed this
+        cycle}) feeds S12 pool-balance. Built once per tick by the ranking
+        layer (it knows which models are free); None ⇒ S12 contributes 0,
+        which keeps pressure-only unit tests (no fleet view) unaffected.
 
         Returns a PressureBreakdown (use .scalar for the scalar value).
         """
@@ -286,6 +292,7 @@ class SystemSnapshot:
         from nerd_herd.signals.s9_perishability import s9_perishability
         from nerd_herd.signals.s10_failure import s10_failure
         from nerd_herd.signals.s11_cost import s11_cost
+        from nerd_herd.signals.s12_pool_balance import s12_pool_balance
 
         # Resolve matrix for this model (model-specific cell wins; provider is fallback)
         provider = getattr(model, "provider", "")
@@ -374,6 +381,7 @@ class SystemSnapshot:
             ),
             "S11": s11_cost(est_call_cost=est_call_cost,
                             daily_cost_remaining=(matrix.cpd.remaining or 0.0)),
+            "S12": s12_pool_balance(model, fleet_consumed=fleet_consumed),
         }
 
         # Modifiers

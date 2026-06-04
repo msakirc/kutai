@@ -44,8 +44,17 @@ PROFILE_PARAMS: dict[str, dict[str, float]] = {
     # → depletion_max applied) makes selector route to peers naturally.
     # Abundance arm is "proportional" (frac × abundance_max) so S1 carries
     # only the stock signal — timing is now S9's job exclusively.
+    #
+    # abundance_max 1.0→0.0 (2026-06-04): frac-of-own-limit abundance is
+    # scale-invariant — a giant-tank provider (groq 14400/day, gemini
+    # 1500/day) sits near frac=1.0 indefinitely and pinned the noisy-OR
+    # positive arm at ~1.0, leaving NO headroom for the fleet-comparative
+    # allocation signal (S12) to steer load toward under-used providers.
+    # Frac is now conservation-ONLY (depletion arm unchanged); positive
+    # pull lives in S9 (timing) + S12 (absolute fleet-relative under-use).
+    # See docs/superpowers/specs/2026-06-04-cloud-utilization-continuity-design.md.
     "time_bucketed": {"depletion_threshold": 0.30, "depletion_max": -1.0,
-                      "abundance_mode": "proportional", "abundance_max": 1.0,
+                      "abundance_mode": "proportional", "abundance_max": 0.0,
                       "exhausted_neutral": False},
 }
 

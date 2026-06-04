@@ -43,11 +43,14 @@ def test_s1_in_flight_overlay_drops_effective():
     assert p < -0.7
 
 
-def test_s1_abundance_uses_max_when_no_negative_cell():
+def test_s1_no_positive_abundance_for_time_bucketed():
+    """S1 is conservation-ONLY since 2026-06-04 (abundance_max=0). A flush
+    time_bucketed pool yields no positive S1 — the positive/abundance pull
+    moved to S9 (timing) + S12 (fleet under-use). Scale-invariant frac
+    abundance was letting giant-tank providers monopolise the positive arm."""
     m = _matrix(
         rpm=RateLimit(limit=30, remaining=29, reset_at=int(__import__('time').time()) + 600),
         rpd=RateLimit(limit=14_400, remaining=14_300, reset_at=int(__import__('time').time()) + 600),
     )
     p = s1_remaining(m, reset_in_secs=600, in_flight=0, profile="time_bucketed")
-    # All cells flush + reset imminent → strong positive abundance via time_decay
-    assert p > 0.3
+    assert p == 0.0

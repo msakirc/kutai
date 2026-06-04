@@ -137,9 +137,9 @@ def test_m3_hard_paid_cloud_upweights_s9():
 
 
 def test_m3_weights_cover_all_signals():
-    """Every signal name (S1-S11 except S8 dropped) must have a weight
+    """Every signal name (S1-S12 except S8 dropped) must have a weight
     or combine_signals will treat it as 0."""
-    expected = {"S1", "S2", "S3", "S4", "S5", "S6", "S7", "S9", "S10", "S11"}
+    expected = {"S1", "S2", "S3", "S4", "S5", "S6", "S7", "S9", "S10", "S11", "S12"}
     for d in (2, 5, 9):
         w = M3_difficulty_weights(difficulty=d)
         assert set(w.keys()) == expected, \

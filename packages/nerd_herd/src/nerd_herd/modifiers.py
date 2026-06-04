@@ -48,18 +48,22 @@ def M3_difficulty_weights(*, difficulty: int, model_is_paid: bool = False) -> di
     """
     if difficulty <= 3:
         s9_w = 0.7 if model_is_paid else 1.5
+        # S12 (pool balance) up-weighted on easy: spreading cheap/easy work
+        # across free providers is exactly where load-balancing belongs.
         return {
             "S1": 1.0, "S2": 0.5, "S3": 0.5,
             "S4": 1.5, "S5": 1.5, "S6": 1.5,
             "S7": 1.0, "S9": s9_w,
-            "S10": 1.0, "S11": 1.5,
+            "S10": 1.0, "S11": 1.5, "S12": 1.5,
         }
     if difficulty >= 7:
         s9_w = 1.5 if model_is_paid else 0.7
+        # S12 down-weighted on hard: don't route hard work to a weak free
+        # model just because it's under-used — capability must win.
         return {
             "S1": 1.0, "S2": 1.5, "S3": 1.5,
             "S4": 0.7, "S5": 0.7, "S6": 0.7,
             "S7": 1.0, "S9": s9_w,
-            "S10": 1.0, "S11": 0.7,
+            "S10": 1.0, "S11": 0.7, "S12": 0.5,
         }
-    return {k: 1.0 for k in ("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S9", "S10", "S11")}
+    return {k: 1.0 for k in ("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S9", "S10", "S11", "S12")}

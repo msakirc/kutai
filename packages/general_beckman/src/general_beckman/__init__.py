@@ -87,6 +87,15 @@ def resolve_inline(task_id: int, result: "TaskResult") -> None:
         fut.set_result(result)
 
 
+def _stamp_admission_urgency(task: dict) -> float:
+    """Compute the admission urgency and stamp it on the task dict so
+    mid-task re-selection can reuse it (one source of truth)."""
+    from general_beckman.admission import compute_urgency
+    u = compute_urgency(task)
+    task["_admission_urgency"] = u
+    return u
+
+
 # Admission-fingerprint cache. When the input state (in_flight + loaded model
 # + cloud rpd + candidate ids) hasn't changed since last tick AND last tick
 # admitted nothing, this tick's result is deterministic — skip the per-
@@ -581,7 +590,7 @@ async def next_task(lane: str | None = None):
         # Now: selector takes urgency as input, applies the threshold
         # internally during ranking, and either returns a pick that already
         # cleared the gate or returns None. Beckman trusts that result.
-        urgency = compute_urgency(task)
+        urgency = _stamp_admission_urgency(task)
 
         # Pass per-task token estimates to selector so the S2 (call
         # burden) + S3 (task burden) signals can fire. Without this,

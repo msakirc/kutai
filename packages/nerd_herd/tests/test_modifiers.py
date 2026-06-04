@@ -170,3 +170,14 @@ def test_m3_boundary_difficulty_6_treated_as_mid():
     """d=6 must NOT trigger the hard branch (which is >= 7)."""
     w = M3_difficulty_weights(difficulty=6)
     assert w["S2"] == 1.0  # mid branch
+
+
+def test_m3_zeroes_s7_for_paid_on_hard_tasks():
+    # On hard tasks the paid model is the right tool — burn-conservation (S7)
+    # must NOT divert hard work off it. Free/local keep S7 conservation.
+    w_paid_hard = M3_difficulty_weights(difficulty=8, model_is_paid=True)
+    w_free_hard = M3_difficulty_weights(difficulty=8, model_is_paid=False)
+    w_paid_easy = M3_difficulty_weights(difficulty=3, model_is_paid=True)
+    assert w_paid_hard["S7"] == 0.0          # paid + hard: no conservation
+    assert w_free_hard["S7"] != 0.0          # free + hard: conservation kept
+    assert w_paid_easy["S7"] != 0.0          # paid + easy: unchanged

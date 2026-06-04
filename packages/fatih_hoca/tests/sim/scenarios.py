@@ -1226,6 +1226,118 @@ def assert_pp9(scenario: "Scenario") -> list[str]:
     return failures
 
 
+# ── S7 continuity probe — burn-rate signal must be continuous + monotonic ─────
+
+def assert_s7_continuity() -> list[str]:
+    """Sample S7 across rising burn on a small tank: strictly increasing
+    magnitude, no flat-zero region once burn is nonzero, saturating at -1."""
+    import time as _t
+    from nerd_herd.types import (
+        SystemSnapshot, CloudProviderState, CloudModelState,
+        RateLimit, RateLimitMatrix,
+    )
+    from nerd_herd.burn_log import BurnLog
+
+    now = _t.time()
+    rpd = RateLimit(limit=20, remaining=10, reset_at=int(now + 3600))
+    cms = CloudModelState(model_id="gem/flash", utilization_pct=0.0,
+                          limits=RateLimitMatrix(rpd=rpd))
+    snap = SystemSnapshot(cloud={"gem": CloudProviderState(
+        provider="gem", models={"gem/flash": cms})})
+    from types import SimpleNamespace
+    m = SimpleNamespace(name="gem/flash", provider="gem", is_local=False,
+                        is_free=True, cap_score=7.0, capabilities=set(), rpd_remaining=10)
+
+    mags = []
+    for n_calls in (0, 1, 2, 4, 8, 16):
+        bl = BurnLog(window_secs=300.0)
+        for i in range(n_calls):
+            bl.record(provider="gem", model="gem/flash", tokens=500, calls=1, now=now - i)
+        s7 = snap.pressure_for(m, task_difficulty=5, now=now, burn_log=bl).signals["S7"]
+        mags.append(-s7)  # magnitude (S7 <= 0)
+
+    failures = []
+    if mags[0] != 0.0:
+        failures.append(f"S7-cont: zero burn must give 0, got {mags[0]}")
+    if any(b < a - 1e-9 for a, b in zip(mags, mags[1:])):
+        failures.append(f"S7-cont: magnitude not monotonic in burn: {mags}")
+    if not (mags[1] > 0.0):
+        failures.append(f"S7-cont: any nonzero burn must lift S7 off zero, got {mags[1]}")
+    if not (mags[-1] >= mags[1]):
+        failures.append("S7-cont: heavy burn must not be weaker than light burn")
+    return failures
+
+
+# ── S6 capability-conserve — graded conserve-pressure, fed via rollup ─────────
+
+def assert_s6_conserve() -> list[str]:
+    """Vision demand >> vision supply → S6 fires negative and is graded
+    (heavier shortage = stronger), not a single bang-bang step."""
+    from nerd_herd.types import QueueProfile
+    from nerd_herd.signals.s6_capable_supply import s6_capable_supply
+    from types import SimpleNamespace
+
+    vm = SimpleNamespace(name="v/m", provider="p", is_local=False, is_free=False,
+                         cap_score=8.5, capabilities={"vision"}, rpd_remaining=20)
+    light = QueueProfile(by_capability={"vision": 25}, total_ready_count=25)
+    heavy = QueueProfile(by_capability={"vision": 200}, total_ready_count=200)
+    s6_light = s6_capable_supply(vm, queue=light, eligible_models=[vm], iter_avg=8.0)
+    s6_heavy = s6_capable_supply(vm, queue=heavy, eligible_models=[vm], iter_avg=8.0)
+
+    failures = []
+    if not (s6_heavy < 0):
+        failures.append(f"S6: heavy vision shortage must be negative, got {s6_heavy}")
+    if not (s6_heavy <= s6_light):
+        failures.append(f"S6: heavier shortage must be >= magnitude (heavy {s6_heavy} "
+                        f"!<= light {s6_light}) — graded, not bang-bang")
+    return failures
+
+
+# ── rp5: overdraw early-warning — hammer a tank, load must shift before 0 ─────
+
+def rp5_overdraw_early_warning() -> Scenario:
+    """One mid-cap free giant + one comparable-cap free peer + paid fallback.
+    A steady stream of medium tasks. With S7 de-blinded, sustained burn on the
+    first free pool must raise conserve-pressure and shift share to the peer
+    BEFORE the hammered pool hits 0 (no exhaustion → no 'no candidates')."""
+    providers = {
+        "hot": {"is_free": True, "models": {"hot/m": {"cap_score_100": 78}}},
+        "cool": {"is_free": True, "models": {"cool/m": {"cap_score_100": 77}}},
+        "anthropic": {"is_free": False, "models": {"anthropic/claude": {"cap_score_100": 92}}},
+    }
+    state = SimState()
+    state.locals["loaded-local"] = SimLocalModel(is_loaded=True, idle_seconds=300.0, tokens_per_second=15.0)
+    state.time_bucketed["hot/m"] = SimPoolCounter(remaining=60, limit=60, reset_at=7200.0)
+    state.time_bucketed["cool/m"] = SimPoolCounter(remaining=60, limit=60, reset_at=7200.0)
+    state.per_call["anthropic/claude"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
+    tasks = [SimTask(idx=i, difficulty=6, estimated_output_tokens=1500) for i in range(100)]
+    return Scenario(
+        name="rp5_overdraw_early_warning",
+        tasks=tasks,
+        initial_state=state,
+        snapshot_factory=_build_snapshot_factory(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
+    )
+
+
+def assert_rp5(scenario: "Scenario") -> list[str]:
+    from sim.runner import run_simulation
+    run = run_simulation(
+        tasks=scenario.tasks, initial_state=scenario.initial_state,
+        select_fn=scenario.select_fn, snapshot_factory=scenario.snapshot_factory,
+    )
+    hot = run.final_state.time_bucketed.get("hot/m")
+    cool = run.final_state.time_bucketed.get("cool/m")
+    failures = []
+    if hot and hot.remaining <= 0:
+        failures.append(f"rp5: hot pool exhausted (remaining={hot.remaining}) — S7 did not warn early")
+    hot_used = (hot.limit - hot.remaining) if hot else 0
+    cool_used = (cool.limit - cool.remaining) if cool else 0
+    if cool_used == 0 and hot_used > 0:
+        failures.append("rp5: cool peer never used — load did not spread off the hammered pool")
+    return failures
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 POOL_PRESSURE_SCENARIOS = [
@@ -1238,6 +1350,9 @@ POOL_PRESSURE_SCENARIOS = [
     ("pp7_difficulty_lookahead", pp7_difficulty_lookahead),
     ("pp8_equilibrium_mission", pp8_equilibrium_mission),
     ("pp9_giant_vs_small_idle_spread", pp9_giant_vs_small_idle_spread),
+    ("s7_continuity", pp1_fat_vs_tiny),
+    ("s6_conserve", pp1_fat_vs_tiny),
+    ("rp5_overdraw_early_warning", rp5_overdraw_early_warning),
 ]
 
 # Realistic-pool scenarios — distribution observation (no pass/fail
@@ -1248,6 +1363,7 @@ REALISTIC_POOL_SCENARIOS = [
     ("rp2_gemini_rpd_burned", rp2_gemini_rpd_burned),
     ("rp3_groq_constrained_premium_intelligent", rp3_groq_constrained_premium_intelligent),
     ("rp4_full_cloud_exhaustion", rp4_full_cloud_exhaustion),
+    ("rp5_overdraw_early_warning", rp5_overdraw_early_warning),
 ]
 
 # Per-scenario assertion callables (scenarios 1-7 pressure-only; 8 full-flow)
@@ -1261,4 +1377,7 @@ POOL_PRESSURE_ASSERTIONS: dict[str, Callable] = {
     "pp7_difficulty_lookahead": lambda sc: assert_pp7_m3_weights(),
     "pp8_equilibrium_mission": lambda sc: assert_pp8(sc),
     "pp9_giant_vs_small_idle_spread": lambda sc: assert_pp9(sc),
+    "s7_continuity": lambda sc: assert_s7_continuity(),
+    "s6_conserve": lambda sc: assert_s6_conserve(),
+    "rp5_overdraw_early_warning": lambda sc: assert_rp5(sc),
 }

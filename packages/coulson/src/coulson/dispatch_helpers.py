@@ -12,6 +12,7 @@ from typing import Any
 
 import fatih_hoca
 from fatih_hoca.types import Failure, Pick
+from fatih_hoca.urgency import mid_task_urgency
 
 from src.infra.logging_config import get_logger
 
@@ -58,9 +59,9 @@ def pick_for_iter(
         if held is not None and fatih_hoca.is_servable(model=held.model, reqs=reqs):
             return held
 
-    urgency = 0.5
-    if failures:
-        urgency = min(1.0, urgency + 0.1)
+    urgency = mid_task_urgency(
+        task.get("_admission_urgency"), has_failures=bool(failures),
+    )
 
     pick = fatih_hoca.select(
         task=reqs.effective_task or reqs.primary_capability,

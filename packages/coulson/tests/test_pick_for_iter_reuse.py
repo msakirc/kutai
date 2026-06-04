@@ -105,8 +105,8 @@ def test_reselects_when_failures_present(monkeypatch):
     )
     assert result is fresh
     assert len(calls) == 1
-    # urgency bumped +0.1 when failures present
-    assert calls[0]["urgency"] == 0.6
+    # mid-task urgency = base 0.5 + finish-bias 0.1 + failure-bump 0.1
+    assert abs(calls[0]["urgency"] - 0.7) < 1e-9
 
 
 def test_held_pick_updated_after_reselect_then_reused(monkeypatch):

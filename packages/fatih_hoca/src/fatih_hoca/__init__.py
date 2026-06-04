@@ -8,6 +8,7 @@ from fatih_hoca.requirements_builder import requirements_for
 from fatih_hoca.capabilities import Cap, ALL_CAPABILITIES, TASK_PROFILES
 from fatih_hoca.ranking import ScoredModel
 from fatih_hoca.selector import Selector
+from fatih_hoca.urgency import mid_task_urgency  # noqa: F401
 
 __all__ = [
     "init", "select", "is_servable", "all_models", "requirements_for",
@@ -15,6 +16,7 @@ __all__ = [
     "AGENT_REQUIREMENTS", "CAPABILITY_TO_TASK",
     "Cap", "ALL_CAPABILITIES", "TASK_PROFILES",
     "discovery_results",
+    "mid_task_urgency",
 ]
 
 _selector: Selector | None = None

@@ -285,7 +285,6 @@ async def next_task(lane: str | None = None):
     """
     import os
     from general_beckman import queue as _queue
-    from general_beckman.admission import compute_urgency
     from general_beckman.cron import fire_due
     from general_beckman.lanes import (
         LANE_ONESHOT, cap_for, count_in_flight, has_ready_mechanical,

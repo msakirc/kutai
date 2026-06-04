@@ -58,6 +58,7 @@ from .guards import (
 )
 from .grounding import (
     extract_written_paths, unmatched_produces, autopersist_candidate,
+    recanonicalize_candidate,
 )
 from .parsing import parse_action, parse_function_call, unwrap_final_answer
 
@@ -831,10 +832,24 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             try:
                 _ap_action = parsed.get("action", "final_answer") if isinstance(parsed, dict) else "final_answer"
                 if _ap_action == "final_answer" and isinstance(_task_ctx, dict):
+                    # Schema validator (when the step declares one): lets
+                    # autopersist prefer a fence-buried artifact over a
+                    # narration wrapper that merely embeds it (mission 81 §4).
+                    _ap_schema = _task_ctx.get("artifact_schema")
+                    _ap_ok = None
+                    if isinstance(_ap_schema, dict) and _ap_schema:
+                        from src.workflows.engine.hooks import validate_artifact_schema as _ap_validate
+
+                        def _ap_ok(_c: str, _s=_ap_schema) -> bool:
+                            try:
+                                return bool(_ap_validate(_c, _s)[0])
+                            except Exception:
+                                return False
                     _ap_cand = autopersist_candidate(
                         _task_ctx.get("produces") or [],
                         extract_written_paths(tool_calls),
                         parsed.get("result", content),
+                        schema_ok=_ap_ok,
                     )
                     if _ap_cand is not None:
                         _ap_rel, _ap_content = _ap_cand
@@ -861,6 +876,80 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                             )
             except Exception as _ap_top_exc:
                 logger.debug(f"[Task #{task_id}] auto-persist skipped: {_ap_top_exc}")
+
+            # ── CANONICALIZE OVERRIDE ──
+            # The agent wrote the produces path but with the WRONG content —
+            # a chat-style narration / status report — while the real,
+            # schema-valid artifact sits inside a fenced block in
+            # final_answer.result (mission 81, step 1.4a: the competitive
+            # positioning doc was buried in a ```yaml fence; a "Findings /
+            # Recommendations" report landed on disk; verify_* then false-DLQ'd
+            # a correct artifact). Auto-persist above only rescues a totally
+            # unwritten path, so this complements it. Deterministically replace
+            # the file with the unwrapped artifact — but ONLY when the on-disk
+            # content fails the declared schema and the result candidate passes,
+            # so a deliberately written valid file is never clobbered.
+            try:
+                _rc_action = parsed.get("action", "final_answer") if isinstance(parsed, dict) else "final_answer"
+                _rc_schema = _task_ctx.get("artifact_schema") if isinstance(_task_ctx, dict) else None
+                if (
+                    _rc_action == "final_answer"
+                    and isinstance(_task_ctx, dict)
+                    and isinstance(_rc_schema, dict)
+                    and _rc_schema
+                ):
+                    from src.workflows.engine.hooks import validate_artifact_schema as _rc_validate
+                    from src.tools.workspace import WORKSPACE_DIR as _rc_ws
+                    import os.path as _rc_op
+
+                    def _rc_ok(_c: str) -> bool:
+                        try:
+                            return bool(_rc_validate(_c, _rc_schema)[0])
+                        except Exception:
+                            return False
+
+                    _rc_produces = _task_ctx.get("produces") or []
+                    _rc_written = extract_written_paths(tool_calls)
+                    # Read current on-disk content for the single produces path.
+                    _rc_disk = None
+                    if isinstance(_rc_produces, list) and len(_rc_produces) == 1 and isinstance(_rc_produces[0], str):
+                        _rc_rel = _rc_produces[0]
+                        _rc_abs = _rc_rel if _rc_op.isabs(_rc_rel) else _rc_op.join(_rc_ws, _rc_rel)
+                        try:
+                            with open(_rc_abs, encoding="utf-8") as _rc_fh:
+                                _rc_disk = _rc_fh.read()
+                        except OSError:
+                            _rc_disk = None
+                    _rc_cand = recanonicalize_candidate(
+                        _rc_produces,
+                        _rc_written,
+                        parsed.get("result", content) if isinstance(parsed, dict) else content,
+                        disk_content=_rc_disk,
+                        schema_ok=_rc_ok,
+                    )
+                    if _rc_cand is not None:
+                        _rc_path, _rc_content = _rc_cand
+                        _rc_abs = _rc_path if _rc_op.isabs(_rc_path) else _rc_op.join(_rc_ws, _rc_path)
+                        try:
+                            with open(_rc_abs, "w", encoding="utf-8") as _rc_wfh:
+                                _rc_wfh.write(_rc_content)
+                            tool_calls.append({
+                                "name": "write_file",
+                                "args": {"path": _rc_path, "content_len": len(_rc_content)},
+                                "ok": True,
+                                "recanonicalized": True,
+                            })
+                            logger.info(
+                                f"[Task #{task_id}] recanonicalized {_rc_path}: on-disk "
+                                f"content failed schema; wrote unwrapped artifact from "
+                                f"final_answer.result ({len(_rc_content)} chars)"
+                            )
+                        except OSError as _rc_exc:
+                            logger.warning(
+                                f"[Task #{task_id}] recanonicalize write failed for {_rc_path}: {_rc_exc}"
+                            )
+            except Exception as _rc_top_exc:
+                logger.debug(f"[Task #{task_id}] recanonicalize skipped: {_rc_top_exc}")
 
             # ── SUB-ITERATION GUARD CHECK ──
             correction = check_sub_iter_guards(

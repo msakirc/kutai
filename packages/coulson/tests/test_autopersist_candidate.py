@@ -77,3 +77,112 @@ def test_skips_multi_file_produces():
 
 def test_skips_non_text_extension():
     assert autopersist_candidate(["m/logo.png"], set(), "x" * 600) is None
+
+
+# ─── schema-aware unwrap (mission 81 §4 — unwritten narration-wrap hole) ──────
+# When the agent dumps a narration report that BURIES the real artifact in a
+# fenced block, persisting the raw narration passes the loose
+# validate_artifact_schema header scan (it finds `## Section` *inside* the
+# fence) but fails the stricter verify_* front-matter gate (`---` not at file
+# start) → false DLQ. With a schema_ok validator injected, auto-persist must
+# write the UNWRAPPED artifact instead of the raw narration.
+
+_AP_WRAPPED = """## Analysis: Competitive Positioning Lock
+
+### Corrected Artifact Content
+
+```yaml
+---
+_schema_version: "1"
+mission_id: 81
+---
+
+## Landscape
+Habitica and TickTick serve habit + productivity audiences.
+
+## Notes
+- https://habitica.com
+```
+"""
+
+
+def _md_needs(*needles):
+    """Fake schema_ok: passes iff every `## needle` header is present."""
+    def _ok(content: str) -> bool:
+        return all(f"## {n}" in content for n in needles)
+    return _ok
+
+
+def test_md_schema_ok_persists_unwrapped_artifact():
+    # Raw passes validate (headers found inside fence) AND body passes — must
+    # still prefer the UNWRAPPED body so front-matter lands at file start.
+    schema_ok = _md_needs("Landscape", "Notes")
+    got = autopersist_candidate(
+        ["m/cp.md"], set(), _AP_WRAPPED, schema_ok=schema_ok,
+    )
+    assert got is not None
+    path, content = got
+    assert path == "m/cp.md"
+    assert content.startswith("---")            # front-matter at file start
+    assert "## Landscape" in content
+    assert "```" not in content                  # fence markers stripped
+    assert "### Corrected Artifact Content" not in content  # narration gone
+
+
+def test_md_schema_ok_keeps_raw_doc_with_incidental_code_fence():
+    # A real doc that merely *contains* a non-artifact fenced snippet must NOT
+    # be replaced by that snippet. body=`ls -la` fails schema → keep raw doc.
+    doc = "# Real Doc\n\n## Section\n" + ("body " * 120) + "\n```bash\nls -la\n```\n"
+    schema_ok = _md_needs("Section")
+    got = autopersist_candidate(["m/d.md"], set(), doc, schema_ok=schema_ok)
+    assert got is not None
+    path, content = got
+    assert content == doc          # raw doc preserved verbatim
+    assert "ls -la" in content
+
+
+def test_md_schema_ok_keeps_raw_doc_embedding_valid_example_fence():
+    # Doc embeds a complete JSON example in a fence; the md schema needs
+    # `## Vision`, which the JSON body lacks → body fails → keep the raw doc.
+    doc = (
+        "---\nx: 1\n---\n\n# Charter\n\n## Vision\n" + ("v " * 120)
+        + '\n```json\n{"example": true}\n```\n'
+    )
+    schema_ok = _md_needs("Vision")
+    got = autopersist_candidate(["m/c.md"], set(), doc, schema_ok=schema_ok)
+    assert got is not None
+    assert got[1] == doc
+
+
+def test_md_schema_ok_length_fallback_when_neither_passes():
+    # No fence, raw fails schema but is substantial → length heuristic still
+    # persists raw (lets grade/verify give precise feedback, not loop).
+    doc = "# Draft\n\n" + ("filler " * 100)   # >500 chars, lacks required header
+    schema_ok = _md_needs("Vision")
+    got = autopersist_candidate(["m/c.md"], set(), doc, schema_ok=schema_ok)
+    assert got == ("m/c.md", doc)
+
+
+def test_md_no_schema_ok_keeps_legacy_length_behavior():
+    # Without schema_ok the function cannot safely distinguish narration from
+    # artifact → falls back to the raw length heuristic (unchanged contract):
+    # it persists the RAW wrapper, never the unwrapped body.
+    raw = _AP_WRAPPED + ("\nmore narration " * 40)   # push past the 500 floor
+    got = autopersist_candidate(["m/cp.md"], set(), raw)
+    assert got == ("m/cp.md", raw)   # raw, not unwrapped — no schema to decide
+
+
+def test_json_unwraps_fenced_artifact_when_raw_unparseable():
+    # Narration wrapping a ```json fence: raw doesn't parse → unwrap + persist
+    # the inner JSON instead of looping to DLQ.
+    wrapped = '## Summary\n\nHere is the artifact:\n```json\n{"items": [1, 2]}\n```\n'
+    got = autopersist_candidate(["m/x.json"], set(), wrapped)
+    assert got is not None
+    path, content = got
+    assert path == "m/x.json"
+    assert json.loads(content) == {"items": [1, 2]}
+
+
+def test_json_unwrap_rejects_unparseable_fence():
+    wrapped = "## Summary\n```json\n{ broken json\n```"
+    assert autopersist_candidate(["m/x.json"], set(), wrapped) is None

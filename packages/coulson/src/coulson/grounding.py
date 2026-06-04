@@ -21,7 +21,8 @@ build_grounding_message()  — didactic feedback string for retry
 from __future__ import annotations
 
 import fnmatch
-from typing import Iterable
+import re
+from typing import Callable, Iterable
 
 
 # Tools that satisfy the "the agent wrote a file" requirement. Each has
@@ -134,7 +135,13 @@ _AUTOPERSIST_EXTENSIONS: tuple[str, ...] = (".md", ".json")
 _AUTOPERSIST_MD_MIN_CHARS = 500
 
 
-def autopersist_candidate(produces: list, written: set[str], result):
+def autopersist_candidate(
+    produces: list,
+    written: set[str],
+    result,
+    *,
+    schema_ok: Callable[[str], bool] | None = None,
+):
     """Decide whether to auto-persist an inline ``final_answer`` artifact.
 
     Returns ``(relative_path, content_to_write)`` when the step declared a
@@ -154,6 +161,16 @@ def autopersist_candidate(produces: list, written: set[str], result):
                    (serialized here). Invalid/empty JSON is rejected so a
                    malformed artifact never lands on disk for a downstream
                    step to choke on.
+
+    ``schema_ok`` (optional, ``callable(str) -> bool``): the declared
+    artifact-schema validator. When supplied, a fence-buried artifact is
+    preferred over a narration wrapper that merely *embeds* it (mission 81
+    §4): persisting the raw narration passes the loose
+    ``validate_artifact_schema`` header scan — which finds ``## Section``
+    *inside* the fence — yet fails the stricter ``verify_*`` front-matter
+    gate (``---`` not at file start). Without ``schema_ok`` a pure heuristic
+    cannot tell narration-wrapping-an-artifact from a doc that merely
+    *contains* an example fence, so the legacy length heuristic is used.
     """
     if not isinstance(produces, list) or len(produces) != 1:
         return None
@@ -168,21 +185,142 @@ def autopersist_candidate(produces: list, written: set[str], result):
         import json
         if isinstance(result, (dict, list)):
             try:
-                result = json.dumps(result, ensure_ascii=False, indent=2)
+                return (path, json.dumps(result, ensure_ascii=False, indent=2))
             except (TypeError, ValueError):
                 return None
         if not isinstance(result, str) or not result.strip():
             return None
+        candidate = result
         try:
-            json.loads(result)
+            json.loads(candidate)
         except (ValueError, TypeError):
-            return None
-        return (path, result)
+            # Raw didn't parse — the JSON may be buried in a ```json fence
+            # inside a narration wrapper. Unwrap and retry before giving up.
+            body = unwrap_fenced_artifact(result)
+            if not isinstance(body, str):
+                return None
+            try:
+                json.loads(body)
+            except (ValueError, TypeError):
+                return None
+            candidate = body
+        return (path, candidate)
 
-    # .md — substantive markdown heuristic
-    if isinstance(result, str) and len(result.strip()) >= _AUTOPERSIST_MD_MIN_CHARS:
+    # .md
+    if not isinstance(result, str):
+        return None
+    # Schema-aware: prefer a fence-buried artifact that passes the schema over
+    # the raw narration wrapper. Checked first so front-matter lands at the
+    # file start (the raw wrapper passes the loose header scan but fails the
+    # stricter verify_* gate). A non-artifact fence (e.g. a ```bash snippet)
+    # or an embedded example that fails the schema falls through to the raw.
+    if schema_ok is not None:
+        body = unwrap_fenced_artifact(result)
+        if isinstance(body, str) and schema_ok(body):
+            return (path, body)
+        if schema_ok(result):
+            return (path, result)
+    # Legacy substantive-markdown heuristic (no schema available, or neither
+    # candidate conforms — persist the draft so grade/verify can give precise
+    # feedback instead of the agent looping to max_iterations).
+    if len(result.strip()) >= _AUTOPERSIST_MD_MIN_CHARS:
         return (path, result)
     return None
+
+
+# Matches a fenced code block, capturing the body (without the fence lines).
+# Tolerates an optional language tag (```yaml / ```md / ```json / ```).
+_FENCE_RE = re.compile(r"```[^\n`]*\n(.*?)\n```", re.DOTALL)
+
+
+def _looks_like_artifact(body: str) -> bool:
+    """A fence body that looks like a document/data artifact, not a shell
+    snippet — starts with YAML front-matter, a markdown header, or JSON."""
+    s = body.strip()
+    return bool(s) and (
+        s.startswith("---") or s.startswith("#")
+        or s.startswith("{") or s.startswith("[")
+    )
+
+
+def unwrap_fenced_artifact(result) -> str | None:
+    """Extract a buried artifact from a narration-wrapped ``result``.
+
+    Cloud LLMs frequently answer with a chat-style report
+    (``## Analysis / ### Summary / ### Corrected Artifact Content``) that
+    embeds the *real* document inside a ```` ```yaml ```` / ```` ```md ````
+    fence. Persisting the raw narration to the produces path makes the
+    verify gate read a report instead of the artifact (mission 81, 1.4a).
+
+    Returns the inner body of the most-substantial artifact-looking fenced
+    block (front-matter / header / JSON preserved, fence markers + narration
+    stripped). Returns ``None`` when ``result`` is not a string or has no
+    fenced block — the caller then falls back to the raw ``result``.
+    """
+    if not isinstance(result, str):
+        return None
+    blocks = _FENCE_RE.findall(result)
+    if not blocks:
+        return None
+    artifactish = [b for b in blocks if _looks_like_artifact(b)] or blocks
+    best = max(artifactish, key=lambda b: len(b.strip())).strip()
+    return best or None
+
+
+def recanonicalize_candidate(
+    produces: list,
+    written: set[str],
+    result,
+    *,
+    disk_content: str | None,
+    schema_ok: Callable[[str], bool],
+) -> tuple[str, str] | None:
+    """Decide whether to OVERWRITE a written-but-wrong text artifact.
+
+    Complements :func:`autopersist_candidate` (which rescues a *totally
+    unwritten* path). Here the agent DID write the single declared
+    ``.md`` / ``.json`` produces path, but with non-conforming content
+    (narration / a status report) while the schema-valid artifact lives in
+    ``result`` — typically inside a fenced block.
+
+    Conservative override rule — fire only when BOTH hold, so a deliberately
+    written valid file is never clobbered:
+      * the on-disk content FAILS ``schema_ok``; and
+      * the result candidate (unwrapped fence, else raw result) PASSES it.
+
+    ``schema_ok`` is injected (callable(str) -> bool) to keep this module
+    pure and free of any artifact-schema / workspace import. Returns
+    ``(relative_path, canonical_content)`` to write, or ``None``.
+    """
+    if not isinstance(produces, list) or len(produces) != 1:
+        return None
+    path = produces[0]
+    if not isinstance(path, str) or not path.endswith(_AUTOPERSIST_EXTENSIONS):
+        return None
+    # Only the WRITTEN-but-wrong case — unwritten is autopersist_candidate's job.
+    if unmatched_produces(produces, written) == produces:
+        return None
+    # Need on-disk content that currently fails the schema; if it already
+    # conforms (or we can't read it), leave the file alone.
+    if not isinstance(disk_content, str) or schema_ok(disk_content):
+        return None
+
+    candidate = unwrap_fenced_artifact(result)
+    if candidate is None and isinstance(result, str):
+        candidate = result.strip() or None
+    if not isinstance(candidate, str) or not candidate.strip():
+        return None
+
+    if path.endswith(".json"):
+        import json
+        try:
+            json.loads(candidate)
+        except (ValueError, TypeError):
+            return None  # never overwrite with un-parseable JSON
+
+    if not schema_ok(candidate):
+        return None  # result is no better than disk — don't persist
+    return (path, candidate)
 
 
 def build_grounding_message(

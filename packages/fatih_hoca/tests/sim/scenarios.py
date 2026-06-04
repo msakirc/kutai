@@ -62,7 +62,7 @@ def _standard_i2p_task_mix(count: int = 182, seed: int = 42) -> list[SimTask]:
     return tasks
 
 
-def _build_snapshot_factory(scenario_providers: dict[str, Any]):
+def _build_snapshot_factory(scenario_providers: dict[str, Any], wall_anchor: float | None = None):
     """Builds a closure that turns SimState -> SystemSnapshot-like object.
 
     Uses real nerd_herd types so `snapshot.pressure_for(model)` is available
@@ -82,7 +82,8 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
     # Pin a wall-clock anchor so virtual-clock -> wall-clock mapping is stable
     # within a sim run. We project `counter.reset_at` (virtual seconds) onto the
     # same wall clock for rate-limit reset time calculations.
-    wall_anchor = _time.time()
+    if wall_anchor is None:
+        wall_anchor = _time.time()
 
     def factory(state: SimState) -> Any:
         if state.locals:
@@ -117,11 +118,10 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
                         limits=RateLimitMatrix(),
                     )
                     continue
-                reset_in_secs = max(0.0, counter.reset_at - state.virtual_clock)
                 rpd = RateLimit(
                     limit=counter.limit,
                     remaining=counter.remaining,
-                    reset_at=int(wall_anchor + reset_in_secs),
+                    reset_at=int(wall_anchor + counter.reset_at),
                 )
                 util = 100.0 * (1.0 - counter.remaining / max(1, counter.limit))
                 models[model_id] = CloudModelState(
@@ -144,32 +144,43 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
 def _build_select_fn(scenario_providers: dict[str, Any], tasks: list[SimTask] | None = None):
     """Wires through the real fatih_hoca.select() against the SimState.
 
-    If ``tasks`` is provided, a live ``QueueProfile`` is built from the
-    remaining tail (``tasks[task.idx:]``) at each tick and threaded into
-    ``select_for_simulation``. This fixes Phase 2d bug #2 — scenarios
-    previously fed a fresh empty QueueProfile, making the queue-pressure
-    arm of per_call scarcity permanently dormant.
+    Owns a single ``wall_anchor`` and a per-run ``BurnLog`` so the burn-rate
+    window (S7) and reset-proximity (S9) share one clock: ``now = wall_anchor
+    + state.virtual_clock``. Each pick is recorded into the burn log so the
+    NEXT tick's S7 sees a real rolling rate.
     """
     from types import SimpleNamespace
     from fatih_hoca import selector as _selector
     from fatih_hoca.requirements import QueueProfile
-    snapshot_factory = _build_snapshot_factory(scenario_providers)
+    from nerd_herd.burn_log import BurnLog
+
+    wall_anchor = _time.time()
+    burn_log = BurnLog(window_secs=300.0)
+    snapshot_factory = _build_snapshot_factory(scenario_providers, wall_anchor=wall_anchor)
+
+    # task_name → required capability (only names that imply a hard capability;
+    # everything else implies none, so S6 stays 0 on generic workloads).
+    _CAP_BY_TASK = {"visual_reviewer": "vision"}
 
     def select(state: SimState, task: SimTask) -> Any:
+        now = wall_anchor + state.virtual_clock
         queue_profile = None
         if tasks is not None:
-            # Remaining slice starting at this task. Use positional index,
-            # since task.idx is dense sequential (0..N-1) in all scenarios.
             remaining = tasks[task.idx:]
             total = len(remaining)
             hard = sum(1 for t in remaining if t.difficulty >= 7)
             by_difficulty: dict[int, int] = {}
+            by_capability: dict[str, int] = {}
             for t in remaining:
                 by_difficulty[t.difficulty] = by_difficulty.get(t.difficulty, 0) + 1
+                cap = _CAP_BY_TASK.get(t.task_name)
+                if cap:
+                    by_capability[cap] = by_capability.get(cap, 0) + 1
             queue_profile = QueueProfile(
                 total_ready_count=total,
                 hard_tasks_count=hard,
                 by_difficulty=by_difficulty,
+                by_capability=by_capability,
             )
 
         picked = _selector.select_for_simulation(
@@ -179,7 +190,18 @@ def _build_select_fn(scenario_providers: dict[str, Any], tasks: list[SimTask] | 
             snapshot=snapshot_factory(state),
             providers_cfg=scenario_providers,
             queue_profile=queue_profile,
+            now=now,
+            burn_log=burn_log,
         )
+        # Record this pick's consumption so the next tick's S7 sees it.
+        if picked.pool in ("time_bucketed", "per_call") and picked.provider:
+            burn_log.record(
+                provider=picked.provider,
+                model=picked.model_name,
+                tokens=task.estimated_output_tokens,
+                calls=1,
+                now=now,
+            )
         return SimpleNamespace(
             model_name=picked.model_name,
             pool=picked.pool,

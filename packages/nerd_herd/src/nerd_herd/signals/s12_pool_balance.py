@@ -34,14 +34,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-
-def _smoothstep(x: float) -> float:
-    """Continuous 0→1 ramp with zero slope at both ends (no kink)."""
-    if x <= 0.0:
-        return 0.0
-    if x >= 1.0:
-        return 1.0
-    return x * x * (3.0 - 2.0 * x)
+from nerd_herd.signals._curves import smoothstep as _smoothstep
 
 
 def s12_pool_balance(

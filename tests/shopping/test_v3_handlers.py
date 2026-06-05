@@ -5,7 +5,16 @@ import pytest
 from src.workflows.shopping.pipeline_v2 import (
     Candidate, _candidates_to_json,
     handler_group_prep, handler_group_apply_label_prep, handler_label_apply_filter_gate,
+    handler_synth_prep, handler_synth_apply,
 )
+
+
+def _chosen_group_dict():
+    return {"representative_title": "Galaxy S25", "member_indices": [0],
+            "is_accessory_or_part": False, "prominence": 1.0,
+            "product_type": "authentic_product", "base_model": "Galaxy S25",
+            "variant": None, "authenticity_confidence": 0.9,
+            "matches_user_intent": True, "line_id": "galaxy-s25"}
 
 
 def _cands():
@@ -94,3 +103,48 @@ async def test_label_apply_filter_gate_emits_gate_result():
     assert out["gate"]["kind"] in ("clarify", "chosen", "escalation")
     if out["gate"]["kind"] == "clarify":
         assert out["clarify_payloads"]
+
+
+@pytest.mark.asyncio
+async def test_synth_prep_builds_input_and_meta_from_chosen():
+    cands = _cands()
+    gate = {"gate": {"kind": "chosen"}, "chosen_group": _chosen_group_dict(),
+            "candidates": _candidates_to_json(cands), "query": "s25"}
+    out = await handler_synth_prep(task={}, artifacts={"gate_result": json.dumps(gate)}, ctx={})
+    si = json.loads(out["synth_input"])
+    sm = json.loads(out["synth_meta"])
+    assert si["representative_title"] == "Galaxy S25"
+    assert si["snippets"] == ["iyi"]  # member index 0's snippet
+    assert sm["escalation"] is False and sm["snippet_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_synth_prep_escalates_when_no_group():
+    gate = {"gate": {"kind": "clarify"}, "clarify_payloads": {},
+            "candidates": [], "query": "x"}
+    out = await handler_synth_prep(
+        task={}, artifacts={"gate_result": json.dumps(gate),
+                            "clarify_choice": json.dumps({"kind": "variant", "group_id": 9})}, ctx={})
+    assert json.loads(out["synth_meta"])["escalation"] is True
+
+
+@pytest.mark.asyncio
+async def test_synth_apply_parses_aspects_into_card():
+    cands = _cands()
+    meta = {"group": _chosen_group_dict(), "candidates": _candidates_to_json(cands),
+            "snippet_count": 5, "escalation": False}
+    raw = json.dumps({"aspects": [{"aspect": "kamera", "sentiment": 0.8, "mention_count": 3,
+                                   "summary": "net", "quote": "kamera çok net"}],
+                      "praise": ["hızlı"], "complaints": [], "red_flags": [],
+                      "insufficient_data": False, "overall_sentiment": 0.7,
+                      "comparative_mentions": [], "notable_quote": "iyi telefon"})
+    out = await handler_synth_apply(
+        task={}, artifacts={"synth_raw": raw, "synth_meta": json.dumps(meta)}, ctx={})
+    assert out["escalation_needed"] is False and out["cards"]
+
+
+@pytest.mark.asyncio
+async def test_synth_apply_escalates_on_meta_escalation():
+    out = await handler_synth_apply(
+        task={}, artifacts={"synth_raw": "", "synth_meta": json.dumps({"escalation": True})}, ctx={})
+    assert out["escalation_needed"] is True and out["cards"] == []

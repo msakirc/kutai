@@ -574,6 +574,39 @@ async def step_synthesize_reviews(
     """
     from src.workflows.shopping.prompts_v2 import SYNTHESIS_PROMPT
 
+    snippets = await gather_review_snippets(
+        group, candidates, deep_scrape=deep_scrape, community_query=community_query)
+    if not snippets:
+        logger.info(
+            "synthesize short-circuit (no snippets)",
+            representative_title=group.representative_title,
+        )
+        return _insufficient()
+
+    prompt = SYNTHESIS_PROMPT.format(
+        representative_title=group.representative_title,
+        review_snippets_json=json.dumps(snippets, ensure_ascii=False),
+    )
+
+    try:
+        resp = await _synthesis_llm_call(prompt)
+    except Exception as exc:
+        logger.warning("synthesis LLM failed: %s", exc)
+        return _insufficient()
+
+    return _parse_synthesis_raw(resp.get("content", ""), len(snippets))
+
+
+async def gather_review_snippets(
+    group: ProductGroup,
+    candidates: list[Candidate],
+    *,
+    deep_scrape: bool = False,
+    community_query: str | None = None,
+) -> list[str]:
+    """Gather (and optionally community-augment + cap) the review snippet pile
+    for one group. Deterministic I/O — shared by legacy ``step_synthesize_reviews``
+    and v3 ``handler_synth_prep``. Returns [] when nothing substantive is found."""
     # Gather snippets from all group members. Commerce snippets already filtered
     # in _fetch_reviews; don't re-filter (would drop short test fixtures).
     snippets: list[str] = []
@@ -584,7 +617,6 @@ async def step_synthesize_reviews(
     # Augment with community/forum sources only on explicit deep_scrape (post-pick).
     # Auto-augment on thin commerce piles disabled — community scrapers hit strict
     # rate limits / daily budgets and surfaced ERROR-level alerts during compare-all.
-    # Deep_scrape runs after user commits to a line, where extra latency + risk is OK.
     if deep_scrape:
         cq = (community_query or group.base_model or group.representative_title or "").strip()
         if cq:
@@ -594,7 +626,6 @@ async def step_synthesize_reviews(
                 logger.warning("community augment failed for %s: %s", cq, exc)
                 community = []
             if community:
-                # Merge while keeping order + dedup against existing snippets
                 seen = {re.sub(r"\s+", " ", s.lower())[:60] for s in snippets}
                 for s in community:
                     norm = re.sub(r"\s+", " ", s.lower())[:60]
@@ -608,33 +639,24 @@ async def step_synthesize_reviews(
                 )
 
     if not snippets:
-        logger.info(
-            "synthesize short-circuit (no snippets)",
-            representative_title=group.representative_title,
-        )
-        return _insufficient()
+        return []
 
     # Cap total to avoid context blow-up when community pile is huge
     cap = _MAX_SNIPPETS_PER_PRODUCT * (3 if deep_scrape else 2)
     if len(snippets) > cap:
         snippets = snippets[:cap]
+    return snippets
 
-    prompt = SYNTHESIS_PROMPT.format(
-        representative_title=group.representative_title,
-        review_snippets_json=json.dumps(snippets, ensure_ascii=False),
-    )
 
-    try:
-        resp = await _synthesis_llm_call(prompt)
-    except Exception as exc:
-        logger.warning("synthesis LLM failed: %s", exc)
-        return _insufficient()
-
-    content = _strip_json_fences(str(resp.get("content", "")).strip())
+def _parse_synthesis_raw(raw_text: str, snippet_count: int) -> ReviewSynthesis:
+    """Parse a synthesizer producer's raw JSON output into a ReviewSynthesis.
+    Falls back to ``_insufficient()`` on parse error. Shared by legacy
+    ``step_synthesize_reviews`` and v3 ``handler_synth_apply``."""
+    content = _strip_json_fences(str(raw_text or "").strip())
     try:
         parsed = json.loads(content)
     except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("synthesis LLM output not parseable: %s", exc)
+        logger.warning("synthesis output not parseable: %s", exc)
         return _insufficient()
 
     def _take_list(key: str, n: int = 5) -> list[str]:
@@ -662,7 +684,6 @@ async def step_synthesize_reviews(
     except (TypeError, ValueError):
         overall = 0.0
 
-    # Dedup comparative_mentions — LLM occasionally repeats the same snippet
     raw_comp = _take_list("comparative_mentions", n=8)
     seen_comp: set[str] = set()
     deduped_comp: list[str] = []
@@ -675,24 +696,17 @@ async def step_synthesize_reviews(
         if len(deduped_comp) >= 3:
             break
 
-    syn = ReviewSynthesis(
+    return ReviewSynthesis(
         praise=_take_list("praise"),
         complaints=_take_list("complaints"),
         red_flags=_take_list("red_flags"),
         insufficient_data=bool(parsed.get("insufficient_data", False)),
         aspects=aspects,
         overall_sentiment=overall,
-        review_volume=len(snippets),
+        review_volume=snippet_count,
         notable_quote=str(parsed.get("notable_quote", "")).strip()[:240],
         comparative_mentions=deduped_comp,
     )
-    logger.info(
-        "step_synthesize done",
-        representative_title=group.representative_title,
-        snippet_count=len(snippets),
-        insufficient=syn.insufficient_data,
-    )
-    return syn
 
 
 # Variant suffixes that disqualify a result unless the user explicitly asked
@@ -1330,6 +1344,69 @@ async def handler_label_apply_filter_gate(task: dict, artifacts: dict, ctx: dict
     return out
 
 
+async def handler_synth_prep(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Resolve the group (chosen or post-variant-pick), gather the review snippet
+    pile, and emit `synth_input` (the synthesizer producer's user-message data)
+    plus `synth_meta` (group + candidates + snippet_count for the apply step)."""
+    raw = artifacts.get("gate_result", "{}")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    cands = _candidates_from_json(payload.get("candidates", []))
+
+    gate_kind = payload.get("gate", {}).get("kind")
+    group: ProductGroup | None = None
+    deep = False
+    if gate_kind == "chosen":
+        group = _group_from_dict(payload["chosen_group"])
+    else:
+        choice_raw = artifacts.get("clarify_choice", "{}")
+        choice = json.loads(choice_raw) if isinstance(choice_raw, str) else (choice_raw or {})
+        if choice.get("kind") == "variant":
+            gid = choice.get("group_id")
+            payloads = payload.get("clarify_payloads", {}) or {}
+            picked = payloads.get(str(gid)) if gid is not None else None
+            if picked:
+                group = _group_from_dict(picked)
+                deep = True
+
+    if group is None:
+        return {
+            "synth_input": json.dumps({"representative_title": "", "snippets": []}, ensure_ascii=False),
+            "synth_meta": json.dumps({"escalation": True}, ensure_ascii=False),
+        }
+
+    snippets = await gather_review_snippets(group, cands, deep_scrape=deep)
+    synth_input = {"representative_title": group.representative_title, "snippets": snippets}
+    synth_meta = {
+        "group": _group_to_dict(group),
+        "candidates": _candidates_to_json(cands),
+        "snippet_count": len(snippets),
+        "escalation": False,
+    }
+    return {
+        "synth_input": json.dumps(synth_input, ensure_ascii=False),
+        "synth_meta": json.dumps(synth_meta, ensure_ascii=False),
+    }
+
+
+async def handler_synth_apply(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Parse the synthesizer producer's `synth_raw` into a ReviewSynthesis and
+    render the group card. Reads `synth_meta` for the group + candidates."""
+    meta = json.loads(artifacts.get("synth_meta", "{}"))
+    if meta.get("escalation") or not meta.get("group"):
+        logger.warning("synth_apply: no group resolved")
+        return {"cards": [], "escalation_needed": True}
+
+    group = _group_from_dict(meta["group"])
+    cands = _candidates_from_json(meta.get("candidates", []))
+    snippet_count = int(meta.get("snippet_count", 0))
+    if snippet_count == 0:
+        syn = _insufficient()
+    else:
+        syn = _parse_synthesis_raw(artifacts.get("synth_raw", ""), snippet_count)
+    cards = [format_group_card(group, syn, cands)]
+    return {"cards": cards, "escalation_needed": False}
+
+
 _STEP_HANDLERS_V2 = {
     "resolve_candidates": _handler_resolve_candidates,
     "group_label_filter_gate": _handler_group_label_filter_gate,
@@ -1339,6 +1416,8 @@ _STEP_HANDLERS_V2 = {
     "group_prep": handler_group_prep,
     "group_apply_label_prep": handler_group_apply_label_prep,
     "label_apply_filter_gate": handler_label_apply_filter_gate,
+    "synth_prep": handler_synth_prep,
+    "synth_apply": handler_synth_apply,
 }
 
 _STEP_HANDLERS_V2.update({

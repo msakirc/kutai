@@ -9,9 +9,11 @@ import time
 from renoir import assess
 from .types import ImageSpec, ImageResult
 from .providers.pollinations import PollinationsProvider
+from .providers.huggingface import HuggingFaceProvider
 
 _PROVIDERS: dict = {
     "pollinations": PollinationsProvider(),
+    "huggingface": HuggingFaceProvider(),
 }
 
 

@@ -486,7 +486,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             bonus_count = ctx.get("_bonus_count", 0)
             if bonus_count < _MAX_BONUS:
                 try:
-                    # Check workspace files for progress
+                    # Check workspace files for progress.
                     output_names = ctx.get("output_artifacts", [])
                     mission_id = ctx.get("mission_id") or task.get("mission_id")
                     has_progress = False
@@ -494,12 +494,28 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
                         import os
                         from src.tools.workspace import WORKSPACE_DIR
                         artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                        # Candidate progress files: the mission-root <name>.<ext>
+                        # legacy path (produces-less steps) PLUS every declared
+                        # `produces` path. Since 2026-06-05 the materializer is the
+                        # sole writer for produces-having steps and skips the root
+                        # write, so a root-only check sees no progress and DLQs a
+                        # task that actually wrote its declared artifact.
+                        cand_paths = []
                         for name in output_names:
                             for ext in (".md", ".json", ".txt"):
-                                fpath = os.path.join(artifact_dir, f"{name}{ext}")
-                                if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
-                                    has_progress = True
-                                    break
+                                cand_paths.append(
+                                    os.path.join(artifact_dir, f"{name}{ext}")
+                                )
+                        for entry in (ctx.get("produces") or []):
+                            if isinstance(entry, str) and entry:
+                                cand_paths.append(
+                                    entry if os.path.isabs(entry)
+                                    else os.path.join(WORKSPACE_DIR, entry)
+                                )
+                        for fpath in cand_paths:
+                            if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
+                                has_progress = True
+                                break
                     if has_progress:
                         ctx["_bonus_count"] = bonus_count + 1
                         retry_ctx.max_worker_attempts += 1

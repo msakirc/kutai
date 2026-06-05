@@ -362,7 +362,7 @@ def _top_level_required_field_names(rule: dict) -> list[str]:
 
 
 def _extract_artifact_value(output_value, artifact_name: str, rtype: str):
-    """Parse output and extract the value for ``artifact_name``.
+    r"""Parse output and extract the value for ``artifact_name``.
 
     Returns the extracted value (dict/list/str) or None if parse failed.
     Tries direct JSON, artifact-name-keyed wrapper, single matching value

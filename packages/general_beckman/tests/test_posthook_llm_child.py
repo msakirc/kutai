@@ -31,7 +31,14 @@ async def test_emit_child_spec_is_raw_dispatch(monkeypatch):
     """Calling _enqueue_posthook_llm_child("constrained_emit", ...) builds a
     raw_dispatch=True spec whose messages contain the schema + draft, with a
     response_format set, and enqueues it on the oneshot lane (the only lane the
-    pump dispatches) with the emit resume continuation."""
+    pump dispatches) with the emit resume continuation.
+
+    Contract (post-2026-06-05 should_skip_emit rework): the emit fires ONLY when
+    the draft FAILS the artifact-schema validator (lock-step with the schema
+    gate). So the draft here is an object that carries the top-level key but is
+    MISSING the required nested field — it fails validation, so the emit fires.
+    The skip path (a passing draft) is covered by
+    ``test_emit_skipped_when_draft_validates`` below."""
     import general_beckman.apply as apply_mod
 
     # KutAI artifact_schema dialect: top-level keys are artifact NAMES; each
@@ -42,7 +49,9 @@ async def test_emit_child_spec_is_raw_dispatch(monkeypatch):
             "fields": {"connection_verified": {"type": "boolean"}},
         }
     }
-    draft = "the connection is verified, all good"
+    # Object present, required nested field absent → validate_artifact_schema
+    # returns False → should_skip_emit False → emit fires.
+    draft = '{"connection": {"present_but_incomplete": true}}'
     source = {"id": 42, "mission_id": 7, "result": draft}
     source_ctx = {"artifact_schema": schema, "workflow_step_id": "7.4"}
 
@@ -61,7 +70,7 @@ async def test_emit_child_spec_is_raw_dispatch(monkeypatch):
     # The draft text rides in the user message.
     joined = "\n".join(m["content"] for m in llm["messages"])
     assert "connection_verified" in joined  # schema field surfaced
-    assert "the connection is verified" in joined  # draft surfaced
+    assert "present_but_incomplete" in joined  # draft surfaced
 
     assert kwargs["lane"] == "oneshot"
     assert kwargs["on_complete"] == "posthook.constrained_emit.resume"
@@ -69,6 +78,34 @@ async def test_emit_child_spec_is_raw_dispatch(monkeypatch):
     # mission_id rides in cont_state, never on the child row.
     assert kwargs["cont_state"]["source_task_id"] == 42
     assert kwargs["cont_state"]["mission_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_emit_skipped_when_draft_validates(monkeypatch):
+    """Lock-step contract: when the draft already PASSES the artifact-schema
+    validator (the schema gate would pass), the constrained emit is a no-op —
+    no child is enqueued. Re-emitting a valid draft only risks tail-compression
+    (see should_skip_emit docstring)."""
+    import general_beckman.apply as apply_mod
+
+    schema = {
+        "connection": {
+            "type": "object",
+            "fields": {"connection_verified": {"type": "boolean"}},
+        }
+    }
+    # A draft the (deliberately loose) validator accepts → emit must skip.
+    draft = "the connection is verified, all good"
+    source = {"id": 42, "mission_id": 7, "result": draft}
+    source_ctx = {"artifact_schema": schema, "workflow_step_id": "7.4"}
+
+    with patch.object(apply_mod, "enqueue", AsyncMock(return_value=901)) as enq:
+        result = await apply_mod._enqueue_posthook_llm_child(
+            "constrained_emit", source, source_ctx,
+        )
+
+    enq.assert_not_awaited()
+    assert result is False  # signals "no child enqueued"
 
 
 @pytest.mark.asyncio

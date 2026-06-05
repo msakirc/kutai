@@ -165,10 +165,14 @@ controlled centrally and briefs are reviewable before any README is written.
 | nerd_herd | ✅ | ascii-fied | repair TR chars; verify drift |
 | dogru_mu_samet | ❌ | — | write full bilingual README |
 | intersect | ❌ | — | write full bilingual README |
-| salako | ❌ | — | write full bilingual README |
 | vecihi | ❌ | — | write full bilingual README |
 | workflow_engine | ❌ | — | write full bilingual README |
 | yalayut | ❌ | — | write full bilingual README |
 | yasar_usta | ❌ | — | write full bilingual README |
 
 Excluded from scope: `c21_paraflow_diff`, `sade_kalsin`, `safety_guard`.
+
+`salako` struck from this table: it was renamed to `mr_roboto` (commit
+e16c75d6, full cutover, no shim). `packages/salako/` survives only as orphaned,
+gitignored `.pyc` cruft — nothing tracked, not importable. No README; the work it
+implied is `mr_roboto`'s. The orphan directory was removed.

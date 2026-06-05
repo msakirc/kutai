@@ -1,373 +1,470 @@
-# General Beckman
+# General Beckman — Task master (the queue's mission commander)
 
-**Task master for autonomous AI pipelines. Decides what runs next, owns every task row.**
+> Named for General Beckman in *Chuck* — the commander who decides which
+> mission goes out and what happens when an agent reports back. This package
+> is that authority for the task queue: it owns every task row's lifecycle.
 
-*Three-method public API. Pure rewrite rules. Unified cron table. No lanes, no tick, no handler registry.*
-
-[English](#english) | [Turkce](#turkce)
-
----
+[English](#english) · [Türkçe](#türkçe)
 
 <a id="english"></a>
 
-## What is General Beckman?
+## Purpose
 
-General Beckman is the task-row authority for KutAI. It decides **which task to release next** from the queue and **what to do with each result** — including spawning follow-up tasks (subtasks, retries, clarifications, mission progression). Named after General Beckman in *Chuck*, the NSA commander who hands out missions.
+**What it's good for.** An autonomous system generates far more work than it can
+run at once — user requests, mission steps, retries, clarifications, post-hook
+graders, cron cadences — all against scarce GPU and metered cloud quota.
+General Beckman is the single place that answers two questions so nothing else
+has to: *"which one task should I release right now?"* and *"this one just
+finished — what does its result imply?"*. Callers enqueue work and report
+outcomes; Beckman owns admission, retry/backoff, dead-lettering, queue hygiene,
+mission cost ceilings, and the spawning of every follow-up row.
+
+**What it really does.** `next_task()` is an *admission loop*, not a dumb pop: it
+takes the top-K ready tasks by urgency within a lane, asks the model selector
+for a Pick per candidate, and admits the first whose chosen model clears its
+pool-pressure threshold — claiming it, reserving its in-flight slot, and
+stamping the Pick so the worker reuses it. `on_task_finished()` runs a pure
+pipeline — `route_result → rewrite_actions → apply_actions` — that turns an
+agent's envelope into typed Action dataclasses and applies them as DB rows:
+complete, spawn subtasks, retry with backoff, dead-letter, advance a mission,
+fire a durable continuation. `enqueue()` is the one external write path.
+
+**It does NOT** pick models, run LLM/HTTP calls, manage GPU or processes, or
+compute workflow phases — it asks a *model selector* for a Pick, reads a
+*capacity snapshot* for pressure, and routes mission progression through a
+*mechanical executor* (it never imports the workflow engine). It does NOT talk
+to Telegram directly: every outbound message is a mechanical `notify_user` /
+`clarify` task. There is no distribution, multi-host scheduling, or
+cross-worker fairness — this is one SQLite DB, one async process, one pump.
+
+## Public API
+
+The pump calls three async functions; everything else is internal. Two more
+exports (`resolve_inline`, `on_model_swap`) are wake-up hooks the host fires
+from elsewhere.
 
 ```python
 import general_beckman as beckman
 
-# Called every orchestrator cycle (~3s). Sweeps the queue, fires due crons,
-# picks one dispatchable task. Returns None when the queue is empty or
-# the system is saturated.
-task = await beckman.next_task()
+# 1. Admission — called every orchestrator pump cycle, per lane.
+#    Fires due crons, scans top-K ready tasks by urgency, admits the first
+#    whose selected model clears its pool-pressure gate. None = nothing
+#    admissible this tick (queue empty, lane saturated, or no model has room).
+task = await beckman.next_task(lane=None)          # -> Task | None  (Task = dict)
 
-# Called after every dispatched task returns. Routes the result through
-# rewrite rules, applies actions to the DB. Every follow-up row originates here.
-await beckman.on_task_finished(task_id, result)
+# 2. Result handling — called after every dispatched task returns.
+#    route_result -> rewrite_actions -> apply_actions. Every follow-up row
+#    (subtask, retry, DLQ, MissionAdvance, continuation) originates here.
+await beckman.on_task_finished(task_id, result)    # -> None
 
-# The one external write path — for user- or bot-initiated tasks
-# (/task, /shop, etc.). Not used for result-driven or cron-driven tasks.
-new_task_id = await beckman.enqueue(spec)
+# 3. The single external write path — user/bot tasks, subtasks, cron rows.
+new_id = await beckman.enqueue(spec)               # -> int (task id)
 ```
 
-That's the entire surface. No public classes, no registries, no pub/sub, no `tick()`. Orchestrator calls those three functions and nothing more.
-
-## Why General Beckman?
-
-| | Beckman | Celery | RQ | Dramatiq |
-|---|---|---|---|---|
-| **Scope** | Single-process async task master | Distributed broker + workers | Redis-backed queue | Distributed with brokers |
-| **Result handling** | Pure rewrite rules → DB actions | Callbacks / chains / groups | Return value / job status | Middleware chain |
-| **Retry policy** | Typed `decide_retry` + quality bonus | Celery retry, exponential | `retry()` + `max_retries` | `Retries` middleware |
-| **Cron** | Unified table (crontab + interval) | `celery beat` (separate process) | `rq-scheduler` | Periodic tasks |
-| **Deps** | sqlite + mr_roboto + nerd_herd | Redis/RabbitMQ + kombu + celery | Redis | Redis/RabbitMQ |
-| **Mission/workflow awareness** | Yes, via `MissionAdvance` action | Via chains/groups | Via dependent jobs | Via groups |
-| **Queue hygiene** | Integrated sweep (stuck, dep cascade, escalation) | None (outside scope) | None | None |
-
-Beckman is deliberately narrow: one SQLite DB, one async process, one pump. It does not solve distribution, multi-host scheduling, or cross-worker fairness. It solves **"given my current capacity signal, what task should run next and what should I do when it finishes?"**.
-
-## Design principle
-
-> **Orchestrator orchestrates. Beckman owns tasks. Hoca owns models. Nerd Herd owns utilization.**
-
-Beckman answers *"should I dispatch one more?"* via a single system-busy bit from `nerd_herd.snapshot()`. No lanes, no partitioning. Model-aware concerns (swap budget, loaded-model affinity) live per-call inside `fatih_hoca.select()`. Workflow engine lives in its own package and is invoked via a thin `mr_roboto.workflow_advance` mechanical executor — never imported from here.
-
-## Features
-
-### Task selection (`next_task`)
-- Age-based priority boost (+0.1/hour, cap +1.0) to prevent starvation
-- Paused-pattern filter (DLQ category skip — `/dlq pause category:quality` excludes those tasks)
-- Single system-busy bit from `nerd_herd.snapshot()` — mechanical tasks still dispatch under busy, LLM tasks hold
-- Opportunistic sweep and cron fire in the same call (throttled internally)
-
-### Result handling (`on_task_finished`)
-- `route_result(task, result)` produces typed Action dataclasses
-- `rewrite_actions(task, ctx, actions)` — pure policy rewrites (mission-task complete injects `MissionAdvance`, silent task clarify becomes `Failed`, workflow step subtasks blocked, clarification history reused)
-- `apply_actions(task, actions)` — action → DB rows, one branch per type
-- Retry / DLQ decisions via `retry.decide_retry` — typed output, pure policy
-
-### Cron (unified table)
-- Both user crons (`cron_expression`) and internal cadences (`interval_seconds`) live in one `scheduled_tasks` table
-- 6 internal cadences seeded on first `next_task()`: `beckman_sweep`, `hoca_benchmark_refresh`, `nerd_herd_health_alert`, `todo_reminder`, `daily_digest`, `api_discovery`
-- Marker payloads (`sweep`, `benchmark_refresh`, `nerd_herd_health`) dispatch internally; non-markers insert concrete task rows
-
-### Queue hygiene (`sweep_queue` via marker)
-- Stuck `processing` tasks (>5 min) → infra-reset up to 3 times, then fail
-- Ungraded stuck >30 min → promote to completed (safety net)
-- Pending tasks with all deps failed → cascade fail (unless any dep is in DLQ)
-- `waiting_subtasks` with all children terminal → mark complete/failed
-- Pending tasks with `next_retry_at` >1h overdue → clear the gate
-- `waiting_human` escalation tiers (4h nudge / 24h tier 1 / 48h tier 2 / 72h cancel) — notifications via `mr_roboto.notify_user` tasks
-- Workflow-level timeout → pause mission
-
-### Retry policy (`retry.decide_retry`)
-- Backoff table: `[0, 10, 30, 120, 600]` seconds — first retry immediate, subsequent back off
-- Exhausted (attempts ≥ max) → DLQ, unless category is `quality` AND progress ≥ 0.5 AND fewer than 2 bonus attempts granted (then one bonus, `bonus_used=True`)
-- DLQ writes to `dead_letter_tasks` table + spawn a `mr_roboto.notify_user` task with failure summary (no inline Telegram)
-
-## Install
-
-```bash
-pip install -e ./packages/general_beckman
-```
-
-Requires `sqlite3`, `nerd_herd`, `mr_roboto` (listed in pyproject.toml).
-
-## API
-
-### Public functions
+`enqueue` carries the full lifecycle contract via keyword-only options:
 
 ```python
-async def next_task() -> Task | None
-async def on_task_finished(task_id: int, result: dict) -> None
-async def enqueue(spec: dict) -> int
+new_id = await beckman.enqueue(
+    spec,                       # dict of add_task kwargs; spec["kind"] defaults "main_work"
+    parent_id=None,             # stored as tasks.parent_task_id
+    lane=None,                  # "oneshot" (default) | "ongoing"; else derived from agent_type
+    on_complete=None,           # name of a durable continuation handler (survives restart)
+    on_error=None,              # continuation handler fired on failure
+    cont_state=None,            # dict passed back to the handler when it fires
+    next_task_spec=None,        # fire-and-forget follow-up spec (context-based, NOT durable)
+)
+# await_inline=True instead RETURNS a TaskResult, blocking until the task
+# reaches a terminal state (resolved via resolve_inline). Mutually exclusive
+# with on_complete/on_error.
+result = await beckman.enqueue(spec, await_inline=True)   # -> TaskResult(status, result, error)
 ```
+
+Wake-up hooks the host fires (not part of the pump):
+
+```python
+beckman.resolve_inline(task_id, TaskResult(...))   # wake an await_inline waiter
+await beckman.on_model_swap(old_model, new_model)  # accelerate retries deferred on model load
+```
+
+Top-level exports (`__all__`): functions `next_task`, `on_task_finished`,
+`enqueue`, `on_model_swap`, `resolve_inline`, `notify_threshold`; types `Task`,
+`AgentResult`, `TaskResult`; constants `INLINE_TIMEOUT`, `THRESHOLDS_PCT`.
+`Task` and `AgentResult` are both `dict[str, Any]` aliases — a task is a raw DB
+row, not a dataclass.
 
 ### Action types (`result_router`)
 
+`route_result(task, agent_result) -> list[Action]` maps an agent envelope's
+`status` to one of these frozen dataclasses; `apply_actions` has one DB branch
+per type:
+
 ```python
 Complete(task_id, result, iterations, metadata, raw)
-CompleteWithReusedAnswer(task_id, result, raw)
+CompleteWithReusedAnswer(task_id, result, raw)     # clarification reused from history
 SpawnSubtasks(parent_task_id, subtasks, raw)
 RequestClarification(task_id, question, chat_id, raw)
 RequestReview(task_id, summary, raw)
-Exhausted(task_id, error, raw)
-Failed(task_id, error, raw)
+Exhausted(task_id, error, raw)                     # -> decide_retry
+Failed(task_id, error, raw)                        # -> decide_retry
 MissionAdvance(task_id, mission_id, completed_task_id, raw)
+RequestPostHook(source_task_id, kind, source_ctx)  # spawn grader / summary
+PostHookVerdict(source_task_id, kind, passed, raw, action="gate"|"rewrite", new_result=None)
 ```
 
-### Retry decision
+### Retry decision (`retry`)
 
 ```python
-decide_retry(failure: dict, progress: float | None = None,
-             bonus_count: int = 0) -> RetryDecision | DLQAction
+from general_beckman.retry import decide_retry, RetryDecision, DLQAction
 
-RetryDecision(action="immediate" | "delayed", delay_seconds=0, bonus_used=False)
-DLQAction(category="unknown", reason="")
-```
-
-### Paused patterns (DLQ pause filter)
-
-```python
-from general_beckman.paused_patterns import pause, unpause, all_paused, is_paused
-
-pause("category:quality")       # exclude tasks with error_category="quality"
-unpause("category:quality")
-patterns = all_paused()         # set[str]
-is_paused(task_row)             # bool
+decide_retry(failure: dict, progress: float | None = None, bonus_count: int = 0)
+#   -> RetryDecision(action="immediate"|"delayed", delay_seconds, bonus_used)
+#   -> DLQAction(action="dlq", category, reason)
 ```
 
 ## Architecture
 
 ```
-general_beckman/
-  ├── __init__.py          — public API (next_task / on_task_finished / enqueue)
-  ├── types.py             — Task + AgentResult dataclass re-exports
-  ├── queue.py             — pick_ready_task (priority boost + paused-pattern filter)
-  ├── cron.py              — fire_due: scheduled_tasks processor, marker dispatch
-  ├── cron_seed.py         — lazy-seeds 6 canonical internal cadences
-  ├── sweep.py             — queue hygiene (stuck / cascade / escalation / workflow timeout)
-  ├── rewrite.py           — pure action-rewriting rules (replaced result_guards.py)
-  ├── apply.py             — action → DB rows (one branch per Action type)
-  ├── retry.py             — decide_retry policy + DLQ decision
-  ├── paused_patterns.py   — DLQ pause-pattern module state
-  ├── result_router.py     — agent result → Action dataclasses
-  └── task_context.py      — parse_context helper
+orchestrator pump (per lane, per cycle)
+  └─ next_task(lane) ── admission loop
+       ├─ fire_due()                  cron: markers dispatch internally,
+       │                              non-markers insert concrete task rows
+       ├─ lane cap check              (mechanicals exempt — CPU-only, no GPU/cloud)
+       ├─ capacity snapshot           pool pressure, overlaid with in-process truth
+       ├─ pick_ready_top_k(urgency)   age-boosted, paused-pattern-filtered
+       └─ per candidate:
+            mechanical?  → claim & return (no model, no pressure gate)
+            else → selector.select(urgency, …) → pick clears pressure gate?
+                   → cost-ceiling ok? → claim → reserve in-flight slot → return
+
+orchestrator runs the agent / mechanical, then:
+  on_task_finished(task_id, result)
+    ├─ accumulate mission spent_usd, fire 50/75/90% ceiling notifies
+    ├─ post_execute_workflow_step  (may flip status before routing)
+    ├─ route_result   → Action dataclasses
+    ├─ rewrite_actions → pure policy (mission complete → +MissionAdvance,
+    │                    silent clarify → Failed, clarification reuse, …)
+    ├─ apply_actions  → DB side-effects, one branch per Action
+    └─ fire durable continuations on TRUE terminal (re-read DB status)
 ```
 
-Each module has one responsibility. `sweep.py` is the largest (~370 lines, seven distinct hygiene branches). Everything else is under 260 lines.
+Mission progression carries no workflow-engine import: a completed mission task
+gets a `MissionAdvance` rewritten in, which spawns a mechanical
+`workflow_advance` task; the mechanical executor delegates to the workflow
+engine and returns the next phase's subtasks as a normal result, which
+`on_task_finished` spawns as `SpawnSubtasks`.
 
-### Task flow — dispatch pump
+## Key Modules
 
+| module | role |
+|---|---|
+| `__init__.py` | public API: `next_task` admission loop, `on_task_finished` pipeline, `enqueue`, cost-ceiling + threshold notifies |
+| `queue.py` | `pick_ready_top_k` — age-boost ordering + paused-pattern filter |
+| `admission.py` | per-task urgency computation (stamped on the row for worker reuse) |
+| `lanes.py` | `oneshot` / `ongoing` lane policy, per-lane concurrency caps, mechanical exemption |
+| `result_router.py` | `route_result` — agent envelope → typed Action dataclasses |
+| `rewrite.py` | pure action-rewriting policy (no DB) |
+| `apply.py` | `apply_actions` — Action → DB rows; the largest module (post-hook chain machinery) |
+| `retry.py` | `decide_retry` policy + transient/quality backoff ladder + DLQ |
+| `sweep.py` | queue hygiene: stuck / ungraded / dep-cascade / rollup / overdue gates / `waiting_human` escalation / workflow timeout |
+| `cron.py` + `cron_seed.py` | unified `scheduled_tasks` processor; lazily seeds internal cadences |
+| `continuations.py` | durable continuation substrate (`continuations` table, survives restart) |
+| `posthooks.py` + `posthook_handlers/` | post-hook spec registry + handler implementations |
+| `paused_patterns.py` | DLQ pause-pattern module state (`/dlq pause category:…`) |
+
+## Gotchas
+
+- **`next_task` admits at most one task per call.** It returns the first
+  candidate that clears the gate, not a batch. The pump calls it repeatedly.
+- **Admission is the model-selection point.** The Pick chosen here is stamped as
+  `preselected_pick` and reused verbatim by the worker on the happy path —
+  including hoisted OVERHEAD hints from `context.llm_call`. Selection bugs are
+  not Beckman bugs; they live in the model selector.
+- **A stale-state cache can short-circuit the scan.** When input state is
+  unchanged since the last tick *and* that tick admitted nothing, `next_task`
+  returns `None` without re-scanning. A 30s wall-clock bucket and per-model
+  availability flags are mixed into the fingerprint specifically to break a
+  deadlock where every candidate sits at full pressure forever. Mechanical
+  tasks bypass the cache.
+- **Mechanical tasks are unbounded.** No model, no Pick, no pressure gate, no
+  lane cap — they reach the DB even under full LLM saturation, so git commits /
+  blackboard writes / `notify_user` never stall behind slow LLM work.
+- **Continuations fire on the *DB* terminal status, not the in-memory result.**
+  `apply_actions` may re-pend a transient failure; firing on the raw result
+  would latch the failed first attempt. `on_task_finished` re-reads the row and
+  only fires on a true `completed` / `failed`.
+- **Transient vs quality retries differ.** Availability/quota/timeout failures
+  ride the full backoff ladder (tail = 24h, past a daily-quota reset); quality
+  failures retry immediately (waiting can't change a deterministic output). The
+  admission cap-guard, `decide_retry`, and sweep all share
+  `effective_max_attempts` so they agree on when a task is truly exhausted.
+- **`await_inline` and `on_complete`/`on_error` are mutually exclusive** — a
+  blocking wait can't also fire a continuation; `enqueue` raises `ValueError`.
+
+## Dependencies
+
+Declared (pyproject) hard peers — Beckman imports their types/functions
+directly:
+
+- **The capacity tracker** (`nerd_herd`): `next_task` awaits its snapshot for
+  pool pressure, and `queue_profile_push.py` imports its `QueueProfile` type at
+  module load and pushes a live queue profile after each result. This is an
+  import-time coupling, not best-effort.
+- **The mechanical executor** (`mr_roboto`): all non-LLM follow-ups — clarify,
+  notify_user, workflow_advance, schema-gate, semgrep, signature extraction —
+  are created as mechanical rows it dispatches. `apply.py` imports several of
+  its verbs directly.
+
+Best-effort / lazy (NOT declared deps — guarded by `try/except`, system runs
+without them): the **model selector** (queried per candidate for a Pick), the
+**cloud capacity adapter** (overlays in-process rate-limit truth onto the
+snapshot), and a **quality checker** (rejects degenerate clarification text).
+
+Host coupling: Beckman reads and writes the host's SQLite DB throughout
+(`src.infra.db`) and runs the workflow-step post-hook (`src.workflows`) inside
+`on_task_finished`. It is not a standalone library — it is the host's task
+authority.
+
+## Tests
+
+```powershell
+& .\.venv\Scripts\python.exe -m pytest packages\general_beckman\ -q
 ```
-orchestrator.run_loop (3s cycle)
-  └─ task = await beckman.next_task()
-       ├─ cron.fire_due()             — processes scheduled_tasks; markers dispatch
-       │                                internally (sweep, benchmark refresh, health),
-       │                                non-markers insert concrete task rows
-       ├─ queue.pick_ready_task(busy) — age-boost sort → paused filter → claim first
-       └─ returns Task | None
-```
-
-### Task flow — result handling
-
-```
-orchestrator._dispatch runs the agent/mr_roboto, then:
-  beckman.on_task_finished(task_id, result)
-    ├─ route_result(task, result)          — Action dataclasses
-    ├─ rewrite_actions(task, ctx, actions) — pure policy:
-    │                                         mission-task complete → +MissionAdvance
-    │                                         silent task clarify → Failed
-    │                                         workflow step subtasks → blocked
-    │                                         clarification history → reused answer
-    └─ apply_actions(task, actions)        — DB side-effects per action type
-         ├─ Complete / CompleteWithReusedAnswer → update_task(status=completed)
-         ├─ SpawnSubtasks → add_task × N + waiting_subtasks
-         ├─ RequestClarification → mr_roboto.clarify task
-         ├─ RequestReview → reviewer task (deduped)
-         ├─ Exhausted / Failed → decide_retry → pending+backoff | DLQ+notify
-         └─ MissionAdvance → mr_roboto.workflow_advance task
-```
-
-### Mission progression (no workflow-engine imports)
-
-```
-coder task #500 completes (mission_id=M)
-  → on_task_finished → rewrite injects MissionAdvance
-  → apply spawns mechanical task: {executor: workflow_advance, mission_id: M, ...}
-
-Next cycle:
-  orchestrator picks that task → mr_roboto.run(it)
-  → mr_roboto.workflow_advance delegates to workflow_engine.advance()
-  → advance() runs post_execute_workflow_step (artifact capture, phase check)
-  → returns subtasks for phase N+1 → mr_roboto envelope {status: needs_subtasks}
-  → on_task_finished → apply spawns those as SpawnSubtasks → DB rows
-```
-
-## What General Beckman does NOT do
-
-- **LLM model selection** — that's `fatih_hoca`'s job.
-- **Process management / llama-server** — that's `dallama`.
-- **Cloud rate-limit tracking** — that's `kuleden_donen_var`.
-- **Resource health checks** — that's `nerd_herd.health_summary`.
-- **Workflow recipe / phase computation** — that's `workflow_engine`, invoked via `mr_roboto.workflow_advance`.
-- **Telemetry push** — that lives at the dispatch observation point in `src/core/metrics_push.py`.
-- **Telegram I/O** — all outbound messages go through `mr_roboto.clarify` / `mr_roboto.notify_user` mechanical tasks.
-
-## License
-
-MIT
 
 ---
+<a id="türkçe"></a>
 
-<a id="turkce"></a>
+## Türkçe
 
-## General Beckman nedir?
+> Adını *Chuck* dizisindeki General Beckman'dan alır — hangi görevin sahaya
+> çıkacağına ve ajan rapor verdiğinde ne olacağına karar veren komutan. Bu
+> paket, görev kuyruğu için o otoritedir: her görev satırının yaşam döngüsünü
+> sahiplenir.
 
-General Beckman, KutAI icin gorev satiri otoritesidir. Kuyruktan **hangi gorevi serbest birakacagini** ve **her sonucla ne yapacagini** belirler — alt gorevler, yeniden denemeler, soru-sorma ve misyon ilerletme dahil tum takip gorevlerini olusturur. Adini *Chuck* dizisindeki Genera Beckman'dan alir — NSA komutani, ajanlara gorev dagitir.
+### Amaç
+
+**Ne işe yarar.** Otonom bir sistem, aynı anda çalıştırabileceğinden çok daha
+fazla iş üretir — kullanıcı istekleri, misyon adımları, yeniden denemeler,
+soru-sormalar, post-hook değerlendiriciler, cron cadence'ları — hepsi kıt GPU
+ve sayaçlı bulut kotasına karşı. General Beckman, başka hiçbir bileşenin
+uğraşmaması için iki soruyu tek noktada yanıtlar: *"şu anda hangi tek görevi
+serbest bırakmalıyım?"* ve *"bu görev az önce bitti — sonucu neyi gerektiriyor?"*.
+Çağıranlar iş ekler ve sonuç bildirir; admission, yeniden deneme/backoff,
+dead-letter, kuyruk temizliği, misyon maliyet tavanları ve her takip satırının
+oluşturulması Beckman'a aittir.
+
+**Gerçekte ne yapar.** `next_task()` aptal bir pop değil, bir *admission
+döngüsüdür*: bir lane içinde aciliyete göre ilk-K hazır görevi alır, her aday
+için model seçiciden bir Pick ister ve seçilen modeli kendi pool-pressure
+eşiğini geçen ilk görevi kabul eder — onu claim eder, in-flight slotunu rezerve
+eder ve worker'ın aynısını kullanması için Pick'i damgalar. `on_task_finished()`
+saf bir hat işletir — `route_result → rewrite_actions → apply_actions` — bir
+ajanın envelope'unu tipli Action dataclass'larına çevirip DB satırları olarak
+uygular: tamamla, alt görev doğur, backoff'la yeniden dene, dead-letter,
+misyonu ilerlet, kalıcı bir continuation ateşle. `enqueue()` tek dış yazma
+yoludur.
+
+**Yapmadıkları**: model seçmez, LLM/HTTP çağrısı yapmaz, GPU veya süreç
+yönetmez, workflow fazı hesaplamaz — *model seçicisinden* bir Pick ister, basınç
+için bir *kapasite anlık görüntüsü* okur ve misyon ilerlemesini bir *mekanik
+yürütücü* üzerinden geçirir (workflow engine'i asla import etmez). Telegram'la
+doğrudan konuşmaz: tüm giden mesajlar mekanik `notify_user` / `clarify`
+görevidir. Dağıtım, çok-makineli zamanlama veya worker'lar arası adalet yoktur —
+bu tek bir SQLite DB, tek bir asenkron süreç, tek bir pompadır.
+
+### Genel API
+
+Pompa üç asenkron fonksiyon çağırır; gerisi tamamen iç işleyiştir. İki ek export
+(`resolve_inline`, `on_model_swap`) host'un başka yerden ateşlediği uyandırma
+kancalarıdır.
 
 ```python
 import general_beckman as beckman
 
-# Orchestrator dongusunde (~3s) her cagrida calisir. Kuyrugu temizler, vadesi
-# gelmis cronlari ateslar, bir gorev secer. Kuyruk bossa veya sistem doluysa None.
-task = await beckman.next_task()
+# 1. Admission — her orchestrator pompa döngüsünde, lane başına çağrılır.
+#    Vadesi gelmiş cronları ateşler, aciliyete göre ilk-K hazır görevi tarar,
+#    seçilen modeli pool-pressure kapısını geçen ilk görevi kabul eder. None =
+#    bu tick'te kabul edilebilir görev yok (kuyruk boş, lane dolu ya da hiçbir
+#    modelde yer yok).
+task = await beckman.next_task(lane=None)          # -> Task | None  (Task = dict)
 
-# Her sonuclanan gorevden sonra cagrilir. Sonucu rewrite kurallarindan gecirir,
-# DB'ye uygular. Tum takip satirlari buradan dogar.
-await beckman.on_task_finished(task_id, result)
+# 2. Sonuç işleme — sonuçlanan her görevden sonra çağrılır.
+#    route_result -> rewrite_actions -> apply_actions. Her takip satırı
+#    (alt görev, yeniden deneme, DLQ, MissionAdvance, continuation) buradan doğar.
+await beckman.on_task_finished(task_id, result)    # -> None
 
-# Tek disaridan yazma yolu — kullanici veya bot baslatmali gorevler icin
-# (/task, /shop vb.). Sonuc- veya cron-kaynakli gorevler icin kullanilmaz.
-new_task_id = await beckman.enqueue(spec)
+# 3. Tek dış yazma yolu — kullanıcı/bot görevleri, alt görevler, cron satırları.
+new_id = await beckman.enqueue(spec)               # -> int (görev id'si)
 ```
 
-API yuzeyi bundan ibaret. Public class yok, registry yok, pub/sub yok, `tick()` yok. Orchestrator bu uc fonksiyonu cagirir, baska hicbirini.
-
-## Neden General Beckman?
-
-- **Uc metotluk dar yuzey** — Celery/RQ gibi full framework degil. Tek islemde, SQLite uzerinde, asenkron.
-- **Saf rewrite kurallari** — sonuc-islem mantigi pure function, test edilebilir, side effect'siz.
-- **Birlesik cron tablosu** — kullanici crontab ifadeleri ve dahili cadence'lar ayni `scheduled_tasks` tablosunda.
-- **Misyon farkindaligi** — misyon gorevi tamamlandiginda `MissionAdvance` aksiyonu uretir, `mr_roboto.workflow_advance` mechanical gorevi dogurur. Workflow engine'i import etmez.
-- **Entegre kuyruk temizligi** — sikismis task'lar, cascade basarisizliklar, waiting_human tirmandirma, workflow timeout — hepsi dahili `sweep_queue` ile.
-
-## Tasarim ilkesi
-
-> **Orchestrator orchestrate eder. Beckman gorevleri sahiplenir. Hoca modelleri bilir. Nerd Herd utilization'i bilir.**
-
-Beckman *"bir tane daha gonderebilir miyim?"* sorusunu `nerd_herd.snapshot()`'tan gelen tek bir busy biti ile cevaplar. Lane yok, bolmecesiz. Model-farkindali kaygilar (swap budget, yuklu model affinity) per-call olarak `fatih_hoca.select()` icinde yasar. Workflow engine kendi paketinde, thin bir `mr_roboto.workflow_advance` mekanik executor araciligiyla cagrilir — buraya hic import edilmez.
-
-## Ozellikler
-
-### Gorev secimi (`next_task`)
-- Yas tabanli oncelik artirma (+0.1/saat, max +1.0) — aclik onlenir
-- Duraklamis desen filtresi (DLQ kategori atlama — `/dlq pause category:quality`)
-- Nerd Herd'den tek busy biti — sistem mesgulken mechanical gorevler yine dispatch edilir, LLM gorevleri bekler
-- Ayni cagri icinde firsatci sweep ve cron atesi (dahili throttled)
-
-### Sonuc islem (`on_task_finished`)
-- `route_result(task, result)` — typed Action dataclass'lari uretir
-- `rewrite_actions(task, ctx, actions)` — pure policy rewrites
-- `apply_actions(task, actions)` — her Action turu icin bir DB dali
-- `retry.decide_retry` — typed cikti, pure policy
-
-### Cron (birlesik tablo)
-- Kullanici cronlari (`cron_expression`) ve dahili cadence'lar (`interval_seconds`) ayni `scheduled_tasks` tablosunda
-- 6 dahili cadence ilk `next_task()` cagrisinda seed edilir: `beckman_sweep`, `hoca_benchmark_refresh`, `nerd_herd_health_alert`, `todo_reminder`, `daily_digest`, `api_discovery`
-- Marker payload'lar (`sweep`, `benchmark_refresh`, `nerd_herd_health`) dahili dispatch, digerleri somut gorev satiri ekler
-
-### Kuyruk temizligi (`sweep_queue` marker ile)
-- `processing`'de sikismis (>5 dk) → 3 kez infra-reset, sonra fail
-- Ungraded >30 dk sikismis → safety-net ile completed'a yukselt
-- Tum bagimliliklari fail olmus bekleyen → cascade fail (bagimliliklardan biri DLQ'da ise ertelenir)
-- `waiting_subtasks`'ta tum cocuklari terminal olmus → complete/failed isaretle
-- `next_retry_at`'i 1 saatten fazla gecmis bekleyen → kapiyi sifirla
-- `waiting_human` tirmandirma kademeleri (4s dipnot / 24s kademe 1 / 48s kademe 2 / 72s iptal) — bildirim `mr_roboto.notify_user` gorevleri ile
-- Workflow-seviye timeout → misyonu pause et
-
-### Yeniden deneme policy'si (`retry.decide_retry`)
-- Backoff tablosu: `[0, 10, 30, 120, 600]` saniye — ilk deneme anlik, sonrakiler artar
-- Exhausted (denemeler >= max) → DLQ, **eger** kategori `quality` VE progress >= 0.5 VE 2'den az bonus verilmisse bir bonus deneme (`bonus_used=True`)
-- DLQ yazimi `dead_letter_tasks` tablosuna + `mr_roboto.notify_user` gorevi olustur (inline Telegram yok)
-
-## Kurulum
-
-```bash
-pip install -e ./packages/general_beckman
-```
-
-Bagimliliklar: `sqlite3`, `nerd_herd`, `mr_roboto` (pyproject.toml'da).
-
-## API
-
-### Public fonksiyonlar
+`enqueue`, yaşam döngüsü sözleşmesinin tamamını anahtar-kelime seçenekleriyle
+taşır:
 
 ```python
-async def next_task() -> Task | None
-async def on_task_finished(task_id: int, result: dict) -> None
-async def enqueue(spec: dict) -> int
+new_id = await beckman.enqueue(
+    spec,                       # add_task kwarg'ları; spec["kind"] varsayılan "main_work"
+    parent_id=None,             # tasks.parent_task_id olarak saklanır
+    lane=None,                  # "oneshot" (varsayılan) | "ongoing"; yoksa agent_type'tan türetilir
+    on_complete=None,           # kalıcı bir continuation handler adı (restart'tan sağ çıkar)
+    on_error=None,              # hata durumunda ateşlenen continuation handler
+    cont_state=None,            # handler ateşlendiğinde geri verilen dict
+    next_task_spec=None,        # ateşle-unut takip spec'i (context tabanlı, kalıcı DEĞİL)
+)
+# await_inline=True ise bunun yerine bir TaskResult DÖNDÜRÜR, görev terminal
+# duruma ulaşana dek bloklar (resolve_inline ile çözülür). on_complete/on_error
+# ile birlikte kullanılamaz.
+result = await beckman.enqueue(spec, await_inline=True)   # -> TaskResult(status, result, error)
 ```
 
-### Action turleri (`result_router`)
+Host'un ateşlediği uyandırma kancaları (pompanın parçası değil):
 
 ```python
-Complete, CompleteWithReusedAnswer, SpawnSubtasks,
-RequestClarification, RequestReview, Exhausted, Failed, MissionAdvance
+beckman.resolve_inline(task_id, TaskResult(...))   # bir await_inline bekleyicisini uyandır
+await beckman.on_model_swap(old_model, new_model)  # model yüklemesini bekleyen retry'leri hızlandır
 ```
 
-### Paused patterns
+Üst düzey export'lar (`__all__`): `next_task`, `on_task_finished`, `enqueue`,
+`on_model_swap`, `resolve_inline`, `notify_threshold` fonksiyonları; `Task`,
+`AgentResult`, `TaskResult` tipleri; `INLINE_TIMEOUT`, `THRESHOLDS_PCT`
+sabitleri. `Task` ve `AgentResult` ikisi de `dict[str, Any]` takma adıdır — bir
+görev, dataclass değil ham bir DB satırıdır.
+
+### Action türleri (`result_router`)
+
+`route_result(task, agent_result) -> list[Action]`, bir ajan envelope'unun
+`status`'unu aşağıdaki frozen dataclass'lardan birine eşler; `apply_actions`
+her tür için bir DB dalına sahiptir:
 
 ```python
-from general_beckman.paused_patterns import pause, unpause, all_paused, is_paused
+Complete(task_id, result, iterations, metadata, raw)
+CompleteWithReusedAnswer(task_id, result, raw)     # soru-sorma geçmişten yeniden kullanıldı
+SpawnSubtasks(parent_task_id, subtasks, raw)
+RequestClarification(task_id, question, chat_id, raw)
+RequestReview(task_id, summary, raw)
+Exhausted(task_id, error, raw)                     # -> decide_retry
+Failed(task_id, error, raw)                        # -> decide_retry
+MissionAdvance(task_id, mission_id, completed_task_id, raw)
+RequestPostHook(source_task_id, kind, source_ctx)  # grader / summary doğur
+PostHookVerdict(source_task_id, kind, passed, raw, action="gate"|"rewrite", new_result=None)
 ```
 
-## Mimari
+### Yeniden deneme kararı (`retry`)
 
-```
-general_beckman/
-  ├── __init__.py          — public API
-  ├── types.py             — Task + AgentResult
-  ├── queue.py             — pick_ready_task
-  ├── cron.py              — fire_due: scheduled_tasks processor
-  ├── cron_seed.py         — 6 dahili cadence'i seed eder
-  ├── sweep.py             — kuyruk temizligi
-  ├── rewrite.py           — pure action-rewrite kurallari
-  ├── apply.py             — action -> DB satirlari
-  ├── retry.py             — decide_retry + DLQ karari
-  ├── paused_patterns.py   — DLQ pause module state
-  ├── result_router.py     — agent sonucu -> Action dataclass'lari
-  └── task_context.py      — parse_context helper
+```python
+from general_beckman.retry import decide_retry, RetryDecision, DLQAction
+
+decide_retry(failure: dict, progress: float | None = None, bonus_count: int = 0)
+#   -> RetryDecision(action="immediate"|"delayed", delay_seconds, bonus_used)
+#   -> DLQAction(action="dlq", category, reason)
 ```
 
-Her modul tek bir sorumluluga sahip. `sweep.py` en buyugu (~370 satir, 7 ayri temizlik dali). Digerleri 260 satirin altinda.
-
-### Misyon ilerleme (workflow_engine import etmez)
+### Mimari
 
 ```
-coder gorevi #500 tamamlandi (mission_id=M)
-  -> on_task_finished -> rewrite MissionAdvance enjekte eder
-  -> apply mechanical gorev dogurur: {executor: workflow_advance, mission_id: M, ...}
+orchestrator pompası (lane başına, döngü başına)
+  └─ next_task(lane) ── admission döngüsü
+       ├─ fire_due()                  cron: marker'lar dahili dispatch,
+       │                              marker olmayanlar somut görev satırı ekler
+       ├─ lane cap kontrolü           (mekanikler muaf — sadece CPU, GPU/bulut yok)
+       ├─ kapasite anlık görüntüsü     pool basıncı, süreç-içi gerçekle örtülür
+       ├─ pick_ready_top_k(urgency)   yaş-artırımlı, duraklatılmış-desen filtreli
+       └─ aday başına:
+            mekanik mi?  → claim & döndür (model yok, basınç kapısı yok)
+            değilse → seçici.select(urgency, …) → pick basınç kapısını geçti mi?
+                      → maliyet tavanı uygun mu? → claim → in-flight slot rezerve → döndür
 
-Sonraki cycle:
-  orchestrator o gorevi secer -> mr_roboto.run(it)
-  -> mr_roboto.workflow_advance, workflow_engine.advance() cagirir
-  -> advance() post_execute_workflow_step calistirir (artifact capture, phase check)
-  -> N+1 faz icin subtask'lar doner -> mr_roboto envelope {status: needs_subtasks}
-  -> on_task_finished -> apply bunlari SpawnSubtasks olarak DB satirlarina cevirir
+orchestrator ajanı / mekaniği çalıştırır, sonra:
+  on_task_finished(task_id, result)
+    ├─ misyon spent_usd biriktir, %50/75/90 tavan bildirimi ateşle
+    ├─ post_execute_workflow_step  (routing öncesi status'u çevirebilir)
+    ├─ route_result   → Action dataclass'ları
+    ├─ rewrite_actions → saf politika (misyon tamamlandı → +MissionAdvance,
+    │                    sessiz clarify → Failed, soru-sorma yeniden kullanımı, …)
+    ├─ apply_actions  → DB yan etkileri, Action başına bir dal
+    └─ GERÇEK terminal'de kalıcı continuation ateşle (DB status'unu yeniden oku)
 ```
 
-## General Beckman'in Yapmadigi Seyler
+Misyon ilerlemesi hiçbir workflow-engine import'u taşımaz: tamamlanan bir misyon
+görevine bir `MissionAdvance` rewrite ile eklenir, bu da mekanik bir
+`workflow_advance` görevi doğurur; mekanik yürütücü işi workflow engine'e
+devreder ve bir sonraki fazın alt görevlerini normal bir sonuç olarak döndürür,
+`on_task_finished` da bunları `SpawnSubtasks` olarak doğurur.
 
-- **LLM model secimi** — o `fatih_hoca`'nin isi.
-- **Process yonetimi / llama-server** — o `dallama`.
-- **Cloud rate-limit takibi** — o `kuleden_donen_var`.
-- **Kaynak saglik kontrolu** — o `nerd_herd.health_summary`.
-- **Workflow recipe / faz hesabi** — o `workflow_engine`, `mr_roboto.workflow_advance` ile cagrilir.
-- **Telemetry push** — o dispatch gozlem noktasinda, `src/core/metrics_push.py`'da.
-- **Telegram I/O** — tum disariya mesajlar `mr_roboto.clarify` / `mr_roboto.notify_user` mechanical gorevleri uzerinden.
+### Ana Modüller
 
-## Lisans
+| modül | rolü |
+|---|---|
+| `__init__.py` | genel API: `next_task` admission döngüsü, `on_task_finished` hattı, `enqueue`, maliyet tavanı + bildirimler |
+| `queue.py` | `pick_ready_top_k` — yaş-artırımlı sıralama + duraklatılmış-desen filtresi |
+| `admission.py` | görev başına aciliyet hesabı (worker yeniden kullanımı için satıra damgalanır) |
+| `lanes.py` | `oneshot` / `ongoing` lane politikası, lane başına eşzamanlılık tavanı, mekanik muafiyeti |
+| `result_router.py` | `route_result` — ajan envelope'u → tipli Action dataclass'ları |
+| `rewrite.py` | saf action-rewrite politikası (DB yok) |
+| `apply.py` | `apply_actions` — Action → DB satırları; en büyük modül (post-hook zincir makinesi) |
+| `retry.py` | `decide_retry` politikası + transient/quality backoff merdiveni + DLQ |
+| `sweep.py` | kuyruk temizliği: sıkışmış / değerlendirilmemiş / dep-cascade / rollup / vadesi geçmiş kapılar / `waiting_human` tırmandırma / workflow timeout |
+| `cron.py` + `cron_seed.py` | birleşik `scheduled_tasks` işleyicisi; dahili cadence'ları tembel seed eder |
+| `continuations.py` | kalıcı continuation altyapısı (`continuations` tablosu, restart'tan sağ çıkar) |
+| `posthooks.py` + `posthook_handlers/` | post-hook spec kaydı + handler uygulamaları |
+| `paused_patterns.py` | DLQ duraklatma-deseni modül durumu (`/dlq pause category:…`) |
 
-MIT
+### Tuzaklar
+
+- **`next_task` çağrı başına en fazla bir görev kabul eder.** Bir parti değil,
+  kapıyı geçen ilk adayı döndürür. Pompa onu tekrar tekrar çağırır.
+- **Admission, model seçim noktasıdır.** Burada seçilen Pick `preselected_pick`
+  olarak damgalanır ve mutlu yolda worker tarafından aynen yeniden kullanılır —
+  `context.llm_call`'tan kaldırılan OVERHEAD ipuçları dahil. Seçim hataları
+  Beckman hatası değildir; model seçicide yaşar.
+- **Bayat durum cache'i taramayı kısa devre yapabilir.** Giriş durumu son
+  tick'ten beri değişmediyse *ve* o tick hiçbir şey kabul etmediyse, `next_task`
+  yeniden taramadan `None` döner. Fingerprint'e 30s'lik bir duvar-saati kovası
+  ve model başına erişilebilirlik bayrakları, her adayın sonsuza dek tam basınçta
+  takılı kaldığı bir deadlock'u kırmak için özellikle karıştırılmıştır. Mekanik
+  görevler cache'i atlar.
+- **Mekanik görevler sınırsızdır.** Model yok, Pick yok, basınç kapısı yok, lane
+  tavanı yok — tam LLM doygunluğunda bile DB'ye ulaşırlar, böylece git
+  commit'ler / blackboard yazımları / `notify_user` yavaş LLM işinin arkasında
+  takılmaz.
+- **Continuation'lar *DB* terminal status'unda ateşlenir, bellekteki sonuçta
+  değil.** `apply_actions` bir transient hatayı yeniden pending'e alabilir; ham
+  sonuçta ateşlemek başarısız ilk denemeyi mandallar. `on_task_finished` satırı
+  yeniden okur ve yalnızca gerçek bir `completed` / `failed`'de ateşler.
+- **Transient ve quality retry'leri farklıdır.** Erişilebilirlik/kota/timeout
+  hataları tüm backoff merdivenini biner (kuyruk = 24s, günlük kota sıfırlamasını
+  geçer); quality hataları hemen yeniden denenir (beklemek deterministik bir
+  çıktıyı değiştiremez). Admission cap-guard, `decide_retry` ve sweep, bir görevin
+  gerçekten tükendiğine karar vermede aynı `effective_max_attempts`'i paylaşır.
+- **`await_inline` ile `on_complete`/`on_error` birlikte kullanılamaz** —
+  bloklayan bir bekleme aynı anda bir continuation ateşleyemez; `enqueue`
+  `ValueError` fırlatır.
+
+### Bağımlılıklar
+
+Bildirilen (pyproject) sıkı dengler — Beckman onların tiplerini/fonksiyonlarını
+doğrudan import eder:
+
+- **Kapasite izleyici** (`nerd_herd`): `next_task`, pool basıncı için onun anlık
+  görüntüsünü bekler ve `queue_profile_push.py`, `QueueProfile` tipini modül
+  yüklenirken import edip her sonuçtan sonra canlı bir kuyruk profili iter. Bu,
+  best-effort değil, import-zamanı bir bağlantıdır.
+- **Mekanik yürütücü** (`mr_roboto`): tüm LLM-olmayan takipler — clarify,
+  notify_user, workflow_advance, schema-gate, semgrep, imza çıkarımı — onun
+  dispatch ettiği mekanik satırlar olarak oluşturulur. `apply.py` onun verb'lerini
+  doğrudan import eder.
+
+Best-effort / tembel (bildirilen dep DEĞİL — `try/except` ile korunur, sistem
+bunlarsız da çalışır): **model seçici** (aday başına Pick için sorgulanır),
+**bulut kapasite adaptörü** (süreç-içi rate-limit gerçeğini anlık görüntünün
+üzerine bindirir) ve bir **kalite denetleyici** (dejenere soru-sorma metnini
+reddeder).
+
+Host bağlantısı: Beckman baştan sona host'un SQLite DB'sini okur ve yazar
+(`src.infra.db`) ve `on_task_finished` içinde workflow-adım post-hook'unu
+(`src.workflows`) çalıştırır. Bağımsız bir kütüphane değildir — host'un görev
+otoritesidir.
+
+### Testler
+
+```powershell
+& .\.venv\Scripts\python.exe -m pytest packages\general_beckman\ -q
+```

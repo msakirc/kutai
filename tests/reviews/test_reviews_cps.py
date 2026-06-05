@@ -153,3 +153,30 @@ def test_enqueue_draft_reply_uses_platform_convention():
 def test_reviews_continuations_in_handler_modules():
     from general_beckman import continuations as c
     assert "mr_roboto.executors.reviews_continuations" in c._HANDLER_MODULES
+
+
+@pytest.mark.asyncio
+async def test_router_classify_enqueues_producer():
+    import mr_roboto
+    task = {"id": 1, "payload": {"action": "reviews/classify",
+                                 "review_id": 7, "product_id": "p"}}
+    with patch("src.reviews.producers.enqueue_classify",
+               AsyncMock(return_value=4321)) as m:
+        act = await mr_roboto._run_dispatch(task)
+    m.assert_awaited_once()
+    assert act.status == "completed"
+    assert act.result.get("enqueued") == 4321
+
+
+@pytest.mark.asyncio
+async def test_router_draft_reply_enqueues_producer():
+    import mr_roboto
+    task = {"id": 1, "payload": {"action": "reviews/draft_reply",
+                                 "review_id": 7, "product_id": "p"}}
+    with patch("src.reviews.producers.enqueue_draft_reply",
+               AsyncMock(return_value=999)) as m:
+        act = await mr_roboto._run_dispatch(task)
+    m.assert_awaited_once()
+    assert act.status == "completed"
+    assert act.result.get("enqueued") == 999
+    assert act.result.get("auto_posted") is False

@@ -4640,25 +4640,33 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "reviews/classify":
-        # LLM-bound: classify sentiment + theme_tag; side-effects for 1-2-star + bug.
+        # SP4b: LLM extracted -> admitted producer task on the pump; the
+        # reviews.classify.resume continuation does the mechanical persist
+        # + side-effects. mr_roboto makes NO LLM call here.
         try:
-            from mr_roboto.reviews_classify import run as _reviews_classify_run
-            res = await _reviews_classify_run(payload)
-            if res.get("status") == "error":
-                return Action(status="failed", error=res.get("error") or "reviews/classify failed", result=res)
-            return Action(status="completed", result=res)
+            from src.reviews.producers import enqueue_classify
+            tid = await enqueue_classify(
+                review_id=int(payload.get("review_id")),
+                product_id=str(payload.get("product_id") or ""),
+            )
+            if tid is None:
+                return Action(status="failed", error="reviews/classify: review not found")
+            return Action(status="completed", result={"enqueued": tid})
         except Exception as e:
             return Action(status="failed", error=str(e))
 
     if action == "reviews/draft_reply":
-        # LLM-bound: draft a reply per brand voice + platform conventions.
-        # NEVER auto-posts — founder approves before any reply is sent.
+        # SP4b: LLM extracted -> producer task; reviews.draft_reply.resume
+        # surfaces the draft via founder_action. NEVER auto-posts.
         try:
-            from mr_roboto.reviews_draft_reply import run as _reviews_draft_reply_run
-            res = await _reviews_draft_reply_run(payload)
-            if res.get("status") == "error":
-                return Action(status="failed", error=res.get("error") or "reviews/draft_reply failed", result=res)
-            return Action(status="completed", result=res)
+            from src.reviews.producers import enqueue_draft_reply
+            tid = await enqueue_draft_reply(
+                review_id=int(payload.get("review_id")),
+                product_id=str(payload.get("product_id") or ""),
+            )
+            if tid is None:
+                return Action(status="failed", error="reviews/draft_reply: review not found")
+            return Action(status="completed", result={"enqueued": tid, "auto_posted": False})
         except Exception as e:
             return Action(status="failed", error=str(e))
 

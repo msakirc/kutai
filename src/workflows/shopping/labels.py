@@ -41,43 +41,19 @@ def _fallback_labels(groups: list[ProductGroup]) -> list[ProductGroup]:
     return groups
 
 
-async def step_label(
-    groups: list[ProductGroup],
-    candidates: list[Candidate],
-    query: str,
-) -> list[ProductGroup]:
-    """Label every group with taxonomy via one LLM call. Mutates groups in place."""
-    if not groups:
-        return groups
+def apply_labels(groups: list[ProductGroup], raw_text: str) -> list[ProductGroup]:
+    """Parse a labeler producer's raw JSON output and apply taxonomy to groups
+    in place. Falls back to ``_fallback_labels`` on parse error.
 
-    view = []
-    for i, g in enumerate(groups):
-        member_cands = [candidates[m] for m in g.member_indices if 0 <= m < len(candidates)]
-        category = next((c.category_path for c in member_cands if c.category_path), "")
-        view.append({
-            "group_id": i,
-            "title": g.representative_title,
-            "category_path": category,
-            "member_count": len(g.member_indices),
-        })
-
-    prompt = LABEL_PROMPT.format(
-        query=query,
-        groups_json=json.dumps(view, ensure_ascii=False),
-    )
-
-    try:
-        resp = await _label_llm_call(prompt)
-    except Exception as exc:
-        logger.warning("label LLM failed, using fallback: %s", exc)
-        return _fallback_labels(groups)
-
-    content = _strip_json_fences(str(resp.get("content", "")).strip())
+    Shared by legacy ``step_label`` (inline call) and the v3
+    ``handler_label_apply_filter_gate`` (producer-agent step output).
+    """
+    content = _strip_json_fences(str(raw_text or "").strip())
     try:
         parsed = json.loads(content)
         entries = parsed.get("groups", [])
     except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("label LLM parse failed: %s", exc)
+        logger.warning("label parse failed: %s", exc)
         return _fallback_labels(groups)
 
     by_id: dict[int, dict] = {
@@ -108,3 +84,44 @@ async def step_label(
         g.matches_user_intent = bool(e.get("matches_user_intent", True))
 
     return groups
+
+
+def build_label_view(groups: list[ProductGroup], candidates: list[Candidate]) -> list[dict]:
+    """Build the labeler's input view (group_id/title/category_path/member_count).
+    Shared by legacy ``step_label`` and v3 ``handler_group_apply_label_prep``."""
+    view = []
+    for i, g in enumerate(groups):
+        member_cands = [candidates[m] for m in g.member_indices if 0 <= m < len(candidates)]
+        category = next((c.category_path for c in member_cands if c.category_path), "")
+        view.append({
+            "group_id": i,
+            "title": g.representative_title,
+            "category_path": category,
+            "member_count": len(g.member_indices),
+        })
+    return view
+
+
+async def step_label(
+    groups: list[ProductGroup],
+    candidates: list[Candidate],
+    query: str,
+) -> list[ProductGroup]:
+    """Label every group with taxonomy via one LLM call. Mutates groups in place."""
+    if not groups:
+        return groups
+
+    view = build_label_view(groups, candidates)
+
+    prompt = LABEL_PROMPT.format(
+        query=query,
+        groups_json=json.dumps(view, ensure_ascii=False),
+    )
+
+    try:
+        resp = await _label_llm_call(prompt)
+    except Exception as exc:
+        logger.warning("label LLM failed, using fallback: %s", exc)
+        return _fallback_labels(groups)
+
+    return apply_labels(groups, resp.get("content", ""))

@@ -381,15 +381,7 @@ async def _llm_group_residuals(candidates: list[Candidate], query: str) -> list[
 
     Falls back to one group per site's rank-1 candidate on any LLM or parse error.
     """
-    from src.workflows.shopping.prompts_v2 import GROUPING_PROMPT
-
-    # Compact JSON view for the LLM — include sku and category_path for context
-    view = [
-        {"index": i, "title": c.title, "site": c.site, "price": c.price,
-         "sku": c.sku, "category_path": c.category_path}
-        for i, c in enumerate(candidates)
-    ]
-    prompt = GROUPING_PROMPT.format(candidates_json=json.dumps(view, ensure_ascii=False))
+    prompt = GROUPING_PROMPT_FORMAT(build_group_view(candidates))
 
     try:
         resp = await _grouping_llm_call(prompt)
@@ -397,12 +389,38 @@ async def _llm_group_residuals(candidates: list[Candidate], query: str) -> list[
         logger.warning("grouping LLM failed, using per-site fallback: %s", exc)
         return _per_site_top1_fallback(candidates)
 
-    content = _strip_json_fences(str(resp.get("content", "")).strip())
+    return _parse_grouping_raw(resp.get("content", ""), candidates)
+
+
+def build_group_view(candidates: list[Candidate]) -> list[dict]:
+    """Compact JSON view for the grouping prompt (index/title/site/price/sku/
+    category_path). Shared by legacy ``_llm_group_residuals`` and v3
+    ``handler_group_prep``."""
+    return [
+        {"index": i, "title": c.title, "site": c.site, "price": c.price,
+         "sku": c.sku, "category_path": c.category_path}
+        for i, c in enumerate(candidates)
+    ]
+
+
+def GROUPING_PROMPT_FORMAT(view: list[dict]) -> str:
+    from src.workflows.shopping.prompts_v2 import GROUPING_PROMPT
+    return GROUPING_PROMPT.format(candidates_json=json.dumps(view, ensure_ascii=False))
+
+
+def _parse_grouping_raw(raw_text: str, candidates: list[Candidate]) -> list[ProductGroup]:
+    """Parse a grouper producer's raw JSON output into ProductGroups, with the
+    per-site rank-1 fallback on any parse/empty error. Shared by legacy
+    ``_llm_group_residuals`` and v3 ``handler_group_apply_label_prep``.
+
+    ``candidates`` are the residual candidates the indices refer to (caller remaps
+    the returned member_indices back to the full candidate list)."""
+    content = _strip_json_fences(str(raw_text or "").strip())
     try:
         parsed = json.loads(content)
         raw_groups = parsed.get("groups", [])
     except (json.JSONDecodeError, TypeError, AttributeError) as exc:
-        logger.warning("grouping LLM output not parseable, using fallback: %s", exc)
+        logger.warning("grouping output not parseable, using fallback: %s", exc)
         return _per_site_top1_fallback(candidates)
 
     groups: list[ProductGroup] = []
@@ -426,12 +444,6 @@ async def _llm_group_residuals(candidates: list[Candidate], query: str) -> list[
     if not groups:
         logger.warning("grouping returned no valid groups, using fallback")
         return _per_site_top1_fallback(candidates)
-
-    logger.info(
-        "_llm_group_residuals done",
-        group_count=len(groups),
-        accessory_drop_count=sum(1 for g in groups if g.is_accessory_or_part),
-    )
     return groups
 
 
@@ -1193,11 +1205,140 @@ async def _handler_format_compare(task: dict, artifacts: dict, ctx: dict) -> dic
     return {"formatted_text": text, "escalation": False}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# shopping_v3 producer-agent triad handlers (prep + apply; LLM lives in the
+# agent:<shopping_*> step between them). See
+# docs/superpowers/specs/2026-06-05-shopping-workflow-step-migration-design.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def handler_group_prep(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Deterministic SKU-bucketing + build the grouper producer's input view.
+
+    Emits `group_input` ({view, has_residuals:"true"|"false"}) and a partial
+    `groups_state` carrying the bucketed groups + candidates + query.
+    """
+    raw = artifacts.get("search_results", "{}")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    cands = _candidates_from_json(payload.get("candidates", []))
+    query = payload.get("query", "")
+
+    sku_buckets: "OrderedDict[str, list[int]]" = OrderedDict()
+    unbucketed: list[int] = []
+    for i, c in enumerate(cands):
+        if c.sku:
+            sku_buckets.setdefault(c.sku, []).append(i)
+        else:
+            unbucketed.append(i)
+
+    bucketed: list[dict] = []
+    for _sku, indices in sku_buckets.items():
+        first = cands[indices[0]]
+        bucketed.append(_group_to_dict(ProductGroup(
+            representative_title=first.title,
+            member_indices=indices,
+            is_accessory_or_part=False,
+            prominence=sum(1.0 / cands[i].site_rank for i in indices),
+        )))
+
+    groups_state = {
+        "groups": bucketed,
+        "candidates": _candidates_to_json(cands),
+        "query": query,
+        "unbucketed": unbucketed,
+    }
+    if unbucketed:
+        residual_cands = [cands[i] for i in unbucketed]
+        group_input = {"view": build_group_view(residual_cands), "has_residuals": "true"}
+    else:
+        group_input = {"view": [], "has_residuals": "false"}
+
+    return {
+        "group_input": json.dumps(group_input, ensure_ascii=False),
+        "groups_state": json.dumps(groups_state, ensure_ascii=False),
+    }
+
+
+async def handler_group_apply_label_prep(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Parse the grouper producer's `group_raw` (when residuals existed), merge
+    with bucketed groups, then build the labeler producer's `label_input`."""
+    from src.workflows.shopping.labels import build_label_view
+    gs = json.loads(artifacts.get("groups_state", "{}"))
+    cands = _candidates_from_json(gs.get("candidates", []))
+    query = gs.get("query", "")
+    unbucketed = gs.get("unbucketed", [])
+    groups = [_group_from_dict(g) for g in gs.get("groups", [])]
+
+    raw = artifacts.get("group_raw")
+    if raw and unbucketed:
+        residual_cands = [cands[i] for i in unbucketed]
+        residual = _parse_grouping_raw(raw, residual_cands)
+        for g in residual:
+            g.member_indices = [unbucketed[j] for j in g.member_indices]
+            groups.append(g)
+
+    label_input = {"view": build_label_view(groups, cands), "query": query}
+    new_state = {
+        "groups": [_group_to_dict(g) for g in groups],
+        "candidates": _candidates_to_json(cands),
+        "query": query,
+    }
+    return {
+        "label_input": json.dumps(label_input, ensure_ascii=False),
+        "groups_state": json.dumps(new_state, ensure_ascii=False),
+    }
+
+
+async def handler_label_apply_filter_gate(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Apply the labeler producer's `label_raw` taxonomy, filter, and run the
+    variant gate. Emits `gate_result` in the same shape as the legacy fused
+    handler (chosen | clarify | escalation)."""
+    from src.workflows.shopping.variant_gate import step_filter, step_variant_gate
+    from src.workflows.shopping.labels import apply_labels
+
+    gs = json.loads(artifacts.get("groups_state", "{}"))
+    cands = _candidates_from_json(gs.get("candidates", []))
+    query = gs.get("query", "")
+    groups = [_group_from_dict(g) for g in gs.get("groups", [])]
+
+    if not groups:
+        return {"gate": {"kind": "escalation", "reason": "no_candidates"},
+                "candidates": _candidates_to_json(cands), "query": query}
+
+    groups = apply_labels(groups, artifacts.get("label_raw", ""))
+    survivors = step_filter(groups)
+    gate = step_variant_gate(survivors, groups, query=query)
+
+    out: dict = {
+        "gate": {"kind": gate["kind"]},
+        "candidates": _candidates_to_json(cands),
+        "query": query,
+    }
+    if gate["kind"] == "chosen":
+        out["chosen_group"] = _group_to_dict(gate["group"])
+    elif gate["kind"] == "clarify":
+        out["clarify_options"] = gate["options"]
+        out["clarify_payloads"] = {
+            str(gid): _group_to_dict(g) for gid, g in gate["payloads"].items()
+        }
+        bases = {s.base_model for s in survivors if s.base_model}
+        if len(bases) == 1:
+            out["base_label"] = next(iter(bases))
+        else:
+            out["base_label"] = query.strip().title() or (survivors[0].base_model if survivors else "")
+    elif gate["kind"] == "escalation":
+        out["gate"]["reason"] = gate.get("reason", "unknown")
+    return out
+
+
 _STEP_HANDLERS_V2 = {
     "resolve_candidates": _handler_resolve_candidates,
     "group_label_filter_gate": _handler_group_label_filter_gate,
     "group_and_synthesize": _handler_group_and_synthesize,
     "format_response": _handler_format_response,
+    # shopping_v3 triad handlers
+    "group_prep": handler_group_prep,
+    "group_apply_label_prep": handler_group_apply_label_prep,
+    "label_apply_filter_gate": handler_label_apply_filter_gate,
 }
 
 _STEP_HANDLERS_V2.update({

@@ -10998,7 +10998,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             buttons = [
                 [InlineKeyboardButton(
                     opt["label"],
-                    callback_data=f"variant_choice:{opt['group_id']}",
+                    callback_data=f"vc:{mission_id}:{task_id}:{opt['group_id']}",
                 )]
                 for opt in options
             ]

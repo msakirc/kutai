@@ -294,13 +294,28 @@ def build_grading_spec(source: dict, exclusions: list):
 
     messages = [
         {"role": "system", "content": GRADING_SYSTEM},
+        # NO TRUNCATION of any grader input, ever. The description IS the
+        # grading contract and the result IS the artifact under judgment;
+        # lopping either makes the grader judge a partial spec against a
+        # partial artifact and emit false verdicts. #289700 (2026-06-04): a
+        # 1329-char 5-section charter instruction cut at 500 chars dropped
+        # sections 4-5, and the grader reported the artifact "added a sixth
+        # section" — 36% of i2p steps (94/259) have instructions past the old
+        # cap. An oversized input is a model-selection/capacity concern, never
+        # solved by silent truncation here.
         {"role": "user", "content": GRADING_PROMPT.format(
-            title=str(source.get("title", ""))[:100],
-            description=str(source.get("description", ""))[:500],
-            response=str(result_text)[:30000],
+            title=str(source.get("title", "")),
+            description=str(source.get("description", "")),
+            response=str(result_text),
         )},
     ]
     _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
+    # Derive the input estimate from the ACTUAL prompt size (~4 chars/token).
+    # Now that nothing is truncated, a large artifact must steer selection to a
+    # model whose context window actually fits it — otherwise the call-level
+    # context cap becomes the new silent-truncation point we just removed.
+    _prompt_chars = sum(len(m["content"]) for m in messages)
+    _est_input = max(800, _prompt_chars // 4)
     return {
         "title": f"grader:task#{source.get('id')}:{_suffix}",
         "description": "Grading review of task output",
@@ -315,7 +330,7 @@ def build_grading_spec(source: dict, exclusions: list):
             "difficulty": 3,
             "messages": messages,
             "failures": [],
-            "estimated_input_tokens": 800,
+            "estimated_input_tokens": _est_input,
             "estimated_output_tokens": 600,
             "prefer_speed": True,
             "exclude_models": list(exclusions),

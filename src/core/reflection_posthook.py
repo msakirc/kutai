@@ -299,12 +299,16 @@ def build_reflect_messages(
     system_content = (
         f"{REFLECT_SYSTEM_BASE}\n\n{checklist}" if checklist else REFLECT_SYSTEM_BASE
     )
+    # NO TRUNCATION of any reviewer input, ever — same rule as the grader
+    # (src/core/grading.py). A self-reflection that judges the draft against a
+    # truncated spec (or a draft cut at 3000 chars) flags the cut-off tail as
+    # "missing" and "fixes" against a partial contract. Feed both whole.
     return [
         {"role": "system", "content": system_content},
         {"role": "user", "content": (
             f"Task: {task.get('title', '')}\n"
-            f"Description: {(task.get('description') or '')[:500]}\n\n"
-            f"Response to review:\n{(result or '')[:3000]}"
+            f"Description: {task.get('description') or ''}\n\n"
+            f"Response to review:\n{result or ''}"
         )},
     ]
 
@@ -312,12 +316,6 @@ def build_reflect_messages(
 # ────────────────────────────────────────────────────────────────────────────
 # Constrained-emit child — response_format + message build + skip predicate.
 # ────────────────────────────────────────────────────────────────────────────
-
-# Cap draft to keep input token cost in line. 30000 so big multi-artifact
-# drafts (form_specs + empty_error_state_specs) don't lose tail content before
-# the emit even sees it (lifted from constrained_emit.py ~123).
-_EMIT_DRAFT_CAP = 30000
-
 
 def schema_response_format(artifact_schema: dict, step_id: str = "artifact"):
     """Build a json_schema response_format for *artifact_schema*.
@@ -370,7 +368,11 @@ def build_emit_messages(draft: str, response_format: dict) -> list[dict]:
         ensure_ascii=False,
         indent=2,
     )
-    draft_for_prompt = (draft or "")[:_EMIT_DRAFT_CAP]
+    # NO TRUNCATION: the draft IS the artifact being re-serialized — lopping its
+    # tail drops required fields, and the prompt explicitly orders "do not
+    # summarize away content". Feed the whole draft; an oversized one is a
+    # model-context concern handled by the caller's size-derived estimate.
+    draft_for_prompt = draft or ""
     system = (
         "You are a structured-output emitter. Re-emit the artifact "
         "below as JSON conforming exactly to the provided schema. "

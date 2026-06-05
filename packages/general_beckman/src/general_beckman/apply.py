@@ -1726,8 +1726,11 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 "messages": messages,
                 "failures": [],
                 "estimated_input_tokens": max(1000, len(messages[1]["content"]) // 4),
+                # Output budget tracks the FULL draft (re-emit is ~1:1 reshape),
+                # no 30000-char pre-cap. The 16000 ceiling is a model max-output
+                # guard, not a content truncation of an input.
                 "estimated_output_tokens": min(
-                    16000, max(2000, len(draft[:30000]) // 3),
+                    16000, max(2000, len(draft) // 3),
                 ),
                 "prefer_speed": True,
                 "response_format": response_format,
@@ -1759,6 +1762,9 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
             stack=source_ctx.get("stack"), layer=source_ctx.get("layer"),
         )
         messages = build_reflect_messages(source, draft, checklist=checklist)
+        # Estimate from the ACTUAL (untruncated) prompt so selection fits the
+        # context window — else the call-level cap re-truncates the draft.
+        _reflect_chars = sum(len(m.get("content") or "") for m in messages)
         spec = {
             "title": f"reflect:task#{source_id}",
             "description": "Self-reflection review of step output",
@@ -1773,7 +1779,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 "difficulty": 6,
                 "messages": messages,
                 "failures": [],
-                "estimated_input_tokens": 800,
+                "estimated_input_tokens": max(800, _reflect_chars // 4),
                 "estimated_output_tokens": 500,
                 "prefer_speed": True,
             }},

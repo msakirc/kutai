@@ -41,3 +41,110 @@ async def test_enqueue_classify_builds_overhead_child_with_continuation():
     llm = captured["spec"]["context"]["llm_call"]
     assert llm["raw_dispatch"] is True and llm["call_category"] == "overhead"
     assert "crashes" in llm["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_classify_resume_persists_and_routes_bug_sideeffect():
+    from mr_roboto.executors import reviews_continuations as rc
+
+    updates = []
+
+    class _DB:
+        async def execute(self, sql, params=()):
+            updates.append((sql, params)); return None
+        async def commit(self):
+            return None
+
+    async def fake_get_db():
+        return _DB()
+
+    emitted = {}
+    async def fake_low_star(**kw):
+        emitted["low_star"] = kw
+    bug = {}
+    async def fake_bug(spec, **kw):
+        bug["spec"] = spec; return 1
+
+    state = {"review_id": 7, "product_id": "p", "platform": "g2",
+             "author": "Ada", "rating": 1, "body_md": "it crashes"}
+    result = {"result": {"content": '{"sentiment":"negative","theme_tag":"bug"}'}}
+
+    with patch("src.infra.db.get_db", fake_get_db), \
+         patch.object(rc, "_emit_low_star_founder_action", fake_low_star), \
+         patch.object(rc, "_enqueue_bug_investigation", fake_bug):
+        await rc._classify_resume(99, result, state)
+
+    assert any("UPDATE external_reviews" in s for s, _ in updates)
+    assert emitted["low_star"]["theme_tag"] == "bug"
+    assert bug["spec"]["title"].startswith("[BUG]")
+
+
+@pytest.mark.asyncio
+async def test_classify_resume_err_uses_heuristic():
+    from mr_roboto.executors import reviews_continuations as rc
+
+    updates = []
+    class _DB:
+        async def execute(self, sql, params=()):
+            updates.append(params); return None
+        async def commit(self): return None
+    async def fake_get_db(): return _DB()
+
+    state = {"review_id": 7, "product_id": "p", "platform": "g2",
+             "author": "Ada", "rating": 5, "body_md": "love the UX"}
+    with patch("src.infra.db.get_db", fake_get_db), \
+         patch.object(rc, "_emit_low_star_founder_action", AsyncMock()), \
+         patch.object(rc, "_enqueue_bug_investigation", AsyncMock()):
+        await rc._classify_resume_err(99, {"error": "no candidates"}, state)
+
+    # heuristic: rating 5 -> positive
+    assert any(p[0] == "positive" for p in updates)
+
+
+@pytest.mark.asyncio
+async def test_draft_reply_resume_surfaces_draft_never_autoposts():
+    from mr_roboto.executors import reviews_continuations as rc
+    fa = {}
+    async def fake_fa(**kw):
+        fa.update(kw)
+        class _R:
+            id = 12
+        return _R()
+    state = {"review_id": 7, "product_id": "p", "platform": "g2",
+             "author": "Ada", "rating": 5}
+    result = {"result": {"content": "Thanks so much for the kind words!"}}
+    writes = []
+    class _DB:
+        async def execute(self, sql, params=()):
+            writes.append(sql); return None
+        async def commit(self): return None
+    async def fake_get_db(): return _DB()
+    with patch("src.founder_actions.create", fake_fa), \
+         patch("src.infra.db.get_db", fake_get_db):
+        await rc._draft_reply_resume(99, result, state)
+    assert "Thanks so much" in str(fa)
+    assert not any("replied_at" in w or "reply_body_md" in w for w in writes)
+
+
+@pytest.mark.asyncio
+async def test_draft_reply_resume_err_uses_fallback():
+    from mr_roboto.executors import reviews_continuations as rc
+    fa = {}
+    async def fake_fa(**kw):
+        fa.update(kw)
+        class _R:
+            id = 13
+        return _R()
+    state = {"review_id": 7, "product_id": "p", "platform": "g2",
+             "author": "Bo", "rating": 2}
+    with patch("src.founder_actions.create", fake_fa):
+        await rc._draft_reply_resume_err(99, {"error": "no candidates"}, state)
+    # fallback draft addresses the author and is surfaced
+    assert "Bo" in str(fa)
+
+
+def test_enqueue_draft_reply_uses_platform_convention():
+    # static check: producer holds platform conventions (prompt left mr_roboto)
+    from src.reviews import producers
+    assert "appstore" in producers._PLATFORM_CONVENTIONS
+    assert "g2" in producers._PLATFORM_CONVENTIONS

@@ -195,10 +195,11 @@ class SwapManager:
         Parameters
         ----------
         load_timeout:
-            Caller-provided ceiling for the health-wait timeout (seconds).
-            If >0, ``server.start()`` uses ``min(own_estimate, load_timeout)``
-            instead of the internal estimate alone.  Passed from Fatih Hoca
-            via the dispatcher so slow-loading models can be rejected earlier.
+            Caller-provided floor for the health-wait timeout (seconds).
+            If >0, ``server.start()`` uses ``max(own_estimate, load_timeout)``
+            instead of the internal estimate alone — it can only extend the
+            wait. Passed from Fatih Hoca via the dispatcher (its per-model load
+            estimate) so a model it knows is slow to load gets enough time.
 
         Returns True if the new model is loaded and healthy.
         """

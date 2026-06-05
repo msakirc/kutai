@@ -93,19 +93,21 @@ async def advance(mission_id: int, completed_task_id: int,
         out.error = hook_result.get("error", "Post-hook failed")
         return out
 
-    # 3. Next-phase subtasks (if engine emits them).
-    try:
-        from src.workflows.engine.recipe import advance_recipe
-        next_subs = await advance_recipe(mission_id, completed_task_id,
-                                         previous_result)
-        out.next_subtasks = list(next_subs or [])
-    except ImportError:
-        # No recipe-advance primitive yet — no-op. Phase transition logic
-        # stays in _handle_complete until migrated.
-        pass
-    except Exception as e:
-        out.status = "failed"
-        out.error = f"advance_recipe: {e}"[:300]
+    # 3. Next-phase subtasks: there are none to emit here, by design.
+    # Every workflow step is expanded into a concrete, dependency-gated task
+    # at mission creation (`expander.expand_steps_to_tasks` — "all steps are
+    # expanded upfront before any file is written"). Later-phase tasks already
+    # exist and unblock as their `depends_on_steps` complete; there is no
+    # runtime phase-emission primitive. `next_subtasks` therefore stays empty.
+    # It is kept on AdvanceResult as a reserved, always-empty field so the
+    # mr_roboto/result_router `needs_subtasks` consumer contract is stable.
+    #
+    # Historic note: the Task-13 plan scaffolded a
+    # `src.workflows.engine.recipe.advance_recipe` import at this point as a
+    # possible future migration target. That primitive was never implemented,
+    # so the import raised ImportError on every call and the branch was a
+    # permanent no-op (the swallowed ImportError also masked which). Removed
+    # 2026-06-05 — see docs/handoff/2026-06-05-readme-sweep-bug-findings.md #1.
 
     # 4. Mission completion — if no next subtasks queued AND every other
     # mission task is terminal, mark the mission done. Replaces

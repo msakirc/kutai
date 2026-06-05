@@ -267,6 +267,76 @@ def unwrap_fenced_artifact(result) -> str | None:
     return best or None
 
 
+import json as _json
+
+# Leading YAML front-matter: ``---\n...\n---`` at the very start of the file.
+_FRONT_MATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
+
+
+def stamp_front_matter(content: str, mission_id: int, kind: str) -> str:
+    """Idempotently stamp ``mission_id`` into an artifact's metadata.
+
+    ``md``  : ensure a leading ``---`` front-matter block carrying
+              ``mission_id``. Inject the key if the block exists without it;
+              prepend a minimal block if absent; no-op if already present.
+              Never produces a second ``---`` block (handoff Q(c)).
+    ``json``: ensure a top-level ``mission_id`` key. No-op if present or the
+              content does not parse (best-effort — never corrupt a file).
+    """
+    if not isinstance(content, str):
+        return content
+    if kind == "json":
+        try:
+            obj = _json.loads(content)
+        except (ValueError, TypeError):
+            return content
+        if isinstance(obj, dict) and "mission_id" not in obj:
+            obj = {"mission_id": mission_id, **obj}
+            return _json.dumps(obj, ensure_ascii=False, indent=2)
+        return content
+
+    # markdown
+    m = _FRONT_MATTER_RE.match(content)
+    if m:
+        body = m.group(1)
+        if re.search(r"^\s*mission_id\s*:", body, re.MULTILINE):
+            return content  # already stamped — idempotent
+        new_block = f"---\n{body}\nmission_id: {mission_id}\n---\n"
+        return new_block + content[m.end():]
+    return f"---\nmission_id: {mission_id}\n---\n\n{content}"
+
+
+def select_canonical(candidates, schema_ok: Callable[[str], bool]):
+    """Pick the best artifact form from competing candidates.
+
+    ``candidates`` is an ordered list of raw strings (e.g. ``[output_value,
+    disk_content]``). For each, the fence-unwrapped form is also considered.
+    Among forms that PASS ``schema_ok`` the cleanest is chosen (front-matter
+    / header at file start, then shortest — least surrounding narration). If
+    none pass, the most-substantial form is returned so a file always exists.
+    Returns ``None`` only when there is no usable (non-blank) candidate.
+    """
+    forms: list[str] = []
+    for c in candidates:
+        if not isinstance(c, str) or not c.strip():
+            continue
+        forms.append(c)
+        u = unwrap_fenced_artifact(c)
+        if isinstance(u, str) and u.strip() and u.strip() != c.strip():
+            forms.append(u)
+    if not forms:
+        return None
+
+    passing = [f for f in forms if schema_ok(f)]
+    if passing:
+        def _rank(f: str):
+            s = f.strip()
+            starts_clean = s.startswith(("---", "#", "{", "["))
+            return (0 if starts_clean else 1, len(s))
+        return min(passing, key=_rank)
+    return max(forms, key=lambda f: len(f.strip()))
+
+
 def recanonicalize_candidate(
     produces: list,
     written: set[str],

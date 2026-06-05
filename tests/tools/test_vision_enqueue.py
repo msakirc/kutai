@@ -1,12 +1,12 @@
 """
-Tests for Site 7 migration: analyze_image() in vision.py calls beckman.enqueue
-directly instead of dispatcher.request() alias.
+Tests for CPS SP4a migration: analyze_image() in vision.py uses husam.run
+(synchronous single-call worker) instead of the blocking await_inline=True primitive.
 """
 from __future__ import annotations
 
 import os
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture(autouse=True)
@@ -46,8 +46,8 @@ def fake_image(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_analyze_image_enqueues_with_tool_call_kind(tmp_path, monkeypatch, fake_image):
-    """analyze_image must enqueue with kind='tool_call' and await_inline=True."""
+async def test_analyze_image_calls_husam_with_tool_call_spec(tmp_path, monkeypatch, fake_image):
+    """analyze_image must call husam.run with a raw_dispatch tool_call spec carrying needs_vision."""
     import src.infra.db as _db_mod
     monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
@@ -55,104 +55,68 @@ async def test_analyze_image_enqueues_with_tool_call_kind(tmp_path, monkeypatch,
 
     captured = {}
 
-    async def fake_enqueue(spec, **kwargs):
+    async def fake_run(spec):
         captured["spec"] = spec
-        captured["kwargs"] = kwargs
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": "A minimal 1x1 PNG test image."},
-            error=None,
-        )
+        return {"content": "A minimal 1x1 PNG test image."}
 
-    with patch("general_beckman.enqueue", fake_enqueue), \
+    with patch("husam.run", fake_run), \
          patch("dogru_mu_samet.assess") as mock_assess:
         mock_assess.return_value = MagicMock(is_degenerate=False, summary="ok")
         from src.tools.vision import analyze_image
         result = await analyze_image(fake_image, "What do you see?")
 
-    assert captured["kwargs"].get("await_inline") is True
+    llm_call = captured["spec"]["context"]["llm_call"]
     assert captured["spec"]["kind"] == "tool_call"
-    assert captured["spec"]["context"]["llm_call"]["raw_dispatch"] is True
+    assert llm_call["raw_dispatch"] is True
+    assert llm_call.get("needs_vision") is True
+    assert llm_call["call_category"] == "main_work"
     assert "1x1" in result or len(result) > 0
 
 
 @pytest.mark.asyncio
-async def test_analyze_image_enqueue_carries_needs_vision_flag(tmp_path, monkeypatch, fake_image):
-    """The llm_call payload must carry needs_vision=True."""
+async def test_analyze_image_no_await_inline_in_module():
+    """Guard: vision.py must not use the blocking await_inline primitive anymore."""
+    import pathlib
+    _root = pathlib.Path(__file__).resolve().parents[2]
+    src = (_root / "src" / "tools" / "vision.py").read_text(encoding="utf-8")
+    offenders = [ln for ln in src.splitlines()
+                 if "await_inline=True" in ln and not ln.lstrip().startswith("#")]
+    assert not offenders, f"vision.py still uses await_inline: {offenders}"
+
+
+@pytest.mark.asyncio
+async def test_analyze_image_degenerate_output_returns_error(tmp_path, monkeypatch, fake_image):
+    """Degenerate vision output is still caught and reported."""
     import src.infra.db as _db_mod
     monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
     await init_db()
 
-    captured = {}
+    async def fake_run(spec):
+        return {"content": "aaaa aaaa aaaa"}
 
-    async def fake_enqueue(spec, **kwargs):
-        captured["spec"] = spec
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": "Image shows a small test png."},
-            error=None,
-        )
-
-    with patch("general_beckman.enqueue", fake_enqueue), \
+    with patch("husam.run", fake_run), \
          patch("dogru_mu_samet.assess") as mock_assess:
-        mock_assess.return_value = MagicMock(is_degenerate=False)
+        mock_assess.return_value = MagicMock(is_degenerate=True, summary="repetitive")
         from src.tools.vision import analyze_image
-        await analyze_image(fake_image)
+        result = await analyze_image(fake_image)
 
-    llm_call = captured["spec"]["context"]["llm_call"]
-    assert llm_call.get("needs_vision") is True
-    assert llm_call["call_category"] == "main_work"
+    assert result.startswith("Error")
+    assert "degenerate" in result
 
 
 @pytest.mark.asyncio
-async def test_analyze_image_parent_id_from_current_task_id(tmp_path, monkeypatch, fake_image):
-    """parent_id must be taken from current_task_id ContextVar."""
+async def test_analyze_image_returns_error_string_when_husam_raises(tmp_path, monkeypatch, fake_image):
+    """When husam.run raises, analyze_image returns an error string (outer except)."""
     import src.infra.db as _db_mod
     monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "test.db"))
     from src.infra.db import init_db
     await init_db()
 
-    captured = {}
+    async def fake_run(spec):
+        raise RuntimeError("vision model unavailable")
 
-    async def fake_enqueue(spec, **kwargs):
-        captured["kwargs"] = kwargs
-        from general_beckman import TaskResult
-        return TaskResult(
-            status="completed",
-            result={"content": "Vision result for parent task."},
-            error=None,
-        )
-
-    from src.core.heartbeat import current_task_id as _ctid
-    token = _ctid.set(77)
-    try:
-        with patch("general_beckman.enqueue", fake_enqueue), \
-             patch("dogru_mu_samet.assess") as mock_assess:
-            mock_assess.return_value = MagicMock(is_degenerate=False)
-            from src.tools.vision import analyze_image
-            await analyze_image(fake_image)
-    finally:
-        _ctid.reset(token)
-
-    assert captured["kwargs"].get("parent_id") == 77
-
-
-@pytest.mark.asyncio
-async def test_analyze_image_returns_error_string_on_failed_result(tmp_path, monkeypatch, fake_image):
-    """When Beckman returns status='failed', analyze_image should return error string."""
-    import src.infra.db as _db_mod
-    monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "test.db"))
-    from src.infra.db import init_db
-    await init_db()
-
-    async def fake_enqueue(spec, **kwargs):
-        from general_beckman import TaskResult
-        return TaskResult(status="failed", result=None, error="vision model unavailable")
-
-    with patch("general_beckman.enqueue", fake_enqueue):
+    with patch("husam.run", fake_run):
         from src.tools.vision import analyze_image
         result = await analyze_image(fake_image)
 

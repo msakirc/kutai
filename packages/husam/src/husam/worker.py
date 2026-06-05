@@ -46,6 +46,120 @@ async def _remaining_budget(mission_id: int | None) -> float | None:
     return max(0.0, ceiling - spent)
 
 
+async def _run_image(task: dict, image_call: dict) -> dict:
+    """Image-modality lane. Single-shot. Mirrors dispatcher.execute()'s telemetry
+    envelope (begin_call -> call -> _record_pick success/failure -> end_call finally
+    -> record_call_tokens -> record_call_cost) but calls paintress, not the LLM
+    dispatcher primitive. Husam is permitted to reach the dispatcher; here it only
+    borrows the _record_pick delegator."""
+    import time as _time
+    import paintress
+    import fatih_hoca
+    from fatih_hoca.registry import ImageModelInfo
+    from fatih_hoca.types import SelectionFailure
+    from src.core.in_flight import begin_call, end_call
+    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+    from src.core.router import ModelCallFailed
+    from src.core import heartbeat as _hb
+
+    pick = task.get("preselected_pick")
+    if pick is None or not isinstance(getattr(pick, "model", None), ImageModelInfo):
+        ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+        pick = fatih_hoca.select(
+            needs_image=True,
+            quality_tier=image_call.get("quality_tier", "fast"),
+            failures=list((ctx or {}).get("failed_models") or []),
+        )
+    if pick is None or isinstance(pick, SelectionFailure):
+        raise ModelCallFailed(call_id="image",
+                              last_error="no eligible image provider",
+                              error_category="availability")
+    model = pick.model
+
+    task_id = None
+    try:
+        from src.core.heartbeat import current_task_id
+        task_id = current_task_id.get()
+    except Exception:
+        pass
+
+    agent_type = image_call.get("agent_type", "image")
+    difficulty = int(image_call.get("difficulty", 5) or 5)
+    disp = get_dispatcher()
+
+    call_id = await begin_call(
+        category=CallCategory.IMAGE.value,
+        model_name=getattr(model, "name", ""),
+        provider=getattr(model, "provider", ""),
+        is_local=bool(getattr(model, "is_local", False)),
+        task_id=task_id,
+        est_tokens=0,
+    )
+
+    started = _time.time()
+    result = None
+    try:
+        s = paintress.ImageSpec(
+            prompt=image_call.get("prompt", ""),
+            out_dir=image_call.get("out_dir") or ".",
+            negative_prompt=image_call.get("negative_prompt"),
+            width=int(image_call.get("width", 1024)),
+            height=int(image_call.get("height", 1024)),
+            seed=image_call.get("seed"),
+            quality_tier=image_call.get("quality_tier", "fast"),
+            filename_hint=image_call.get("filename_hint"),
+        )
+        try:
+            async with _hb.keepalive():
+                result = await paintress.generate(pick, s)
+        except Exception as exc:
+            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
+                                    success=False, error_category="raw_exception",
+                                    agent_type=agent_type, difficulty=difficulty)
+            raise ModelCallFailed(call_id=getattr(model, "name", "image"),
+                                  last_error=f"{exc.__class__.__name__}:{exc}",
+                                  error_category="raw_exception")
+        if result.error is None:
+            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
+                                    success=True, error_category="",
+                                    agent_type=agent_type, difficulty=difficulty)
+        else:
+            err_cat = "fatal" if result.error.startswith("unknown_provider") else "availability"
+            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
+                                    success=False, error_category=err_cat,
+                                    agent_type=agent_type, difficulty=difficulty)
+            raise ModelCallFailed(call_id=getattr(model, "name", "image"),
+                                  last_error=result.error, error_category=err_cat)
+    finally:
+        await end_call(call_id)
+
+    duration_ms = int((_time.time() - started) * 1000)
+    try:
+        from src.infra.db import record_call_tokens, record_call_cost
+        await record_call_tokens(
+            task_id=task_id, agent_type=agent_type,
+            workflow_step_id=image_call.get("workflow_step_id"),
+            workflow_phase=image_call.get("workflow_phase"),
+            call_category=CallCategory.IMAGE.value,
+            model=getattr(model, "name", ""), provider=getattr(model, "provider", ""),
+            is_streaming=False, prompt_tokens=0, completion_tokens=0,
+            reasoning_tokens=0, total_tokens=0, duration_ms=duration_ms,
+            iteration_n=int(image_call.get("iteration_n", 0) or 0), success=True,
+        )
+        if result.cost > 0.0 and task_id is not None:
+            await record_call_cost(task_id, float(result.cost))
+    except Exception:
+        pass  # telemetry best-effort
+
+    return {
+        "content": result.path, "path": result.path, "provider": result.provider,
+        "model": result.model, "cost": result.cost, "latency": result.latency,
+        "seed_used": result.seed_used,
+        "is_local": getattr(model, "is_local", False),
+        "ran_on": result.provider,
+    }
+
+
 async def run(task: dict) -> dict:
     """Select + execute a raw_dispatch task; return the legacy response dict.
 
@@ -64,6 +178,21 @@ async def run(task: dict) -> dict:
         ModelCallFailed: MAIN_WORK selection/call failures (and pool-empty).
         RuntimeError:    OVERHEAD selection/call failures.
     """
+    # ── Image modality branch (FIRST — before any text rehydration) ──────────
+    # An image task carries ``context.image_call`` (NOT llm_call). If we fell
+    # through to the text path below it would KeyError on the missing llm_call /
+    # dispatch a text model. So we branch at the very top of run().
+    import json as _json
+    _ctx = task.get("context")
+    if isinstance(_ctx, str):
+        try:
+            _ctx = _json.loads(_ctx)
+        except Exception:
+            _ctx = {}
+    _image_call = _ctx.get("image_call") if isinstance(_ctx, dict) else None
+    if isinstance(_image_call, dict) and _image_call.get("raw_dispatch"):
+        return await _run_image({**task, "context": _ctx}, _image_call)
+
     # LAZY imports — keep husam's import-time graph minimal and coulson-free.
     import fatih_hoca
     import hallederiz_kadir

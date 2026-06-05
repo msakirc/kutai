@@ -51,6 +51,7 @@ class CallCategory(Enum):
     """Two categories — simple and clear."""
     MAIN_WORK = "main_work"   # Agent execution, can trigger swaps
     OVERHEAD = "overhead"     # Classifier/grader/reflection, no swaps
+    IMAGE = "image"     # Image generation via husam → paintress (single-shot)
 
 
 # ─── LLM Dispatcher ─────────────────────────────────────────────────────────

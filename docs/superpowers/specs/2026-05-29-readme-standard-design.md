@@ -95,8 +95,13 @@ Trade-off accepted: the halves can drift; mitigate by editing both in one change
   - `saglayicilarin` → `sağlayıcılarının`
 - The Turkish section **mirrors** the English sections (same structure), not a loose
   paraphrase.
+- **Restore chars by meaning, not by pattern.** Don't mechanically add Turkish
+  diacritics to every vowel — match the intended word. `kule` (tower) ≠ `küle`
+  (ash); the KDV idiom is the control-tower "kuleden dönen var," so it is
+  `Kuleden` (plain u) with only `Dönen` taking the ö. The opposite failure of
+  ascii-fication, and just as wrong.
 - Nicknames spelled correctly: **Yaşar Usta**, **Doğru mu Samet**,
-  **Küleden Dönen Var**, **HaLLederiz Kadir**.
+  **Kuleden Dönen Var** (*kule* = tower, not *küle* = ash), **HaLLederiz Kadir**.
 
 ## Evergreen Rules — SHOULD NOT exist
 

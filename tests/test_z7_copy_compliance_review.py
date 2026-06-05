@@ -29,7 +29,7 @@ import os
 import sys
 import types
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -361,11 +361,10 @@ class TestPrivacyMismatchLLM:
         copy_text = "We never collect your data."
         privacy_policy = "We collect email and usage data for analytics."
 
-        # Build a fake TaskResult-like object
-        mock_result = MagicMock()
-        mock_result.raw = {"result": '{"contradicts": "yes", "citation": "We never collect your data."}'}
+        async def fake_run(spec):
+            return {"content": '{"contradicts": "yes", "citation": "We never collect your data."}'}
 
-        with patch("general_beckman.enqueue", new=AsyncMock(return_value=mock_result)):
+        with patch("husam.run", fake_run):
             from general_beckman.posthook_handlers.copy_compliance_review import (
                 _check_privacy_mismatch_llm,
             )
@@ -384,10 +383,10 @@ class TestPrivacyMismatchLLM:
         copy_text = "We protect your privacy."
         privacy_policy = "We collect data but protect it."
 
-        mock_result = MagicMock()
-        mock_result.raw = {"result": '{"contradicts": "no", "citation": ""}'}
+        async def fake_run(spec):
+            return {"content": '{"contradicts": "no", "citation": ""}'}
 
-        with patch("general_beckman.enqueue", new=AsyncMock(return_value=mock_result)):
+        with patch("husam.run", fake_run):
             from general_beckman.posthook_handlers.copy_compliance_review import (
                 _check_privacy_mismatch_llm,
             )
@@ -403,10 +402,10 @@ class TestPrivacyMismatchLLM:
         copy_text = "Your data stays with us."
         privacy_policy = "We share data with analytics partners."
 
-        mock_result = MagicMock()
-        mock_result.raw = {"result": '{"contradicts": "unclear", "citation": "Your data stays with us."}'}
+        async def fake_run(spec):
+            return {"content": '{"contradicts": "unclear", "citation": "Your data stays with us."}'}
 
-        with patch("general_beckman.enqueue", new=AsyncMock(return_value=mock_result)):
+        with patch("husam.run", fake_run):
             from general_beckman.posthook_handlers.copy_compliance_review import (
                 _check_privacy_mismatch_llm,
             )
@@ -417,13 +416,16 @@ class TestPrivacyMismatchLLM:
 
     @pytest.mark.asyncio
     async def test_llm_error_returns_info_skip(self):
-        """LLM call failure → graceful info note, no crash."""
+        """LLM call failure → distinct 'skipped due to error' info finding, no crash."""
         task = {"id": 102, "mission_id": 1}
         ctx = {}
         copy_text = "Amazing product."
         privacy_policy = "We collect data."
 
-        with patch("general_beckman.enqueue", new=AsyncMock(side_effect=RuntimeError("LLM unavailable"))):
+        async def fake_run(spec):
+            raise RuntimeError("LLM unavailable")
+
+        with patch("husam.run", fake_run):
             from general_beckman.posthook_handlers.copy_compliance_review import (
                 _check_privacy_mismatch_llm,
             )
@@ -431,7 +433,7 @@ class TestPrivacyMismatchLLM:
 
         assert len(findings) == 1
         assert findings[0]["severity"] == "info"
-        assert "skipped" in findings[0]["why"]
+        assert "skipped due to error" in findings[0]["why"]
 
 
 # ---------------------------------------------------------------------------
@@ -484,11 +486,6 @@ class TestHandleIntegration:
         privacy_policy_text = "We collect and share all user data with third parties."
         copy_text = "We never share your data with anyone, ever."
 
-        mock_result = MagicMock()
-        mock_result.raw = {
-            "result": '{"contradicts": "yes", "citation": "We never share your data with anyone, ever."}'
-        }
-
         ctx = {
             "jurisdiction": "us",
             "channel": "",
@@ -497,7 +494,10 @@ class TestHandleIntegration:
         task = self._make_task(ctx)
         task["description"] = copy_text
 
-        with patch("general_beckman.enqueue", new=AsyncMock(return_value=mock_result)):
+        async def fake_run(spec):
+            return {"content": '{"contradicts": "yes", "citation": "We never share your data with anyone, ever."}'}
+
+        with patch("husam.run", fake_run):
             # Also patch _load_privacy_policy to return our fake policy
             with patch(
                 "general_beckman.posthook_handlers.copy_compliance_review._load_privacy_policy",
@@ -616,3 +616,42 @@ class TestMrRobotoRouting:
         # If completed, result should have status key
         if action.status == "completed":
             assert "status" in action.result
+
+
+# ---------------------------------------------------------------------------
+# CPS SP4a Task 3 — husam.run raw_dispatch migration tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_copy_compliance_builds_raw_dispatch_spec_for_husam():
+    from general_beckman.posthook_handlers import copy_compliance_review as ccr
+
+    captured = {}
+
+    async def fake_run(spec):
+        captured["spec"] = spec
+        return {"content": '{"contradicts": "no", "citation": ""}'}
+
+    with patch("husam.run", fake_run):
+        findings = await ccr._check_privacy_mismatch_llm(
+            copy_text="We never sell your data.",
+            privacy_policy="We do not sell personal data.",
+            task={"id": 42, "mission_id": None},
+            ctx={},
+        )
+
+    llm = captured["spec"]["context"]["llm_call"]
+    assert llm["raw_dispatch"] is True
+    assert llm["call_category"] == "overhead"
+    assert llm["messages"][0]["role"] == "user"
+    assert all(f.get("severity") != "blocker" for f in findings)
+
+
+def test_copy_compliance_no_await_inline_in_module():
+    import pathlib
+    _root = pathlib.Path(__file__).resolve().parents[1]
+    src = (_root / "packages" / "general_beckman" / "src" / "general_beckman"
+           / "posthook_handlers" / "copy_compliance_review.py").read_text(encoding="utf-8")
+    offenders = [ln for ln in src.splitlines()
+                 if "await_inline=True" in ln and not ln.lstrip().startswith("#")]
+    assert not offenders, f"copy_compliance_review still uses await_inline: {offenders}"

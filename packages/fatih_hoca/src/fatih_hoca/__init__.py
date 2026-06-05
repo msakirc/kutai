@@ -15,7 +15,15 @@ __all__ = [
     "AGENT_REQUIREMENTS", "CAPABILITY_TO_TASK",
     "Cap", "ALL_CAPABILITIES", "TASK_PROFILES",
     "discovery_results",
+    "_is_image_entry",
 ]
+
+
+def _is_image_entry(m) -> bool:
+    """True if m is an image-modality catalog entry; lets benchmark enrichment
+    skip image rows (which lack LLM benchmark fields)."""
+    from .registry import ImageModelInfo
+    return isinstance(m, ImageModelInfo)
 
 _selector: Selector | None = None
 _registry: ModelRegistry | None = None
@@ -446,6 +454,28 @@ def select(**kwargs) -> Pick | None:
 
     See Selector.select() for the full list of keyword arguments.
     """
+    # Image modality short-circuit. Runs BEFORE any text-model machinery.
+    if kwargs.pop("needs_image", False):
+        from .image_select import select_image
+        raw_failures = kwargs.get("failures") or []
+        # Normalize to plain name strings. Callers may pass:
+        #   - plain strings; - real fatih_hoca Failure (where `.model` is a STRING);
+        #   - objects with `.model.name`.
+        failures: list[str] = []
+        for f in raw_failures:
+            if isinstance(f, str):
+                name = f
+            else:
+                m = getattr(f, "model", None)
+                name = m if isinstance(m, str) else getattr(m, "name", None)
+            if name:
+                failures.append(name)
+        return select_image(
+            quality_tier=kwargs.get("quality_tier", "fast"),
+            failures=failures,
+            remaining_budget_usd=kwargs.get("remaining_budget_usd"),
+        )
+
     if _selector is None:
         return None
     return _selector.select(**kwargs)

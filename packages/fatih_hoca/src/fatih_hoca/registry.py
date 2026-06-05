@@ -208,6 +208,42 @@ class ModelInfo:
         return max(0, min(int(effective), int(self.context_length)))
 
 
+# ─── ImageModelInfo ───────────────────────────────────────────────────────────
+
+@dataclass
+class ImageModelInfo:
+    """An image-generation provider/model.
+
+    Independent from ModelInfo by design. Sharing a dataclass parent would
+    push defaulted fields above ModelInfo's required (name/location/provider/
+    litellm_name) fields and break compile. The dispatcher/husam branches on
+    isinstance(pick.model, ImageModelInfo) at the call site.
+    """
+    name: str
+    provider: str
+    location: str
+    endpoint: str = ""
+    api_base: str | None = None
+    quality_rank: float = 5.0    # 0-10, hand-set per provider
+    cost_per_image: float = 0.0
+    vram_mb: int = 0              # local footprint; 0 for cloud
+    supports_seed: bool = False
+    max_width: int = 1024
+    max_height: int = 1024
+    is_loaded: bool = False
+    tier: str = "free"
+    # Carried for telemetry parity with ModelInfo (read by pick-recorder).
+    litellm_name: str = ""
+
+    @property
+    def is_local(self) -> bool:
+        return self.location in ("local", "ollama")
+
+    @property
+    def supports_image_generation(self) -> bool:
+        return True
+
+
 # ─── GGUF Metadata Reader ───────────────────────────────────────────────────
 
 # Cache GGUF metadata to avoid re-reading large files on every startup.

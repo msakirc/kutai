@@ -10,6 +10,7 @@ import os
 from typing import Optional
 
 from src.infra.logging_config import get_logger
+from ...tools.workspace import WORKSPACE_DIR
 from .artifacts import ArtifactStore, format_artifacts_for_prompt, get_phase_summaries, CONTEXT_BUDGETS, _TIER_ORDER
 from .conditions import evaluate_condition, resolve_group
 from .policies import ReviewTracker
@@ -267,6 +268,73 @@ def _unwrap_envelope(text) -> str:
             stripped = _unescape_json_string(body)
 
     return stripped
+
+
+async def materialize_produces(ctx: dict, task: dict, result, output_value):
+    """Sole writer of declared ``produces`` paths.
+
+    For each single declared ``.md`` / ``.json`` produces path, gather the
+    on-disk content (whatever the agent's write_file left) and ``output_value``
+    as competing candidates, pick the schema-best via ``select_canonical``,
+    stamp ``mission_id`` front-matter idempotently, and write the canonical
+    path last. Returns the canonical content as the new ``output_value`` (when
+    a single path is declared) so the in-memory schema gate validates exactly
+    what landed on disk. Fully fail-soft — never raises, always leaves a file.
+    """
+    mission_id = task.get("mission_id") or ctx.get("mission_id")
+    produces = ctx.get("produces") or []
+    if not (output_value and mission_id) or not isinstance(produces, list):
+        return output_value
+
+    # Mechanical siblings (workflow_advance, git_commit, ...) inherit ctx but
+    # do not emit artifacts — mirror the schema gate's _is_producer guard.
+    executor = (task.get("executor") or ctx.get("executor") or "")
+    agent_type = (task.get("agent_type") or ctx.get("agent_type") or "")
+    if executor == "mechanical" or agent_type == "mechanical":
+        return output_value
+
+    from coulson.grounding import select_canonical, stamp_front_matter
+
+    schema = ctx.get("artifact_schema") or {}
+
+    def _schema_ok(c: str) -> bool:
+        try:
+            return bool(validate_artifact_schema(c, schema)[0])
+        except Exception:
+            return False
+
+    single = len([e for e in produces if isinstance(e, str)
+                  and e.endswith((".md", ".json"))]) == 1
+    canonical_out = output_value
+    for entry in produces:
+        if not (isinstance(entry, str) and entry.endswith((".md", ".json"))):
+            continue
+        abs_path = entry if os.path.isabs(entry) else os.path.join(WORKSPACE_DIR, entry)
+        disk = None
+        try:
+            with open(abs_path, encoding="utf-8") as fh:
+                disk = fh.read()
+        except OSError:
+            disk = None
+        chosen = select_canonical([output_value, disk], _schema_ok)
+        if not isinstance(chosen, str):
+            continue
+        kind = "json" if entry.endswith(".json") else "md"
+        chosen = stamp_front_matter(chosen, int(mission_id), kind)
+        try:
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, "w", encoding="utf-8") as fh:
+                fh.write(chosen)
+            logger.info(
+                f"[Workflow Hook] materialize_produces -> {abs_path} "
+                f"({len(chosen)} chars)"
+            )
+        except OSError as e:
+            logger.debug(f"[Workflow Hook] materialize write failed {abs_path}: {e}")
+            continue
+        if single:
+            canonical_out = chosen
+    return canonical_out
 
 
 def _produces_file_is_stale(existing_raw: str, new_value: str) -> bool:

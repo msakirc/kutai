@@ -1771,8 +1771,11 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         if response_format is None:
             return False  # unconstrainable (markdown/string) — validator covers it
         if should_skip_emit(draft, artifact_schema):
-            # Draft already parses with all required keys — re-emitting would
-            # compress, not reshape. Skip the child entirely (no rewrite).
+            # Draft already PASSES full schema validation (== the schema gate
+            # would pass) — re-emitting would only risk tail-compression. Skip
+            # the child. A draft that FAILS validation (missing nested fields /
+            # wrong container) now falls through and gets re-emitted BEFORE the
+            # gate, instead of flowing on to DLQ on a blind retry.
             return False
         messages = build_emit_messages(draft, response_format)
         spec = {

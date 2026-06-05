@@ -335,26 +335,32 @@ def schema_response_format(artifact_schema: dict, step_id: str = "artifact"):
 
 
 def should_skip_emit(draft: str, artifact_schema: dict) -> bool:
-    """Skip the emit when the draft already parses as JSON with all required
-    object/array artifact keys present.
+    """Skip the emit only when the draft already PASSES the full artifact-schema
+    validation — i.e. exactly when the deterministic schema gate (#1) would pass.
 
-    Re-emitting a conforming draft tends to COMPRESS rather than reshape — the
-    model sees a long rich draft, gets a tight token budget, and trims content
-    from tail fields to fit. The schema validator runs next and catches genuine
-    shape gaps; the emit pass is only valuable when the draft is non-JSON or
-    missing top-level keys. Lifted from constrained_emit.py ~92-116.
+    The old predicate skipped on top-level artifact-NAME presence alone. That
+    let an internally-incomplete draft through: a ``monetization_strategy``
+    object missing 3 of its 6 nested ``required_fields`` (#289737) or a single
+    object where an 8-15 item array is required (#289735) both carry the right
+    top-level key, so the emit was skipped — then the draft flowed to the grade
+    / schema gate and DLQ'd on a blind retry (the grader's bare COMPLETE:NO
+    gives capable producers no actionable reason to fix the shape).
+
+    Gating on the SAME validator the schema gate uses keeps the two decisions in
+    lock-step: the emit fires precisely when the gate would reject, so the
+    constrained re-emit (which forces the missing nested fields / correct array
+    shape on a json_schema-capable model) lands BEFORE the gate. A draft that
+    already validates is left untouched — no needless re-emit, so the old
+    tail-compression worry never triggers (it only re-emits failing drafts).
     """
+    if not isinstance(artifact_schema, dict) or not artifact_schema:
+        return True  # nothing constrainable — emit would be a no-op
+    from src.workflows.engine.hooks import validate_artifact_schema
     try:
-        parsed = json.loads(draft)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return False  # Draft isn't JSON — emit pass will reshape.
-    if not isinstance(parsed, dict):
+        ok, _ = validate_artifact_schema(draft, artifact_schema)
+    except Exception:  # noqa: BLE001 — a validator error must not block the emit
         return False
-    need = [
-        n for n, r in (artifact_schema or {}).items()
-        if isinstance(r, dict) and r.get("type") in ("object", "array")
-    ]
-    return bool(need) and all(k in parsed for k in need)
+    return bool(ok)
 
 
 def build_emit_messages(draft: str, response_format: dict) -> list[dict]:

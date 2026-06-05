@@ -79,8 +79,7 @@ def synthesize(ref: ArtifactRef, raw_body: bytes) -> tuple[Manifest, str]:
 async def llm_synthesize(raw_text: str, source_meta: dict) -> dict:
     """LLM-fallback manifest synthesis for unstructured sources
     (awesome-list bullets, freeform README). Routes a Sonnet call through
-    ``beckman.enqueue`` — yalayut never imports LLMDispatcher; only Beckman
-    talks to it (KutAI "only Beckman calls the dispatcher" rule).
+    ``husam.run`` — yalayut never imports LLMDispatcher directly.
 
     Returns a partial manifest dict: ``{intent_keywords, mechanizable,
     kind, install_cmd, auth_env}``. On any failure returns a conservative
@@ -101,28 +100,23 @@ async def llm_synthesize(raw_text: str, source_meta: dict) -> dict:
         f"Description / README:\n{raw_text[:2000]}\n"
     )
     try:
-        import general_beckman
-        result = await general_beckman.enqueue(
+        import husam
+        resp = await husam.run(
             {
                 "agent_type": "yalayut_synthesizer",
+                "kind": "overhead",
                 "context": {
                     "llm_call": {
                         "raw_dispatch": True,
+                        "call_category": "overhead",
                         "messages": [{"role": "user", "content": prompt}],
                         "response_format": {"type": "json_object"},
                         "model_hint": "sonnet",
                     },
                 },
-                "kind": "overhead",
-            },
-            # The pump only dispatches lane=='oneshot'; "overhead" was a phantom
-            # lane the pump never selected (SP3b lane bug). Harmless here because
-            # await_inline=True blocks on the continuation directly rather than
-            # the pump, but corrected for consistency.
-            lane="oneshot",
-            await_inline=True,
+            }
         )
-        raw = result.get("result") if isinstance(result, dict) else result
+        raw = resp.get("content")
         parsed = _json.loads(raw) if isinstance(raw, str) else (raw or {})
     except Exception as e:  # noqa: BLE001 — synthesis must never crash cron
         _log.warning("llm_synthesize failed, using empty manifest: %s", e)

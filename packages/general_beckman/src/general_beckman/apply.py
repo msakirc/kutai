@@ -763,13 +763,49 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
 _NULLISH_STRINGS = {"", "none", "null", "nil", "n/a", "na", "-"}
 
 
-def _stamp_retry_feedback(ctx: dict, next_attempt: int) -> None:
-    """Tag freshly-written ``_schema_error``/``_prev_output`` with the attempt
-    number they were written FOR. Readers gate on this so stale feedback from
-    earlier failure modes (e.g. schema reject 2 attempts ago, then availability
-    bounce that re-queues without rewriting) doesn't leak into the next prompt
-    as ``"your last output failed: <unrelated>"``.
+def _record_failed_model(ctx: dict) -> None:
+    """Append the source's ``generating_model`` to ``ctx['failed_models']`` so
+    the retry-escalation MODEL-EXCLUSION arm engages on the next worker pick.
+
+    ``src.core.retry.get_model_constraints`` (read by fatih_hoca's
+    requirements_builder at ``worker_attempts >= 3``) has TWO arms: a
+    difficulty bump (keyed on attempt count alone, so it fires for any path
+    that retries) and a model EXCLUSION (keyed on ``failed_models``). Before
+    2026-06-04 only the grade-FAIL branch populated ``failed_models``, so every
+    OTHER quality re-pend (verify_artifacts / code_review / test_run / semgrep /
+    pattern_lint / shape & blocker checks / prior_art coverage) could re-draw
+    the exact model that just produced the bad output — only the difficulty bump
+    nudged it. Recording the failed model here closes that gap UNIVERSALLY:
+    every quality re-pend funnels through ``_stamp_retry_feedback`` (its sole
+    chokepoint), so this one call makes all of them escalate symmetrically.
+
+    Idempotent (dedup) and a no-op when ``generating_model`` is unknown.
     """
+    gen = ctx.get("generating_model") or ""
+    if not gen:
+        return
+    failed = list(ctx.get("failed_models") or [])
+    if gen not in failed:
+        failed.append(gen)
+        ctx["failed_models"] = failed
+
+
+def _stamp_retry_feedback(ctx: dict, next_attempt: int) -> None:
+    """Prepare ``ctx`` for the next quality-retry attempt. Called by EVERY
+    quality re-pend branch (grade + all mechanical checks), so it is the single
+    place that guarantees the per-attempt invariants hold for all of them:
+
+    1. Tag freshly-written ``_schema_error``/``_prev_output`` with the attempt
+       number they were written FOR. Readers gate on this so stale feedback from
+       earlier failure modes (e.g. schema reject 2 attempts ago, then
+       availability bounce that re-queues without rewriting) doesn't leak into
+       the next prompt as ``"your last output failed: <unrelated>"``.
+    2. Record the failing model in ``failed_models`` so the retry escalation's
+       model-exclusion arm engages — not just the difficulty bump. This is a
+       QUALITY-only chokepoint (availability/infra retries ride decide_retry,
+       never this), so excluding the model is always correct here.
+    """
+    _record_failed_model(ctx)
     if "_schema_error" in ctx or "_prev_output" in ctx:
         ctx["_schema_error_for_attempt"] = int(next_attempt)
 
@@ -3853,6 +3889,19 @@ _Z1_WARNING_KINDS: frozenset[str] = frozenset({
 
 _Z1_MECHANICAL_KINDS: frozenset[str] = _Z1_BLOCKER_KINDS | _Z1_WARNING_KINDS
 
+# Z1 blockers whose verdict judges LLM PRODUCER output (fabrication / thin
+# grounding), NOT a deterministic on-disk artifact. These must NOT single-shot
+# DLQ — a retry on an escalated (stronger) model can ground correctly — so the
+# verdict dispatcher routes them through the retry-with-escalation rail
+# (_apply_simple_blocker_verdict) instead of _apply_z1_mechanical_verdict. The
+# remaining _Z1_BLOCKER_KINDS (compliance_template_present / compliance_blocker_
+# check — file-presence + on-disk overlay checks; critic_gate — a veto) stay
+# single-shot, since re-running the same artifact through the same model is
+# pointless there. See project_quality_failure_escalation_20260604.
+_PRODUCER_QUALITY_Z1_BLOCKERS: frozenset[str] = frozenset({
+    "prior_art_min_coverage",
+})
+
 
 async def _apply_z1_mechanical_verdict(
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
@@ -4781,6 +4830,26 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
         # Adapt the verb's problem lists into `findings`, then share the
         # existing re-pend-with-feedback rail. Blocker semantics: a failed
         # check re-pends the PRODUCER (not the validator) with the problems.
+        _adapt_shape_findings(a)
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix=f"{a.kind.replace('_', ' ')} gate",
+        )
+        return
+
+    if a.kind in _PRODUCER_QUALITY_Z1_BLOCKERS:
+        # A Z1 blocker whose verdict judges LLM PRODUCER output (e.g.
+        # prior_art_min_coverage caught the synthesizer fabricating Habitica/
+        # Streaks instead of grounding in the fetched candidates, #289710
+        # 2026-06-04). Unlike the other Z1 blockers — which are deterministic
+        # against on-disk artifacts, so re-running the SAME model re-emits the
+        # SAME artifact and single-shot DLQ is correct — a stronger/escalated
+        # model WOULD ground here. Route it through the retry-with-escalation
+        # rail (_apply_simple_blocker_verdict + the _stamp_retry_feedback model
+        # exclusion) instead of _apply_z1_mechanical_verdict's single-shot DLQ,
+        # so worker_attempts climb to 3 and get_model_constraints excludes the
+        # fabricating model + bumps difficulty. See the escalation audit
+        # (project_quality_failure_escalation_20260604).
         _adapt_shape_findings(a)
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,

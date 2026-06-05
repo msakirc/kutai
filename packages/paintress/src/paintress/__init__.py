@@ -8,8 +8,11 @@ import time
 
 from renoir import assess
 from .types import ImageSpec, ImageResult
+from .providers.pollinations import PollinationsProvider
 
-_PROVIDERS: dict = {}  # populated by Tasks 4/5
+_PROVIDERS: dict = {
+    "pollinations": PollinationsProvider(),
+}
 
 
 def _safe_filename(hint: str | None) -> str:

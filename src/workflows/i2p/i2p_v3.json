@@ -2523,13 +2523,16 @@
         "monetization_strategy"
       ],
       "instruction": "Define business model: pricing_model, tiers, free_tier_strategy, upgrade_triggers, billing_implementation, revenue_projections. If multiple viable models exist, present with trade-offs and trigger needs_clarification.",
-      "done_when": "monetization_strategy exists with pricing tiers, free/paid split, and revenue projections.",
+      "done_when": "monetization_strategy exists with pricing_model, tiers, free_tier_strategy, upgrade_triggers, billing_implementation, and revenue_projections.",
       "artifact_schema": {
         "monetization_strategy": {
           "type": "object",
           "required_fields": [
             "pricing_model",
             "tiers",
+            "free_tier_strategy",
+            "upgrade_triggers",
+            "billing_implementation",
             "revenue_projections"
           ],
           "_schema_version": "1"

@@ -1678,6 +1678,34 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
     gen_model = source_ctx.get("generating_model") or ""
 
     if kind == "grade":
+        # Fix #1 — deterministic artifact-schema gate BEFORE the LLM grade.
+        # ``grade`` is the terminal chain entry, so any constrained_emit /
+        # self_reflect rewrite has already landed on ``source.result``. Shape
+        # and field-completeness are mechanical facts: a missing required field
+        # or an object-where-an-array-is-required is FAIL with a precise reason,
+        # unlike the prose grader's bare COMPLETE:NO that left capable producers
+        # retrying blind to DLQ (#289735 single-object-vs-array, #289737 field
+        # completeness). Route the failure through the SAME grade-FAIL retry /
+        # escalation path (its message rides under ``error`` where
+        # _grader_verdict_text reads it) and skip the wasted LLM grade. The
+        # grader then judges semantics only, on shape-valid artifacts.
+        _art_schema = source_ctx.get("artifact_schema")
+        if isinstance(_art_schema, dict) and _art_schema:
+            _draft = source.get("result")
+            if isinstance(_draft, str) and _draft.strip():
+                try:
+                    from mr_roboto.schema_gate import schema_gate as _schema_gate
+                    _sg = _schema_gate(output_value=_draft, schema=_art_schema)
+                except Exception:  # noqa: BLE001 — never let the gate crash grade
+                    _sg = {"passed": True, "error": ""}
+                if not _sg.get("passed"):
+                    await _apply_posthook_verdict(
+                        {"id": source_id},
+                        PostHookVerdict(
+                            source_task_id=source_id, kind="grade", passed=False,
+                            raw={"passed": False,
+                                 "error": f"schema gate: {_sg.get('error')}"}))
+                    return False  # verdict applied directly — no LLM grade spawned
         from src.core.grading import build_grading_spec, GradeResult
         excl = list(exclusions) if exclusions is not None else \
             list({m for m in [gen_model, *(source_ctx.get("grade_excluded_models") or [])] if m})

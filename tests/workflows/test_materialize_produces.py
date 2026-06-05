@@ -26,7 +26,7 @@ def _ctx(produces, schema=None):
 
 @pytest.mark.asyncio
 async def test_writes_unwrapped_canonical_and_returns_it(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.workflows.engine.hooks.WORKSPACE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
     rel = "mission_81/.prd/competitive_positioning.md"
     ctx = _ctx([rel], _SCHEMA_MD)
     task = {"mission_id": 81, "agent_type": "analyst"}
@@ -41,7 +41,7 @@ async def test_writes_unwrapped_canonical_and_returns_it(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mechanical_executor_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.workflows.engine.hooks.WORKSPACE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
     ctx = _ctx(["mission_81/x.md"], _SCHEMA_MD)
     task = {"mission_id": 81, "executor": "mechanical"}
     out = await materialize_produces(ctx, task, {}, "## Landscape\nx")
@@ -51,7 +51,7 @@ async def test_mechanical_executor_is_noop(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_schema_writes_passthrough(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.workflows.engine.hooks.WORKSPACE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
     rel = "mission_81/notes.md"
     ctx = _ctx([rel])                              # no artifact_schema
     task = {"mission_id": 81, "agent_type": "analyst"}
@@ -65,7 +65,7 @@ async def test_no_schema_writes_passthrough(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_json_unwrapped_and_stamped(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.workflows.engine.hooks.WORKSPACE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
     rel = "mission_81/.intake/draft.json"
     schema = {"draft": {"type": "object", "required": ["items"]}}
     ctx = _ctx([rel], schema)
@@ -84,7 +84,7 @@ async def test_mission81_289715_regression(tmp_path, monkeypatch):
     while the correct doc sat in a ```yaml fence in result. Materializer must
     overwrite disk with the unwrapped artifact AND pass both the loose schema
     and a strict front-matter check."""
-    monkeypatch.setattr("src.workflows.engine.hooks.WORKSPACE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
     rel = "mission_81/.prd/competitive_positioning.md"
     abs_p = tmp_path / rel
     abs_p.parent.mkdir(parents=True, exist_ok=True)

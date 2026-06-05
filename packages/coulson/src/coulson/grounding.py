@@ -307,34 +307,35 @@ def stamp_front_matter(content: str, mission_id: int, kind: str) -> str:
 
 
 def select_canonical(candidates, schema_ok: Callable[[str], bool]):
-    """Pick the best artifact form from competing candidates.
+    """Pick the best artifact form from competing candidates, by priority.
 
-    ``candidates`` is an ordered list of raw strings (e.g. ``[output_value,
-    disk_content]``). For each, the fence-unwrapped form is also considered.
-    Among forms that PASS ``schema_ok`` the cleanest is chosen (front-matter
-    / header at file start, then shortest — least surrounding narration). If
-    none pass, the most-substantial form is returned so a file always exists.
-    Returns ``None`` only when there is no usable (non-blank) candidate.
+    ``candidates`` is an ordered list of raw strings by PRIORITY, highest
+    first (the materializer passes ``[disk_content, output_value]`` — the
+    agent's committed on-disk file outranks the final_answer body so a rich
+    valid artifact is never clobbered by a thinner result, intake #73). For
+    each source the fence-unwrapped form is preferred over the raw form when
+    it also passes ``schema_ok`` (strips a narration wrapper, mission 81).
+
+    Returns the first priority source's passing form (unwrapped if it passes,
+    else raw); if no source passes, the most-substantial form overall so a
+    file always exists. ``None`` only when there is no usable candidate.
     """
-    forms: list[str] = []
+    all_forms: list[str] = []
     for c in candidates:
         if not isinstance(c, str) or not c.strip():
             continue
-        forms.append(c)
+        group: list[str] = []
         u = unwrap_fenced_artifact(c)
         if isinstance(u, str) and u.strip() and u.strip() != c.strip():
-            forms.append(u)
-    if not forms:
+            group.append(u)   # unwrapped preferred within this source
+        group.append(c)
+        all_forms.extend(group)
+        for form in group:
+            if schema_ok(form):
+                return form
+    if not all_forms:
         return None
-
-    passing = [f for f in forms if schema_ok(f)]
-    if passing:
-        def _rank(f: str):
-            s = f.strip()
-            starts_clean = s.startswith(("---", "#", "{", "["))
-            return (0 if starts_clean else 1, len(s))
-        return min(passing, key=_rank)
-    return max(forms, key=lambda f: len(f.strip()))
+    return max(all_forms, key=lambda f: len(f.strip()))
 
 
 def recanonicalize_candidate(

@@ -2701,23 +2701,43 @@
       "artifact_schema": {
         "nfr_performance": {
           "type": "object",
-          "required_fields": [
-            "api_response_time",
-            "page_load_time",
-            "throughput",
-            "items"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "items": {
+              "type": "array",
+              "min_items": 3,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {},
+                  "target": {},
+                  "risk_if_wrong": {},
+                  "validation_method": {},
+                  "falsification_signal": {}
+                }
+              }
+            }
+          },
+          "_schema_version": "2"
         },
         "nfr_scalability": {
           "type": "object",
-          "required_fields": [
-            "concurrent_users",
-            "data_volume",
-            "projections",
-            "items"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "items": {
+              "type": "array",
+              "min_items": 3,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {},
+                  "target": {},
+                  "risk_if_wrong": {},
+                  "validation_method": {},
+                  "falsification_signal": {}
+                }
+              }
+            }
+          },
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -2753,23 +2773,43 @@
       "artifact_schema": {
         "nfr_availability": {
           "type": "object",
-          "required_fields": [
-            "uptime_target",
-            "rto",
-            "rpo",
-            "items"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "items": {
+              "type": "array",
+              "min_items": 3,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {},
+                  "target": {},
+                  "risk_if_wrong": {},
+                  "validation_method": {},
+                  "falsification_signal": {}
+                }
+              }
+            }
+          },
+          "_schema_version": "2"
         },
         "security_requirements": {
           "type": "object",
-          "required_fields": [
-            "authentication",
-            "authorization",
-            "data_protection",
-            "items"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "items": {
+              "type": "array",
+              "min_items": 3,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {},
+                  "target": {},
+                  "risk_if_wrong": {},
+                  "validation_method": {},
+                  "falsification_signal": {}
+                }
+              }
+            }
+          },
+          "_schema_version": "2"
         }
       },
       "context": {},

@@ -148,3 +148,8 @@ def test_enqueue_draft_reply_uses_platform_convention():
     from src.reviews import producers
     assert "appstore" in producers._PLATFORM_CONVENTIONS
     assert "g2" in producers._PLATFORM_CONVENTIONS
+
+
+def test_reviews_continuations_in_handler_modules():
+    from general_beckman import continuations as c
+    assert "mr_roboto.executors.reviews_continuations" in c._HANDLER_MODULES

@@ -469,6 +469,74 @@ async def _message_route_err(
     await tg._route_classified_message(chat_id, text, cls)
 
 
+async def _send_telegram_photo_via_resume(
+    chat_id: int, path: str, *, caption: str | None = None
+) -> bool:
+    """Send a photo from a CPS resume context (no live Update)."""
+    try:
+        tg = get_telegram()
+    except RuntimeError:
+        return False
+    if tg is None or not getattr(tg, "app", None):
+        return False
+    try:
+        with open(path, "rb") as fh:
+            await tg.app.bot.send_photo(chat_id=chat_id, photo=fh,
+                                        caption=(caption or "")[:1000])
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("resume telegram photo send failed",
+                     chat_id=chat_id, error=str(exc))
+        return False
+
+
+async def _image_delivery_resume(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS resume for `/image`. state = {'chat_id': int, 'prompt': str}.
+
+    ``result['result']`` is husam's image dict, JSON-stringified by the
+    orchestrator. Tolerate dict + flat restart-reconcile shapes.
+    """
+    import json
+    import os
+    chat_id = (state or {}).get("chat_id")
+    if chat_id is None:
+        return
+    result = result or {}
+    inner = result.get("result")
+    if isinstance(inner, str):
+        try:
+            inner = json.loads(inner)
+        except Exception:
+            inner = {}
+    if isinstance(inner, dict):
+        payload = inner
+    elif isinstance(result.get("path"), str):
+        payload = result
+    else:
+        payload = {}
+    path = payload.get("path")
+    prompt = (state.get("prompt") or "")[:200]
+    if path and os.path.isfile(path):
+        await _send_telegram_photo_via_resume(chat_id, path, caption=prompt)
+    else:
+        await _send_telegram_via_resume(
+            chat_id, "❌ Image failed: no image produced")
+
+
+async def _image_delivery_err(
+    child_task_id: int, result: dict, state: dict
+) -> None:
+    """CPS on_error for `/image`."""
+    chat_id = (state or {}).get("chat_id")
+    if chat_id is None:
+        return
+    err = (result or {}).get("error") if isinstance(result, dict) else ""
+    await _send_telegram_via_resume(
+        chat_id, f"❌ Image failed: {err or 'generation error'}")
+
+
 def register_continuations() -> None:
     """Register all Telegram CPS resume / on_error handlers (SP2).
 
@@ -481,6 +549,8 @@ def register_continuations() -> None:
         register_resume("telegram.casual_reply_err",      _casual_reply_err)
         register_resume("telegram.message_route_resume",  _message_route_resume)
         register_resume("telegram.message_route_err",     _message_route_err)
+        register_resume("image_delivery.resume",          _image_delivery_resume)
+        register_resume("image_delivery.err",             _image_delivery_err)
     except Exception as exc:  # noqa: BLE001
         logger.debug("telegram continuation registration deferred",
                      error=str(exc))
@@ -2059,6 +2129,7 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("mish", self.cmd_mission))      # abbreviation
         self.app.add_handler(CommandHandler("missions", self.cmd_missions))
         self.app.add_handler(CommandHandler("task", self.cmd_add_task))
+        self.app.add_handler(CommandHandler("image", self.cmd_image))
         self.app.add_handler(CommandHandler("queue", self.cmd_view_queue))
         self.app.add_handler(CommandHandler("status", self.cmd_status))
         # Z8 T1D — /stop_ops <mission_id> revokes an ongoing mission.
@@ -2496,6 +2567,43 @@ class TelegramInterface:
         )
         self.user_last_task_id[chat_id] = task_id
         await self._reply(update, f"✅ Task #{task_id} queued.")
+
+
+    async def cmd_image(self, update, context):
+        """/image <prompt> — generate via the cloud image pipeline.
+
+        CPS: enqueue + on_complete continuation; the photo is delivered from
+        `_image_delivery_resume`. NO await_inline.
+        """
+        prompt = " ".join(context.args or []).strip()
+        if not prompt:
+            await self._reply(update, "Usage: `/image a red bicycle`",
+                              parse_mode="Markdown", reply_markup=REPLY_KEYBOARD)
+            return
+        import os
+        import tempfile
+        from general_beckman import enqueue
+        chat_id = update.effective_chat.id
+        out_dir = os.path.join(tempfile.gettempdir(), "kutai_images", str(chat_id))
+        spec = {
+            "title": f"image:{prompt[:40]}",
+            "description": "Telegram /image generation",
+            "agent_type": "image",
+            "kind": "image",
+            "priority": 5,
+            "context": {"image_call": {
+                "raw_dispatch": True, "prompt": prompt, "out_dir": out_dir,
+                "width": 1024, "height": 1024, "quality_tier": "quality",
+                "filename_hint": prompt[:30],
+            }},
+        }
+        await self._reply(update, "🎨 Generating…", reply_markup=REPLY_KEYBOARD)
+        await enqueue(
+            spec,
+            on_complete="image_delivery.resume",
+            on_error="image_delivery.err",
+            cont_state={"chat_id": chat_id, "prompt": prompt},
+        )
 
 
     async def cmd_view_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

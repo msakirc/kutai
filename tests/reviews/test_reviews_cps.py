@@ -180,3 +180,42 @@ async def test_router_draft_reply_enqueues_producer():
     assert act.status == "completed"
     assert act.result.get("enqueued") == 999
     assert act.result.get("auto_posted") is False
+
+
+def test_no_llm_left_in_verb_modules():
+    import inspect
+    import mr_roboto.reviews_classify as rc
+    import mr_roboto.reviews_draft_reply as rd
+    assert not hasattr(rc, "_call_llm_classify")
+    assert not hasattr(rd, "_call_llm_draft_reply")
+    for mod in (rc, rd):
+        src = inspect.getsource(mod)
+        assert "await_inline=True" not in src
+        assert "LLMDispatcher" not in src
+
+
+@pytest.mark.asyncio
+async def test_cron_enqueues_producer_per_review():
+    from src.app.jobs import reviews_poll_daily as job
+    calls = []
+
+    async def fake_enq(*, review_id, product_id):
+        calls.append((review_id, product_id)); return 1
+
+    class _Cur:
+        async def fetchall(self):
+            return [(7, "p")]
+
+    class _DB:
+        async def execute(self, *a, **k):
+            return _Cur()
+
+    async def fake_get_db():
+        return _DB()
+
+    with patch("src.reviews.producers.enqueue_classify", fake_enq), \
+         patch("src.infra.db.get_db", fake_get_db):
+        res = await job.run_reviews_poll_daily({"products": []})
+
+    assert (7, "p") in calls
+    assert res["total_enqueued"] == 1

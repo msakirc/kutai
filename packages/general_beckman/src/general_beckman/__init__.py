@@ -259,6 +259,86 @@ async def _ceiling_ok(task: dict, log) -> bool:
         return True  # Fail-open: don't block admission on unexpected errors.
 
 
+def _select_for_admission(spec: dict, sel_kwargs: dict | None = None):
+    """Single admission-time selection point. Reads failed_models from the task
+    context and forwards them so a re-admitted retry never re-picks the just-
+    failed provider. Applies to text AND image tasks.
+
+    `sel_kwargs` is the rich text-selection kwargs next_task() already computed
+    (task/agent_type/difficulty/urgency/call_category/needs_thinking/prefer_speed/
+    est tokens). For the TEXT path we preserve it verbatim and only add failures.
+    For the IMAGE path we ignore it and call the image scorer."""
+    import fatih_hoca
+    from fatih_hoca.types import Failure
+
+    ctx = spec.get("context") or {}
+    if isinstance(ctx, str):
+        import json as _json
+        try:
+            ctx = _json.loads(ctx) or {}
+        except Exception:
+            ctx = {}
+    failed_models = list(ctx.get("failed_models") or [])
+
+    is_image = bool(ctx.get("image_call")) or spec.get("kind") == "image"
+    if is_image:
+        ic = ctx.get("image_call") or {}
+        return fatih_hoca.select(
+            needs_image=True,
+            quality_tier=ic.get("quality_tier", "fast"),
+            failures=failed_models,  # image scorer normalizes strings
+        )
+
+    # Text path: preserve next_task()'s rich kwargs; only add failures.
+    kw = dict(sel_kwargs or {})
+    kw.setdefault("agent_type", spec.get("agent_type", ""))
+    kw.setdefault("task", kw.get("agent_type", spec.get("agent_type", "")))
+    kw["failures"] = [Failure(model=n, reason="prior_admission") for n in failed_models]
+    return fatih_hoca.select(**kw)
+
+
+async def _handle_admission_pick(spec: dict, pick) -> dict:
+    """Convert a SelectionFailure (or a None pick) into a task-status outcome
+    instead of letting beckman crash downstream on pick.model.name.
+    Returns {'status': 'failed'|'paused'|'ok', 'error': str|None, 'pick': Pick|None}."""
+    from fatih_hoca.types import SelectionFailure
+
+    if pick is None:
+        pick = _select_for_admission(spec)
+
+    if isinstance(pick, SelectionFailure):
+        if pick.reason == "budget":
+            try:
+                from general_beckman.lifecycle_events import emit_pause
+                mid = spec.get("mission_id")
+                if mid is not None:
+                    await emit_pause(int(mid), reason="no_model_fits_budget",
+                                     triggered_by="auto:budget")
+                return {"status": "paused", "error": f"{pick.reason}:{pick.detail}",
+                        "pick": None}
+            except Exception:
+                pass
+        return {"status": "failed",
+                "error": f"selection_failure:{pick.reason}:{pick.detail}",
+                "pick": None}
+
+    if pick is None:
+        return {"status": "failed", "error": "selection_failure:no_pick", "pick": None}
+
+    return {"status": "ok", "error": None, "pick": pick}
+
+
+async def _mark_admission_failed(task: dict, status: str, error: str) -> None:
+    """Terminal/paused write for an admission selection outcome."""
+    if status == "failed":
+        from general_beckman.apply import _dlq_write
+        await _dlq_write(task, error=error, category="availability",
+                         attempts=int(task.get("worker_attempts") or 0) + 1)
+    else:  # paused
+        from src.infra.db import update_task
+        await update_task(task["id"], status=status, error=error[:500])
+
+
 async def next_task(lane: str | None = None):
     """Admission loop: pick one ready task whose pool pressure clears its urgency threshold.
 
@@ -639,10 +719,31 @@ async def next_task(lane: str | None = None):
                     _sel_kwargs["needs_thinking"] = _needs_thinking
                 if _prefer_speed is not None:
                     _sel_kwargs["prefer_speed"] = _prefer_speed
-                pick = fatih_hoca.select(**_sel_kwargs)
+                # Task 9: route through the single admission-selection point so
+                # failed_models from a prior attempt are forwarded as failures=
+                # (text → Failure objects, image → strings) and the just-failed
+                # provider is never re-picked. _sel_kwargs is preserved verbatim
+                # for the text path; the helper only adds failures=.
+                pick = _select_for_admission(task, _sel_kwargs)
             except Exception as e:
                 select_err = repr(e)
                 pick = None
+        # Task 10: a SelectionFailure is truthy (not None) — without this gate
+        # the code below would treat it as a valid pick and crash on
+        # pick.model.name. Convert it into a task-status outcome and abandon
+        # THIS candidate cleanly (matching the for-loop's `continue`
+        # semantics). A normal Pick flows through unchanged. We only intercept
+        # when `pick is not None`; a plain None (no eligible model / select
+        # raised) falls straight to the existing debug-log + continue below,
+        # preserving the pre-Task-10 admission behavior exactly (and avoiding
+        # the helper's re-select-on-None, which would drop the rich text
+        # kwargs).
+        if pick is not None:
+            _outcome = await _handle_admission_pick(task, pick=pick)
+            if _outcome["status"] != "ok":
+                await _mark_admission_failed(task, _outcome["status"], _outcome["error"])
+                continue
+            pick = _outcome["pick"]
         if pick is None:
             _log.debug(
                 f"admission: task #{task['id']} agent={agent_type} d={difficulty} "

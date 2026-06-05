@@ -603,11 +603,22 @@
       "artifact_schema": {
         "project_state_map": {
           "type": "object",
-          "required_fields": [
-            "phases",
-            "effective_starting_phase",
-            "blocking_gaps"
-          ]
+          "fields": {
+            "phases": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "completion_percentage": {},
+                  "blocking_gaps": { "optional": true },
+                  "quality_gaps": { "optional": true }
+                }
+              }
+            },
+            "effective_starting_phase": {},
+            "blocking_gaps": { "optional": true }
+          }
         }
       },
       "context": {},
@@ -678,13 +689,15 @@
       "artifact_schema": {
         "project_conventions": {
           "type": "object",
-          "required_fields": [
-            "naming_conventions",
-            "file_organization",
-            "import_style",
-            "error_handling_pattern",
-            "test_patterns"
-          ]
+          "fields": {
+            "naming_conventions": {},
+            "file_organization": {},
+            "import_style": {},
+            "error_handling_pattern": {},
+            "test_patterns": {},
+            "git_conventions": {},
+            "state_management_patterns": { "optional": true }
+          }
         }
       },
       "context": {},
@@ -1544,7 +1557,7 @@
         "competitor_features_raw",
         "competitor_feature_matrix"
       ],
-      "instruction": "For each direct competitor in direct_competitors_list, catalog every feature visible from their: marketing website (features page, pricing page), documentation, free tier exploration, App Store/Play Store listing, Product Hunt page, demo videos. For each feature, record: feature_name, feature_description, which_competitor, tier_available (free/paid/enterprise), and category (core, secondary, integration, admin). Be exhaustive. Then build a feature comparison matrix. Rows: every unique feature (deduplicated and normalized across competitors). Columns: each competitor. Cell values: 'full', 'partial', 'none', 'unknown'. Group rows by feature category. Add a 'feature_frequency' column. Sort within each category by frequency descending.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep the feature matrix concise  -  max 10 features per competitor, one line each. Total output under 2000 words.",
+      "instruction": "For each direct competitor in direct_competitors_list, catalog every feature visible from their: marketing website (features page, pricing page), documentation, free tier exploration, App Store/Play Store listing, Product Hunt page, demo videos. For each feature, record: feature_name, description, competitor_name, tier_available (free/paid/enterprise), and category (core, secondary, integration, admin). Be exhaustive. Then build a feature comparison matrix. Rows: every unique feature (deduplicated and normalized across competitors). Columns: each competitor. Cell values: 'full', 'partial', 'none', 'unknown'. Group rows by feature category. Add a 'feature_frequency' column. Sort within each category by frequency descending.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep the feature matrix concise  -  max 10 features per competitor, one line each. Total output under 2000 words.",
       "done_when": "competitor_features_raw and competitor_feature_matrix exist with comprehensive feature data and comparison table.",
       "artifact_schema": {
         "competitor_features_raw": {
@@ -1601,12 +1614,38 @@
       "artifact_schema": {
         "competitor_pricing_analysis": {
           "type": "object",
-          "required_fields": [
-            "competitors",
-            "market_standard_range",
-            "pricing_gaps"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "competitors": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "pricing_model_type": {},
+                  "tiers": {
+                    "type": "array",
+                    "min_items": 1,
+                    "items": {
+                      "type": "object",
+                      "fields": {
+                        "name": {},
+                        "monthly_price": { "optional": true },
+                        "annual_price": { "optional": true },
+                        "key_limits": { "optional": true }
+                      }
+                    }
+                  },
+                  "pricing_page_url": {},
+                  "free_tier_scope": { "optional": true },
+                  "upgrade_triggers": { "optional": true },
+                  "enterprise_offering": { "optional": true }
+                }
+              }
+            },
+            "market_standard_range": {},
+            "pricing_gaps": {}
+          },
+          "_schema_version": "2"
         }
       },
       "api_hints": [
@@ -1644,24 +1683,42 @@
         "competitor_reviews_raw": {
           "type": "array",
           "min_items": 1,
-          "item_fields": [
-            "competitor_name",
-            "source",
-            "positive_themes",
-            "negative_themes",
-            "notable_quotes"
-          ],
-          "_schema_version": "1"
+          "items": {
+            "type": "object",
+            "fields": {
+              "competitor_name": {},
+              "source_name": {},
+              "positive_themes": {},
+              "negative_themes": {},
+              "notable_quotes": {},
+              "review_count_sampled": { "optional": true },
+              "average_rating": { "optional": true }
+            }
+          },
+          "_schema_version": "2"
         },
         "competitor_sentiment_analysis": {
           "type": "object",
-          "required_fields": [
-            "per_competitor",
-            "universal_praises",
-            "universal_complaints",
-            "differentiation_signals"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "per_competitor": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "competitor_name": {},
+                  "top_5_praised_aspects": {},
+                  "top_5_pain_points": {},
+                  "overall_sentiment": {},
+                  "net_promoter_signal": { "optional": true }
+                }
+              }
+            },
+            "universal_praises": {},
+            "universal_complaints": {},
+            "differentiation_signals": {}
+          },
+          "_schema_version": "2"
         }
       },
       "api_hints": [
@@ -1701,9 +1758,15 @@
             "competitor_name",
             "design_quality",
             "ux_weaknesses",
-            "unique_ux_patterns"
+            "unique_ux_patterns",
+            "visual_consistency",
+            "information_density",
+            "navigation_clarity",
+            "onboarding_quality",
+            "accessibility_signals",
+            "mobile_quality"
           ],
-          "_schema_version": "1"
+          "_schema_version": "2"
         }
       },
       "api_hints": [
@@ -1739,11 +1802,25 @@
       "artifact_schema": {
         "market_gap_analysis": {
           "type": "object",
-          "required_fields": [
-            "opportunities",
-            "competitor_swots"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "opportunities": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "opportunity_id": {},
+                  "description": {},
+                  "estimated_impact": {},
+                  "difficulty_to_address": {},
+                  "our_ability_to_exploit": {},
+                  "evidence": { "optional": true }
+                }
+              }
+            },
+            "competitor_swots": {}
+          },
+          "_schema_version": "2"
         }
       },
       "api_hints": [
@@ -2044,7 +2121,16 @@
         "go_no_go_decision": {
           "type": "object",
           "fields": {
-            "scores": {},
+            "scores": {
+              "type": "object",
+              "required_fields": [
+                "market_attractiveness",
+                "competitive_feasibility",
+                "technical_feasibility",
+                "differentiation_potential",
+                "regulatory_risk"
+              ]
+            },
             "weighted_score": {},
             "recommendation": {
               "type": "string",
@@ -2260,11 +2346,24 @@
         },
         "user_journey_map": {
           "type": "object",
-          "required_fields": [
-            "stages",
-            "aha_moment"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "stages": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "user_actions": {},
+                  "touchpoints": {},
+                  "emotions": {},
+                  "drop_off_reasons": { "optional": true },
+                  "metrics": { "optional": true }
+                }
+              }
+            },
+            "aha_moment": {}
+          },
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -2380,9 +2479,10 @@
           "required_fields": [
             "mvp_feature_list",
             "excluded_features_rationale",
-            "mvp_value_statement"
+            "mvp_value_statement",
+            "estimated_scope_size"
           ],
-          "_schema_version": "1"
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -2997,11 +3097,14 @@
         },
         "i18n_requirements": {
           "type": "object",
-          "required_fields": [
-            "initial_languages",
-            "rtl_support"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "initial_languages": {},
+            "rtl_support": {},
+            "future_languages": { "optional": true },
+            "string_extraction_strategy": { "optional": true },
+            "text_expansion_budget": { "optional": true }
+          },
+          "_schema_version": "2"
         }
       },
       "context": {
@@ -3037,16 +3140,22 @@
         "business_rules": {
           "type": "array",
           "min_items": 1,
-          "item_fields": [
-            "rule_id",
-            "title",
-            "rule_statement",
-            "testable_assertion",
-            "risk_if_wrong",
-            "validation_method",
-            "falsification_signal"
-          ],
-          "_schema_version": "1"
+          "items": {
+            "type": "object",
+            "fields": {
+              "rule_id": {},
+              "title": {},
+              "rule_statement": {},
+              "testable_assertion": {},
+              "risk_if_wrong": {},
+              "validation_method": {},
+              "falsification_signal": {},
+              "category": {},
+              "source": {},
+              "affected_features": { "optional": true }
+            }
+          },
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -3798,9 +3907,12 @@
             "folder_structure",
             "component_hierarchy",
             "state_management",
-            "routing"
+            "routing",
+            "code_splitting",
+            "data_fetching",
+            "error_boundaries"
           ],
-          "_schema_version": "1"
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -5157,17 +5269,18 @@
         "dependency_graph",
         "effort_estimates"
       ],
-      "instruction": "Build complete task dependency graph. Identify: critical_path, parallelizable_groups, bottleneck_tasks. Then refine effort estimates (XS/S/M/L/XL) with confidence levels. Flag XL tasks for decomposition. Calculate totals and identify risky estimates.",
+      "instruction": "Build complete task dependency graph. Identify: critical_path, parallel_groups, bottleneck_tasks. Then refine effort estimates (XS/S/M/L/XL) with confidence levels. Flag XL tasks for decomposition. Calculate totals and identify risky estimates.",
       "done_when": "dependency_graph and effort_estimates exist.",
       "artifact_schema": {
         "dependency_graph": {
           "type": "object",
-          "required_fields": [
-            "tasks",
-            "critical_path",
-            "parallel_groups"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "tasks": {},
+            "critical_path": {},
+            "parallel_groups": {},
+            "bottleneck_tasks": { "optional": true }
+          },
+          "_schema_version": "2"
         },
         "effort_estimates": {
           "type": "object",
@@ -6741,6 +6854,7 @@
               "sprint_id": {},
               "status": {},
               "template_ref": {},
+              "user_story_ids": { "optional": true },
               "depends_on_features": {
                 "type": "array",
                 "optional": true
@@ -6904,7 +7018,8 @@
           "required_fields": [
             "sprint_id_completed",
             "features_completed",
-            "velocity_ratio"
+            "velocity_ratio",
+            "next_sprint_adjustments"
           ],
           "must_be_true": [
             "sprint_id_completed",

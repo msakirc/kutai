@@ -358,7 +358,10 @@ class Orchestrator:
                 if isinstance(_ctx_rd, str):
                     _ctx_rd = json.loads(_ctx_rd)
                 _llm_call_rd = _ctx_rd.get("llm_call") if isinstance(_ctx_rd, dict) else None
-                _is_raw = isinstance(_llm_call_rd, dict) and _llm_call_rd.get("raw_dispatch") is True
+                _img_call_rd = _ctx_rd.get("image_call") if isinstance(_ctx_rd, dict) else None
+                _llm_rd = isinstance(_llm_call_rd, dict) and _llm_call_rd.get("raw_dispatch") is True
+                _img_rd = isinstance(_img_call_rd, dict) and _img_call_rd.get("raw_dispatch") is True
+                _is_raw = _llm_rd or _img_rd
             except Exception:
                 _is_raw = False
             if _is_raw:

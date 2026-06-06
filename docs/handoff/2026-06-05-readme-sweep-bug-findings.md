@@ -1,3 +1,9 @@
+> **RESOLVED 2026-06-06.** All 5 fixed, pushed to `main`, full yalayut+intersect
+> suites green (261 passed). #3 and #5 were **not product bugs** (doc drift / stale
+> test from intentional Phase-3 changes); #1 dead-code delete; #2 + #4 real fixes.
+> #2 (`/yalayut mcp kill|restart`) is live only after KutAI restart. See memory
+> `project_readme_sweep_bugs_fixed_20260605` for the per-bug breakdown.
+
 # Handoff — bugs surfaced during the README gold-standard sweep (2026-06-05)
 
 While writing gold-standard READMEs for 14 packages (commit `06762ef0`), the

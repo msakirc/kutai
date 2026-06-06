@@ -59,7 +59,7 @@ python -m pytest packages/name/
 ## Türkçe
 <!-- Full mirror of the sections above, SAME structure.
      PROPER Turkish characters are mandatory: ş ı ç ğ ö ü İ — never ascii-fied.
-     Package nicknames spelled correctly: Yaşar Usta, Doğru mu Samet, Küleden Dönen Var. -->
+     Package nicknames spelled correctly: Yaşar Usta, Doğru mu Samet, Kuleden Dönen Var. -->
 
 ### Amaç
 <!-- Purpose, mirrored. Include the non-goal sentence ("... yapmaz"). -->

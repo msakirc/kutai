@@ -313,21 +313,29 @@ async def mcp_status() -> list[dict]:
 
 
 async def mcp_restart(artifact_id: int) -> dict:
-    """Restart an MCP process — delegates to the Phase 3 MCP plugin."""
+    """Restart an MCP process: shut it down so it re-spawns lazily on next use.
+
+    The MCP manager has no eager-respawn primitive, and KutAI's
+    ``no_auto_connect`` rule forbids re-spawning a server at rest. A shutdown
+    forces a fresh start the next time intersect matches the artifact — which
+    is exactly how the manager's own probe-failure restart path behaves
+    (``McpManager.reprobe_if_due`` → ``shutdown``).
+    """
     try:
-        from yalayut.plugins.mcp import restart_process
-        await restart_process(artifact_id)
-        return {"ok": True, "artifact_id": artifact_id}
+        from yalayut.mcp_manager import get_manager
+        await get_manager().shutdown(artifact_id)
+        return {"ok": True, "artifact_id": artifact_id,
+                "note": "stopped; re-spawns on next use"}
     except Exception as e:  # noqa: BLE001
         logger.warning("mcp_restart failed: %s", e)
         return {"ok": False, "reason": str(e)}
 
 
 async def mcp_kill(artifact_id: int) -> dict:
-    """Kill an MCP process — delegates to the Phase 3 MCP plugin."""
+    """Kill an MCP process via the live MCP manager."""
     try:
-        from yalayut.plugins.mcp import kill_process
-        await kill_process(artifact_id)
+        from yalayut.mcp_manager import get_manager
+        await get_manager().shutdown(artifact_id)
         return {"ok": True, "artifact_id": artifact_id}
     except Exception as e:  # noqa: BLE001
         logger.warning("mcp_kill failed: %s", e)

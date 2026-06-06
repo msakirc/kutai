@@ -41,8 +41,7 @@ async def analyze_image(filepaths: "list[str] | str", question: str = "Describe 
     try:
         logger.info("analyzing image(s)", count=len(path_list), first=path_list[0])
 
-        import general_beckman
-        from src.core.llm_dispatcher import _task_result_to_request_response
+        import husam
 
         # Build content: one text block then one image block per file
         content: list[dict] = [{"type": "text", "text": question}]
@@ -54,16 +53,6 @@ async def analyze_image(filepaths: "list[str] | str", question: str = "Describe 
             })
 
         messages = [{"role": "user", "content": content}]
-
-        # Resolve parent_id from the orchestrator's per-task ContextVar.
-        # Vision tool is always invoked from within an agent's tool execution,
-        # so current_task_id is set by the orchestrator at dispatch time.
-        _parent_id = None
-        try:
-            from src.core.heartbeat import current_task_id as _ctid
-            _parent_id = _ctid.get()
-        except Exception:
-            pass
 
         _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
         spec = {
@@ -87,18 +76,12 @@ async def analyze_image(filepaths: "list[str] | str", question: str = "Describe 
                 },
             },
         }
-        task_result = await general_beckman.enqueue(
-            spec,
-            parent_id=_parent_id,
-            await_inline=True,
-        )
-
-        if task_result.status == "failed":
-            logger.warning("vision enqueue failed", error=task_result.error)
-            return f"Error: vision call failed ({task_result.error})"
-
-        result = _task_result_to_request_response(task_result)
-        analysis = result.get("content", "")
+        # husam.run is the non-agentic single-call worker (select→execute→map);
+        # it returns the legacy response dict and RAISES on failure (caught by
+        # the outer except below). No pump, no await_inline — vision is a
+        # mid-ReAct tool that must return its result inline to the coulson loop.
+        resp = await husam.run(spec)
+        analysis = resp.get("content", "")
         from dogru_mu_samet import assess as cq_assess
         _vis_cq = cq_assess(analysis)
         if _vis_cq.is_degenerate:

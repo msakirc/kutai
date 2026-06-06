@@ -47,10 +47,9 @@ the posthook's failed status already re-queues the source step for retry.
 
 LLM tone pass
 -------------
-Routed through ``general_beckman.enqueue`` (OVERHEAD lane, ``await_inline=True``)
-per the singular-dispatcher rule. The tone call is best-effort — if beckman
-enqueue raises or the model call fails, we degrade to ``info``-level note
-"tone_pass_skipped" and continue.
+Routed through ``husam.run`` (non-pump, no sibling-deadlock) per the CPS SP4a
+migration. The tone call is best-effort — if husam.run raises, we degrade to
+``info``-level note "tone_pass_skipped" and continue.
 """
 from __future__ import annotations
 
@@ -353,16 +352,15 @@ async def _run_llm_tone_pass(
     voice_body_md: str,
     source_task_id: int | None,
 ) -> list[dict]:
-    """Run LLM tone-match scoring via beckman.enqueue (OVERHEAD lane).
+    """Run LLM tone-match scoring via husam.run (single-call worker).
 
     Returns a list of ``info``-severity violations for low-scoring sections.
     Degrades gracefully to a single info note on any infrastructure error.
     """
     try:
-        import general_beckman
-        from src.core.llm_dispatcher import _task_result_to_request_response
+        import husam
     except ImportError as exc:
-        logger.debug("brand_voice_lint: beckman import failed: %s", exc)
+        logger.debug("brand_voice_lint: husam import failed: %s", exc)
         return [{
             "severity": "info",
             "check": "tone_pass_skipped",
@@ -408,11 +406,9 @@ async def _run_llm_tone_pass(
     }
 
     try:
-        task_result = await general_beckman.enqueue(
-            spec, parent_id=source_task_id, await_inline=True,
-        )
+        resp = await husam.run(spec)
     except Exception as exc:
-        logger.warning("brand_voice_lint: tone enqueue raised: %r", exc)
+        logger.warning("brand_voice_lint: tone husam call raised: %r", exc)
         return [{
             "severity": "info",
             "check": "tone_pass_skipped",
@@ -420,22 +416,12 @@ async def _run_llm_tone_pass(
             "excerpt": "",
         }]
 
-    if task_result.status == "failed":
-        return [{
-            "severity": "info",
-            "check": "tone_pass_skipped",
-            "detail": f"LLM tone call failed: {task_result.error}",
-            "excerpt": "",
-        }]
-
-    response = _task_result_to_request_response(task_result)
-    raw_content = response.get("content", "")
+    raw_content = resp.get("content", "")
     if isinstance(raw_content, list):
         raw_content = "\n".join(
             p.get("text", "") if isinstance(p, dict) else str(p)
             for p in raw_content
         )
-
     raw_content = str(raw_content or "").strip()
 
     # Parse JSON response

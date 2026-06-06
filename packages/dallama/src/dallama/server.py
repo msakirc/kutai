@@ -94,8 +94,11 @@ class ServerProcess:
         Parameters
         ----------
         load_timeout:
-            Caller-provided ceiling for the health-wait.  When >0 the
-            actual timeout is ``min(internal_estimate, load_timeout)``.
+            Caller-provided floor for the health-wait (seconds). When >0 the
+            actual timeout is ``max(internal_estimate, load_timeout)`` — it can
+            only *extend* the wait, never shorten it. Fatih Hoca passes its
+            per-model load estimate here (via the dispatcher) so a model it
+            knows is slow to load is given enough time to become healthy.
 
         Returns True on success, False if the process fails to become healthy.
         """

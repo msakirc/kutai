@@ -448,7 +448,7 @@ async def _check_privacy_mismatch_llm(
 ) -> list[dict]:
     """Semantic check: does marketing copy contradict the privacy policy?
 
-    Routes through ``general_beckman.enqueue`` (OVERHEAD lane, await_inline).
+    Routes through ``husam.run`` with a ``raw_dispatch`` llm_call spec (OVERHEAD lane).
     Returns a list of findings (may be empty on pass or LLM failure).
 
     Structured output contract (returned by the LLM):
@@ -483,60 +483,36 @@ async def _check_privacy_mismatch_llm(
 
     spec = {
         "title": f"copy_compliance privacy check (source #{task_id})",
-        "description": prompt,
-        "agent_type": "classifier",  # single-shot, cheap
-        "mission_id": mission_id,
+        "description": "Marketing-copy vs privacy-policy contradiction check.",
+        "agent_type": "classifier",
+        "kind": "overhead",
+        "priority": 1,
         "context": {
-            "requires_grading": False,
-            "task_type": "copy_compliance_privacy_check",
-            "source_task_id": task_id,
+            "llm_call": {
+                "raw_dispatch": True,
+                "call_category": "overhead",
+                "task": "classifier",
+                "agent_type": "classifier",
+                "difficulty": 2,
+                "messages": [{"role": "user", "content": prompt}],
+                "failures": [],
+                "estimated_input_tokens": 800,
+                "estimated_output_tokens": 200,
+            },
         },
     }
+    if mission_id is not None:
+        spec["mission_id"] = mission_id
 
     try:
-        import general_beckman as _gb
-        result = await _gb.enqueue(spec, await_inline=True, lane="oneshot")
-        raw_result = getattr(result, "raw", None) or {}
-        text_out = (
-            raw_result.get("result")
-            or raw_result.get("answer")
-            or raw_result.get("content")
-            or ""
-        )
+        import husam
+        resp = await husam.run(spec)
+        text_out = resp.get("content", "") if isinstance(resp, dict) else str(resp)
         if isinstance(text_out, str):
             text_out = text_out.strip()
-            # Strip markdown fences if present
             text_out = re.sub(r"^```(?:json)?\s*", "", text_out)
             text_out = re.sub(r"\s*```$", "", text_out)
         parsed = json.loads(text_out) if isinstance(text_out, str) and text_out else {}
-        contradicts = str(parsed.get("contradicts") or "unclear").lower()
-        citation = str(parsed.get("citation") or "")
-        if contradicts == "yes":
-            findings.append({
-                "check": "privacy_policy_contradiction",
-                "severity": SEV_BLOCKER,
-                "excerpt": citation[:300],
-                "why": (
-                    "Marketing copy contradicts the generated privacy policy. "
-                    "The copy makes a claim that is inconsistent with the data "
-                    "practices disclosed in the privacy policy."
-                ),
-                "fix_suggestion": (
-                    "Remove or requalify the contradicting claim. "
-                    "Alternatively, update the privacy policy if the claim "
-                    "reflects actual product behaviour."
-                ),
-            })
-        elif contradicts == "unclear":
-            findings.append({
-                "check": "privacy_policy_contradiction",
-                "severity": SEV_INFO,
-                "excerpt": citation[:300],
-                "why": (
-                    "Potential inconsistency between marketing copy and privacy policy — "
-                    "could not determine definitively. Manual review recommended."
-                ),
-            })
     except Exception as exc:
         logger.warning(
             "copy_compliance: LLM privacy-check failed — skipped",
@@ -549,6 +525,36 @@ async def _check_privacy_mismatch_llm(
             "why": (
                 f"Privacy↔copy LLM check skipped due to error: {str(exc)[:200]}. "
                 "Manual review recommended."
+            ),
+        })
+        return findings
+
+    contradicts = str(parsed.get("contradicts") or "unclear").lower()
+    citation = str(parsed.get("citation") or "")
+    if contradicts == "yes":
+        findings.append({
+            "check": "privacy_policy_contradiction",
+            "severity": SEV_BLOCKER,
+            "excerpt": citation[:300],
+            "why": (
+                "Marketing copy contradicts the generated privacy policy. "
+                "The copy makes a claim that is inconsistent with the data "
+                "practices disclosed in the privacy policy."
+            ),
+            "fix_suggestion": (
+                "Remove or requalify the contradicting claim. "
+                "Alternatively, update the privacy policy if the claim "
+                "reflects actual product behaviour."
+            ),
+        })
+    elif contradicts == "unclear":
+        findings.append({
+            "check": "privacy_policy_contradiction",
+            "severity": SEV_INFO,
+            "excerpt": citation[:300],
+            "why": (
+                "Potential inconsistency between marketing copy and privacy policy — "
+                "could not determine definitively. Manual review recommended."
             ),
         })
     return findings

@@ -89,30 +89,6 @@ from .codebase_index import (
 # Optional / pre-existing tools — degrade gracefully if absent
 _optional_tools: dict[str, dict[str, Any]] = {}
 
-# Z1 Tier 6B (P5) — web-grounded prior-art search.
-try:
-    from .prior_art import find_prior_art_tool
-
-    _optional_tools["find_prior_art"] = {
-        "function": find_prior_art_tool,
-        "description": (
-            "Search the web for prior art (Z1 P5). Surfaces failed/dormant "
-            "solutions, adjacent failures, and key lessons from HN, "
-            "Wikipedia, Wayback Machine, and Product Hunt. "
-            "Args: idea_summary (str), domain_keywords (str — comma-separated "
-            "keywords), k (int, default 10), ambition_tier (str: "
-            "private_beta|public_launch|revenue_product, default 'private_beta')"
-        ),
-        "example": (
-            '{"action": "tool_call", "tool": "find_prior_art", '
-            '"args": {"idea_summary": "Turkish reseller arbitrage tool", '
-            '"domain_keywords": "trendyol,price tracker,reseller", '
-            '"ambition_tier": "private_beta"}}'
-        ),
-    }
-except Exception:  # pragma: no cover — never block startup
-    pass
-
 # Z1 Tier 5A (P6) — compliance template renderer (Jinja2-backed).
 try:
     from .compliance_templates import compliance_template_render

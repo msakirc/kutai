@@ -215,6 +215,8 @@ async def _nerd_herd_health_alert() -> None:
         report = await summary() if callable(summary) else summary
         if not report or not report.get("alerts"):
             return
+        # No chat_id \u2014 the notify_user executor defaults a null recipient to the
+        # admin chat (notify_user.py), same as every other proactive notifier.
         await add_task(
             title="Notify: resource health",
             description="",

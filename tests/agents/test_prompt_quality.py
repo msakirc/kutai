@@ -18,6 +18,9 @@ LOW_TRAFFIC_AGENTS = [
     "product_researcher", "integration_reviewer",
     "growth_digest_synthesizer",  # Z9 T2C — weekly growth digest synthesis
     "signal_classifier",  # Z9 T3B — growth signal classifier
+    "shopping_grouper",  # shopping v3 — grouping producer
+    "shopping_labeler",  # shopping v3 — labeling producer
+    "shopping_synthesizer",  # shopping v3 — review-synthesis producer
 ]
 
 ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 20 total

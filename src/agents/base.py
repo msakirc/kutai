@@ -152,9 +152,8 @@ class BaseAgent:
         # Resolve model context window — try dispatcher's loaded model
         model_ctx = 4096
         try:
-            from ..core.llm_dispatcher import get_dispatcher
-            dispatcher = get_dispatcher()
-            loaded = dispatcher._get_loaded_litellm_name()
+            from src.models.introspection import get_loaded_litellm_name
+            loaded = get_loaded_litellm_name()
             if loaded:
                 model_ctx = self._get_context_window(loaded) or 4096
         except Exception:

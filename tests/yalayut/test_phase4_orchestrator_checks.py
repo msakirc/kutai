@@ -30,7 +30,12 @@ def test_yalayut_discovery_check_enqueues_when_due(loop, monkeypatch):
         assert len(enqueued) == 1
         spec = enqueued[0]
         assert spec["agent_type"] == "mechanical"
-        assert spec["payload"]["action"] == "yalayut_discovery"
+        # payload MUST be nested under context, never a top-level key —
+        # enqueue forwards spec via add_task(**spec) and add_task has no
+        # `payload` param (live crash 2026-06-05: "add_task() got an
+        # unexpected keyword argument 'payload'").
+        assert "payload" not in spec
+        assert spec["context"]["payload"]["action"] == "yalayut_discovery"
         # second call right away → NOT due, gated.
         await orch._check_yalayut_discovery()
         assert len(enqueued) == 1
@@ -52,7 +57,8 @@ def test_source_scout_check_enqueues_when_due(loop, monkeypatch):
         orch._last_source_scout = time.time() - 100000  # long ago → due
         await orch._check_source_scout()
         assert len(enqueued) == 1
-        assert enqueued[0]["payload"]["action"] == "source_scout"
+        assert "payload" not in enqueued[0]
+        assert enqueued[0]["context"]["payload"]["action"] == "source_scout"
     loop.run_until_complete(_run())
 
 

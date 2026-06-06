@@ -150,8 +150,11 @@ class Orchestrator:
                 {
                     "agent_type": "mechanical",
                     "title": "Yalayut daily discovery",
-                    "payload": {"action": "yalayut_discovery",
-                                "mode": "daily"},
+                    "context": {
+                        "executor": "mechanical",
+                        "payload": {"action": "yalayut_discovery",
+                                    "mode": "daily"},
+                    },
                 },
                 lane="oneshot",
             )
@@ -173,7 +176,10 @@ class Orchestrator:
                 {
                     "agent_type": "mechanical",
                     "title": "Yalayut source scout",
-                    "payload": {"action": "source_scout"},
+                    "context": {
+                        "executor": "mechanical",
+                        "payload": {"action": "source_scout"},
+                    },
                 },
                 lane="oneshot",
             )

@@ -313,11 +313,11 @@ async def run(task: dict) -> dict:
         # Iteration 0: reuse Beckman's admission-time Hoca query.
         pick = preselected_pick
     else:
-        # Mid-task urgency bump on retry recursion (see _do_dispatch rationale).
-        _urgency = urgency_in
-        if failures:
-            _u = float(_urgency or 0.5) + 0.1
-            _urgency = min(1.0, _u)
+        # Mid-task urgency: admission urgency (urgency_in) + finish-bias, with
+        # an extra bump while adapting around failures. Single source of truth
+        # = fatih_hoca.mid_task_urgency (shared with the coulson ReAct loop).
+        from fatih_hoca.urgency import mid_task_urgency
+        _urgency = mid_task_urgency(urgency_in, has_failures=bool(failures))
         remaining = await _remaining_budget(mission_id)
         pick = fatih_hoca.select(
             task=task_name,

@@ -386,20 +386,26 @@ class TestMultilineParsing:
 class TestApplyGradeResultPass:
     """Test apply_grade_result PASS path."""
 
+    # PASS path no longer mints prose skills via add_skill. Workflow steps
+    # (title carries a [X.Y] id, result >= 50 chars) capture an exemplar into
+    # workflow_exemplars instead; non-workflow tasks mint nothing.
+
     @pytest.mark.asyncio
     @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
     @patch("src.infra.db.get_task", new_callable=AsyncMock)
-    @patch("src.memory.skills.add_skill", new_callable=AsyncMock)
+    @patch("src.memory.workflow_exemplars.capture_exemplar", new_callable=AsyncMock)
     @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
     @patch("src.memory.preferences.store_preference", new_callable=AsyncMock)
     @patch("src.memory.episodic.store_insight", new_callable=AsyncMock)
-    async def test_pass_with_rich_verdict(
-        self, mock_insight, mock_pref, mock_record, mock_skill, mock_get, mock_trans
+    async def test_pass_workflow_step_captures_exemplar(
+        self, mock_insight, mock_pref, mock_record, mock_capture, mock_get, mock_trans
     ):
         mock_get.return_value = {
-            "id": 42, "title": "Compare laptop prices",
+            "id": 42, "title": "[3.2] Compare laptop prices",
             "agent_type": "shopping_advisor",
-            "context": '{"generating_model": "test-model", "tools_used_names": ["smart_search", "web_search"], "chat_id": "12345", "iterations": 3}',
+            "result": "Across 3 Turkish stores the cheapest match was X at 24,999 TL; full comparison table follows.",
+            "quality_score": 0.9,
+            "context": '{"generating_model": "test-model", "chat_id": "12345"}',
         }
         verdict = GradeResult(
             passed=True,
@@ -413,76 +419,79 @@ class TestApplyGradeResultPass:
         await apply_grade_result(42, verdict)
 
         mock_trans.assert_called_once()
-        mock_skill.assert_called_once()
+        mock_capture.assert_called_once()
+        kwargs = mock_capture.call_args.kwargs
+        assert kwargs["step_id"] == "3.2"
+        assert kwargs["agent_type"] == "shopping_advisor"
         mock_pref.assert_called_once()
         mock_insight.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
     @patch("src.infra.db.get_task", new_callable=AsyncMock)
-    @patch("src.memory.skills.add_skill", new_callable=AsyncMock)
+    @patch("src.memory.workflow_exemplars.capture_exemplar", new_callable=AsyncMock)
     @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
     @patch("src.memory.preferences.store_preference", new_callable=AsyncMock)
     @patch("src.memory.episodic.store_insight", new_callable=AsyncMock)
-    async def test_pass_empty_verdict_uses_mechanical_fallback(
-        self, mock_insight, mock_pref, mock_record, mock_skill, mock_get, mock_trans
+    async def test_pass_non_workflow_skips_exemplar(
+        self, mock_insight, mock_pref, mock_record, mock_capture, mock_get, mock_trans
     ):
         mock_get.return_value = {
-            "id": 43, "title": "Check weather",
+            "id": 43, "title": "Check weather",  # no [X.Y] step id
             "agent_type": "executor",
-            "context": '{"generating_model": "test-model", "tools_used_names": ["api_call"], "iterations": 2}',
+            "result": "It is 18 degrees and sunny in Istanbul right now, light wind from the west.",
+            "context": '{"generating_model": "test-model"}',
         }
         verdict = GradeResult(passed=True)
 
         await apply_grade_result(43, verdict)
 
         mock_trans.assert_called_once()
-        mock_skill.assert_called_once()
-        # Mechanical fallback: description should contain task title and agent type
-        call_kwargs = mock_skill.call_args
-        assert "Check weather" in call_kwargs.kwargs.get("description", call_kwargs[1].get("description", ""))
+        mock_capture.assert_not_called()
         mock_pref.assert_not_called()
         mock_insight.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
     @patch("src.infra.db.get_task", new_callable=AsyncMock)
-    @patch("src.memory.skills.add_skill", new_callable=AsyncMock)
+    @patch("src.memory.workflow_exemplars.capture_exemplar", new_callable=AsyncMock)
     @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
-    async def test_pass_low_iterations_skips_skill(
-        self, mock_record, mock_skill, mock_get, mock_trans
+    async def test_pass_short_result_skips_exemplar(
+        self, mock_record, mock_capture, mock_get, mock_trans
     ):
         mock_get.return_value = {
-            "id": 44, "title": "Simple lookup",
+            "id": 44, "title": "[1.1] Simple lookup",
             "agent_type": "executor",
-            "context": '{"generating_model": "test-model", "tools_used_names": ["api_call"], "iterations": 1}',
+            "result": "done",  # < 50 chars
+            "context": '{"generating_model": "test-model"}',
         }
         verdict = GradeResult(passed=True, situation="Simple API call")
 
         await apply_grade_result(44, verdict)
 
         mock_trans.assert_called_once()
-        mock_skill.assert_not_called()
+        mock_capture.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)
     @patch("src.infra.db.get_task", new_callable=AsyncMock)
-    @patch("src.memory.skills.add_skill", new_callable=AsyncMock)
+    @patch("src.memory.workflow_exemplars.capture_exemplar", new_callable=AsyncMock)
     @patch("src.infra.db.record_model_call", new_callable=AsyncMock)
-    async def test_pass_no_tools_skips_skill(
-        self, mock_record, mock_skill, mock_get, mock_trans
+    async def test_pass_no_result_skips_exemplar(
+        self, mock_record, mock_capture, mock_get, mock_trans
     ):
         mock_get.return_value = {
-            "id": 45, "title": "Think about it",
+            "id": 45, "title": "[2.4] Think about it",
             "agent_type": "executor",
-            "context": '{"generating_model": "test-model", "iterations": 5}',
+            # no result field
+            "context": '{"generating_model": "test-model"}',
         }
         verdict = GradeResult(passed=True, situation="Deep thinking task")
 
         await apply_grade_result(45, verdict)
 
         mock_trans.assert_called_once()
-        mock_skill.assert_not_called()
+        mock_capture.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.core.state_machine.transition_task", new_callable=AsyncMock)

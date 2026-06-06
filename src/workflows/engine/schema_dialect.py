@@ -270,6 +270,21 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
                 allowed_set = {str(a) for a in allowed if isinstance(a, (str, int, float, bool))}
             else:
                 allowed_set = set()
+            # ``equals_lenient`` (opt-in): tolerate the casing/decoration an LLM
+            # adds to a verdict token — e.g. 'Conditional (needs_clarification)'
+            # or 'No-Go — kill it'. Matches if the casefolded LEADING token is in
+            # the allowed set. Use ONLY for informational verdicts (no downstream
+            # gate); strict review gates keep exact match so a hedged "approved
+            # (with concerns)" still rejects (mission #81, 2026-06-04).
+            if allowed_set and rule.get("equals_lenient"):
+                def _lead(s: str) -> str:
+                    s = str(s).strip().casefold()
+                    parts = s.split()
+                    return (parts[0] if parts else s).strip("()[]{}.,:;!?\"'")
+
+                if _lead(value) in {_lead(a) for a in allowed_set}:
+                    allowed_set = set()  # matched leniently → skip rejection
+
             if allowed_set and value not in allowed_set:
                 # Two-line rejection — first line is the bare delta so retry
                 # context can sound it out; second line steers the agent

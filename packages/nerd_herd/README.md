@@ -1,370 +1,483 @@
-# nerd herd
+# Nerd Herd — System-state ledger & pressure brain
 
-**Standalone observability for GPU-powered AI systems.**
+> The one place that knows the live state of the machine: GPU, VRAM budget,
+> service health, llama-server throughput, the in-flight call list, and cloud
+> rate-limit cells. Producers push facts in; consumers read a single coherent
+> snapshot out — and ask it how much *pressure* a candidate model is under.
 
-*Collect metrics. Manage VRAM budgets. Serve Prometheus. No Prometheus server required.*
-
-[English](#english) | [Turkce](#turkce)
-
----
+[English](#english) · [Türkçe](#türkçe)
 
 <a id="english"></a>
 
-## What is nerd herd?
+## Purpose
 
-nerd herd is a Python observability package that monitors GPU resources, manages VRAM budget policies, tracks service health, collects inference metrics from llama-server, pre-computes rates in ring buffers, and serves everything via a Prometheus-compatible `/metrics` endpoint. Grafana scrapes nerd herd directly — no Prometheus server needed.
+**What it's good for.** A running AI system has its state scattered everywhere:
+GPU temperature lives in the driver, VRAM budget in the load policy, throughput
+in llama-server, rate limits in each cloud provider, the queue in the task
+master, the in-flight calls in the dispatcher. Nerd Herd is the single ledger
+that collects all of it, so any consumer — a Grafana dashboard, a health
+watchdog, or the model selector — reads one consistent picture instead of
+polling six subsystems. Producers *push* facts in; Nerd Herd owns the merge.
 
-```python
-from nerd_herd import NerdHerd
+**What it really does.** Two surfaces over one shared state. (1) An
+**observability sidecar**: it polls the GPU (pynvml) and llama-server's native
+`/metrics`, manages a 4-mode VRAM budget with an auto-detect loop that backs off
+when external apps grab the GPU, tracks service health, and serves everything as
+Prometheus text on `/metrics` plus a small JSON API — so Grafana scrapes it
+directly with no Prometheus server. (2) A **pressure brain**: `snapshot()`
+returns a `SystemSnapshot` of everything pushed in, and `SystemSnapshot.pressure_for(model, …)`
+runs eleven scarcity signals (S1–S12) through three modifiers into one scalar in
+`[-1, +1]` plus a diagnostic `PressureBreakdown` — the number a selector uses to
+decide whether a given model is starved or abundant *right now*.
 
-nh = NerdHerd(
-    metrics_port=9881,
-    llama_server_url="http://127.0.0.1:8080",
-)
-await nh.start()
+**It does NOT** pick or rank models, gate admission, or make any policy decision
+— it computes the pressure scalar and hands it back; the caller decides. It does
+NOT make LLM or provider HTTP calls (it only parses the metrics handed to it),
+discover models, or decide swap budgets (it counts swaps in a sliding window; the
+*is-this-swap-allowed?* policy lives elsewhere). Missing data yields a neutral
+value, never an exception.
 
-# DaLLaMa asks: "how much VRAM can I use?"
-budget_mb = nh.get_vram_budget_mb()  # 4000 (shared mode, 50% of 8GB)
+## Public API
 
-# GPU state
-state = nh.gpu_state()
-print(f"{state.vram_free_mb}MB free, {state.temperature_c}C")
-
-# Health tracking
-nh.mark_degraded("telegram")
-nh.mark_healthy("llm")
-```
-
-Then point Grafana at `http://localhost:9881/metrics`.
-
-## Why nerd herd?
-
-| | nerd herd | Prometheus + Grafana | Datadog / New Relic | nvidia-smi |
-|---|---|---|---|---|
-| **Setup** | `pip install nerd-herd` | Docker, configs, YAML | Account, agent, $$ | Already there |
-| **RAM** | ~20MB | 256MB+ (Prometheus alone) | 200MB+ (agent) | N/A |
-| **VRAM budgeting** | Built-in (4 modes) | Manual alerting | Not GPU-aware | Read-only |
-| **Rate computation** | Ring buffer, no TSDB | Prometheus TSDB | Cloud TSDB | N/A |
-| **GPU auto-detect** | External process aware | Manual rules | Generic GPU metrics | Manual |
-| **Inference metrics** | llama-server native | Custom exporter needed | Custom integration | N/A |
-| **Price** | Free | Free / $$ (storage) | $$$$ | Free |
-
-## Why not Prometheus?
-
-Prometheus is a 256MB container that scrapes two endpoints every 15 seconds and stores time series so Grafana can compute `rate()`. For a single-GPU local AI system, that's overkill.
-
-nerd herd replaces this by:
-1. **Collecting directly** from pynvml/psutil and llama-server's native `/metrics`
-2. **Pre-computing rates** in ring buffers (~10KB memory vs 256MB Prometheus)
-3. **Serving `/metrics`** in Prometheus text format — Grafana scrapes it directly using its built-in Prometheus datasource type
-
-The trade-off: you lose ad-hoc PromQL queries like `rate(counter[30s])` vs `rate(counter[5m])`. nerd herd pre-computes 1-minute rolling averages. For a local AI system with one GPU, this is more than enough.
-
-## Features
-
-### GPU Monitoring
-- **VRAM** — total, used, free (MB)
-- **Utilization** — GPU compute percentage (0-100%)
-- **Temperature** — Celsius, throttling detection (>85C)
-- **Power** — watts draw
-- **External process detection** — detects non-self GPU consumers (games, other apps)
-- **System resources** — RAM available, CPU usage
-- **2-second cache** — avoids hammering pynvml
-
-### VRAM Budget Management
-- **4 load modes** — full (100%), heavy (90%), shared (50%), minimal (0% local)
-- **Auto-detect loop** — watches external GPU usage, adjusts mode automatically
-- **Immediate downgrade** — when external processes grab VRAM
-- **Delayed upgrade** — waits 5 minutes of sustained decrease before upgrading
-- **Manual override** — user sets mode, auto-detect stops until re-enabled
-- **Callback-driven** — `on_mode_change(callback)` for DB persistence, notifications, etc.
-
-### Inference Metrics
-- **llama-server native** — fetches from `/metrics` endpoint (Prometheus format)
-- **Pre-computed rates** — generation tokens/sec, prompt tokens/sec (1-minute rolling average)
-- **Pass-through gauges** — KV cache ratio, requests processing, requests pending
-- **Graceful degradation** — reports zeros when llama-server is down
-
-### Health Registry
-- **Capability tracking** — mark services as healthy or degraded
-- **Boot time** — tracks when the system started
-- **No opinions** — you decide what capabilities to track
-
-### Prometheus Exposition
-- **HTTP server** — aiohttp on configurable port (default 9881)
-- **`/metrics`** — Prometheus text exposition format
-- **`/health`** — JSON liveness check
-- **Reuse address** — survives crash→restart without port conflicts
-
-### Collector Registry
-- **Protocol-based** — any object with `collect()` and `prometheus_metrics()` can register
-- **Custom collectors** — register your app's metrics alongside GPU/health/inference
-- **Unified exposition** — all collectors served through single `/metrics` endpoint
-
-## Install
-
-```bash
-pip install nerd-herd
-```
-
-## Quick Start
+Two ways to talk to Nerd Herd. **In-process** (`NerdHerd`) when you own the
+object; **over HTTP** (`NerdHerdClient` + module-level helpers) when Nerd Herd
+runs as a separate sidecar process and you hold a thin proxy.
 
 ```python
-from nerd_herd import NerdHerd
+from nerd_herd import NerdHerd, SystemSnapshot
 
-async def main():
-    nh = NerdHerd(
-        metrics_port=9881,
-        llama_server_url="http://127.0.0.1:8080",
-    )
-    await nh.start()
+nh = NerdHerd(metrics_port=9881, llama_server_url="http://127.0.0.1:8080")
+await nh.start()                 # metrics server + inference polling
+await nh.start_auto_detect()     # GPU backoff loop (optional)
 
-    # Start GPU auto-detection
-    await nh.start_auto_detect(notify_fn=my_notify)
+# --- producers push facts in ---
+nh.push_local_state(local_state)         # the model host, on each swap
+nh.push_cloud_state(cloud_provider_state)# the capacity tracker, on each response
+nh.push_queue_profile(queue_profile)     # the task master, on queue change
+nh.push_in_flight(list_of_inflight_calls)# the dispatcher, on begin/end
+nh.record_swap(model_name)               # the dispatcher, after a swap
 
-    # Wire mode change callback
-    nh.on_mode_change(lambda old, new, src: print(f"{old} -> {new}"))
-
-    # Register custom metrics
-    nh.register_collector("myapp", MyAppCollector())
-
-    # ... your app runs ...
-
-    await nh.stop()
+# --- consumers read one coherent snapshot out ---
+snap: SystemSnapshot = nh.snapshot()
+budget_mb = nh.get_vram_budget_mb()      # free VRAM × mode fraction
+breakdown = snap.pressure_for(model, task_difficulty=7, est_call_cost=0.002)
+scalar = breakdown.scalar                # float in [-1, +1]; -1 starved, +1 abundant
 ```
-
-```
-# Grafana datasource config:
-# Type: Prometheus
-# URL: http://localhost:9881
-```
-
-## API Reference
-
-### NerdHerd
 
 ```python
-NerdHerd(
-    metrics_port=9881,           # HTTP server port
-    llama_server_url=None,       # llama-server URL (None = no inference metrics)
-    detect_interval=30,          # GPU auto-detect poll seconds
-    upgrade_delay=300,           # seconds before auto-upgrading mode
-    initial_load_mode="full",    # starting load mode
-    inference_poll_interval=5,   # llama-server poll seconds
-)
+# Out-of-process: module-level singleton + HTTP client proxy.
+from nerd_herd import snapshot, refresh_snapshot, push_in_flight, record_swap
+from nerd_herd.client import set_default, NerdHerdClient
 
-# Lifecycle
-await nh.start()                          # start metrics server + inference polling
-await nh.start_auto_detect(notify_fn)     # start GPU auto-detect loop
-await nh.stop()                           # stop everything
-
-# GPU
-nh.gpu_state() -> GPUState                # VRAM, temp, utilization
-
-# VRAM budget
-nh.get_vram_budget_mb() -> int            # free VRAM * budget fraction
-nh.get_vram_budget_fraction() -> float    # 0.0 - 1.0
-nh.get_load_mode() -> str                 # "full" | "heavy" | "shared" | "minimal"
-nh.set_load_mode(mode, source="user")     # source="user" disables auto-detect
-nh.enable_auto_management()               # re-enable auto-detect
-nh.is_local_inference_allowed() -> bool   # False when minimal
-nh.on_mode_change(callback)               # (old_mode, new_mode, source) -> None
-
-# Health
-nh.mark_degraded(capability)
-nh.mark_healthy(capability)
-nh.is_healthy(capability) -> bool
-nh.get_health_status() -> HealthStatus
-
-# Custom collectors
-nh.register_collector(name, collector)
-
-# Prometheus
-nh.prometheus_lines() -> str              # text format for embedding
+set_default(NerdHerdClient(port=9881))   # wire once at startup
+await refresh_snapshot()                 # async fetch → caches
+snap = snapshot()                        # sync read of last cached snapshot
 ```
 
-### Writing a Custom Collector
+**Top-level exports (`__all__`).** Facade & client: `NerdHerd`, `NerdHerdClient`,
+`GPUStateProxy`. State dataclasses: `GPUState`, `SystemState`, `ExternalGPUUsage`,
+`HealthStatus`, `InFlightCall`, `RateLimit`, `RateLimitMatrix`, `CloudModelState`,
+`CloudProviderState`, `LocalModelState`, `QueueProfile`, `SystemSnapshot`,
+`PressureBreakdown`. Collector machinery: `CollectorRegistry`, `Collector`,
+`GPUCollector`, `LoadManager`, `HealthRegistry`, `InferenceCollector`,
+`RingBuffer`, `SwapBudget`. Helpers: `health_summary`. Module-level singleton
+funcs (used by out-of-process callers): `snapshot`, `refresh_snapshot`,
+`record_swap`, `push_queue_profile`, `push_in_flight`.
+
+### Key methods (`NerdHerd`)
+
+| method | purpose |
+|---|---|
+| `snapshot() -> SystemSnapshot` | point-in-time merge of all pushed state; overlays live inference metrics onto local state |
+| `push_local_state(state)` · `push_cloud_state(state)` · `push_queue_profile(p)` · `push_in_flight(calls)` | producers replace/upsert their slice of state |
+| `record_swap(model_name="")` · `recent_swap_count() -> int` | sliding-window swap counter (window 300s) |
+| `gpu_state() -> GPUState` | live VRAM / temp / utilization / power |
+| `get_vram_budget_mb() -> int` · `get_vram_budget_fraction() -> float` | free VRAM × current mode fraction |
+| `get_load_mode() -> str` · `set_load_mode(mode, source="user") -> str` | `"full" / "heavy" / "shared" / "minimal"`; `source="user"` disables auto-detect |
+| `enable_auto_management()` · `is_local_inference_allowed() -> bool` | re-enable backoff loop; `False` only in `minimal` |
+| `on_mode_change(cb)` | register `(old, new, source) -> None` callback (DB persistence, notify) |
+| `mark_degraded(cap)` · `mark_healthy(cap)` · `is_healthy(cap) -> bool` · `get_health_status() -> HealthStatus` | service-health registry |
+| `register_collector(name, collector)` | add a custom `Collector` to the `/metrics` exposition |
+| `prometheus_lines() -> str` | Prometheus text for embedding |
+
+### `SystemSnapshot.pressure_for(...)`
 
 ```python
-class MyCollector:
-    name = "myapp"
-
-    def collect(self) -> dict:
-        return {"requests_total": 42, "errors_total": 3}
-
-    def prometheus_metrics(self) -> list:
-        from prometheus_client import Gauge
-        # Set gauge values, return gauge objects
-        ...
-
-nh.register_collector("myapp", MyCollector())
+breakdown = snapshot.pressure_for(
+    model,                       # duck-typed: .name .provider .is_free .is_local .cap_score
+    task_difficulty=5,           # 1..10
+    est_per_call_tokens=0,
+    est_per_task_tokens=0,
+    est_iterations=1,
+    est_call_cost=0.0,
+    cap_needed=5.0,
+    consecutive_failures=0,
+    fleet_consumed=None,         # {free-provider -> calls this cycle} for S12; None → S12=0
+    eligible_models=None,
+) -> PressureBreakdown           # .scalar in [-1, +1], .signals, .modifiers, .bucket_totals
 ```
-
-## Exposed Metrics
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `nerd_herd_gpu_vram_used_mb` | gauge | GPU VRAM used (MB) |
-| `nerd_herd_gpu_vram_free_mb` | gauge | GPU VRAM free (MB) |
-| `nerd_herd_gpu_vram_total_mb` | gauge | GPU VRAM total (MB) |
-| `nerd_herd_gpu_utilization_pct` | gauge | GPU utilization (0-100) |
-| `nerd_herd_gpu_temperature_c` | gauge | GPU temperature (Celsius) |
-| `nerd_herd_gpu_power_draw_w` | gauge | GPU power draw (watts) |
-| `nerd_herd_gpu_external_vram_mb` | gauge | External process VRAM (MB) |
-| `nerd_herd_gpu_external_processes` | gauge | External GPU process count |
-| `nerd_herd_system_ram_available_mb` | gauge | System RAM available (MB) |
-| `nerd_herd_system_cpu_percent` | gauge | CPU usage (%) |
-| `nerd_herd_load_mode` | gauge | Load mode (0-3) |
-| `nerd_herd_load_mode_info{mode}` | gauge | Load mode label |
-| `nerd_herd_vram_budget_fraction` | gauge | VRAM budget (0.0-1.0) |
-| `nerd_herd_auto_managed` | gauge | Auto-detect active (0/1) |
-| `nerd_herd_capability_healthy{name}` | gauge | Capability health (0/1) |
-| `nerd_herd_inference_tokens_per_sec` | gauge | Gen tokens/sec (1m avg) |
-| `nerd_herd_inference_prompt_tokens_per_sec` | gauge | Prompt tokens/sec (1m avg) |
-| `nerd_herd_inference_kv_cache_ratio` | gauge | KV cache usage ratio |
-| `nerd_herd_inference_requests_processing` | gauge | Requests in progress |
-| `nerd_herd_inference_requests_pending` | gauge | Requests queued |
 
 ## Architecture
 
+Producers push; one snapshot merges; two consumers read. The pressure path is a
+pure function over the snapshot.
+
 ```
-  Your App            nerd herd                     Grafana
-  ┌─────────┐        ┌──────────────────┐         ┌────────────┐
-  │ DaLLaMa │──asks──│ LoadManager      │         │            │
-  │ budget?  │       │  4 modes, auto   │         │  Dashboards│
-  │          │       │  detect loop     │         │            │
-  └─────────┘        ├──────────────────┤  GET    │            │
-                     │ GPUCollector     │◄────────│  /metrics  │
-  llama-server       │  pynvml, psutil  │  :9881  │            │
-  ┌─────────┐        ├──────────────────┤         │            │
-  │ /metrics│──poll──│ InferenceCollect │         └────────────┘
-  │  :8080  │  5s    │  ring buffer     │
-  └─────────┘        │  rate() precomp  │
-                     ├──────────────────┤
-  Your App           │ HealthRegistry   │
-  ┌─────────┐        │  cap tracking    │
-  │ mark_   │──────>├──────────────────┤
-  │ degraded│        │ CollectorRegistry│
-  └─────────┘        │  + custom colls  │
-                     ├──────────────────┤
-                     │ MetricsServer    │
-                     │  aiohttp :9881   │
-                     └──────────────────┘
+  producers ──push──►        Nerd Herd state          ──read──► consumers
+  ┌──────────────┐    ┌───────────────────────────┐
+  │ model host   │──► │ LoadManager  (4 VRAM modes,│   /metrics ──► Grafana (Prometheus DS)
+  │ capacity trk │──► │              auto-backoff) │   /api/*   ──► sidecar HTTP client
+  │ task master  │──► │ GPUCollector (pynvml,2s)   │
+  │ dispatcher   │──► │ InferenceColl(llama /metr) │   snapshot() ─┐
+  └──────────────┘    │ HealthRegistry             │               ▼
+                      │ SwapBudget   (300s window) │      SystemSnapshot.pressure_for()
+                      │ _local / _cloud / _queue / │        S1..S12 ─► M1/M2/M3 ─► combine
+                      │ _in_flight  pushed slices  │        ─► scalar ∈ [-1,+1] + breakdown
+                      └───────────────────────────┘               (selector reads scalar)
 ```
+
+The pressure scalar combines signals bucket-by-bucket (`combine.py`):
+worst-wins inside each bucket, weighted sum across buckets, and a noisy-OR
+abundance arm (`S9`, `S12`) gated by total negative pressure.
+
+## Key Modules
+
+| module | role |
+|---|---|
+| `nerd_herd.py` | `NerdHerd` facade — registers built-in collectors, holds pushed state, builds `snapshot()` |
+| `client.py` | `NerdHerdClient` HTTP proxy + process-wide `get_default`/`set_default`; safe defaults when sidecar is down |
+| `types.py` | all state dataclasses **and** `SystemSnapshot.pressure_for` (the signal pipeline lives here) |
+| `exposition.py` | `MetricsServer` (aiohttp): `/metrics`, `/health`, `/api/*`; `API_VERSION` handshake |
+| `gpu.py` / `load.py` / `inference.py` / `health.py` | the four built-in collectors |
+| `registry.py` | `Collector` protocol + `CollectorRegistry` — unified `/metrics` exposition |
+| `signals/` | `s1_remaining … s12_pool_balance` — pure functions, each → float `[-1, +1]` |
+| `combine.py` / `modifiers.py` / `breakdown.py` | bucket combination, M1/M2/M3 reshapers, `PressureBreakdown` struct |
+| `burn_log.py` | rolling per-(provider, model) burn-rate log (feeds S7); process singleton |
+| `swap_budget.py` | sliding-window swap counter (data only; allow/deny policy lives elsewhere) |
+| `ring_buffer.py` | fixed-capacity buffer for pre-computed inference rates |
+| `health_summary.py` | resource-health rollup; **reaches into the host app** (see Dependencies) |
+| `__main__.py` | `python -m nerd_herd` sidecar entry point (PID file, DB-backed mode persistence) |
+
+## VRAM budget modes
+
+| mode | fraction | meaning |
+|---|---|---|
+| `full` | 1.0 | all local capacity available |
+| `heavy` | 0.9 | 90% cap, headroom for OS/desktop |
+| `shared` | 0.5 | 50% cap, prefer cloud for heavy tasks |
+| `minimal` | 0.0 | local inference disabled (`is_local_inference_allowed() → False`) |
+
+The auto-detect loop **downgrades immediately** when external GPU usage rises and
+**upgrades only after** `upgrade_delay` (default 300s) of sustained improvement —
+asymmetric to avoid flapping. A manual `set_load_mode(..., source="user")` pins
+the mode and disables auto-detect until `enable_auto_management()`.
+
+## Gotchas
+
+- **Producers are the source of truth.** `snapshot()` is only as fresh as the
+  last push. The dispatcher must `push_in_flight` on every begin/end or pressure
+  reads stale in-flight reservations. The one auto-overlay exception: live
+  inference metrics (`requests_processing`, `idle_seconds`, `kv_cache_ratio`) are
+  layered onto local state at snapshot time without a push.
+- **In-flight is matched by *provider*, not model id.** Cloud rate-limit cells
+  are often provider-aggregate (one API key shared across model ids), so
+  `pressure_for` subtracts every in-flight call on the same provider. Per-model
+  cells (`rpd`/`tpd`) over-subtract slightly — the safe direction (fewer
+  admissions, no overshoot).
+- **`pressure_for` returns a `PressureBreakdown`, not a float.** Read `.scalar`.
+  The full struct (per-signal, per-bucket, modifiers) is meant to be logged for
+  offline weight tuning.
+- **Missing model state ⇒ neutral, not error.** No matrix, no samples, empty
+  queue → signals return 0. A freshly-revived model with `<5` samples falls back
+  to `provider_prior_rate`, then to neutral — never ranks as perfectly reliable.
+- **HTTP client returns safe defaults silently.** When the sidecar is
+  unreachable, `NerdHerdClient` methods return zeros/`"full"`/empty snapshot and
+  log at debug. Use `check_version()` against `API_VERSION` to detect a stale
+  sidecar and restart it.
+- **`set_default` is process-wide.** The module-level `snapshot()` /
+  `push_in_flight()` helpers resolve through `client.get_default()`; they no-op
+  until something calls `set_default(...)`.
 
 ## Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| yazbunu | Structured logging |
-| pynvml | NVIDIA GPU metrics (graceful degradation if no GPU) |
-| psutil | RAM/CPU metrics |
-| prometheus_client | Metric types + text format |
-| aiohttp | HTTP server + llama-server polling |
+- **Third-party**: `pynvml` (GPU; degrades gracefully with no GPU), `psutil`
+  (RAM/CPU), `prometheus_client` (metric types + text format), `aiohttp` (HTTP
+  server + llama-server polling), `yazbunu` (structured logging).
+- **llama-server** (optional): pass `llama_server_url` to enable inference
+  metrics; absent → those gauges report zero.
+- **The host application** — one genuine, asymmetric coupling. The core package
+  is host-independent, but `health_summary.py` deliberately reaches **into the
+  host** via lazy `try/except` imports (`src.models.local_model_manager`,
+  `src.models.gpu_monitor`, `src.core.router`, `src.models.model_registry`,
+  `src.security.credential_store`) to assemble a full resource-health rollup. It
+  is the one module that won't run standalone; every other module is
+  self-contained. The state dataclasses (`CloudProviderState`, `RateLimitMatrix`,
+  etc.) are the deliberate seam **producers** push through — Nerd Herd does not
+  import any of them back.
+- **Env**: `LLAMA_SERVER_PORT` (sidecar default llama URL), `NERD_HERD_PROJECT_ROOT`
+  (sidecar `sys.path` injection for `health_summary`'s host imports).
 
-## License
+## Runbook
 
-MIT
+Run as a standalone sidecar:
+
+```powershell
+& .\.venv\Scripts\python.exe -m nerd_herd --port 9881 --llama-url http://127.0.0.1:8080 --db-path .\data\kutai.db
+```
+
+Point Grafana at `http://localhost:9881/metrics` (datasource type: Prometheus).
+The sidecar persists load mode to the `load_mode` table and restores it on boot.
+Tuning the pressure signals: each `signals/sN_*.py` is a pure function with its
+own test under `tests/signals/` — change one, re-run that test, and inspect the
+`PressureBreakdown` it feeds. Do **not** add policy here; the scalar is advice,
+the selector decides.
+
+## Tests
+
+```powershell
+& .\.venv\Scripts\python.exe -m pytest packages\nerd_herd\ -q
+```
 
 ---
+<a id="türkçe"></a>
 
-<a id="turkce"></a>
+## Türkçe
 
-## nerd herd nedir?
+> Makinenin canlı durumunu bilen tek yer: GPU, VRAM bütçesi, servis sağlığı,
+> llama-server hızı, uçuştaki çağrı listesi ve bulut rate-limit hücreleri.
+> Üreticiler gerçekleri içeri iter; tüketiciler tutarlı tek bir anlık görüntü
+> okur — ve bir aday modelin ne kadar *baskı* altında olduğunu sorar.
 
-nerd herd, GPU destekli yapay zeka sistemleri icin bagimsiz bir gozlemlenebilirlik paketidir. GPU kaynaklarini izler, VRAM butce politikalarini yonetir, servis sagligini takip eder, llama-server'dan cikarim metriklerini toplar ve hepsini Prometheus uyumlu `/metrics` endpointi uzerinden sunar.
+### Amaç
 
-```python
-from nerd_herd import NerdHerd
+**Ne işe yarar.** Çalışan bir yapay zeka sisteminin durumu her yere dağılmıştır:
+GPU sıcaklığı sürücüde, VRAM bütçesi yük politikasında, hız llama-server'da, rate
+limit'ler her bulut sağlayıcısında, kuyruk görev yöneticisinde, uçuştaki çağrılar
+dispatcher'da. Nerd Herd, bunların hepsini toplayan tek defterdir; böylece
+herhangi bir tüketici — bir Grafana panosu, bir sağlık nöbetçisi ya da model
+seçicisi — altı alt sistemi tek tek yoklamak yerine tutarlı tek bir resim okur.
+Üreticiler gerçekleri *iter*; birleştirmenin sahibi Nerd Herd'dir.
 
-nh = NerdHerd(
-    metrics_port=9881,
-    llama_server_url="http://127.0.0.1:8080",
-)
-await nh.start()
+**Gerçekte ne yapar.** Tek paylaşılan durumun üzerinde iki yüz. (1) Bir
+**gözlemlenebilirlik yan-süreci (sidecar)**: GPU'yu (pynvml) ve llama-server'ın
+yerel `/metrics`'ini yoklar, harici uygulamalar GPU'yu kaptığında geri çekilen
+bir otomatik-algılama döngüsüyle 4 modlu VRAM bütçesi yönetir, servis sağlığını
+izler ve her şeyi `/metrics` üzerinde Prometheus metni artı küçük bir JSON API
+olarak sunar — böylece Grafana, Prometheus sunucusu olmadan doğrudan kazır. (2)
+Bir **baskı beyni**: `snapshot()`, içeri itilen her şeyin bir `SystemSnapshot`'ını
+döndürür ve `SystemSnapshot.pressure_for(model, …)`, on bir kıtlık sinyalini
+(S1–S12) üç değiştiriciden geçirip `[-1, +1]` aralığında tek bir skalere artı bir
+tanılayıcı `PressureBreakdown`'a indirger — bir seçicinin, belirli bir modelin
+*şu anda* aç mı yoksa bol mu olduğuna karar vermek için kullandığı sayı.
 
-# DaLLaMa sorar: "ne kadar VRAM kullanabilirim?"
-butce_mb = nh.get_vram_budget_mb()  # 4000 (paylasimli mod, 8GB'nin %50'si)
+**Yapmadıkları**: model seçmez veya sıralamaz, kabul (admission) kapısı tutmaz,
+hiçbir politika kararı vermez — baskı skalerini hesaplayıp geri verir; kararı
+çağıran taraf verir. LLM veya sağlayıcı HTTP çağrısı yapmaz (yalnızca kendisine
+verilen metrikleri parse eder), model keşfetmez, swap bütçesine karar vermez
+(kayan pencerede swap'ları sayar; *bu swap'a izin var mı?* politikası başka yerde
+yaşar). Eksik veri bir istisna değil, nötr bir değer üretir.
 
-# GPU durumu
-durum = nh.gpu_state()
-print(f"{durum.vram_free_mb}MB bos, {durum.temperature_c}C")
-```
+### Genel API
 
-Sonra Grafana'yi `http://localhost:9881/metrics` adresine yonlendirin.
-
-## Neden nerd herd?
-
-- **Prometheus'a gerek yok** — 256MB'lik konteyner yerine ~20MB'lik ring buffer ile oran hesaplama
-- **VRAM butce yonetimi** — 4 mod (full/heavy/shared/minimal), otomatik algilama
-- **GPU koruması** — harici surecler (oyunlar, diger uygulamalar) GPU'yu kullandiginda otomatik geri cekilme
-- **llama-server entegrasyonu** — yerel `/metrics` endpointinden token/saniye, KV cache, istek kuyrugu
-- **Saglik takibi** — servislerin durumunu (calisiyor/bozuk) izleme
-- **Toplayici kayit defteri** — kendi metriklerinizi GPU/saglik/cikarim yaninda kaydedin
-- **Prometheus formati** — Grafana dogrudan kazir, ek arac gerekmez
-
-## Ozellikler
-
-### GPU Izleme
-- **VRAM** — toplam, kullanilan, bos (MB)
-- **Kullanim** — GPU hesaplama yuzdesi
-- **Sicaklik** — Celsius, termal kisitlama tespiti (>85C)
-- **Guc** — watt cekimi
-- **Harici surec tespiti** — GPU'yu kullanan diger uygulamalari algilar
-- **2 saniye onbellek** — pynvml'i yormaz
-
-### VRAM Butce Yonetimi
-- **4 yuk modu** — full (%100), heavy (%90), shared (%50), minimal (%0 yerel)
-- **Otomatik algilama** — harici GPU kullanimini izler, modu otomatik ayarlar
-- **Aninda dusurme** — harici surecler VRAM kaptiginda
-- **Gecikmeli yukseltme** — 5 dakika surekli dusus bekler
-- **Manuel kontrol** — kullanici modu ayarlar, otomatik algilama durur
-
-### Cikarim Metrikleri
-- **llama-server yerel** — `/metrics` endpointinden ceker
-- **Onceden hesaplanmis oranlar** — uretim token/sn, prompt token/sn (1 dakika ortalama)
-- **Gecis olcumleri** — KV cache orani, islenen/bekleyen istekler
-
-### Prometheus Sunumu
-- **HTTP sunucusu** — aiohttp, varsayilan port 9881
-- **`/metrics`** — Prometheus metin formati
-- **`/health`** — JSON canlilik kontrolu
-
-## Kurulum
-
-```bash
-pip install nerd-herd
-```
-
-## Hizli Baslangic
+Nerd Herd ile konuşmanın iki yolu. Nesneye sahipken **süreç-içi** (`NerdHerd`);
+Nerd Herd ayrı bir sidecar süreç olarak çalışırken ve elinizde ince bir proxy
+varken **HTTP üzerinden** (`NerdHerdClient` + modül düzeyi yardımcılar).
 
 ```python
-from nerd_herd import NerdHerd
+from nerd_herd import NerdHerd, SystemSnapshot
 
-async def main():
-    nh = NerdHerd(
-        metrics_port=9881,
-        llama_server_url="http://127.0.0.1:8080",
-    )
-    await nh.start()
+nh = NerdHerd(metrics_port=9881, llama_server_url="http://127.0.0.1:8080")
+await nh.start()                 # metrik sunucusu + çıkarım yoklaması
+await nh.start_auto_detect()     # GPU geri-çekilme döngüsü (opsiyonel)
 
-    # GPU otomatik algilamayi baslat
-    await nh.start_auto_detect(notify_fn=bildirim_gonder)
+# --- üreticiler gerçekleri içeri iter ---
+nh.push_local_state(local_state)         # model host, her swap'ta
+nh.push_cloud_state(cloud_provider_state)# kapasite izleyici, her yanıtta
+nh.push_queue_profile(queue_profile)     # görev yöneticisi, kuyruk değişiminde
+nh.push_in_flight(list_of_inflight_calls)# dispatcher, her begin/end'de
+nh.record_swap(model_name)               # dispatcher, bir swap'tan sonra
 
-    # Mod degisikliginde bildirim al
-    nh.on_mode_change(lambda eski, yeni, kaynak: print(f"{eski} -> {yeni}"))
-
-    # ... uygulamaniz calisir ...
-
-    await nh.stop()
+# --- tüketiciler tutarlı tek bir anlık görüntü okur ---
+snap: SystemSnapshot = nh.snapshot()
+budget_mb = nh.get_vram_budget_mb()      # boş VRAM × mod kesri
+breakdown = snap.pressure_for(model, task_difficulty=7, est_call_cost=0.002)
+scalar = breakdown.scalar                # [-1, +1]; -1 aç, +1 bol
 ```
 
-```
-# Grafana veri kaynagi ayari:
-# Tip: Prometheus
-# URL: http://localhost:9881
+```python
+# Süreç-dışı: modül düzeyi singleton + HTTP istemci proxy'si.
+from nerd_herd import snapshot, refresh_snapshot, push_in_flight, record_swap
+from nerd_herd.client import set_default, NerdHerdClient
+
+set_default(NerdHerdClient(port=9881))   # başlangıçta bir kez bağla
+await refresh_snapshot()                 # async getir → önbelleğe al
+snap = snapshot()                        # son önbelleklenen anlık görüntünün sync okuması
 ```
 
-## Lisans
+**Üst düzey export'lar (`__all__`).** Cephe & istemci: `NerdHerd`,
+`NerdHerdClient`, `GPUStateProxy`. Durum dataclass'ları: `GPUState`,
+`SystemState`, `ExternalGPUUsage`, `HealthStatus`, `InFlightCall`, `RateLimit`,
+`RateLimitMatrix`, `CloudModelState`, `CloudProviderState`, `LocalModelState`,
+`QueueProfile`, `SystemSnapshot`, `PressureBreakdown`. Toplayıcı makinesi:
+`CollectorRegistry`, `Collector`, `GPUCollector`, `LoadManager`,
+`HealthRegistry`, `InferenceCollector`, `RingBuffer`, `SwapBudget`.
+Yardımcılar: `health_summary`. Modül düzeyi singleton fonksiyonları (süreç-dışı
+çağıranlarca kullanılır): `snapshot`, `refresh_snapshot`, `record_swap`,
+`push_queue_profile`, `push_in_flight`.
 
-MIT
+#### Ana metotlar (`NerdHerd`)
+
+| metot | görevi |
+|---|---|
+| `snapshot() -> SystemSnapshot` | itilen tüm durumun nokta-zaman birleşimi; canlı çıkarım metriklerini yerel duruma bindirir |
+| `push_local_state` · `push_cloud_state` · `push_queue_profile` · `push_in_flight` | üreticiler kendi durum dilimlerini değiştirir/upsert eder |
+| `record_swap(model_name="")` · `recent_swap_count() -> int` | kayan-pencere swap sayacı (pencere 300s) |
+| `gpu_state() -> GPUState` | canlı VRAM / sıcaklık / kullanım / güç |
+| `get_vram_budget_mb() -> int` · `get_vram_budget_fraction() -> float` | boş VRAM × geçerli mod kesri |
+| `get_load_mode() -> str` · `set_load_mode(mode, source="user") -> str` | `"full" / "heavy" / "shared" / "minimal"`; `source="user"` otomatik-algılamayı kapatır |
+| `enable_auto_management()` · `is_local_inference_allowed() -> bool` | geri-çekilme döngüsünü tekrar aç; yalnızca `minimal`'da `False` |
+| `on_mode_change(cb)` | `(eski, yeni, kaynak) -> None` callback'i kaydet (DB kalıcılığı, bildirim) |
+| `mark_degraded` · `mark_healthy` · `is_healthy` · `get_health_status` | servis-sağlık kayıt defteri |
+| `register_collector(name, collector)` | `/metrics` sunumuna özel bir `Collector` ekle |
+| `prometheus_lines() -> str` | gömme için Prometheus metni |
+
+#### `SystemSnapshot.pressure_for(...)`
+
+```python
+breakdown = snapshot.pressure_for(
+    model,                       # duck-typed: .name .provider .is_free .is_local .cap_score
+    task_difficulty=5,           # 1..10
+    est_per_call_tokens=0,
+    est_per_task_tokens=0,
+    est_iterations=1,
+    est_call_cost=0.0,
+    cap_needed=5.0,
+    consecutive_failures=0,
+    fleet_consumed=None,         # {free-sağlayıcı -> bu döngüdeki çağrılar} (S12); None → S12=0
+    eligible_models=None,
+) -> PressureBreakdown           # .scalar [-1, +1], .signals, .modifiers, .bucket_totals
+```
+
+### Mimari
+
+Üreticiler iter; tek anlık görüntü birleştirir; iki tüketici okur. Baskı yolu,
+anlık görüntü üzerinde saf bir fonksiyondur.
+
+```
+  üreticiler ─push─►        Nerd Herd durumu         ─read─► tüketiciler
+  ┌──────────────┐    ┌───────────────────────────┐
+  │ model host   │──► │ LoadManager  (4 VRAM modu, │   /metrics ──► Grafana (Prometheus DS)
+  │ kapasite izl.│──► │              oto-geri-çek.)│   /api/*   ──► sidecar HTTP istemci
+  │ görev yön.   │──► │ GPUCollector (pynvml, 2s)  │
+  │ dispatcher   │──► │ InferenceColl(llama /metr) │   snapshot() ─┐
+  └──────────────┘    │ HealthRegistry             │               ▼
+                      │ SwapBudget   (300s pencere)│      SystemSnapshot.pressure_for()
+                      │ _local / _cloud / _queue / │        S1..S12 ─► M1/M2/M3 ─► combine
+                      │ _in_flight  itilen dilimler│        ─► skaler ∈ [-1,+1] + breakdown
+                      └───────────────────────────┘               (seçici skaleri okur)
+```
+
+Baskı skaleri sinyalleri kova-kova birleştirir (`combine.py`): her kovanın
+içinde en-kötü-kazanır, kovalar arası ağırlıklı toplam, ve toplam negatif baskıya
+göre kapılanan bir noisy-OR bolluk kolu (`S9`, `S12`).
+
+### Ana Modüller
+
+| modül | rolü |
+|---|---|
+| `nerd_herd.py` | `NerdHerd` cephesi — yerleşik toplayıcıları kaydeder, itilen durumu tutar, `snapshot()` kurar |
+| `client.py` | `NerdHerdClient` HTTP proxy + süreç-geneli `get_default`/`set_default`; sidecar kapalıyken güvenli varsayılanlar |
+| `types.py` | tüm durum dataclass'ları **ve** `SystemSnapshot.pressure_for` (sinyal hattı burada yaşar) |
+| `exposition.py` | `MetricsServer` (aiohttp): `/metrics`, `/health`, `/api/*`; `API_VERSION` el sıkışması |
+| `gpu.py` / `load.py` / `inference.py` / `health.py` | dört yerleşik toplayıcı |
+| `registry.py` | `Collector` protokolü + `CollectorRegistry` — birleşik `/metrics` sunumu |
+| `signals/` | `s1_remaining … s12_pool_balance` — saf fonksiyonlar, her biri → float `[-1, +1]` |
+| `combine.py` / `modifiers.py` / `breakdown.py` | kova birleşimi, M1/M2/M3 yeniden-şekillendiriciler, `PressureBreakdown` struct'ı |
+| `burn_log.py` | (sağlayıcı, model) başına kayan burn-rate günlüğü (S7'yi besler); süreç singleton'ı |
+| `swap_budget.py` | kayan-pencere swap sayacı (yalnızca veri; izin/ret politikası başka yerde) |
+| `ring_buffer.py` | önceden hesaplanmış çıkarım oranları için sabit kapasiteli tampon |
+| `health_summary.py` | kaynak-sağlık özeti; **host uygulamasına uzanır** (bkz. Bağımlılıklar) |
+| `__main__.py` | `python -m nerd_herd` sidecar giriş noktası (PID dosyası, DB-destekli mod kalıcılığı) |
+
+### VRAM bütçe modları
+
+| mod | kesir | anlamı |
+|---|---|---|
+| `full` | 1.0 | tüm yerel kapasite kullanılabilir |
+| `heavy` | 0.9 | %90 sınır, OS/masaüstü için pay |
+| `shared` | 0.5 | %50 sınır, ağır görevlerde bulutu tercih et |
+| `minimal` | 0.0 | yerel çıkarım kapalı (`is_local_inference_allowed() → False`) |
+
+Otomatik-algılama döngüsü, harici GPU kullanımı yükseldiğinde **anında düşürür**
+ve yalnızca `upgrade_delay` (varsayılan 300s) süresince sürekli iyileşmeden
+**sonra yükseltir** — çırpınmayı (flapping) önlemek için asimetrik. Manuel bir
+`set_load_mode(..., source="user")` modu sabitler ve `enable_auto_management()`
+çağrılana dek otomatik-algılamayı kapatır.
+
+### Tuzaklar
+
+- **Gerçeğin kaynağı üreticilerdir.** `snapshot()` yalnızca son push kadar
+  tazedir. Dispatcher her begin/end'de `push_in_flight` yapmalıdır, yoksa baskı
+  bayat uçuştaki rezervasyonları okur. Tek oto-bindirme istisnası: canlı çıkarım
+  metrikleri (`requests_processing`, `idle_seconds`, `kv_cache_ratio`) snapshot
+  anında push olmadan yerel duruma bindirilir.
+- **Uçuştakiler model id'sine değil *sağlayıcıya* göre eşleşir.** Bulut rate-limit
+  hücreleri çoğu zaman sağlayıcı-toplamdır (tek bir API anahtarı model id'leri
+  arasında paylaşılır), bu yüzden `pressure_for` aynı sağlayıcıdaki her uçuştaki
+  çağrıyı düşer. Model-başına hücreler (`rpd`/`tpd`) hafifçe fazla düşer — güvenli
+  yön (daha az kabul, taşma yok).
+- **`pressure_for` bir float değil `PressureBreakdown` döndürür.** `.scalar`'ı
+  okuyun. Tam struct (sinyal-başına, kova-başına, değiştiriciler) çevrimdışı
+  ağırlık ayarı için loglanmak üzere tasarlanmıştır.
+- **Eksik model durumu ⇒ nötr, hata değil.** Matris yok, örnek yok, boş kuyruk →
+  sinyaller 0 döner. `<5` örnekli yeni-canlandırılmış bir model
+  `provider_prior_rate`'e, sonra nötre geri düşer — asla kusursuz güvenilir gibi
+  sıralanmaz.
+- **HTTP istemci sessizce güvenli varsayılan döner.** Sidecar erişilemezken
+  `NerdHerdClient` metotları sıfır/`"full"`/boş anlık görüntü döner ve debug'da
+  loglar. Bayat bir sidecar'ı saptayıp yeniden başlatmak için `API_VERSION`'a
+  karşı `check_version()` kullanın.
+- **`set_default` süreç-genelidir.** Modül düzeyi `snapshot()` / `push_in_flight()`
+  yardımcıları `client.get_default()` üzerinden çözülür; bir şey
+  `set_default(...)` çağırana dek no-op'turlar.
+
+### Bağımlılıklar
+
+- **Üçüncü-taraf**: `pynvml` (GPU; GPU yoksa zarifçe geriler), `psutil` (RAM/CPU),
+  `prometheus_client` (metrik tipleri + metin formatı), `aiohttp` (HTTP sunucusu +
+  llama-server yoklaması), `yazbunu` (yapılı loglama).
+- **llama-server** (opsiyonel): çıkarım metriklerini etkinleştirmek için
+  `llama_server_url` geçin; yoksa o ölçümler sıfır raporlar.
+- **Host uygulaması** — tek gerçek, asimetrik bağ. Çekirdek paket host'tan
+  bağımsızdır, ama `health_summary.py` tam bir kaynak-sağlık özeti kurmak için
+  bilinçli olarak lazy `try/except` import'larıyla **host'a uzanır**
+  (`src.models.local_model_manager`, `src.models.gpu_monitor`, `src.core.router`,
+  `src.models.model_registry`, `src.security.credential_store`). Standalone
+  çalışmayan tek modül odur; diğer her modül kendi kendine yeter. Durum
+  dataclass'ları (`CloudProviderState`, `RateLimitMatrix`, vb.) **üreticilerin**
+  içinden push yaptığı bilinçli dikiş yeridir — Nerd Herd hiçbirini geri import
+  etmez.
+- **Env**: `LLAMA_SERVER_PORT` (sidecar varsayılan llama URL'i),
+  `NERD_HERD_PROJECT_ROOT` (`health_summary`'nin host import'ları için sidecar
+  `sys.path` enjeksiyonu).
+
+### Çalıştırma
+
+Standalone sidecar olarak çalıştırma:
+
+```powershell
+& .\.venv\Scripts\python.exe -m nerd_herd --port 9881 --llama-url http://127.0.0.1:8080 --db-path .\data\kutai.db
+```
+
+Grafana'yı `http://localhost:9881/metrics` adresine yönlendirin (veri kaynağı
+tipi: Prometheus). Sidecar, yük modunu `load_mode` tablosuna kalıcılaştırır ve
+açılışta geri yükler. Baskı sinyallerini ayarlama: her `signals/sN_*.py`,
+`tests/signals/` altında kendi testi olan saf bir fonksiyondur — birini değiştir,
+o testi yeniden çalıştır ve beslediği `PressureBreakdown`'ı incele. Buraya
+politika **eklemeyin**; skaler tavsiyedir, kararı seçici verir.
+
+### Testler
+
+```powershell
+& .\.venv\Scripts\python.exe -m pytest packages\nerd_herd\ -q
+```

@@ -11,11 +11,16 @@ from __future__ import annotations
 import time
 
 from nerd_herd.burn_log import BurnLog
+from nerd_herd.signals._curves import smoothstep
 from nerd_herd.types import RateLimitMatrix
 
 
-THRESHOLD = 0.70
-SLOPE = 2.0
+# Continuous ramp-from-0 (2026-06-05, replaces the 0.70 dead-band). SAT is the
+# ratio at which conserve-pressure saturates to -1; tuned by sim SAT-sweep
+# (run_scenarios.py rp5). Lower SAT = earlier/stronger warning. smoothstep keeps
+# light burn quiet (3x^2-2x^3 ≈ 3·ratio^2 near 0) while de-blinding overdraw
+# before exhaustion. See docs/superpowers/specs/2026-06-05-s7-s6-continuity-design.md.
+SAT = 1.0
 
 
 def s7_burn_rate(
@@ -43,10 +48,7 @@ def s7_burn_rate(
             continue
         remaining = max(1, (rl.remaining or 0) - rl.in_flight)
         ratio = extrapolated / remaining
-        excess = max(0.0, ratio - THRESHOLD)
-        if excess <= 0:
-            continue
-        pressure = -min(1.0, excess * SLOPE)
+        pressure = -smoothstep(min(1.0, ratio / SAT))
         if pressure < worst:
             worst = pressure
     return worst

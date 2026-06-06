@@ -269,69 +269,77 @@ def _unwrap_envelope(text) -> str:
     return stripped
 
 
-def _produces_file_is_stale(existing_raw: str, new_value: str) -> bool:
-    """True when an existing produces file should be OVERWRITTEN by new_value.
+async def materialize_produces(ctx: dict, task: dict, result, output_value):
+    """Sole writer of declared ``produces`` paths.
 
-    The produces-persist block normally "only fills missing" files so a rich
-    agent-written artifact is never clobbered by a thin result summary
-    (intake #73). But that guard also locked in JUNK: when an early attempt
-    persisted a raw / truncated LLM envelope to the produces path, every later
-    good attempt skipped the existing file and the shape validator failed
-    forever (mission_79 2026-05-30: .intake/interview_script.md held a
-    truncated ``{"action": "final_answer", ...}`` wrapper while the good 5KB
-    script sat at the mission-root path).
-
-    Narrowly widen the guard: replace ONLY when the existing file is junk —
-    a raw LLM envelope (final_answer / tool_call / CallResult) or degenerate /
-    empty — AND new_value is substantial and itself clean. Rich/valid
-    artifacts (including bare JSON with no envelope markers) are preserved.
+    For each single declared ``.md`` / ``.json`` produces path, gather the
+    on-disk content (whatever the agent's write_file left) and ``output_value``
+    as competing candidates, pick the schema-best via ``select_canonical``,
+    stamp ``mission_id`` front-matter idempotently, and write the canonical
+    path last. Returns the canonical content as the new ``output_value`` (when
+    a single path is declared) so the in-memory schema gate validates exactly
+    what landed on disk. Fully fail-soft — never raises, always leaves a file.
     """
-    if not isinstance(new_value, str) or len(new_value.strip()) < 120:
-        return False
-    existing = (existing_raw or "").strip()
-    if not existing:
-        return True  # empty file → fill
+    mission_id = task.get("mission_id") or ctx.get("mission_id")
+    produces = ctx.get("produces") or []
+    if not (output_value and mission_id) or not isinstance(produces, list):
+        return output_value
 
-    probe = existing
-    if probe.startswith("```"):
-        probe = probe.split("\n", 1)[1] if "\n" in probe else probe[3:]
-        probe = probe.rsplit("```", 1)[0].strip()
+    # Mechanical siblings (workflow_advance, git_commit, ...) inherit ctx but
+    # do not emit artifacts — mirror the schema gate's _is_producer guard.
+    executor = (task.get("executor") or ctx.get("executor") or "")
+    agent_type = (task.get("agent_type") or ctx.get("agent_type") or "")
+    if executor == "mechanical" or agent_type == "mechanical":
+        return output_value
 
-    is_junk = False
-    try:
-        obj = json.loads(probe)
-        if isinstance(obj, dict):
-            if obj.get("action") in ("final_answer", "tool_call"):
-                is_junk = True
-            elif isinstance(obj.get("content"), str) and any(
-                k in obj for k in ("model", "model_name", "usage", "ran_on", "provider")
-            ):
-                is_junk = True
-    except (json.JSONDecodeError, TypeError, ValueError):
-        # Truncated / unclosed wrapper — detect the envelope prefix.
-        head = probe[:80]
-        if probe.startswith("{") and ('"action"' in head or '"content"' in head):
-            is_junk = True
+    from coulson.grounding import select_canonical, stamp_front_matter
+    # Read WORKSPACE_DIR dynamically from its source module so test
+    # monkeypatching of ``src.tools.workspace.WORKSPACE_DIR`` takes effect.
+    import src.tools.workspace as _ws
 
-    if not is_junk:
+    schema = ctx.get("artifact_schema") or {}
+
+    def _schema_ok(c: str) -> bool:
         try:
-            from dogru_mu_samet import assess as _cq
-            if _cq(existing).is_degenerate:
-                is_junk = True
-        except Exception:  # noqa: BLE001
-            pass
-
-    if not is_junk:
-        return False  # rich / valid artifact → preserve (intake #73)
-
-    # Never replace junk with junk — the new value must itself be clean.
-    try:
-        from dogru_mu_samet import assess as _cq
-        if _cq(new_value).is_degenerate:
+            return bool(validate_artifact_schema(c, schema)[0])
+        except Exception:
             return False
-    except Exception:  # noqa: BLE001
-        pass
-    return True
+
+    single = len([e for e in produces if isinstance(e, str)
+                  and e.endswith((".md", ".json"))]) == 1
+    canonical_out = output_value
+    for entry in produces:
+        if not (isinstance(entry, str) and entry.endswith((".md", ".json"))):
+            continue
+        abs_path = entry if os.path.isabs(entry) else os.path.join(_ws.WORKSPACE_DIR, entry)
+        disk = None
+        try:
+            with open(abs_path, encoding="utf-8") as fh:
+                disk = fh.read()
+        except OSError:
+            disk = None
+        # Priority: the agent's on-disk write outranks output_value — a rich
+        # valid file is preserved (intake #73); only a disk file that FAILS
+        # the schema yields to the (unwrapped) result (mission 81).
+        chosen = select_canonical([disk, output_value], _schema_ok)
+        if not isinstance(chosen, str):
+            continue
+        kind = "json" if entry.endswith(".json") else "md"
+        chosen = stamp_front_matter(chosen, int(mission_id), kind)
+        try:
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, "w", encoding="utf-8") as fh:
+                fh.write(chosen)
+            logger.info(
+                f"[Workflow Hook] materialize_produces -> {abs_path} "
+                f"({len(chosen)} chars)"
+            )
+        except OSError as e:
+            logger.debug(f"[Workflow Hook] materialize write failed {abs_path}: {e}")
+            continue
+        if single:
+            canonical_out = chosen
+    return canonical_out
 
 
 def _top_level_required_field_names(rule: dict) -> list[str]:
@@ -354,7 +362,7 @@ def _top_level_required_field_names(rule: dict) -> list[str]:
 
 
 def _extract_artifact_value(output_value, artifact_name: str, rtype: str):
-    """Parse output and extract the value for ``artifact_name``.
+    r"""Parse output and extract the value for ``artifact_name``.
 
     Returns the extracted value (dict/list/str) or None if parse failed.
     Tries direct JSON, artifact-name-keyed wrapper, single matching value
@@ -1191,6 +1199,51 @@ async def post_execute_workflow_step(task: dict, result: dict) -> None:
             )
 
 
+async def _live_artifact_schema(mission_id, step_id: str):
+    """Return *step_id*'s ``artifact_schema`` from the LIVE workflow JSON.
+
+    ``ctx.artifact_schema`` is frozen into the task at expander time. When the
+    workflow JSON is edited (e.g. go_no_go_decision.recommendation gains
+    ``equals_lenient``), an already-expanded producer task keeps the stale
+    snapshot — and ``advance()`` re-reads that producer row, so a ``/dlq retry``
+    of the workflow_advance task re-validates against the old schema and DLQs a
+    now-valid artifact forever (mission #81, 2026-06-04).
+
+    Mirrors coulson._refresh_workflow_step_config's ``get_step`` lookup, so
+    template-expanded feature steps (whose art_prefix'd ids are not in
+    ``wf.steps``) return None here and keep their prefixed snapshot. Best-effort:
+    returns None on any failure so the caller falls back to the frozen schema.
+    """
+    if not (mission_id and step_id):
+        return None
+    try:
+        from src.infra.db import get_db
+        from src.workflows.engine.loader import load_workflow
+        wf_name = "i2p_v3"
+        try:
+            _db = await get_db()
+            _cur = await _db.execute(
+                "SELECT context FROM missions WHERE id = ?", (mission_id,)
+            )
+            _row = await _cur.fetchone()
+            await _cur.close()
+            if _row and _row[0]:
+                _mctx = json.loads(_row[0])
+                if isinstance(_mctx, str):
+                    _mctx = json.loads(_mctx)
+                if isinstance(_mctx, dict):
+                    wf_name = _mctx.get("workflow_name") or wf_name
+        except Exception:
+            pass
+        _wf = load_workflow(wf_name)
+        _step = _wf.get_step(step_id)
+        if _step and isinstance(_step.get("artifact_schema"), dict):
+            return _step["artifact_schema"]
+    except Exception:
+        return None
+    return None
+
+
 async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     ctx = _parse_context(task)
     if not is_workflow_step(ctx):
@@ -1202,6 +1255,14 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
 
     if not mission_id:
         return
+
+    # Re-sync artifact_schema from the live workflow JSON before the schema
+    # gate below. Without this, a workflow_advance retry validates the produced
+    # artifact against the producer task's frozen schema snapshot — workflow
+    # edits never reach in-flight missions on retry (mission #81 #291858).
+    _live_schema = await _live_artifact_schema(mission_id, step_id)
+    if _live_schema:
+        ctx["artifact_schema"] = _live_schema
 
     store = get_artifact_store()
 
@@ -1444,12 +1505,26 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             # task after grade passes (packages/general_beckman/apply.py::
             # _apply_posthook_verdict) — no need to queue here.
 
-    # ── Write artifacts to disk in mission directory ──
+    # ── Materialize the declared `produces` paths (sole writer) ──
+    # One deterministic pass: pick the schema-best of {on-disk write,
+    # output_value} (fence-unwrapped), stamp mission_id, write the canonical
+    # path, and return that content so the schema gate below validates exactly
+    # what is on disk. Replaces the old fill-missing block (+ _produces_file_is_stale)
+    # and the coulson auto-persist/canonicalize blocks.
     if output_value and mission_id:
         try:
-            from ...tools.workspace import WORKSPACE_DIR
-            import os
-            artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+            output_value = await materialize_produces(ctx, task, result, output_value)
+        except Exception as _e:
+            logger.debug(f"[Workflow Hook] materialize_produces skipped: {_e}")
+
+    # Legacy fallback — steps with NO declared `produces` still persist their
+    # artifact as `<name>.md` at the mission root (downstream summaries /
+    # consumers may read it). Steps WITH `produces` are owned by
+    # materialize_produces above and skip this.
+    if output_value and mission_id and not (ctx.get("produces") or []):
+        try:
+            import src.tools.workspace as _ws
+            artifact_dir = os.path.join(_ws.WORKSPACE_DIR, f"mission_{mission_id}")
             os.makedirs(artifact_dir, exist_ok=True)
             for name in output_names:
                 file_path = os.path.join(artifact_dir, f"{name}.md")
@@ -1458,50 +1533,6 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 logger.debug(f"[Workflow Hook] Wrote artifact to {file_path}")
         except Exception as e:
             logger.debug(f"[Workflow Hook] Could not write artifact to disk: {e}")
-
-    # ── Persist to the DECLARED `produces` paths (real subdir + extension) ──
-    # The block above only writes `<name>.md` at the mission root, which misses
-    # any step that declares a produces path with a subdir/extension (e.g.
-    # `.intake/intake_todo_draft.json`). Schema'd agent steps have write_file
-    # auto-stripped (the result IS the artifact), so without this the declared
-    # produces file never lands on disk → grounding DLQs and downstream
-    # consumers can't find it (intake #73: produces `.intake/...json` but the
-    # engine wrote `intake_todo_draft.md` at the root). Only FILL missing files
-    # — never clobber a file the agent wrote itself (its full content may be
-    # richer than the result summary).
-    if output_value and mission_id:
-        try:
-            from ...tools.workspace import WORKSPACE_DIR as _WS_DIR
-            import os as _os
-            for _entry in (ctx.get("produces") or []):
-                if not (isinstance(_entry, str) and _entry):
-                    continue
-                _fp = _entry if _os.path.isabs(_entry) else _os.path.join(_WS_DIR, _entry)
-                if _os.path.isfile(_fp):
-                    # Preserve a rich/valid existing artifact (intake #73), but
-                    # overwrite a stale junk file — a raw/truncated LLM envelope
-                    # an earlier attempt persisted that every shape check then
-                    # fails on (mission_79 .intake/interview_script.md).
-                    try:
-                        with open(_fp, encoding="utf-8") as _ef:
-                            _existing = _ef.read()
-                    except OSError:
-                        _existing = ""
-                    if not _produces_file_is_stale(_existing, output_value):
-                        continue  # agent / prior step already wrote it — preserve
-                    logger.info(
-                        f"[Workflow Hook] Overwriting stale produces artifact "
-                        f"-> {_fp} ({len(_existing)} junk -> {len(output_value)} chars)"
-                    )
-                _os.makedirs(_os.path.dirname(_fp), exist_ok=True)
-                with open(_fp, "w", encoding="utf-8") as _f:
-                    _f.write(output_value)
-                logger.info(
-                    f"[Workflow Hook] Persisted produces artifact -> {_fp} "
-                    f"({len(output_value)} chars)"
-                )
-        except Exception as _e:
-            logger.debug(f"[Workflow Hook] produces-path persist failed: {_e}")
 
     # ── Validate artifact schema ──
     # Gate is on `artifact_schema` AND "this task is the LLM-driven worker

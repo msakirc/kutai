@@ -603,11 +603,22 @@
       "artifact_schema": {
         "project_state_map": {
           "type": "object",
-          "required_fields": [
-            "phases",
-            "effective_starting_phase",
-            "blocking_gaps"
-          ]
+          "fields": {
+            "phases": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "completion_percentage": {},
+                  "blocking_gaps": { "optional": true },
+                  "quality_gaps": { "optional": true }
+                }
+              }
+            },
+            "effective_starting_phase": {},
+            "blocking_gaps": { "optional": true }
+          }
         }
       },
       "context": {},
@@ -678,13 +689,15 @@
       "artifact_schema": {
         "project_conventions": {
           "type": "object",
-          "required_fields": [
-            "naming_conventions",
-            "file_organization",
-            "import_style",
-            "error_handling_pattern",
-            "test_patterns"
-          ]
+          "fields": {
+            "naming_conventions": {},
+            "file_organization": {},
+            "import_style": {},
+            "error_handling_pattern": {},
+            "test_patterns": {},
+            "git_conventions": {},
+            "state_management_patterns": { "optional": true }
+          }
         }
       },
       "context": {},
@@ -1227,33 +1240,58 @@
       "reversibility": "full"
     },
     {
-      "id": "1.0",
+      "id": "1.0a",
       "phase": "phase_1",
-      "name": "prior_art_search",
-      "agent": "researcher",
+      "name": "prior_art_query_plan",
+      "agent": "query_planner",
+      "difficulty": "easy",
+      "depends_on": ["0.6"],
+      "input_artifacts": ["idea_brief_final"],
+      "output_artifacts": ["prior_art_queries"],
+      "produces": ["mission_{mission_id}/.research/prior_art_queries.json"],
+      "tools_hint": ["read_file", "write_file"],
+      "instruction": "Read idea_brief_final. Emit 3-5 prior-art SEARCH QUERIES plus domain_keywords that will surface competing and dead/dormant products. Do NOT name specific products yourself. Write {\"queries\":[...],\"domain_keywords\":[...],\"ambition_tier\":context.ambition_tier or 'private_beta'} to the produces path.",
+      "done_when": "prior_art_queries.json exists with >=3 queries.",
+      "artifact_schema": {
+        "prior_art_queries": {
+          "type": "object",
+          "required_fields": ["queries", "domain_keywords"]
+        }
+      },
+      "context": {"estimated_output_tokens": 400},
+      "reversibility": "full"
+    },
+    {
+      "id": "1.0b",
+      "phase": "phase_1",
+      "name": "prior_art_fetch",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": ["1.0a"],
+      "input_artifacts": ["prior_art_queries"],
+      "output_artifacts": ["prior_art_candidates"],
+      "produces": ["mission_{mission_id}/.research/prior_art_candidates.json"],
+      "payload": {
+        "action": "prior_art_fetch",
+        "queries_path": "mission_{mission_id}/.research/prior_art_queries.json",
+        "candidates_path": "mission_{mission_id}/.research/prior_art_candidates.json"
+      },
+      "done_when": "prior_art_candidates.json exists.",
+      "reversibility": "full"
+    },
+    {
+      "id": "1.0c",
+      "phase": "phase_1",
+      "name": "prior_art_synthesize",
+      "agent": "prior_art_synthesizer",
       "difficulty": "medium",
-      "tools_hint": [
-        "find_prior_art",
-        "web_search",
-        "extract_url"
-      ],
-      "depends_on": [
-        "0.6"
-      ],
-      "may_need_clarification": false,
-      "input_artifacts": [
-        "idea_brief_final"
-      ],
-      "output_artifacts": [
-        "prior_art_report"
-      ],
-      "produces": [
-        "mission_{mission_id}/.research/prior_art_report.json"
-      ],
-      "post_hooks": [
-        "prior_art_min_coverage"
-      ],
-      "instruction": "Call find_prior_art(idea_summary=idea_brief_final.summary, domain_keywords=<comma-separated tags from idea_brief_final.domain_tags or Vision keywords>, k=10, ambition_tier=context.ambition_tier or 'private_beta'). Inspect the returned report. If verdict='blue_ocean_validated' but you suspect the agent missed adjacent solutions, broaden domain_keywords once and re-call. Save the final report JSON to the produces path verbatim. Surface dead/dormant entries with Wayback timestamps when present.",
+      "depends_on": ["1.0b"],
+      "input_artifacts": ["idea_brief_final", "prior_art_candidates"],
+      "output_artifacts": ["prior_art_report"],
+      "produces": ["mission_{mission_id}/.research/prior_art_report.json"],
+      "post_hooks": ["prior_art_min_coverage"],
+      "tools_hint": ["read_file", "write_file"],
+      "instruction": "Read prior_art_candidates.json and idea_brief_final. Judge which fetched candidates are real attempted solutions. Every attempted_solutions url+name MUST be copied from a fetched candidate — never invent a product or URL. Extract >=1 key_lesson when attempted_solutions is non-empty. Set verdict. Write the prior_art_report JSON to the produces path verbatim.",
       "done_when": "prior_art_report exists at the produces path and prior_art_min_coverage post-hook returns ok=true.",
       "artifact_schema": {
         "prior_art_report": {
@@ -1268,7 +1306,8 @@
         }
       },
       "context": {
-        "estimated_output_tokens": 3000
+        "estimated_output_tokens": 3000,
+        "candidates_path": "mission_{mission_id}/.research/prior_art_candidates.json"
       },
       "reversibility": "full"
     },
@@ -1374,7 +1413,7 @@
       "output_artifacts": [
         "direct_competitors_list"
       ],
-      "instruction": "Identify all direct competitors: products solving the same problem for the same audience. For each competitor, collect: name, website_url, one_line_description, founding_year, funding_total (if known), team_size_estimate, platforms (web/ios/android/desktop), primary_market (geography), status (active/acquired/dead). Search: web search, Product Hunt, G2, Capterra, AlternativeTo, Crunchbase, App Store, Play Store. Find at least 5 competitors if they exist. If fewer than 3 exist, note this as a market signal (either blue ocean or no market).\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.",
+      "instruction": "Identify all direct competitors: products solving the same problem for the same audience. For each competitor, return ONLY these fields: name, website_url, one_line_description, platforms (web/ios/android/desktop), status (active/acquired/dead). Do NOT research or invent funding, team size, founding year, or market geography — out of scope, unverifiable in a quick search, and unused by any downstream step. Search: web search, Product Hunt, G2, Capterra, AlternativeTo, App Store, Play Store. Find at least 5 competitors if they exist. If fewer than 3 exist, note this as a market signal (either blue ocean or no market).\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.",
       "done_when": "direct_competitors_list exists as a structured list with all fields populated per competitor.",
       "artifact_schema": {
         "direct_competitors_list": {
@@ -1518,7 +1557,7 @@
         "competitor_features_raw",
         "competitor_feature_matrix"
       ],
-      "instruction": "For each direct competitor in direct_competitors_list, catalog every feature visible from their: marketing website (features page, pricing page), documentation, free tier exploration, App Store/Play Store listing, Product Hunt page, demo videos. For each feature, record: feature_name, feature_description, which_competitor, tier_available (free/paid/enterprise), and category (core, secondary, integration, admin). Be exhaustive. Then build a feature comparison matrix. Rows: every unique feature (deduplicated and normalized across competitors). Columns: each competitor. Cell values: 'full', 'partial', 'none', 'unknown'. Group rows by feature category. Add a 'feature_frequency' column. Sort within each category by frequency descending.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep the feature matrix concise  -  max 10 features per competitor, one line each. Total output under 2000 words.",
+      "instruction": "For each direct competitor in direct_competitors_list, catalog every feature visible from their: marketing website (features page, pricing page), documentation, free tier exploration, App Store/Play Store listing, Product Hunt page, demo videos. For each feature, record: feature_name, description, competitor_name, tier_available (free/paid/enterprise), and category (core, secondary, integration, admin). Be exhaustive. Then build a feature comparison matrix. Rows: every unique feature (deduplicated and normalized across competitors). Columns: each competitor. Cell values: 'full', 'partial', 'none', 'unknown'. Group rows by feature category. Add a 'feature_frequency' column. Sort within each category by frequency descending.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nOUTPUT SIZE: Keep the feature matrix concise  -  max 10 features per competitor, one line each. Total output under 2000 words.",
       "done_when": "competitor_features_raw and competitor_feature_matrix exist with comprehensive feature data and comparison table.",
       "artifact_schema": {
         "competitor_features_raw": {
@@ -1575,12 +1614,38 @@
       "artifact_schema": {
         "competitor_pricing_analysis": {
           "type": "object",
-          "required_fields": [
-            "competitors",
-            "market_standard_range",
-            "pricing_gaps"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "competitors": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "pricing_model_type": {},
+                  "tiers": {
+                    "type": "array",
+                    "min_items": 1,
+                    "items": {
+                      "type": "object",
+                      "fields": {
+                        "name": {},
+                        "monthly_price": { "optional": true },
+                        "annual_price": { "optional": true },
+                        "key_limits": { "optional": true }
+                      }
+                    }
+                  },
+                  "pricing_page_url": {},
+                  "free_tier_scope": { "optional": true },
+                  "upgrade_triggers": { "optional": true },
+                  "enterprise_offering": { "optional": true }
+                }
+              }
+            },
+            "market_standard_range": {},
+            "pricing_gaps": {}
+          },
+          "_schema_version": "2"
         }
       },
       "api_hints": [
@@ -1618,24 +1683,42 @@
         "competitor_reviews_raw": {
           "type": "array",
           "min_items": 1,
-          "item_fields": [
-            "competitor_name",
-            "source",
-            "positive_themes",
-            "negative_themes",
-            "notable_quotes"
-          ],
-          "_schema_version": "1"
+          "items": {
+            "type": "object",
+            "fields": {
+              "competitor_name": {},
+              "source_name": {},
+              "positive_themes": {},
+              "negative_themes": {},
+              "notable_quotes": {},
+              "review_count_sampled": { "optional": true },
+              "average_rating": { "optional": true }
+            }
+          },
+          "_schema_version": "2"
         },
         "competitor_sentiment_analysis": {
           "type": "object",
-          "required_fields": [
-            "per_competitor",
-            "universal_praises",
-            "universal_complaints",
-            "differentiation_signals"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "per_competitor": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "competitor_name": {},
+                  "top_5_praised_aspects": {},
+                  "top_5_pain_points": {},
+                  "overall_sentiment": {},
+                  "net_promoter_signal": { "optional": true }
+                }
+              }
+            },
+            "universal_praises": {},
+            "universal_complaints": {},
+            "differentiation_signals": {}
+          },
+          "_schema_version": "2"
         }
       },
       "api_hints": [
@@ -1675,9 +1758,15 @@
             "competitor_name",
             "design_quality",
             "ux_weaknesses",
-            "unique_ux_patterns"
+            "unique_ux_patterns",
+            "visual_consistency",
+            "information_density",
+            "navigation_clarity",
+            "onboarding_quality",
+            "accessibility_signals",
+            "mobile_quality"
           ],
-          "_schema_version": "1"
+          "_schema_version": "2"
         }
       },
       "api_hints": [
@@ -1713,11 +1802,25 @@
       "artifact_schema": {
         "market_gap_analysis": {
           "type": "object",
-          "required_fields": [
-            "opportunities",
-            "competitor_swots"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "opportunities": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "opportunity_id": {},
+                  "description": {},
+                  "estimated_impact": {},
+                  "difficulty_to_address": {},
+                  "our_ability_to_exploit": {},
+                  "evidence": { "optional": true }
+                }
+              }
+            },
+            "competitor_swots": {}
+          },
+          "_schema_version": "2"
         }
       },
       "api_hints": [
@@ -2012,24 +2115,31 @@
       "output_artifacts": [
         "go_no_go_decision"
       ],
-      "instruction": "Evaluate all research to produce a Go/No-Go recommendation. Score 1-10: market_attractiveness, competitive_feasibility, technical_feasibility, differentiation_potential, regulatory_risk. Compute weighted_score. Wire indirect_competitors_list into the feasibility assessment. If score > 6: Go. If 4-6: Conditional â€” trigger needs_clarification. If < 4: No-Go.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nZ1 P5 — If `prior_art_report.verdict == 'graveyard_well_populated'`, weight the kill-decision higher; surface `prior_art_report.key_lessons` as additional risks in your reasoning and cite at least one lesson_id explicitly.",
+      "instruction": "Evaluate all research to produce a Go/No-Go recommendation. Emit `scores` as a flat JSON object with exactly these five integer (1-10) keys — downstream steps read `go_no_go_decision.scores.<dimension>` by name, so use them verbatim: market_attractiveness, competitive_feasibility, technical_feasibility, differentiation_potential, regulatory_risk. Compute weighted_score. Wire indirect_competitors_list into the feasibility assessment. If score > 6: Go. If 4-6: Conditional â€” trigger needs_clarification. If < 4: No-Go. The `recommendation` field MUST be EXACTLY one bare token — `Go`, `Conditional`, or `No-Go` — with no parentheses, suffix, or explanation; put any clarification need in your needs_clarification status, not in this field.\n\nIMPORTANT: After gathering data (1-2 searches max), produce your answer as a JSON object in your final response. Do NOT keep searching â€” use what you found. Your response text IS the artifact.\n\nZ1 P5 — If `prior_art_report.verdict == 'graveyard_well_populated'`, weight the kill-decision higher; surface `prior_art_report.key_lessons` as additional risks in your reasoning and cite at least one lesson_id explicitly.",
       "done_when": "go_no_go_decision exists with scored assessment and clear recommendation.",
       "artifact_schema": {
         "go_no_go_decision": {
           "type": "object",
           "fields": {
-            "scores": {},
+            "scores": {
+              "type": "object",
+              "required_fields": [
+                "market_attractiveness",
+                "competitive_feasibility",
+                "technical_feasibility",
+                "differentiation_potential",
+                "regulatory_risk"
+              ]
+            },
             "weighted_score": {},
             "recommendation": {
               "type": "string",
               "equals": [
                 "Go",
-                "go",
                 "Conditional",
-                "conditional",
-                "No-Go",
-                "no-go"
-              ]
+                "No-Go"
+              ],
+              "equals_lenient": true
             }
           },
           "_schema_version": "1"
@@ -2061,7 +2171,7 @@
         "product_vision",
         "product_mission"
       ],
-      "instruction": "Craft a product vision statement: 'For [target audience] who [need], [product name] is a [category] that [key benefit]. Unlike [competitors], we [key differentiator].' Also write a tagline under 10 words. Then craft a product mission statement: 'We help [specific audience] [achieve specific outcome] by [how the product does it].' Under 30 words. Self-review for alignment with go_no_go_decision and market_research_report.\n\nZ1 P5 — Prior art report's `key_lessons` are positioning constraints — explicitly reference at least one lesson_id in the positioning rationale (justify how this product's differentiator avoids the cited failure mode).",
+      "instruction": "Craft a product vision statement: 'For [target audience] who [need], [product name] is a [category] that [key benefit]. Unlike [competitors], we [key differentiator].' Also write a tagline under 10 words. Then craft a product mission statement: 'We help [specific audience] [achieve specific outcome] by [how the product does it].' Under 30 words.\n\nWEAKNESS-DRIVEN POSITIONING — read `go_no_go_decision.scores`. For EVERY dimension scoring < 5, the positioning MUST directly counter that weakness, and the rationale MUST name the dimension and how it is answered: low `differentiation_potential` → lead the 'Unlike [competitors], we [differentiator]' clause with the single strongest differentiator; low `market_attractiveness` → narrow [target audience] to the highest-intent segment rather than a broad market; low `competitive_feasibility` → frame the wedge/beachhead you can actually win first; high `regulatory_risk` (>= 7) → surface the compliance/trust stance as an explicit positioning pillar. If no dimension scored < 5, state that and align with go_no_go_decision + market_research_report as before.\n\nZ1 P5 — Prior art report's `key_lessons` are positioning constraints — explicitly reference at least one lesson_id in the positioning rationale (justify how this product's differentiator avoids the cited failure mode).",
       "done_when": "product_vision and product_mission exist with vision statement, tagline, and mission.",
       "artifact_schema": {
         "product_vision": {
@@ -2236,11 +2346,24 @@
         },
         "user_journey_map": {
           "type": "object",
-          "required_fields": [
-            "stages",
-            "aha_moment"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "stages": {
+              "type": "array",
+              "min_items": 1,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "user_actions": {},
+                  "touchpoints": {},
+                  "emotions": {},
+                  "drop_off_reasons": { "optional": true },
+                  "metrics": { "optional": true }
+                }
+              }
+            },
+            "aha_moment": {}
+          },
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -2356,9 +2479,10 @@
           "required_fields": [
             "mvp_feature_list",
             "excluded_features_rationale",
-            "mvp_value_statement"
+            "mvp_value_statement",
+            "estimated_scope_size"
           ],
-          "_schema_version": "1"
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -2499,13 +2623,16 @@
         "monetization_strategy"
       ],
       "instruction": "Define business model: pricing_model, tiers, free_tier_strategy, upgrade_triggers, billing_implementation, revenue_projections. If multiple viable models exist, present with trade-offs and trigger needs_clarification.",
-      "done_when": "monetization_strategy exists with pricing tiers, free/paid split, and revenue projections.",
+      "done_when": "monetization_strategy exists with pricing_model, tiers, free_tier_strategy, upgrade_triggers, billing_implementation, and revenue_projections.",
       "artifact_schema": {
         "monetization_strategy": {
           "type": "object",
           "required_fields": [
             "pricing_model",
             "tiers",
+            "free_tier_strategy",
+            "upgrade_triggers",
+            "billing_implementation",
             "revenue_projections"
           ],
           "_schema_version": "1"
@@ -2674,23 +2801,43 @@
       "artifact_schema": {
         "nfr_performance": {
           "type": "object",
-          "required_fields": [
-            "api_response_time",
-            "page_load_time",
-            "throughput",
-            "items"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "items": {
+              "type": "array",
+              "min_items": 3,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {},
+                  "target": {},
+                  "risk_if_wrong": {},
+                  "validation_method": {},
+                  "falsification_signal": {}
+                }
+              }
+            }
+          },
+          "_schema_version": "2"
         },
         "nfr_scalability": {
           "type": "object",
-          "required_fields": [
-            "concurrent_users",
-            "data_volume",
-            "projections",
-            "items"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "items": {
+              "type": "array",
+              "min_items": 3,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {},
+                  "target": {},
+                  "risk_if_wrong": {},
+                  "validation_method": {},
+                  "falsification_signal": {}
+                }
+              }
+            }
+          },
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -2726,23 +2873,43 @@
       "artifact_schema": {
         "nfr_availability": {
           "type": "object",
-          "required_fields": [
-            "uptime_target",
-            "rto",
-            "rpo",
-            "items"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "items": {
+              "type": "array",
+              "min_items": 3,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {},
+                  "target": {},
+                  "risk_if_wrong": {},
+                  "validation_method": {},
+                  "falsification_signal": {}
+                }
+              }
+            }
+          },
+          "_schema_version": "2"
         },
         "security_requirements": {
           "type": "object",
-          "required_fields": [
-            "authentication",
-            "authorization",
-            "data_protection",
-            "items"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "items": {
+              "type": "array",
+              "min_items": 3,
+              "items": {
+                "type": "object",
+                "fields": {
+                  "name": {},
+                  "target": {},
+                  "risk_if_wrong": {},
+                  "validation_method": {},
+                  "falsification_signal": {}
+                }
+              }
+            }
+          },
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -2930,11 +3097,14 @@
         },
         "i18n_requirements": {
           "type": "object",
-          "required_fields": [
-            "initial_languages",
-            "rtl_support"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "initial_languages": {},
+            "rtl_support": {},
+            "future_languages": { "optional": true },
+            "string_extraction_strategy": { "optional": true },
+            "text_expansion_budget": { "optional": true }
+          },
+          "_schema_version": "2"
         }
       },
       "context": {
@@ -2970,16 +3140,22 @@
         "business_rules": {
           "type": "array",
           "min_items": 1,
-          "item_fields": [
-            "rule_id",
-            "title",
-            "rule_statement",
-            "testable_assertion",
-            "risk_if_wrong",
-            "validation_method",
-            "falsification_signal"
-          ],
-          "_schema_version": "1"
+          "items": {
+            "type": "object",
+            "fields": {
+              "rule_id": {},
+              "title": {},
+              "rule_statement": {},
+              "testable_assertion": {},
+              "risk_if_wrong": {},
+              "validation_method": {},
+              "falsification_signal": {},
+              "category": {},
+              "source": {},
+              "affected_features": { "optional": true }
+            }
+          },
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -3395,7 +3571,8 @@
       "input_artifacts": [
         "tech_stack_decision",
         "architecture_pattern_decision",
-        "requirements_spec"
+        "requirements_spec",
+        "go_no_go_decision"
       ],
       "output_artifacts": [
         "system_architecture"
@@ -3403,7 +3580,7 @@
       "context": {
         "estimated_output_tokens": 12000
       },
-      "instruction": "Design the high-level system architecture.\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys (emit in this order):\n\n{\n  \"components\": [ {\"name\": \"...\", \"role\": \"...\", \"tech\": \"...\", \"interfaces\": [\"...\"]} ],\n  \"databases\": [ {\"name\": \"...\", \"engine\": \"...\", \"purpose\": \"...\"} ],\n  \"external_services\": [ {\"name\": \"...\", \"purpose\": \"...\"} ],\n  \"communication_patterns\": [ {\"from\": \"...\", \"to\": \"...\", \"protocol\": \"REST|gRPC|WS|Queue|Webhook\", \"sync_or_async\": \"sync|async\"} ],\n  \"data_flow\": [ {\"flow_id\": \"...\", \"description\": \"...\"} ],\n  \"network_topology\": \"<short paragraph>\",\n  \"environments\": [ {\"name\": \"dev|staging|prod\", \"notes\": \"...\"} ]\n}\n\nDo NOT emit prose code-style file lists. Cap each array at 12 entries. Total output under 8000 tokens.",
+      "instruction": "Design the high-level system architecture.\n\nDE-RISK FROM ASSESSMENT — read `go_no_go_decision.scores`: if `technical_feasibility` scored < 5, the architecture MUST explicitly de-risk the hardest component (isolate it, name a fallback, or stage it behind a spike); if `regulatory_risk` scored >= 7, bake the relevant control in early (data residency, encryption, audit trail, consent) rather than deferring it. Note in `network_topology` or a component `role` how each such concern is addressed.\n\nOUTPUT FORMAT: Return ONLY a JSON object directly in `result` (no JSON-string wrapping, no `final_answer` envelope, no Markdown). Object MUST have these top-level keys (emit in this order):\n\n{\n  \"components\": [ {\"name\": \"...\", \"role\": \"...\", \"tech\": \"...\", \"interfaces\": [\"...\"]} ],\n  \"databases\": [ {\"name\": \"...\", \"engine\": \"...\", \"purpose\": \"...\"} ],\n  \"external_services\": [ {\"name\": \"...\", \"purpose\": \"...\"} ],\n  \"communication_patterns\": [ {\"from\": \"...\", \"to\": \"...\", \"protocol\": \"REST|gRPC|WS|Queue|Webhook\", \"sync_or_async\": \"sync|async\"} ],\n  \"data_flow\": [ {\"flow_id\": \"...\", \"description\": \"...\"} ],\n  \"network_topology\": \"<short paragraph>\",\n  \"environments\": [ {\"name\": \"dev|staging|prod\", \"notes\": \"...\"} ]\n}\n\nDo NOT emit prose code-style file lists. Cap each array at 12 entries. Total output under 8000 tokens.",
       "done_when": "system_architecture is a JSON object with `components`, `databases`, `communication_patterns`, `environments` keys populated.",
       "artifact_schema": {
         "system_architecture": {
@@ -3730,9 +3907,12 @@
             "folder_structure",
             "component_hierarchy",
             "state_management",
-            "routing"
+            "routing",
+            "code_splitting",
+            "data_fetching",
+            "error_boundaries"
           ],
-          "_schema_version": "1"
+          "_schema_version": "2"
         }
       },
       "context": {},
@@ -5089,17 +5269,18 @@
         "dependency_graph",
         "effort_estimates"
       ],
-      "instruction": "Build complete task dependency graph. Identify: critical_path, parallelizable_groups, bottleneck_tasks. Then refine effort estimates (XS/S/M/L/XL) with confidence levels. Flag XL tasks for decomposition. Calculate totals and identify risky estimates.",
+      "instruction": "Build complete task dependency graph. Identify: critical_path, parallel_groups, bottleneck_tasks. Then refine effort estimates (XS/S/M/L/XL) with confidence levels. Flag XL tasks for decomposition. Calculate totals and identify risky estimates.",
       "done_when": "dependency_graph and effort_estimates exist.",
       "artifact_schema": {
         "dependency_graph": {
           "type": "object",
-          "required_fields": [
-            "tasks",
-            "critical_path",
-            "parallel_groups"
-          ],
-          "_schema_version": "1"
+          "fields": {
+            "tasks": {},
+            "critical_path": {},
+            "parallel_groups": {},
+            "bottleneck_tasks": { "optional": true }
+          },
+          "_schema_version": "2"
         },
         "effort_estimates": {
           "type": "object",
@@ -5128,12 +5309,13 @@
         "effort_estimates",
         "technical_design_document_summary",
         "third_party_selections",
-        "dependency_graph"
+        "dependency_graph",
+        "go_no_go_decision"
       ],
       "output_artifacts": [
         "risk_assessment"
       ],
-      "instruction": "Identify risks across: technical, integration, scope, dependency, security, operational. Each with: risk_id, description, category, likelihood, impact, risk_score, early_warning_signs, mitigation_strategy, contingency_plan.",
+      "instruction": "Identify risks across: technical, integration, scope, dependency, security, operational. Each with: risk_id, description, category, likelihood, impact, risk_score, early_warning_signs, mitigation_strategy, contingency_plan.\n\nSEED FROM ASSESSMENT — read `go_no_go_decision`: every dimension in `scores` that scored < 5 (and `regulatory_risk` >= 7) MUST appear as at least one risk with a concrete mitigation and contingency — these are the founder-acknowledged weak spots, not optional. Carry forward any kill-lessons surfaced in the go/no-go reasoning.",
       "done_when": "risk_assessment exists with all risks scored, with mitigation and contingency plans.",
       "artifact_schema": {
         "risk_assessment": {
@@ -6672,6 +6854,7 @@
               "sprint_id": {},
               "status": {},
               "template_ref": {},
+              "user_story_ids": { "optional": true },
               "depends_on_features": {
                 "type": "array",
                 "optional": true
@@ -6835,7 +7018,8 @@
           "required_fields": [
             "sprint_id_completed",
             "features_completed",
-            "velocity_ratio"
+            "velocity_ratio",
+            "next_sprint_adjustments"
           ],
           "must_be_true": [
             "sprint_id_completed",

@@ -715,6 +715,7 @@ class _SimPickResult:
     pool: str
     cap_score_100: float
     tokens_per_second: float
+    provider: str = ""
 
 
 def select_for_simulation(
@@ -725,6 +726,8 @@ def select_for_simulation(
     snapshot: Any,
     providers_cfg: dict,
     queue_profile: Any = None,
+    now: float | None = None,
+    burn_log=None,
 ) -> "_SimPickResult":
     """Test-only adapter: build ModelInfo stubs from providers_cfg, call
     rank_candidates, return a light pick result.
@@ -757,7 +760,7 @@ def select_for_simulation(
         is_loaded=True,
         is_free=False,
         provider="local",
-        capabilities=SimpleNamespace(),
+        capabilities=set(),
         tokens_per_second=20.0,
         load_time_seconds=0.0,
         total_params_b=7,
@@ -774,6 +777,14 @@ def select_for_simulation(
         is_free = cfg.get("is_free", False)
         for model_id, model_cfg in cfg.get("models", {}).items():
             cap_overrides[model_id] = float(model_cfg.get("cap_score_100", 50.0))
+            _caps = set(model_cfg.get("capabilities", []))
+            _ms = None
+            _ps = snapshot.cloud.get(provider) if hasattr(snapshot, "cloud") else None
+            if _ps is not None:
+                _ms = _ps.models.get(model_id)
+            _rpd_rem = 0
+            if _ms is not None and _ms.limits.rpd is not None:
+                _rpd_rem = _ms.limits.rpd.remaining or 0
             candidates.append(SimpleNamespace(
                 name=model_id,
                 litellm_name=model_id,
@@ -781,7 +792,8 @@ def select_for_simulation(
                 is_loaded=False,
                 is_free=is_free,
                 provider=provider,
-                capabilities=SimpleNamespace(),
+                capabilities=_caps,
+                rpd_remaining=_rpd_rem,
                 tokens_per_second=0.0,
                 load_time_seconds=0.0,
                 total_params_b=0,
@@ -817,6 +829,8 @@ def select_for_simulation(
             snapshot=snapshot,
             failures=[],
             remaining_budget=300.0,
+            now=now,
+            burn_log=burn_log,
         )
     finally:
         _ranking_mod.score_model_for_task = real_score
@@ -824,7 +838,7 @@ def select_for_simulation(
     if not scored:
         return _SimPickResult(
             model_name="loaded-local", pool="local",
-            cap_score_100=55.0, tokens_per_second=20.0,
+            cap_score_100=55.0, tokens_per_second=20.0, provider="local",
         )
 
     top = scored[0]
@@ -833,4 +847,5 @@ def select_for_simulation(
         pool=top.pool or "local",
         cap_score_100=top.capability_score * 10.0,
         tokens_per_second=top.model.tokens_per_second or 20.0,
+        provider=getattr(top.model, "provider", "") or "local",
     )

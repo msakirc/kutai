@@ -1,26 +1,21 @@
-"""Z1 Tier 6B (P5) — web-grounded prior art search.
+"""Prior-art fetch logic for the research domain.
 
-Module exposing :func:`find_prior_art` that escalates through public APIs
-to assemble a structured "graveyard" report for an idea. Output schema is
-documented in ``docs/i2p-evolution/01-pre-code-plan-v3.md`` lines 1159+.
+Relocates fetch/candidate-assembly OUT of the vecihi scraper package
+(which is a fetch engine only) into this research-domain module.
 
-Sources tier (escalating, stops on first sufficient response):
+Public entry point: :func:`fetch_candidates` — takes a fixed query set
+(produced by an LLM upstream) and returns real fetched candidates with
+``{"candidates": [...], "search_summary": {...}}``.
+
+Verdict / lessons / relevance judgement is the synthesis LLM's job —
+this function never invents entries.
+
+Sources (escalating, falls back to cache on rate-limit / empty results):
 
 1. ``hn_algolia`` — HN search (https://hn.algolia.com/api/v1/search), no auth.
 2. ``wikipedia`` — Wikipedia REST (https://en.wikipedia.org/w/api.php), no auth.
 3. ``wayback`` — Wayback Machine availability + cdx.
 4. ``product_hunt`` — public RSS feed (https://www.producthunt.com/feed).
-
-Fallback: if any source returns 429 OR ≥3 sources return 0 results within
-30s, fall back to the local ``prior_art_cache`` SQLite table. Cache hits
-are annotated in ``search_summary.cache_hit_for_sources``.
-
-URL resolution sweep: every candidate URL is HEAD-checked inside this
-module. Unreachable URLs are flagged with ``status: "dead"``.
-
-Q4 lock — this module backs the LLM-callable ``find_prior_art`` tool; the
-mechanical post-hook ``prior_art_min_coverage`` (mr_roboto) gates the
-artifact afterwards.
 """
 from __future__ import annotations
 
@@ -39,7 +34,7 @@ except Exception:  # pragma: no cover — aiohttp is a hard dep but defend
     aiohttp = None  # type: ignore[assignment]
 
 
-logger = logging.getLogger("vecihi.prior_art")
+logger = logging.getLogger("research.prior_art")
 
 SCHEMA_VERSION = "1"
 DEFAULT_TTL_HOURS = 168  # 7 days
@@ -148,35 +143,6 @@ def _write_cache(
             con.close()
     except Exception as e:  # pragma: no cover
         logger.warning("prior_art cache write failed: %s", e)
-
-
-# ---------------------------------------------------------------------------
-# Query construction
-# ---------------------------------------------------------------------------
-def _build_queries(idea_summary: str, domain_keywords: list[str]) -> list[str]:
-    """Build a small set of probe queries.
-
-    Strategy:
-    - Seed: the idea summary truncated to 6-8 tokens.
-    - Plus: each domain keyword paired with ``"saas"``, ``"tool"``,
-      ``"startup"`` — three short phrases that match "graveyard"-style
-      shutdown discussions on HN.
-    """
-    base = re.sub(r"\s+", " ", (idea_summary or "")).strip()
-    tokens = base.split(" ")
-    seed = " ".join(tokens[:8]) if tokens else ""
-    out: list[str] = []
-    if seed:
-        out.append(seed)
-    suffixes = ["saas", "tool", "startup"]
-    for kw in (domain_keywords or [])[:3]:
-        for suf in suffixes:
-            phrase = f"{kw.strip()} {suf}".strip()
-            if phrase and phrase not in out:
-                out.append(phrase)
-        if len(out) >= 5:
-            break
-    return out[:5]
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +272,7 @@ async def _query_product_hunt(
 
 
 # ---------------------------------------------------------------------------
-# Normalization & classification
+# Normalization
 # ---------------------------------------------------------------------------
 def _normalize_hn(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
@@ -389,63 +355,6 @@ def _dedup_by_name(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(seen.values())
 
 
-def _split_by_relevance(
-    candidates: list[dict[str, Any]], idea_summary: str
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Naive split: items whose name shares a token with idea_summary
-    are 'attempted', else 'adjacent'."""
-    tokens = {t.lower() for t in re.findall(r"[a-zA-Z]{4,}", idea_summary or "")}
-    attempted: list[dict[str, Any]] = []
-    adjacent: list[dict[str, Any]] = []
-    for c in candidates:
-        name_tokens = {t.lower() for t in re.findall(r"[a-zA-Z]{4,}", c.get("name", ""))}
-        if tokens & name_tokens:
-            attempted.append(c)
-        else:
-            adjacent.append(c)
-    # If everything matched as adjacent, promote up to 5 to attempted
-    if not attempted and adjacent:
-        attempted = adjacent[:5]
-        adjacent = adjacent[5:]
-    return attempted, adjacent
-
-
-def _extract_lessons(attempted: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Surface a key_lesson per dead/dormant solution we have evidence for.
-
-    Naive but honest: one lesson per dead/dormant entry, citing its source.
-    LLM caller can re-write these — this module just guarantees structure.
-    """
-    lessons: list[dict[str, Any]] = []
-    for i, sol in enumerate(attempted):
-        if sol.get("status") in ("dead", "dormant"):
-            lessons.append({
-                "lesson_id": f"L-{i+1:03d}",
-                "lesson": (
-                    f"{sol.get('name')} ({sol.get('status')}) — "
-                    f"investigate failure mode before competing on the same surface."
-                ),
-                "evidence_refs": list(sol.get("sources") or []) or ["agent_inference"],
-                "applies_to_us": "Document a concrete differentiator before phase 2.",
-            })
-    return lessons
-
-
-def _classify_verdict(
-    attempted: list[dict[str, Any]],
-    total_inspected: int,
-    queries: list[str],
-) -> str:
-    graveyard = sum(1 for s in attempted if s.get("status") in ("dead", "dormant"))
-    if graveyard >= 2:
-        return "graveyard_well_populated"
-    if attempted:
-        return "graveyard_thin"
-    if len(queries) >= 3 and total_inspected >= 20:
-        return "blue_ocean_validated"
-    return "blue_ocean_suspicious"
-
-
 # ---------------------------------------------------------------------------
 # URL resolution sweep
 # ---------------------------------------------------------------------------
@@ -494,7 +403,7 @@ async def _resolve_urls(
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Cache-hit annotation helper
 # ---------------------------------------------------------------------------
 def _annotate_cache_hit(
     cached: dict[str, Any], sources: list[str]
@@ -509,8 +418,11 @@ def _annotate_cache_hit(
     return out
 
 
-async def find_prior_art(
-    idea_summary: str,
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+async def fetch_candidates(
+    queries: list[str],
     domain_keywords: list[str] | None = None,
     k: int = _DEFAULT_K,
     ambition_tier: str = "private_beta",
@@ -519,42 +431,21 @@ async def find_prior_art(
     session: "aiohttp.ClientSession | None" = None,
     ttl_hours: int = DEFAULT_TTL_HOURS,
 ) -> dict[str, Any]:
-    """Run a web-grounded prior-art search.
+    """Fetch + normalize + URL-resolve prior-art candidates for a fixed
+    query set. Returns ``{"candidates": [...], "search_summary": {...}}``.
 
-    See module docstring for sources, fallback rules, and schema.
-
-    Parameters
-    ----------
-    idea_summary:
-        One-paragraph summary of the idea (used for query construction +
-        relevance split).
-    domain_keywords:
-        Cluster of 1-5 domain words ("price tracker", "trendyol",
-        "saas reseller"). Hashed to form the cache key.
-    k:
-        Top-k attempted_solutions to return.
-    ambition_tier:
-        ``"private_beta"`` / ``"public_launch"`` / ``"revenue_product"``.
-        Higher tiers add Wayback validation + Product Hunt probes.
-    db_path:
-        Override SQLite path (tests).
-    session:
-        Optional aiohttp session (tests inject mocks); otherwise a session
-        is created internally.
-    ttl_hours:
-        Cache TTL for fresh writes (default 168 = 7 days).
+    Every returned candidate carries a real, HEAD-resolved http(s) URL
+    (unreachable ones are marked ``status="dead"`` but keep their URL).
+    Verdict / lessons / relevance judgement is the synthesis LLM's job
+    (step 1.0c) — this function never invents entries.
     """
-    if aiohttp is None:  # pragma: no cover — defended at top of module
-        raise RuntimeError("aiohttp required for vecihi.prior_art")
+    if aiohttp is None:  # pragma: no cover
+        raise RuntimeError("aiohttp required for src.research.prior_art")
 
     domain_keywords = list(domain_keywords or [])
-    queries = _build_queries(idea_summary, domain_keywords)
-    cache_key = _hash_keywords(domain_keywords or [idea_summary[:64]])
-
-    # Cache fast-path
+    queries = [q for q in (queries or []) if isinstance(q, str) and q.strip()][:5]
+    cache_key = _hash_keywords(domain_keywords or [(" ".join(queries))[:64]])
     cached = _read_cache(cache_key, db_path=db_path)
-    # We always try fresh first; fall back to cache only on rate-limit /
-    # empty-results trigger. Pre-load cached for that branch.
 
     candidates: list[dict[str, Any]] = []
     sources_used: list[str] = []
@@ -572,18 +463,15 @@ async def find_prior_art(
         # Tier 1: HN
         try:
             hn_hits, hn_rate = await asyncio.wait_for(
-                _query_hn(session, queries), timeout=_SOURCE_TIMEOUT + 1,
-            )
+                _query_hn(session, queries), timeout=_SOURCE_TIMEOUT + 1)
             if hn_rate:
                 rate_limit_hits.append({"source": "hn_algolia", "err": "429"})
+            sources_used.append("hn_algolia")
             if hn_hits:
-                sources_used.append("hn_algolia")
-                norm = _normalize_hn(hn_hits)
-                candidates.extend(norm)
+                candidates.extend(_normalize_hn(hn_hits))
                 total_inspected += len(hn_hits)
             else:
                 empty_count += 1
-                sources_used.append("hn_algolia")
         except asyncio.TimeoutError:
             rate_limit_hits.append({"source": "hn_algolia", "err": "timeout"})
             empty_count += 1
@@ -591,38 +479,31 @@ async def find_prior_art(
         # Tier 2: Wikipedia
         try:
             wiki_hits, wiki_rate = await asyncio.wait_for(
-                _query_wikipedia(session, queries), timeout=_SOURCE_TIMEOUT + 1,
-            )
+                _query_wikipedia(session, queries), timeout=_SOURCE_TIMEOUT + 1)
             if wiki_rate:
                 rate_limit_hits.append({"source": "wikipedia", "err": "429"})
+            sources_used.append("wikipedia")
             if wiki_hits:
-                sources_used.append("wikipedia")
                 candidates.extend(_normalize_wiki(wiki_hits))
                 total_inspected += len(wiki_hits)
             else:
                 empty_count += 1
-                sources_used.append("wikipedia")
         except asyncio.TimeoutError:
             rate_limit_hits.append({"source": "wikipedia", "err": "timeout"})
             empty_count += 1
 
-        # Tier 3: Wayback (per top-k candidate, private_beta+)
-        if (ambition_tier in ("private_beta", "public_launch", "revenue_product")
-                and candidates):
+        # Tier 3: Wayback (per top-k candidate)
+        if ambition_tier in ("private_beta", "public_launch", "revenue_product") and candidates:
             sources_used.append("wayback")
             top = candidates[:k]
-            wb_coros = [
-                _query_wayback(session, c["url"]) for c in top if c.get("url")
-            ]
+            wb_coros = [_query_wayback(session, c["url"]) for c in top if c.get("url")]
             if wb_coros:
                 try:
                     wb_results = await asyncio.wait_for(
                         asyncio.gather(*wb_coros, return_exceptions=True),
-                        timeout=_SOURCE_TIMEOUT + 4,
-                    )
+                        timeout=_SOURCE_TIMEOUT + 4)
                 except asyncio.TimeoutError:
                     wb_results = [None] * len(wb_coros)
-                # Apply the wayback fields back to the candidates that had urls
                 idx = 0
                 for c in top:
                     if not c.get("url"):
@@ -630,9 +511,7 @@ async def find_prior_art(
                     res = wb_results[idx] if idx < len(wb_results) else None
                     idx += 1
                     if isinstance(res, dict):
-                        c.update({k: v for k, v in res.items()
-                                 if k.startswith("wayback_")})
-                        # If it's archived but unreachable, mark dormant.
+                        c.update({kk: vv for kk, vv in res.items() if kk.startswith("wayback_")})
                         if res.get("wayback_first_capture") and not c.get("status"):
                             c["status"] = "dormant"
 
@@ -640,9 +519,7 @@ async def find_prior_art(
         if ambition_tier in ("public_launch", "revenue_product") and queries:
             try:
                 ph_hits, ph_rate = await asyncio.wait_for(
-                    _query_product_hunt(session, queries[0]),
-                    timeout=_SOURCE_TIMEOUT + 1,
-                )
+                    _query_product_hunt(session, queries[0]), timeout=_SOURCE_TIMEOUT + 1)
                 if ph_rate:
                     rate_limit_hits.append({"source": "product_hunt", "err": "429"})
                 if ph_hits:
@@ -652,34 +529,14 @@ async def find_prior_art(
             except asyncio.TimeoutError:
                 rate_limit_hits.append({"source": "product_hunt", "err": "timeout"})
 
-        # Fallback rule: any source 429 OR ≥3 empty within 30s
         elapsed = asyncio.get_event_loop().time() - started
-        should_fallback = bool(rate_limit_hits) or (
-            empty_count >= 3 and elapsed <= _FALLBACK_TIMEOUT
-        )
+        should_fallback = bool(rate_limit_hits) or (empty_count >= 3 and elapsed <= _FALLBACK_TIMEOUT)
         if should_fallback and cached:
-            # Z1 T6B telemetry on cache-hit fallback path.
-            try:
-                from yazbunu import get_logger as _yaz_logger
-                _yaz_logger("z1.prior_art").info(
-                    "z1_prior_art",
-                    sources_used=sources_used,
-                    rate_limit_hits_count=len(rate_limit_hits),
-                    cache_hit=True,
-                    ambition_tier=ambition_tier,
-                    keyword_count=len(domain_keywords),
-                    verdict=(cached or {}).get("verdict"),
-                )
-            except Exception:
-                pass
-            return _annotate_cache_hit(
-                cached,
-                sources=cached.get("search_summary", {}).get(
-                    "sources_used", []
-                ) or sources_used,
-            )
+            cand = cached.get("candidates") or []
+            summ = dict(cached.get("search_summary") or {})
+            summ["cache_hit_for_sources"] = sources_used
+            return {"candidates": cand, "search_summary": summ}
 
-        # Dedup + URL resolution sweep (broken URLs marked dead)
         candidates = _dedup_by_name(candidates)
         candidates = await _resolve_urls(session, candidates)
     finally:
@@ -689,65 +546,24 @@ async def find_prior_art(
             except Exception:
                 pass
 
-    attempted, adjacent = _split_by_relevance(candidates, idea_summary)
-    lessons = _extract_lessons(attempted)
-    graveyard_count = sum(
-        1 for s in attempted if s.get("status") in ("dead", "dormant")
-    )
-    verdict = _classify_verdict(attempted, total_inspected, queries)
+    def _clean(items):
+        return [{kk: vv for kk, vv in it.items() if not kk.startswith("_")} for it in items]
 
-    # Strip private fields
-    def _clean(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [{k: v for k, v in it.items() if not k.startswith("_")}
-                for it in items]
-
-    report = {
-        "_schema_version": SCHEMA_VERSION,
+    out = {
+        "candidates": _clean(candidates[: max(k, 20)]),
         "search_summary": {
-            "queries_run": queries[:5],
+            "queries_run": queries,
             "sources_used": sources_used,
             "rate_limit_hits": rate_limit_hits,
             "total_results_inspected": total_inspected,
             "cache_hit_for_sources": [],
         },
-        "attempted_solutions": _clean(attempted[:k]),
-        "adjacent_failures": _clean(adjacent[:5]),
-        "key_lessons": lessons,
-        "graveyard_count": graveyard_count,
-        "verdict": verdict,
     }
-
-    # Best-effort cache write (skip in pure-cache fallback)
     try:
-        _write_cache(cache_key, report, ttl_hours=ttl_hours, db_path=db_path)
+        _write_cache(cache_key, out, ttl_hours=ttl_hours, db_path=db_path)
     except Exception:  # pragma: no cover
         pass
-
-    # Z1 T6B — yazbunu z1_prior_art telemetry. Single structured event per
-    # search; failure-soft (telemetry must not break search).
-    try:
-        from yazbunu import get_logger as _yaz_logger
-        _yaz_logger("z1.prior_art").info(
-            "z1_prior_art",
-            sources_used=sources_used,
-            rate_limit_hits_count=len(rate_limit_hits),
-            total_inspected=total_inspected,
-            attempted_count=len(attempted),
-            adjacent_count=len(adjacent),
-            graveyard_count=graveyard_count,
-            verdict=verdict,
-            cache_hit=False,
-            ambition_tier=ambition_tier,
-            keyword_count=len(domain_keywords),
-        )
-    except Exception:  # pragma: no cover
-        pass
-
-    return report
+    return out
 
 
-__all__ = [
-    "find_prior_art",
-    "SCHEMA_VERSION",
-    "DEFAULT_TTL_HOURS",
-]
+__all__ = ["fetch_candidates", "SCHEMA_VERSION", "DEFAULT_TTL_HOURS"]

@@ -1,0 +1,83 @@
+"""Tests for the schema_gate mechanical validator (fix #1).
+
+schema_gate promotes the existing src.workflows.engine.hooks.validate_artifact_schema
+to a *gating* mechanical post-hook: given a produced artifact string and the
+step's artifact_schema, return {"passed", "error"} so a FAIL deterministically
+retries the producer with a precise reason (the validator's own message) —
+instead of relying on the prose-reading LLM grader.
+
+Regression anchors:
+  #289735 (2.8 user_stories): schema demands a JSON array (min_items>=5);
+           producer emitted a single object -> must FAIL.
+  #289737 (2.10 monetization): schema required_fields=[3 keys]; an artifact
+           carrying those 3 keys -> must PASS (the 2.10 prose/schema drift is
+           fix #4's job, NOT the gate's).
+"""
+import json
+
+from mr_roboto.schema_gate import schema_gate
+
+
+_ARRAY_SCHEMA = {
+    "user_stories": {
+        "type": "array",
+        "min_items": 5,
+        "item_fields": ["story_id", "epic", "title", "story",
+                        "acceptance_criteria", "priority"],
+    }
+}
+
+_OBJECT_SCHEMA = {
+    "monetization_strategy": {
+        "type": "object",
+        "required_fields": ["pricing_model", "tiers", "revenue_projections"],
+    }
+}
+
+
+def _story(i):
+    return {
+        "story_id": f"US-00{i}", "epic": "core", "title": f"t{i}",
+        "story": "As a user, I want X, so that Y",
+        "acceptance_criteria": "Given/When/Then", "priority": "High",
+    }
+
+
+def test_single_object_against_array_schema_fails():
+    # #289735 reproduction: one story object where an array of >=5 is required.
+    out = json.dumps(_story(1))
+    res = schema_gate(output_value=out, schema=_ARRAY_SCHEMA)
+    assert res["passed"] is False
+    assert res["error"]  # non-empty, actionable reason
+
+
+def test_array_of_five_stories_passes():
+    out = json.dumps([_story(i) for i in range(1, 6)])
+    res = schema_gate(output_value=out, schema=_ARRAY_SCHEMA)
+    assert res["passed"] is True
+    assert not res["error"]
+
+
+def test_object_with_required_fields_passes():
+    # #289737: artifact carries exactly the 3 schema-required keys -> PASS.
+    out = json.dumps({
+        "pricing_model": "Freemium",
+        "tiers": {"free": {}, "pro": {}},
+        "revenue_projections": {"y1": 1000},
+    })
+    res = schema_gate(output_value=out, schema=_OBJECT_SCHEMA)
+    assert res["passed"] is True
+    assert not res["error"]
+
+
+def test_object_missing_required_field_fails():
+    out = json.dumps({"pricing_model": "Freemium", "tiers": {}})
+    res = schema_gate(output_value=out, schema=_OBJECT_SCHEMA)
+    assert res["passed"] is False
+    assert "revenue_projections" in res["error"] or res["error"]
+
+
+def test_no_schema_is_vacuous_pass():
+    res = schema_gate(output_value="anything", schema={})
+    assert res["passed"] is True
+    assert not res["error"]

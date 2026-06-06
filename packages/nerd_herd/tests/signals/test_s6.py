@@ -18,12 +18,15 @@ def test_s6_zero_when_no_demand():
     assert p == 0.0
 
 
-def test_s6_zero_when_supply_meets_demand():
+def test_s6_small_nonzero_when_supply_far_exceeds_demand():
+    # OLD (dead-band): ratio 0.05 < 0.70 → exactly 0.0
+    # NEW (smoothstep ramp): any positive ratio yields a tiny negative pressure;
+    # at ratio=0.05 → smoothstep(0.05) ≈ -0.00725; near-zero but not zero.
     m = FakeModel("a", {"vision"}, 100, lambda d: True)
     queue = {"by_capability": {"vision": 5}, "by_difficulty": {}}
     p = s6_capable_supply(m, queue=queue, eligible_models=[m], iter_avg=10)
-    # demand 5 calls × 10 iters = 50; supply 100 × 10 = 1000; ratio 0.05 → no pressure
-    assert p == 0.0
+    # demand 5×10=50; supply 100×10=1000; ratio 0.05 → small conserve-pressure
+    assert -0.05 < p < 0.0
 
 
 def test_s6_negative_when_demand_exceeds_supply():

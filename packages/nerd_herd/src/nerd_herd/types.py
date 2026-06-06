@@ -265,8 +265,17 @@ class SystemSnapshot:
         est_call_cost: float = 0.0,
         cap_needed: float = 5.0,
         consecutive_failures: int = 0,
+        fleet_consumed: dict | None = None,
+        now: float | None = None,
+        burn_log=None,
+        eligible_models: list | None = None,
     ):
-        """Compute pressure breakdown via 10 signals + 4 modifiers.
+        """Compute pressure breakdown via signals + modifiers.
+
+        ``fleet_consumed`` ({free-provider -> absolute calls consumed this
+        cycle}) feeds S12 pool-balance. Built once per tick by the ranking
+        layer (it knows which models are free); None ⇒ S12 contributes 0,
+        which keeps pressure-only unit tests (no fleet view) unaffected.
 
         Returns a PressureBreakdown (use .scalar for the scalar value).
         """
@@ -286,6 +295,7 @@ class SystemSnapshot:
         from nerd_herd.signals.s9_perishability import s9_perishability
         from nerd_herd.signals.s10_failure import s10_failure
         from nerd_herd.signals.s11_cost import s11_cost
+        from nerd_herd.signals.s12_pool_balance import s12_pool_balance
 
         # Resolve matrix for this model (model-specific cell wins; provider is fallback)
         provider = getattr(model, "provider", "")
@@ -303,7 +313,7 @@ class SystemSnapshot:
             prov.limits.rpd if prov else RateLimit()
         )
         import time as _time
-        now = _time.time()
+        now = now if now is not None else _time.time()
         reset_in = max(0.0, (rpd_cell.reset_at - now)) if rpd_cell.reset_at else 0.0
 
         # In-flight count + projected tokens. Filter by provider, NOT by
@@ -353,9 +363,11 @@ class SystemSnapshot:
             "S4": s4_queue_tokens(matrix, queue=self.queue_profile or QueueProfile()),
             "S5": s5_queue_calls(matrix, queue=self.queue_profile or QueueProfile()),
             "S6": s6_capable_supply(model, queue=self.queue_profile or QueueProfile(),
-                                    eligible_models=[], iter_avg=float(est_iterations or 8)),
+                                    eligible_models=eligible_models or [],
+                                    iter_avg=float(est_iterations or 8)),
             "S7": s7_burn_rate(matrix, provider=provider, model=getattr(model, "name", ""),
-                               burn_log=get_burn_log(), now=now),
+                               burn_log=(burn_log if burn_log is not None else get_burn_log()),
+                               now=now),
             "S9": s9_perishability(model, local=self.local, vram_avail_mb=self.vram_available_mb,
                                    matrix=matrix, task_difficulty=task_difficulty, now=now,
                                    in_flight_calls=self.in_flight_calls),
@@ -374,6 +386,7 @@ class SystemSnapshot:
             ),
             "S11": s11_cost(est_call_cost=est_call_cost,
                             daily_cost_remaining=(matrix.cpd.remaining or 0.0)),
+            "S12": s12_pool_balance(model, fleet_consumed=fleet_consumed),
         }
 
         # Modifiers

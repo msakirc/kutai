@@ -574,6 +574,50 @@ class TestHandleIntegration:
         assert result.get("status") in ("ok", "skip")
 
 
+# ─── husam.run migration tests ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tone_pass_calls_husam_and_parses_score():
+    from general_beckman.posthook_handlers import brand_voice_lint as bvl
+
+    async def fake_run(spec):
+        return {"content": '{"score": 4, "flagged_sections": ["too salesy"]}'}
+
+    with patch("husam.run", fake_run):
+        findings = await bvl._run_llm_tone_pass(
+            text="Buy now! Limited offer!",
+            voice_display_name="Calm Professional",
+            voice_body_md="Measured, factual, never pushy.",
+            source_task_id=123,
+        )
+    assert all(f.get("check") != "tone_pass_skipped" for f in findings)
+
+
+@pytest.mark.asyncio
+async def test_tone_pass_skipped_when_husam_raises():
+    from general_beckman.posthook_handlers import brand_voice_lint as bvl
+
+    async def fake_run(spec):
+        raise RuntimeError("no model available")
+
+    with patch("husam.run", fake_run):
+        findings = await bvl._run_llm_tone_pass(
+            text="x", voice_display_name="v", voice_body_md="b", source_task_id=1,
+        )
+    assert findings and findings[0]["check"] == "tone_pass_skipped"
+
+
+def test_brand_voice_lint_no_await_inline_in_module():
+    import pathlib
+    _root = pathlib.Path(__file__).resolve().parents[2]
+    src = (_root / "packages" / "general_beckman" / "src" / "general_beckman"
+           / "posthook_handlers" / "brand_voice_lint.py").read_text(encoding="utf-8")
+    offenders = [ln for ln in src.splitlines()
+                 if "await_inline=True" in ln and not ln.lstrip().startswith("#")]
+    assert not offenders, f"brand_voice_lint still uses await_inline: {offenders}"
+
+
 # ─── posthooks registry tests ─────────────────────────────────────────────
 
 

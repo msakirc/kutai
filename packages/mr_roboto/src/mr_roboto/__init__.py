@@ -62,6 +62,7 @@ from mr_roboto import init_mission_github_repo as init_mission_github_repo_modul
 from mr_roboto import find_similar_missions as find_similar_missions_module  # noqa: F401
 from mr_roboto import surface_prior_mission_hints as surface_prior_mission_hints_module  # noqa: F401
 from mr_roboto.prior_art_min_coverage import prior_art_min_coverage
+from mr_roboto.prior_art_fetch import prior_art_fetch
 from mr_roboto.pick_recipe import pick_recipe
 # NOTE: do NOT `from mr_roboto.critic_gate import critic_gate` — that would
 # shadow the submodule on the mr_roboto package namespace and break
@@ -157,6 +158,7 @@ __all__ = [
     "verify_premortem_shape",
     "spec_consistency_check",
     "prior_art_min_coverage",
+    "prior_art_fetch",
     "check_imports",
     "regen_and_diff",
     "apply_migration",
@@ -2155,9 +2157,16 @@ async def _run_dispatch(task: dict) -> Action:
         if gate_enabled:
             text = payload.get("message") or payload.get("text") or ""
             try:
+                # Gate the MESSAGE CONTENT only. The critic judges (a) spec
+                # break, (b) founder fury, (c) secret/PII leak — all properties
+                # of the text. chat_id (the recipient) is irrelevant to those,
+                # and a null chat_id is the NORMAL case (notify_user defaults it
+                # to the admin chat). Passing it in only baited the critic into
+                # spurious "chat_id is null → will fail" validity-vetoes that
+                # DLQ'd valid notifications (task #261969, 2026-06-02).
                 gate_result = await _critic_gate(
                     "notify_user",
-                    {"message": text, "chat_id": payload.get("chat_id")},
+                    {"message": text},
                     mission_id=task.get("mission_id"),
                 )
             except Exception as e:
@@ -3005,6 +3014,7 @@ async def _run_dispatch(task: dict) -> Action:
             res = _pa_check(
                 report=payload.get("report"),
                 report_path=payload.get("report_path"),
+                candidates_path=payload.get("candidates_path"),
             )
             if not res.get("ok"):
                 return Action(
@@ -3016,6 +3026,19 @@ async def _run_dispatch(task: dict) -> Action:
                     ),
                     result=res,
                 )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "prior_art_fetch":
+        from mr_roboto.prior_art_fetch import prior_art_fetch as _paf
+        try:
+            res = await _paf(
+                queries_path=payload.get("queries_path"),
+                candidates_path=payload.get("candidates_path"),
+            )
+            if not res.get("ok"):
+                return Action(status="failed", error=res.get("error"), result=res)
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="failed", error=str(e))

@@ -49,12 +49,14 @@ def test_s1_fires_negative_when_per_call_pool_depleted():
     assert p < 0, "S1 must fire negative on depleted per_call pool"
 
 
-def test_s1_fires_positive_when_time_bucketed_pool_full_near_reset():
-    """time_bucketed pool with reset imminent + abundant remaining → positive."""
+def test_s1_no_positive_for_time_bucketed_full_pool():
+    """S1 is conservation-ONLY since 2026-06-04 (abundance_max=0): a flush
+    time_bucketed pool yields 0, not positive. Near-reset positivity now
+    comes from S9 (timing); fleet under-use pull from S12."""
     now = time.time()
     m = RateLimitMatrix(rpd=RateLimit(limit=1000, remaining=950, reset_at=int(now + 600)))
     p = s1_remaining(m, reset_in_secs=600, profile="time_bucketed")
-    assert p > 0, "S1 must fire positive on flush+near-reset time_bucketed"
+    assert p == 0.0, "S1 time_bucketed abundance is now 0 (conservation-only)"
 
 
 def test_s1_zero_when_no_cells_populated():

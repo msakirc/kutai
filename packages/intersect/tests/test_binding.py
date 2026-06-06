@@ -141,17 +141,23 @@ def test_static_bind_seed_convention_task_payload(fake_artifact):
 async def test_flash_produces_prebind_envelope_with_seed_convention(
     intersect_db, fake_artifact, monkeypatch,
 ):
-    """End-to-end: flash must produce render='prebind' + bound_args when the
-    artifact uses the real seed bind_from convention (task.payload.*) and the
-    task context carries payload: {project_name: 'wt'}.
+    """End-to-end: flash must produce render='prebind' + bound_args when an
+    inject-class parametric artifact uses the real seed bind_from convention
+    (task.payload.*) and the task context carries payload: {project_name: 'wt'}.
 
-    This FAILS before the Cause-1 fix because _build_task_ctx does not expose
-    task.payload — binding degrades to incomplete → render='prose'.
+    This FAILS if _build_task_ctx does not expose task.payload — binding
+    degrades to incomplete → render='prose' (Cause-1 regression guard).
+
+    The fixture is deliberately NOT mechanizable: a mechanizable T0 recipe
+    with a complete bind classifies as *preempt* and routes to the mechanical
+    lane (empty skills envelope) — that path is covered by
+    ``test_flash_preempts_bound_seed_recipe`` below. Here we exercise the
+    inject → prebind render branch.
     """
     from intersect.flash import flash as do_flash
 
     art = fake_artifact(
-        artifact_id=42, kind="shell_recipe", mechanizable=True,
+        artifact_id=42, kind="prompt_skill", mechanizable=False,
         vet_tier=0, score=1.0, name="cc-pypackage",
         inputs_schema={
             "project_name": {
@@ -192,4 +198,60 @@ async def test_flash_produces_prebind_envelope_with_seed_convention(
     bound = payload.get("bound_args") or {}
     assert bound.get("project_name") == "wt", (
         f"bound_args missing project_name='wt'; got {bound}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_flash_preempts_bound_seed_recipe(
+    intersect_db, fake_artifact, monkeypatch,
+):
+    """End-to-end: a mechanizable T0 shell_recipe whose seed bind_from
+    (task.payload.*) resolves completely classifies as *preempt* and routes
+    the task to the mechanical lane with bound args — no skills envelope.
+
+    This is the Phase-3 reality (``PHASE2_PREEMPT_ENABLED = True``, commit
+    1f0c3094). It also proves the seed convention bound correctly, since
+    preempt requires a complete static bind.
+    """
+    from intersect.flash import flash as do_flash
+
+    art = fake_artifact(
+        artifact_id=42, kind="shell_recipe", mechanizable=True,
+        vet_tier=0, score=1.0, name="cc-pypackage",
+        inputs_schema={
+            "project_name": {
+                "type": "string",
+                "bind_from": ["task.payload.project_name", "task.title"],
+            },
+        },
+    )
+
+    async def _query(_task):
+        return [art]
+
+    import yalayut
+    monkeypatch.setattr(yalayut, "query", _query, raising=False)
+
+    task = {
+        "id": 99,
+        "title": "[3.2] Scaffold the Python package",
+        "description": "Create the package",
+        "agent_type": "coder",
+        "mission_id": 57,
+        "context": json.dumps({
+            "is_workflow_step": True,
+            "recipe_lookup": True,
+            "payload": {"project_name": "wt"},
+        }),
+    }
+
+    out = await do_flash(task)
+    # Preempt owns the whole task: routed to the mechanical lane, no envelope.
+    assert out.get("skills") == []
+    assert out.get("runner") == "mechanical"
+    payload = out.get("payload") or {}
+    assert payload.get("action") == "yalayut_recipe"
+    assert payload.get("recipe_id") == 42
+    assert (payload.get("args") or {}).get("project_name") == "wt", (
+        f"preempt args missing project_name='wt'; got {payload.get('args')}"
     )

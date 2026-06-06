@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 
 @dataclass
@@ -128,7 +129,7 @@ class GuardConfig:
     sidecars: list[SidecarConfig] = field(default_factory=list)
 
     # Hooks
-    on_exit: None = None  # callable(exit_code: int) -> None, called after process exits
+    on_exit: Callable[[int], None] | None = None  # called after process exits
 
     # i18n
     messages: Messages = field(default_factory=Messages)

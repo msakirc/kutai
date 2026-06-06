@@ -14,8 +14,11 @@ ABUNDANCE_GATE = -0.2
 
 BURDEN_BUCKET = ("S2", "S3")
 QUEUE_BUCKET = ("S4", "S5", "S6")
-OTHER_BUCKET = ("S1", "S7", "S9", "S10", "S11")
-POSITIVE_ARM_SIGNALS = ("S1", "S9")
+OTHER_BUCKET = ("S1", "S7", "S9", "S10", "S11", "S12")
+# Positive (abundance) arm. S1 dropped 2026-06-04: its free-cloud abundance
+# is now 0 (scale-invariant frac removed — see s1_remaining), so it only ever
+# contributed 0 here. Positive pull = S9 (timing) noisy-OR S12 (fleet under-use).
+POSITIVE_ARM_SIGNALS = ("S9", "S12")
 
 
 def _clamp(x: float, lo: float = -1.0, hi: float = 1.0) -> float:

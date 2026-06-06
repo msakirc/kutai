@@ -21,7 +21,8 @@ build_grounding_message()  — didactic feedback string for retry
 from __future__ import annotations
 
 import fnmatch
-from typing import Iterable
+import re
+from typing import Callable, Iterable
 
 
 # Tools that satisfy the "the agent wrote a file" requirement. Each has
@@ -127,62 +128,114 @@ def unmatched_produces(produces: list, written: set[str]) -> list:
     return [e for e in produces if not match_produces_entry(e, written)]
 
 
-# Text-artifact kinds eligible for inline auto-persist recovery — when the
-# agent dumps the artifact in final_answer.result instead of calling
-# write_file. Binary / non-text produces are never auto-persisted.
-_AUTOPERSIST_EXTENSIONS: tuple[str, ...] = (".md", ".json")
-_AUTOPERSIST_MD_MIN_CHARS = 500
+# Matches a fenced code block, capturing the body (without the fence lines).
+# Tolerates an optional language tag (```yaml / ```md / ```json / ```).
+_FENCE_RE = re.compile(r"```[^\n`]*\n(.*?)\n```", re.DOTALL)
 
 
-def autopersist_candidate(produces: list, written: set[str], result):
-    """Decide whether to auto-persist an inline ``final_answer`` artifact.
+def _looks_like_artifact(body: str) -> bool:
+    """A fence body that looks like a document/data artifact, not a shell
+    snippet — starts with YAML front-matter, a markdown header, or JSON."""
+    s = body.strip()
+    return bool(s) and (
+        s.startswith("---") or s.startswith("#")
+        or s.startswith("{") or s.startswith("[")
+    )
 
-    Returns ``(relative_path, content_to_write)`` when the step declared a
-    single still-unwritten text artifact (``.md`` / ``.json``) and the agent
-    dumped substantive content inline in ``final_answer.result``. Returns
-    ``None`` otherwise — "don't persist; let the grounding guard re-prompt".
 
-    Why: some i2p steps (e.g. 0.0a.draft intake_todo_draft) use the
-    "return the artifact as final_answer, the engine persists it to the
-    produces path" contract with write_file intentionally disabled. Without
-    this recovery the produces-grounding guard — which only clears on a
-    write_file call — loops the agent to max_iterations → DLQ (mission 75).
+def unwrap_fenced_artifact(result) -> str | None:
+    """Extract a buried artifact from a narration-wrapped ``result``.
 
-    Per kind:
-      - ``.md``  : ``result`` is a string with >= 500 non-blank chars.
-      - ``.json``: ``result`` is a JSON string that parses, OR a dict/list
-                   (serialized here). Invalid/empty JSON is rejected so a
-                   malformed artifact never lands on disk for a downstream
-                   step to choke on.
+    Cloud LLMs frequently answer with a chat-style report
+    (``## Analysis / ### Summary / ### Corrected Artifact Content``) that
+    embeds the *real* document inside a ```` ```yaml ```` / ```` ```md ````
+    fence. Persisting the raw narration to the produces path makes the
+    verify gate read a report instead of the artifact (mission 81, 1.4a).
+
+    Returns the inner body of the most-substantial artifact-looking fenced
+    block (front-matter / header / JSON preserved, fence markers + narration
+    stripped). Returns ``None`` when ``result`` is not a string or has no
+    fenced block — the caller then falls back to the raw ``result``.
     """
-    if not isinstance(produces, list) or len(produces) != 1:
+    if not isinstance(result, str):
         return None
-    path = produces[0]
-    if not isinstance(path, str) or not path.endswith(_AUTOPERSIST_EXTENSIONS):
+    blocks = _FENCE_RE.findall(result)
+    if not blocks:
         return None
-    # Only when the single declared path is still entirely unwritten.
-    if unmatched_produces(produces, written) != produces:
-        return None
+    artifactish = [b for b in blocks if _looks_like_artifact(b)] or blocks
+    best = max(artifactish, key=lambda b: len(b.strip())).strip()
+    return best or None
 
-    if path.endswith(".json"):
-        import json
-        if isinstance(result, (dict, list)):
-            try:
-                result = json.dumps(result, ensure_ascii=False, indent=2)
-            except (TypeError, ValueError):
-                return None
-        if not isinstance(result, str) or not result.strip():
-            return None
+
+import json as _json
+
+# Leading YAML front-matter: ``---\n...\n---`` at the very start of the file.
+_FRONT_MATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
+
+
+def stamp_front_matter(content: str, mission_id: int, kind: str) -> str:
+    """Idempotently stamp ``mission_id`` into an artifact's metadata.
+
+    ``md``  : ensure a leading ``---`` front-matter block carrying
+              ``mission_id``. Inject the key if the block exists without it;
+              prepend a minimal block if absent; no-op if already present.
+              Never produces a second ``---`` block (handoff Q(c)).
+    ``json``: ensure a top-level ``mission_id`` key. No-op if present or the
+              content does not parse (best-effort — never corrupt a file).
+    """
+    if not isinstance(content, str):
+        return content
+    if kind == "json":
         try:
-            json.loads(result)
+            obj = _json.loads(content)
         except (ValueError, TypeError):
-            return None
-        return (path, result)
+            return content
+        if isinstance(obj, dict) and "mission_id" not in obj:
+            obj = {"mission_id": mission_id, **obj}
+            return _json.dumps(obj, ensure_ascii=False, indent=2)
+        return content
 
-    # .md — substantive markdown heuristic
-    if isinstance(result, str) and len(result.strip()) >= _AUTOPERSIST_MD_MIN_CHARS:
-        return (path, result)
-    return None
+    # markdown
+    m = _FRONT_MATTER_RE.match(content)
+    if m:
+        body = m.group(1)
+        if re.search(r"^\s*mission_id\s*:", body, re.MULTILINE):
+            return content  # already stamped — idempotent
+        new_block = f"---\n{body}\nmission_id: {mission_id}\n---\n"
+        return new_block + content[m.end():]
+    return f"---\nmission_id: {mission_id}\n---\n\n{content}"
+
+
+def select_canonical(candidates, schema_ok: Callable[[str], bool]):
+    """Pick the best artifact form from competing candidates, by priority.
+
+    ``candidates`` is an ordered list of raw strings by PRIORITY, highest
+    first (the materializer passes ``[disk_content, output_value]`` — the
+    agent's committed on-disk file outranks the final_answer body so a rich
+    valid artifact is never clobbered by a thinner result, intake #73). For
+    each source the fence-unwrapped form is preferred over the raw form when
+    it also passes ``schema_ok`` (strips a narration wrapper, mission 81).
+
+    Returns the first priority source's passing form (unwrapped if it passes,
+    else raw); if no source passes, the most-substantial form overall so a
+    file always exists. ``None`` only when there is no usable candidate.
+    """
+    all_forms: list[str] = []
+    for c in candidates:
+        if not isinstance(c, str) or not c.strip():
+            continue
+        group: list[str] = []
+        u = unwrap_fenced_artifact(c)
+        if isinstance(u, str) and u.strip() and u.strip() != c.strip():
+            group.append(u)   # unwrapped preferred within this source
+        group.append(c)
+        all_forms.extend(group)
+        for form in group:
+            if schema_ok(form):
+                return form
+    if not all_forms:
+        return None
+    return max(all_forms, key=lambda f: len(f.strip()))
 
 
 def build_grounding_message(

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from fatih_hoca.capabilities import TaskRequirements, score_model_for_task
@@ -119,6 +120,9 @@ def _apply_utilization_layer(
     snapshot: SystemSnapshot,
     task_difficulty: int,
     reqs: "ModelRequirements | None" = None,
+    *,
+    now: float | None = None,
+    burn_log=None,
 ) -> None:
     """Apply Phase 2d unified utilization equation.
 
@@ -135,6 +139,55 @@ def _apply_utilization_layer(
         return
     # Build estimate_for proxy: reqs already has agent_type; context is optional.
     task_proxy = reqs  # estimate_for reads task.agent_type and task.context
+
+    # Fleet rollup for S12 pool-balance: absolute calls consumed this cycle
+    # per FREE provider that still has capacity. Built ONCE here (the ranking
+    # layer is the only place that knows each candidate's is_free flag — the
+    # snapshot carries no per-provider free marker). consumed = limit -
+    # remaining on the rpd cell; a provider with zero remaining is dropped so
+    # S12 never steers toward an exhausted pool. Single provider / empty map
+    # ⇒ S12 returns 0 (nothing to balance across).
+    fleet_consumed: dict[str, float] = {}
+    _free_providers = {
+        getattr(sm.model, "provider", "")
+        for sm in scored if getattr(sm.model, "is_free", False)
+    }
+    for _prov in _free_providers:
+        if not _prov:
+            continue
+        _ps = snapshot.cloud.get(_prov)
+        if _ps is None:
+            continue
+        _consumed = 0.0
+        _has_capacity = False
+        for _ms in _ps.models.values():
+            _rl = _ms.limits.rpd
+            if _rl is not None and _rl.limit:
+                _consumed += max(0.0, _rl.limit - (_rl.remaining or 0))
+                if (_rl.remaining or 0) > 0:
+                    _has_capacity = True
+        if _has_capacity:
+            fleet_consumed[_prov] = _consumed
+
+    # Capable-supply rollup for S6: the set of candidates with their remaining
+    # daily capacity, so a capability-shortage produces conserve-pressure. Built
+    # once here; rpd_remaining is read from the snapshot (authoritative) and
+    # attached so s6._supply_for can sum real capacity in prod AND sim.
+    eligible_models: list = []
+    for _sm in scored:
+        _mdl = _sm.model
+        _prov_name = getattr(_mdl, "provider", "")
+        _ps = snapshot.cloud.get(_prov_name)
+        _ms = _ps.models.get(getattr(_mdl, "name", "")) if _ps else None
+        _rpd_rem = 0
+        if _ms is not None and _ms.limits.rpd is not None:
+            _rpd_rem = _ms.limits.rpd.remaining or 0
+        eligible_models.append(SimpleNamespace(
+            name=getattr(_mdl, "name", ""),
+            capabilities=getattr(_mdl, "capabilities", set()),
+            rpd_remaining=_rpd_rem,
+        ))
+
     for sm in scored:
         pool = classify_pool(sm.model)
         sm.pool = pool.value
@@ -156,6 +209,10 @@ def _apply_utilization_layer(
             est_call_cost=getattr(sm.model, "estimated_cost",
                                   lambda *_: 0.0)(estimates.in_tokens, estimates.out_tokens),
             cap_needed=CAP_NEEDED_BY_DIFFICULTY.get(task_difficulty, 5.0),
+            fleet_consumed=fleet_consumed,
+            now=now,
+            burn_log=burn_log,
+            eligible_models=eligible_models,
         )
         scalar = breakdown.scalar
         # Reuse `urgency` column for pressure scalar — telemetry schema continuity.
@@ -192,6 +249,9 @@ def rank_candidates(
     snapshot: SystemSnapshot,
     failures: list[Failure],
     remaining_budget: float = 0.0,
+    *,
+    now: float | None = None,
+    burn_log=None,
 ) -> list[ScoredModel]:
     """
     Score and rank an already-filtered list of ModelInfo objects.
@@ -657,6 +717,8 @@ def rank_candidates(
         snapshot,
         task_difficulty=reqs.difficulty,
         reqs=reqs,
+        now=now,
+        burn_log=burn_log,
     )
     scored.sort(key=lambda c: -c.score)
 

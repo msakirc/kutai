@@ -294,13 +294,28 @@ def build_grading_spec(source: dict, exclusions: list):
 
     messages = [
         {"role": "system", "content": GRADING_SYSTEM},
+        # NO TRUNCATION of any grader input, ever. The description IS the
+        # grading contract and the result IS the artifact under judgment;
+        # lopping either makes the grader judge a partial spec against a
+        # partial artifact and emit false verdicts. #289700 (2026-06-04): a
+        # 1329-char 5-section charter instruction cut at 500 chars dropped
+        # sections 4-5, and the grader reported the artifact "added a sixth
+        # section" — 36% of i2p steps (94/259) have instructions past the old
+        # cap. An oversized input is a model-selection/capacity concern, never
+        # solved by silent truncation here.
         {"role": "user", "content": GRADING_PROMPT.format(
-            title=str(source.get("title", ""))[:100],
-            description=str(source.get("description", ""))[:500],
-            response=str(result_text)[:30000],
+            title=str(source.get("title", "")),
+            description=str(source.get("description", "")),
+            response=str(result_text),
         )},
     ]
     _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
+    # Derive the input estimate from the ACTUAL prompt size (~4 chars/token).
+    # Now that nothing is truncated, a large artifact must steer selection to a
+    # model whose context window actually fits it — otherwise the call-level
+    # context cap becomes the new silent-truncation point we just removed.
+    _prompt_chars = sum(len(m["content"]) for m in messages)
+    _est_input = max(800, _prompt_chars // 4)
     return {
         "title": f"grader:task#{source.get('id')}:{_suffix}",
         "description": "Grading review of task output",
@@ -315,7 +330,7 @@ def build_grading_spec(source: dict, exclusions: list):
             "difficulty": 3,
             "messages": messages,
             "failures": [],
-            "estimated_input_tokens": 800,
+            "estimated_input_tokens": _est_input,
             "estimated_output_tokens": 600,
             "prefer_speed": True,
             "exclude_models": list(exclusions),
@@ -471,7 +486,7 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
             bonus_count = ctx.get("_bonus_count", 0)
             if bonus_count < _MAX_BONUS:
                 try:
-                    # Check workspace files for progress
+                    # Check workspace files for progress.
                     output_names = ctx.get("output_artifacts", [])
                     mission_id = ctx.get("mission_id") or task.get("mission_id")
                     has_progress = False
@@ -479,12 +494,28 @@ async def apply_grade_result(task_id: int, verdict: GradeResult) -> None:
                         import os
                         from src.tools.workspace import WORKSPACE_DIR
                         artifact_dir = os.path.join(WORKSPACE_DIR, f"mission_{mission_id}")
+                        # Candidate progress files: the mission-root <name>.<ext>
+                        # legacy path (produces-less steps) PLUS every declared
+                        # `produces` path. Since 2026-06-05 the materializer is the
+                        # sole writer for produces-having steps and skips the root
+                        # write, so a root-only check sees no progress and DLQs a
+                        # task that actually wrote its declared artifact.
+                        cand_paths = []
                         for name in output_names:
                             for ext in (".md", ".json", ".txt"):
-                                fpath = os.path.join(artifact_dir, f"{name}{ext}")
-                                if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
-                                    has_progress = True
-                                    break
+                                cand_paths.append(
+                                    os.path.join(artifact_dir, f"{name}{ext}")
+                                )
+                        for entry in (ctx.get("produces") or []):
+                            if isinstance(entry, str) and entry:
+                                cand_paths.append(
+                                    entry if os.path.isabs(entry)
+                                    else os.path.join(WORKSPACE_DIR, entry)
+                                )
+                        for fpath in cand_paths:
+                            if os.path.isfile(fpath) and os.path.getsize(fpath) > 200:
+                                has_progress = True
+                                break
                     if has_progress:
                         ctx["_bonus_count"] = bonus_count + 1
                         retry_ctx.max_worker_attempts += 1

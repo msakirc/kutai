@@ -30,12 +30,13 @@ def test_abundance_gated_off_by_significant_negative():
 
 
 def test_abundance_fires_with_no_significant_negative():
-    sigs = {"S1": 0.6, "S2": 0, "S3": 0, "S4": -0.1, "S5": 0, "S6": 0,
-            "S7": 0, "S9": 0.4, "S10": 0, "S11": 0}
+    sigs = {"S1": 0, "S2": 0, "S3": 0, "S4": -0.1, "S5": 0, "S6": 0,
+            "S7": 0, "S9": 0.4, "S10": 0, "S11": 0, "S12": 0.6}
     weights = {k: 1.0 for k in sigs}
     breakdown = combine_signals(signals=sigs, weights=weights)
-    # queue_neg=-0.1; weighted=-0.07 (>-0.2). Abundance fires via noisy-OR:
-    # 1 - (1-0.6)*(1-0.4) = 1 - 0.24 = 0.76
+    # queue_neg=-0.1; weighted=-0.07 (>-0.2). Abundance fires via noisy-OR
+    # over the positive arm (S9, S12):
+    # 1 - (1-0.4)*(1-0.6) = 1 - 0.24 = 0.76
     assert breakdown.positive_total == pytest.approx(0.76, abs=0.01)
     assert breakdown.scalar > 0.6
 
@@ -100,45 +101,46 @@ def test_abundance_gate_below_threshold_suppresses():
 
 def test_abundance_gate_strict_inequality():
     """Just above -0.2 → gate passes → abundance fires."""
-    sigs = {"S1": 0.7, "S2": 0, "S3": 0, "S4": -0.2, "S5": 0, "S6": 0,
-            "S7": 0, "S9": 0, "S10": 0, "S11": 0}
+    sigs = {"S1": 0, "S2": 0, "S3": 0, "S4": -0.2, "S5": 0, "S6": 0,
+            "S7": 0, "S9": 0.7, "S10": 0, "S11": 0, "S12": 0}
     weights = {k: 1.0 for k in sigs}
     br = combine_signals(signals=sigs, weights=weights)
     # queue_neg = -0.2; weighted = -0.14. gate: -0.14 > -0.2 → True
     assert br.positive_total == pytest.approx(0.7, abs=0.001)
 
 
-def test_abundance_only_s1_and_s9_contribute_positive():
-    """Positive S2, S4, S10 must NOT contribute to positive_total —
-    only S1 and S9 are in the abundance arm. Locks POSITIVE_ARM_SIGNALS."""
-    sigs = {"S1": 0.0, "S2": 0.5, "S3": 0.0, "S4": 0.5, "S5": 0.0, "S6": 0.0,
-            "S7": 0.5, "S9": 0.0, "S10": 0.5, "S11": 0.5}
+def test_abundance_only_s9_and_s12_contribute_positive():
+    """Positive S2, S4, S10, S11 must NOT contribute to positive_total —
+    only S9 and S12 are in the abundance arm. Locks POSITIVE_ARM_SIGNALS.
+    (S1 dropped 2026-06-04 — its free-cloud abundance is now 0.)"""
+    sigs = {"S1": 0.5, "S2": 0.5, "S3": 0.0, "S4": 0.5, "S5": 0.0, "S6": 0.0,
+            "S7": 0.5, "S9": 0.0, "S10": 0.5, "S11": 0.5, "S12": 0.0}
     weights = {k: 1.0 for k in sigs}
     br = combine_signals(signals=sigs, weights=weights)
-    # No negatives → gate passes. But max(S1, S9) where both = 0 → 0
+    # No negatives → gate passes. But noisy-OR(S9=0, S12=0) → 0; positive
+    # S1/S2/S4/S7/S10/S11 are NOT in the arm and contribute nothing.
     assert br.positive_total == 0.0
     assert br.scalar == 0.0
 
 
-def test_abundance_noisy_or_combines_s1_s9():
-    """When both S1 and S9 are positive, noisy-OR combines them:
-    1 - (1-S1)(1-S9). Single strong signal preserved exactly; both
-    moderate compose without max-discarding the weaker one. Prior
-    max() semantic discarded reinforcement when stock + timing both
-    fired (see s1/s9 separation 2026-05-03)."""
-    sigs = {"S1": 0.3, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0,
-            "S7": 0, "S9": 0.8, "S10": 0, "S11": 0}
+def test_abundance_noisy_or_combines_s9_s12():
+    """When both S9 (timing) and S12 (fleet under-use) are positive,
+    noisy-OR combines them: 1 - (1-S9)(1-S12). Both moderate compose
+    without max-discarding the weaker one — reinforcement when timing +
+    allocation both fire (2026-06-04 positive-arm = S9, S12)."""
+    sigs = {"S1": 0, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0,
+            "S7": 0, "S9": 0.8, "S10": 0, "S11": 0, "S12": 0.3}
     weights = {k: 1.0 for k in sigs}
     br = combine_signals(signals=sigs, weights=weights)
-    # 1 - (1-0.3)*(1-0.8) = 1 - 0.14 = 0.86
+    # 1 - (1-0.8)*(1-0.3) = 1 - 0.14 = 0.86
     assert br.positive_total == pytest.approx(0.86, abs=0.01)
 
 
 def test_abundance_noisy_or_strong_signal_preserved():
     """Single strong signal alone passes through ~unchanged. Locks
-    the noisy-OR property that s1=0.9, s9=0 → 0.9 (not inflated)."""
-    sigs = {"S1": 0.9, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0,
-            "S7": 0, "S9": 0.0, "S10": 0, "S11": 0}
+    the noisy-OR property that s9=0.9, s12=0 → 0.9 (not inflated)."""
+    sigs = {"S1": 0, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0,
+            "S7": 0, "S9": 0.9, "S10": 0, "S11": 0, "S12": 0.0}
     weights = {k: 1.0 for k in sigs}
     br = combine_signals(signals=sigs, weights=weights)
     # 1 - (1-0.9)*(1-0) = 0.9

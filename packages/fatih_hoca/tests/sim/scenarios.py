@@ -62,7 +62,7 @@ def _standard_i2p_task_mix(count: int = 182, seed: int = 42) -> list[SimTask]:
     return tasks
 
 
-def _build_snapshot_factory(scenario_providers: dict[str, Any]):
+def _build_snapshot_factory(scenario_providers: dict[str, Any], wall_anchor: float | None = None):
     """Builds a closure that turns SimState -> SystemSnapshot-like object.
 
     Uses real nerd_herd types so `snapshot.pressure_for(model)` is available
@@ -82,7 +82,8 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
     # Pin a wall-clock anchor so virtual-clock -> wall-clock mapping is stable
     # within a sim run. We project `counter.reset_at` (virtual seconds) onto the
     # same wall clock for rate-limit reset time calculations.
-    wall_anchor = _time.time()
+    if wall_anchor is None:
+        wall_anchor = _time.time()
 
     def factory(state: SimState) -> Any:
         if state.locals:
@@ -117,11 +118,10 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
                         limits=RateLimitMatrix(),
                     )
                     continue
-                reset_in_secs = max(0.0, counter.reset_at - state.virtual_clock)
                 rpd = RateLimit(
                     limit=counter.limit,
                     remaining=counter.remaining,
-                    reset_at=int(wall_anchor + reset_in_secs),
+                    reset_at=int(wall_anchor + counter.reset_at),
                 )
                 util = 100.0 * (1.0 - counter.remaining / max(1, counter.limit))
                 models[model_id] = CloudModelState(
@@ -144,32 +144,43 @@ def _build_snapshot_factory(scenario_providers: dict[str, Any]):
 def _build_select_fn(scenario_providers: dict[str, Any], tasks: list[SimTask] | None = None):
     """Wires through the real fatih_hoca.select() against the SimState.
 
-    If ``tasks`` is provided, a live ``QueueProfile`` is built from the
-    remaining tail (``tasks[task.idx:]``) at each tick and threaded into
-    ``select_for_simulation``. This fixes Phase 2d bug #2 — scenarios
-    previously fed a fresh empty QueueProfile, making the queue-pressure
-    arm of per_call scarcity permanently dormant.
+    Owns a single ``wall_anchor`` and a per-run ``BurnLog`` so the burn-rate
+    window (S7) and reset-proximity (S9) share one clock: ``now = wall_anchor
+    + state.virtual_clock``. Each pick is recorded into the burn log so the
+    NEXT tick's S7 sees a real rolling rate.
     """
     from types import SimpleNamespace
     from fatih_hoca import selector as _selector
     from fatih_hoca.requirements import QueueProfile
-    snapshot_factory = _build_snapshot_factory(scenario_providers)
+    from nerd_herd.burn_log import BurnLog
+
+    wall_anchor = _time.time()
+    burn_log = BurnLog(window_secs=300.0)
+    snapshot_factory = _build_snapshot_factory(scenario_providers, wall_anchor=wall_anchor)
+
+    # task_name → required capability (only names that imply a hard capability;
+    # everything else implies none, so S6 stays 0 on generic workloads).
+    _CAP_BY_TASK = {"visual_reviewer": "vision"}
 
     def select(state: SimState, task: SimTask) -> Any:
+        now = wall_anchor + state.virtual_clock
         queue_profile = None
         if tasks is not None:
-            # Remaining slice starting at this task. Use positional index,
-            # since task.idx is dense sequential (0..N-1) in all scenarios.
             remaining = tasks[task.idx:]
             total = len(remaining)
             hard = sum(1 for t in remaining if t.difficulty >= 7)
             by_difficulty: dict[int, int] = {}
+            by_capability: dict[str, int] = {}
             for t in remaining:
                 by_difficulty[t.difficulty] = by_difficulty.get(t.difficulty, 0) + 1
+                cap = _CAP_BY_TASK.get(t.task_name)
+                if cap:
+                    by_capability[cap] = by_capability.get(cap, 0) + 1
             queue_profile = QueueProfile(
                 total_ready_count=total,
                 hard_tasks_count=hard,
                 by_difficulty=by_difficulty,
+                by_capability=by_capability,
             )
 
         picked = _selector.select_for_simulation(
@@ -179,7 +190,18 @@ def _build_select_fn(scenario_providers: dict[str, Any], tasks: list[SimTask] | 
             snapshot=snapshot_factory(state),
             providers_cfg=scenario_providers,
             queue_profile=queue_profile,
+            now=now,
+            burn_log=burn_log,
         )
+        # Record this pick's consumption so the next tick's S7 sees it.
+        if picked.pool in ("time_bucketed", "per_call") and picked.provider:
+            burn_log.record(
+                provider=picked.provider,
+                model=picked.model_name,
+                tokens=task.estimated_output_tokens,
+                calls=1,
+                now=now,
+            )
         return SimpleNamespace(
             model_name=picked.model_name,
             pool=picked.pool,
@@ -1129,6 +1151,228 @@ def rp4_full_cloud_exhaustion() -> Scenario:
     )
 
 
+# ── Scenario PP9: Giant tank vs many small idle tanks (S12 anti-monopoly) ─────
+
+def pp9_giant_vs_small_idle_spread() -> Scenario:
+    """One giant-tank free provider + three small-tank idle free providers,
+    all comparable capability, no local. Before the 2026-06-04 fix, scale-
+    invariant frac-abundance let the giant (which stays near frac=1.0) win
+    everything while the small idle quotas rotted. S12 (fleet under-use,
+    absolute-consumption balance) must spread load across ALL four.
+    """
+    # Comparable, high caps so capability doesn't pick a winner — and above
+    # the sim's loaded-local stub (cap 55) so d=6 work goes to free cloud
+    # (local under-qualified), exercising free-vs-free balancing not local.
+    providers = {
+        "giant": {"is_free": True, "models": {"giant/m": {"cap_score_100": 80}}},
+        "small_a": {"is_free": True, "models": {"small_a/m": {"cap_score_100": 80}}},
+        "small_b": {"is_free": True, "models": {"small_b/m": {"cap_score_100": 79}}},
+        "small_c": {"is_free": True, "models": {"small_c/m": {"cap_score_100": 78}}},
+    }
+    state = SimState()
+    state.time_bucketed["giant/m"] = SimPoolCounter(remaining=14_400, limit=14_400, reset_at=86400.0)
+    state.time_bucketed["small_a/m"] = SimPoolCounter(remaining=200, limit=200, reset_at=86400.0)
+    state.time_bucketed["small_b/m"] = SimPoolCounter(remaining=200, limit=200, reset_at=86400.0)
+    state.time_bucketed["small_c/m"] = SimPoolCounter(remaining=200, limit=200, reset_at=86400.0)
+    tasks = [SimTask(idx=i, difficulty=6, estimated_output_tokens=1000) for i in range(120)]
+    return Scenario(
+        name="pp9_giant_vs_small_idle_spread",
+        tasks=tasks,
+        initial_state=state,
+        snapshot_factory=_build_snapshot_factory(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
+    )
+
+
+def assert_pp9(scenario: "Scenario") -> list[str]:
+    """Pressure-only: S12 must give an UNDER-used free provider more positive
+    pressure than an OVER-used one of identical capability, even though the
+    over-used one is a giant tank still near frac=1.0 (the scale-invariance
+    trap that S1 frac-abundance fell into). Locks the 2026-06-04 anti-monopoly
+    fix at the signal level. (Full-sim spread is shown by rp1 in the realistic
+    distribution table — gemini goes 0 → meaningful share.)
+    """
+    from nerd_herd.types import RateLimit, RateLimitMatrix
+
+    now = _time.time()
+    reset_at = int(now + 86400)
+    # Giant tank, barely dented (frac ≈ 0.99) but has ABSORBED all the work.
+    giant_rl = RateLimit(limit=14_400, remaining=14_300, reset_at=reset_at)
+    # Small tank, fully idle (frac = 1.0), absorbed nothing.
+    small_rl = RateLimit(limit=200, remaining=200, reset_at=reset_at)
+
+    snap = _pressure_snapshot(cloud_models={
+        "giant": {"giant/m": RateLimitMatrix(rpd=giant_rl)},
+        "small": {"small/m": RateLimitMatrix(rpd=small_rl)},
+    })
+    giant_m = _cloud_model_stub(name="giant/m", provider="giant", is_free=True, rpd_remaining=14_300)
+    small_m = _cloud_model_stub(name="small/m", provider="small", is_free=True, rpd_remaining=200)
+
+    # Absolute consumption: giant took 100 calls, small took 0.
+    fleet = {"giant": 100.0, "small": 0.0}
+    g = snap.pressure_for(giant_m, task_difficulty=3, fleet_consumed=fleet)
+    s = snap.pressure_for(small_m, task_difficulty=3, fleet_consumed=fleet)
+
+    failures = []
+    if not (s.scalar > g.scalar):
+        failures.append(
+            f"PP9: idle small ({s.scalar:.3f}) must outpull over-used giant "
+            f"({g.scalar:.3f}) — S12 anti-monopoly"
+        )
+    if s.signals.get("S12", 0.0) <= 0.0:
+        failures.append(f"PP9: S12 for idle small should be > 0, got {s.signals.get('S12')}")
+    if g.signals.get("S12", 0.0) != 0.0:
+        failures.append(f"PP9: S12 for over-used giant should be 0, got {g.signals.get('S12')}")
+    return failures
+
+
+# ── S7 continuity probe — burn-rate signal must be continuous + monotonic ─────
+
+def assert_s7_continuity() -> list[str]:
+    """Sample S7 across rising burn on a small tank: strictly increasing
+    magnitude, no flat-zero region once burn is nonzero, saturating at -1."""
+    import time as _t
+    from nerd_herd.types import (
+        SystemSnapshot, CloudProviderState, CloudModelState,
+        RateLimit, RateLimitMatrix,
+    )
+    from nerd_herd.burn_log import BurnLog
+
+    now = _t.time()
+    rpd = RateLimit(limit=20, remaining=10, reset_at=int(now + 3600))
+    cms = CloudModelState(model_id="gem/flash", utilization_pct=0.0,
+                          limits=RateLimitMatrix(rpd=rpd))
+    snap = SystemSnapshot(cloud={"gem": CloudProviderState(
+        provider="gem", models={"gem/flash": cms})})
+    from types import SimpleNamespace
+    m = SimpleNamespace(name="gem/flash", provider="gem", is_local=False,
+                        is_free=True, cap_score=7.0, capabilities=set(), rpd_remaining=10)
+
+    mags = []
+    for n_calls in (0, 1, 2, 4, 8, 16):
+        bl = BurnLog(window_secs=300.0)
+        for i in range(n_calls):
+            bl.record(provider="gem", model="gem/flash", tokens=500, calls=1, now=now - i)
+        s7 = snap.pressure_for(m, task_difficulty=5, now=now, burn_log=bl).signals["S7"]
+        mags.append(-s7)  # magnitude (S7 <= 0)
+
+    failures = []
+    if mags[0] != 0.0:
+        failures.append(f"S7-cont: zero burn must give 0, got {mags[0]}")
+    if any(b < a - 1e-9 for a, b in zip(mags, mags[1:])):
+        failures.append(f"S7-cont: magnitude not monotonic in burn: {mags}")
+    if not (mags[1] > 0.0):
+        failures.append(f"S7-cont: any nonzero burn must lift S7 off zero, got {mags[1]}")
+    if not (mags[-1] >= mags[1]):
+        failures.append("S7-cont: heavy burn must not be weaker than light burn")
+    return failures
+
+
+# ── S6 capability-conserve — graded conserve-pressure, fed via rollup ─────────
+
+def assert_s6_conserve() -> list[str]:
+    """Vision demand >> vision supply → S6 fires negative and is graded
+    (heavier shortage = stronger), not a single bang-bang step."""
+    from nerd_herd.types import QueueProfile
+    from nerd_herd.signals.s6_capable_supply import s6_capable_supply
+    from types import SimpleNamespace
+
+    vm = SimpleNamespace(name="v/m", provider="p", is_local=False, is_free=False,
+                         cap_score=8.5, capabilities={"vision"}, rpd_remaining=20)
+    light = QueueProfile(by_capability={"vision": 25}, total_ready_count=25)
+    heavy = QueueProfile(by_capability={"vision": 200}, total_ready_count=200)
+    s6_light = s6_capable_supply(vm, queue=light, eligible_models=[vm], iter_avg=8.0)
+    s6_heavy = s6_capable_supply(vm, queue=heavy, eligible_models=[vm], iter_avg=8.0)
+
+    failures = []
+    if not (s6_heavy < 0):
+        failures.append(f"S6: heavy vision shortage must be negative, got {s6_heavy}")
+    if not (s6_heavy <= s6_light):
+        failures.append(f"S6: heavier shortage must be >= magnitude (heavy {s6_heavy} "
+                        f"!<= light {s6_light}) — graded, not bang-bang")
+    return failures
+
+
+# ── rp5: overdraw early-warning — hammer a tank, load must shift before 0 ─────
+
+def rp5_overdraw_early_warning() -> Scenario:
+    """End-to-end fleet-balance + anti-exhaustion + liveness guard under
+    sustained scarce free quota. Two comparable free pools (hot cap 78 / cool
+    cap 77, 45-call tanks) + paid fallback + the always-injected loaded local.
+    100 medium (d=6) tasks. The signals under test (de-blinded S7 burn-rate +
+    S12 fleet-balance) must keep cloud-bound work BALANCED across the two free
+    peers — so neither rides to its 45-cap (exhaustion → the 'no candidates'
+    tail) — while still using free cloud rather than dumping everything on local.
+
+    Note: a pure free-vs-free overdraw isolation isn't achievable in this
+    harness because ``select_for_simulation`` always injects an attractive
+    loaded-local candidate; the S7 de-blinding itself is proven at the unit
+    level (nerd_herd test_s7_continuity). This scenario is the realistic
+    end-to-end regression guard. Measured by PICK COUNTS (reset-proof)."""
+    providers = {
+        "hot": {"is_free": True, "models": {"hot/m": {"cap_score_100": 78}}},
+        "cool": {"is_free": True, "models": {"cool/m": {"cap_score_100": 77}}},
+        "anthropic": {"is_free": False, "models": {"anthropic/claude": {"cap_score_100": 92}}},
+    }
+    state = SimState()
+    state.locals["loaded-local"] = SimLocalModel(is_loaded=True, idle_seconds=300.0, tokens_per_second=15.0)
+    # 45-call tanks: a balanced split lands ~30 each (under cap); a monopoly
+    # would push one pool past 45 (exhaustion). reset_at 2h keeps S9's
+    # use-it-or-lose-it pull alive so free cloud is genuinely exercised.
+    state.time_bucketed["hot/m"] = SimPoolCounter(remaining=45, limit=45, reset_at=7200.0)
+    state.time_bucketed["cool/m"] = SimPoolCounter(remaining=45, limit=45, reset_at=7200.0)
+    state.per_call["anthropic/claude"] = SimPoolCounter(remaining=1000, limit=1000, reset_at=86400.0)
+    tasks = [SimTask(idx=i, difficulty=6, estimated_output_tokens=1500) for i in range(100)]
+    return Scenario(
+        name="rp5_overdraw_early_warning",
+        tasks=tasks,
+        initial_state=state,
+        snapshot_factory=_build_snapshot_factory(providers),
+        select_fn=_build_select_fn(providers, tasks=tasks),
+    )
+
+
+def assert_rp5(scenario: "Scenario") -> list[str]:
+    """Measured by PICK COUNTS (reset-proof). Four properties:
+      (1) liveness — every task got a model (no 'no candidates' deadlock);
+      (2) no free pool ridden to its cap (exhaustion → warm-fallback loss);
+      (3) the two free peers balanced (S12/S7 don't monopolise one pool);
+      (4) free cloud genuinely used (not all work dumped on local)."""
+    from collections import Counter
+    from sim.runner import run_simulation
+    run = run_simulation(
+        tasks=scenario.tasks, initial_state=scenario.initial_state,
+        select_fn=scenario.select_fn, snapshot_factory=scenario.snapshot_factory,
+    )
+    counts = Counter(p.model_name for p in run.picks)
+    hot_picks = counts.get("hot/m", 0)
+    cool_picks = counts.get("cool/m", 0)
+    hot_limit = scenario.initial_state.time_bucketed["hot/m"].limit  # limit never decremented
+
+    failures = []
+    if len(run.picks) != len(scenario.tasks):
+        failures.append(
+            f"rp5: liveness — {len(run.picks)} picks for {len(scenario.tasks)} tasks "
+            "(a task got no model)"
+        )
+    if hot_picks >= hot_limit or cool_picks >= hot_limit:
+        failures.append(
+            f"rp5: a free pool rode to its cap (hot={hot_picks} cool={cool_picks} "
+            f"limit={hot_limit}) — exhaustion instead of early spread"
+        )
+    if min(hot_picks, cool_picks) < 0.5 * max(hot_picks, cool_picks):
+        failures.append(
+            f"rp5: free peers imbalanced (hot={hot_picks} cool={cool_picks}) — "
+            "one free pool monopolised, fleet-balance not holding"
+        )
+    if hot_picks + cool_picks < 30:
+        failures.append(
+            f"rp5: free cloud abandoned (hot+cool={hot_picks + cool_picks} of 100) — "
+            "work dumped on local instead of using available free quota"
+        )
+    return failures
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 POOL_PRESSURE_SCENARIOS = [
@@ -1140,6 +1384,10 @@ POOL_PRESSURE_SCENARIOS = [
     ("pp6_capability_shortage", pp6_capability_shortage),
     ("pp7_difficulty_lookahead", pp7_difficulty_lookahead),
     ("pp8_equilibrium_mission", pp8_equilibrium_mission),
+    ("pp9_giant_vs_small_idle_spread", pp9_giant_vs_small_idle_spread),
+    ("s7_continuity", pp1_fat_vs_tiny),
+    ("s6_conserve", pp1_fat_vs_tiny),
+    ("rp5_overdraw_early_warning", rp5_overdraw_early_warning),
 ]
 
 # Realistic-pool scenarios — distribution observation (no pass/fail
@@ -1150,6 +1398,7 @@ REALISTIC_POOL_SCENARIOS = [
     ("rp2_gemini_rpd_burned", rp2_gemini_rpd_burned),
     ("rp3_groq_constrained_premium_intelligent", rp3_groq_constrained_premium_intelligent),
     ("rp4_full_cloud_exhaustion", rp4_full_cloud_exhaustion),
+    ("rp5_overdraw_early_warning", rp5_overdraw_early_warning),
 ]
 
 # Per-scenario assertion callables (scenarios 1-7 pressure-only; 8 full-flow)
@@ -1162,4 +1411,8 @@ POOL_PRESSURE_ASSERTIONS: dict[str, Callable] = {
     "pp6_capability_shortage": lambda sc: assert_pp6(sc),
     "pp7_difficulty_lookahead": lambda sc: assert_pp7_m3_weights(),
     "pp8_equilibrium_mission": lambda sc: assert_pp8(sc),
+    "pp9_giant_vs_small_idle_spread": lambda sc: assert_pp9(sc),
+    "s7_continuity": lambda sc: assert_s7_continuity(),
+    "s6_conserve": lambda sc: assert_s6_conserve(),
+    "rp5_overdraw_early_warning": lambda sc: assert_rp5(sc),
 }

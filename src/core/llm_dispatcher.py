@@ -287,31 +287,6 @@ class LLMDispatcher:
 
         return _task_result_to_request_response(result)
 
-    @staticmethod
-    def _estimate_prompt_tokens(messages: list) -> int:
-        """Rough prompt-token count from message content. 1 token ≈ 4 chars.
-
-        Used to size llama-server's KV cache. Overestimating wastes a
-        little VRAM; underestimating truncates the prompt. Skews
-        slightly high — char-to-token ratio is ~3.5 for English code,
-        ~4 for prose.
-        """
-        total_chars = 0
-        for m in messages or []:
-            content = m.get("content") if isinstance(m, dict) else ""
-            if isinstance(content, str):
-                total_chars += len(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        text = part.get("text", "")
-                        if isinstance(text, str):
-                            total_chars += len(text)
-        # 1 token ≈ 3 chars for mixed prose+JSON+code (skews high
-        # vs the classic 4 ratio — truncation is costlier than over-
-        # allocating a few hundred MB of KV).
-        return max(0, total_chars // 3)
-
     async def execute(
         self,
         *,
@@ -486,53 +461,25 @@ class LLMDispatcher:
         agent_type: str = "",
         difficulty: int | None = None,
     ) -> None:
-        """Fire-and-forget pick_log write. Never propagates errors."""
-        try:
-            import os
-            from src.infra import pick_log as _pick_log_mod
+        """Fire-and-forget pick_log write. Delegates to telemetry.pick_recorder.
 
-            db_path = os.getenv("DB_PATH") or "kutai.db"
-            model = getattr(pick, "model", None)
-            picked_model = getattr(model, "name", "") if model is not None else ""
-            # Read score from Pick.score (populated by selector). The
-            # legacy `composite` attribute never existed on Pick — every
-            # row was getting picked_score=0.0 silently. Now persists
-            # ScoredModel.score from the post-utilization rank step.
-            picked_score = float(getattr(pick, "score", 0.0) or 0.0)
-            # Top-5 candidate summary from the same select() invocation.
-            # Persists into model_pick_log.snapshot_summary so offline
-            # analysis can see runner-up scores alongside the winner —
-            # diagnoses "did we have a clear winner or a near-tie?"
-            snapshot_summary = str(getattr(pick, "top_summary", "") or "")
-            task_name = task or category.value
-            cat_value = category.value if isinstance(category, CallCategory) else str(category)
-
-            # Resolve the active task id from the heartbeat ContextVar —
-            # same pattern used at request() entry (lines 663-664). Defensive:
-            # overhead calls and tests that don't set the ContextVar get None.
-            _active_task_id: int | None = None
-            try:
-                from src.core.heartbeat import current_task_id as _ctid2
-                _active_task_id = _ctid2.get()
-            except Exception:
-                pass
-
-            await _pick_log_mod.write_pick_log_row(
-                db_path=db_path,
-                task_name=task_name,
-                picked_model=picked_model,
-                picked_score=picked_score,
-                category=cat_value,
-                success=success,
-                error_category=error_category,
-                snapshot_summary=snapshot_summary,
-                provider=("local" if getattr(model, "is_local", False) else (getattr(model, "provider", "local") or "local")),
-                agent_type=agent_type,
-                difficulty=difficulty,
-                task_id=_active_task_id,
-            )
-        except Exception as e:  # noqa: BLE001 — telemetry must never break dispatch
-            logger.debug("pick_log record failed: %s", e)
+        Kept as a thin instance method (not inlined at the execute() call
+        sites) so tests that monkeypatch ``LLMDispatcher._record_pick`` and
+        callers asserting ``hasattr(LLMDispatcher, "_record_pick")`` keep
+        working. The 52-LOC body moved to src/telemetry/pick_recorder.py
+        (Modularization Finish Plan Phase 4) — pick telemetry is not part of
+        the dispatcher's load→call loop.
+        """
+        from src.telemetry.pick_recorder import record_pick
+        await record_pick(
+            pick=pick,
+            task=task,
+            category=category,
+            success=success,
+            error_category=error_category,
+            agent_type=agent_type,
+            difficulty=difficulty,
+        )
 
     async def _ensure_local_model(
         self,
@@ -648,55 +595,9 @@ class LLMDispatcher:
 
         return _messages
 
-    def _get_loaded_model_name(self) -> str | None:
-        """Get the currently loaded local model's name."""
-        try:
-            from src.models.local_model_manager import get_local_manager
-            manager = get_local_manager()
-            return manager.current_model
-        except Exception:
-            return None
-
-    def _get_loaded_litellm_name(self) -> str | None:
-        """Get the currently loaded local model's litellm_name."""
-        try:
-            from src.models.local_model_manager import get_local_manager
-            from src.models.model_registry import get_registry
-            manager = get_local_manager()
-            if not manager.current_model:
-                return None
-            registry = get_registry()
-            info = registry.get(manager.current_model)
-            return info.litellm_name if info else None
-        except Exception:
-            return None
-
-    def get_loaded_model_speed(self) -> float:
-        """Get the currently loaded model's measured tok/s. Returns 0 if unknown."""
-        try:
-            from src.models.local_model_manager import get_local_manager
-            manager = get_local_manager()
-            if manager.runtime_state and manager.runtime_state.measured_tps > 0:
-                return manager.runtime_state.measured_tps
-            if manager.current_model:
-                from src.models.model_registry import get_registry
-                info = get_registry().get(manager.current_model)
-                if info:
-                    return info.tokens_per_second
-        except Exception:
-            pass
-        return 0.0
-
-    def is_loaded_model_thinking(self) -> bool:
-        """Check if the currently loaded model has thinking enabled."""
-        try:
-            from src.models.local_model_manager import get_local_manager
-            manager = get_local_manager()
-            if manager.runtime_state:
-                return manager.runtime_state.thinking_enabled
-        except Exception:
-            pass
-        return False
+    # Loaded-model introspection (`get_loaded_litellm_name` etc.) moved to
+    # src/models/introspection.py (Modularization Finish Plan Phase 4). The
+    # speed/thinking/name variants were dead (zero callers) and were deleted.
 
     def get_stats(self) -> dict:
         return {

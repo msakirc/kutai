@@ -15,12 +15,18 @@ from nerd_herd.types import LocalModelState, RateLimitMatrix
 
 LOCAL_IDLE_SAT_SECS = 60.0
 LOCAL_IDLE_MAX = 0.5
-# Proximity window for free-cloud quota perishability. Inside the window
-# (reset is imminent), unused quota is wasted at next reset. Outside,
-# stock signal (S1) carries; no urgency boost from S9.
-# 1h chosen so the signal sharpens meaningfully — at 30min to reset
-# proximity = 0.5, at 6min it's 0.9.
-FREE_CLOUD_PROXIMITY_WINDOW_SECS = 3600.0
+# Free-cloud quota perishability — CONTINUOUS decay (2026-06-04).
+# Reverts the 2026-05-03 hard 1h window (`proximity=0` past 1h), which
+# made perishability invisible all day then cliffed in the final hour =
+# the "until too late" overshoot. Founder design principle: every signal
+# continuous + always-on, no gates, so the system self-corrects before a
+# boundary instead of after it. Continuous form: proximity = exp(-reset_in/τ).
+# τ tunes SLOPE without a cliff (the 05-03 author's real complaint was
+# "24h decay too flat" — a tuning issue, wrongly fixed with a gate):
+#   τ=6h →  1h:0.85  3h:0.61  6h:0.37  12h:0.14  24h:0.018  (always > 0)
+# τ validated by sim τ-sweep (run_scenarios.py). See
+# docs/superpowers/specs/2026-06-04-cloud-utilization-continuity-design.md.
+FREE_CLOUD_DECAY_TAU_SECS = 6 * 3600.0
 # Local serial-only: llama-server runs --parallel 1 and the GPU hosts at
 # most one model. ANY in-flight local task means a second local admission
 # would either queue behind the first or trigger a swap. Both outcomes
@@ -100,10 +106,10 @@ def s9_perishability(
     # Free cloud: pure timing signal. "How soon will what's left vanish."
     # - existence check: at least one cell has remaining > 0 (nothing to
     #   waste = nothing to flush)
-    # - proximity: 1.0 at reset, falling linearly to 0.0 at WINDOW seconds
-    #   away. Sharper than the prior exp-decay over 24h (0.96 at 1h-out
-    #   was barely a signal; now 0.0 past 1h, full inside).
-    # - frac dropped: stock is S1's job. S1 abundance + S9 proximity
+    # - proximity: continuous exp(-reset_in/τ). 1.0 at reset, decaying
+    #   smoothly — never flat-zero, so load spreads across the whole cycle
+    #   instead of cliffing in the final hour (the "too late" pathology).
+    # - frac dropped: stock is S1's job. S12 (fleet under-use) + S9 proximity
     #   reinforce via combine.py's noisy-OR when both fire.
     # - amount-weight dropped: small remaining quota near reset is still
     #   worth flushing; magnitude lives in S1.
@@ -125,7 +131,7 @@ def s9_perishability(
                 soonest_reset = secs
         if not has_remaining or soonest_reset is None:
             return 0.0
-        proximity = 1.0 - min(1.0, soonest_reset / FREE_CLOUD_PROXIMITY_WINDOW_SECS)
+        proximity = math.exp(-soonest_reset / FREE_CLOUD_DECAY_TAU_SECS)
         return _clamp(proximity, 0.0, 1.0)
 
     # Paid cloud — right-tool boost when budget remains AND task is hard.

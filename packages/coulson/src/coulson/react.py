@@ -57,7 +57,7 @@ from .guards import (
     check_sub_iter_guards, get_search_depth,
 )
 from .grounding import (
-    extract_written_paths, unmatched_produces, autopersist_candidate,
+    extract_written_paths, unmatched_produces,
 )
 from .parsing import parse_action, parse_function_call, unwrap_final_answer
 
@@ -816,51 +816,15 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 # else: not a verdict envelope (agent re-sent real content) →
                 # keep `parsed`/`content` as-is.
 
-            # ── AUTO-PERSIST RECOVERY ──
-            # When the agent emits final_answer with a declared text artifact
-            # dumped inline in `result` but never called write_file for the
-            # `produces` path, write it to disk + record a synthetic write so
-            # the grounding guard clears — instead of looping to
-            # max_iterations. Cloud LLMs frequently dump the artifact inline
-            # despite the _FILE_WRITE_PROMPT, and some i2p steps disable
-            # write_file entirely and rely on engine persistence. Punishing
-            # the agent wastes retries when the content is already correct.
-            #   - 2026-05-14 mission 69 step 0.1 product_charter (.md dumped → DLQ)
-            #   - 2026-05-24 mission 75 step 0.0a.draft intake_todo_draft
-            #     (.json dumped; .md-only gate skipped it → guard loop → DLQ)
-            try:
-                _ap_action = parsed.get("action", "final_answer") if isinstance(parsed, dict) else "final_answer"
-                if _ap_action == "final_answer" and isinstance(_task_ctx, dict):
-                    _ap_cand = autopersist_candidate(
-                        _task_ctx.get("produces") or [],
-                        extract_written_paths(tool_calls),
-                        parsed.get("result", content),
-                    )
-                    if _ap_cand is not None:
-                        _ap_rel, _ap_content = _ap_cand
-                        from src.tools.workspace import WORKSPACE_DIR as _ap_ws
-                        import os as _ap_os, os.path as _ap_op
-                        _ap_abs = _ap_rel if _ap_op.isabs(_ap_rel) else _ap_op.join(_ap_ws, _ap_rel)
-                        try:
-                            _ap_os.makedirs(_ap_op.dirname(_ap_abs), exist_ok=True)
-                            with open(_ap_abs, "w", encoding="utf-8") as _ap_fh:
-                                _ap_fh.write(_ap_content)
-                            tool_calls.append({
-                                "name": "write_file",
-                                "args": {"path": _ap_rel, "content_len": len(_ap_content)},
-                                "ok": True,
-                                "auto_persist": True,
-                            })
-                            logger.info(
-                                f"[Task #{task_id}] auto-persisted final_answer.result "
-                                f"to {_ap_rel} ({len(_ap_content)} chars)"
-                            )
-                        except OSError as _ap_exc:
-                            logger.warning(
-                                f"[Task #{task_id}] auto-persist failed for {_ap_rel}: {_ap_exc}"
-                            )
-            except Exception as _ap_top_exc:
-                logger.debug(f"[Task #{task_id}] auto-persist skipped: {_ap_top_exc}")
+            # ── ARTIFACT MATERIALIZATION ──
+            # Persisting + canonicalizing the declared produces path is now the
+            # engine's job: src.workflows.engine.hooks.materialize_produces runs
+            # after this loop (post-execution hook), is the SOLE writer of the
+            # produces path, and deterministically unwraps fence-buried
+            # artifacts + stamps front-matter (spec
+            # docs/superpowers/specs/2026-06-05-deterministic-materializer-design.md).
+            # The old in-loop auto-persist + canonicalize blocks were removed to
+            # collapse the four competing writers into that one chokepoint.
 
             # ── SUB-ITERATION GUARD CHECK ──
             correction = check_sub_iter_guards(

@@ -122,16 +122,23 @@ def build_code_review_spec(source: dict, exclusions: list):
             ctx = {}
     produces = ctx.get("produces") or []
 
+    # NO TRUNCATION of any reviewer input, ever — same rule as the grader
+    # (src/core/grading.py). The description is the review contract and the
+    # response is the artifact under review; lopping either makes the reviewer
+    # judge a partial spec against a partial artifact and emit false verdicts.
     messages = [
         {"role": "system", "content": CODE_REVIEW_SYSTEM},
         {"role": "user", "content": CODE_REVIEW_PROMPT.format(
-            title=str(source.get("title", ""))[:100],
-            description=str(source.get("description", ""))[:500],
+            title=str(source.get("title", "")),
+            description=str(source.get("description", "")),
             produces=_json.dumps(produces),
-            response=str(result_text)[:30000],
+            response=str(result_text),
         )},
     ]
     _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
+    # Estimate from the ACTUAL prompt size so selection fits the context window.
+    _prompt_chars = sum(len(m["content"]) for m in messages)
+    _est_input = max(1500, _prompt_chars // 4)
     return {
         "title": f"code_reviewer:task#{source.get('id')}:{_suffix}",
         "description": "Code review of build-step output",
@@ -146,7 +153,7 @@ def build_code_review_spec(source: dict, exclusions: list):
             "difficulty": 4,
             "messages": messages,
             "failures": [],
-            "estimated_input_tokens": 1500,
+            "estimated_input_tokens": _est_input,
             "estimated_output_tokens": 800,
             "exclude_models": list(exclusions),
         }},

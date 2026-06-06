@@ -763,13 +763,49 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
 _NULLISH_STRINGS = {"", "none", "null", "nil", "n/a", "na", "-"}
 
 
-def _stamp_retry_feedback(ctx: dict, next_attempt: int) -> None:
-    """Tag freshly-written ``_schema_error``/``_prev_output`` with the attempt
-    number they were written FOR. Readers gate on this so stale feedback from
-    earlier failure modes (e.g. schema reject 2 attempts ago, then availability
-    bounce that re-queues without rewriting) doesn't leak into the next prompt
-    as ``"your last output failed: <unrelated>"``.
+def _record_failed_model(ctx: dict) -> None:
+    """Append the source's ``generating_model`` to ``ctx['failed_models']`` so
+    the retry-escalation MODEL-EXCLUSION arm engages on the next worker pick.
+
+    ``src.core.retry.get_model_constraints`` (read by fatih_hoca's
+    requirements_builder at ``worker_attempts >= 3``) has TWO arms: a
+    difficulty bump (keyed on attempt count alone, so it fires for any path
+    that retries) and a model EXCLUSION (keyed on ``failed_models``). Before
+    2026-06-04 only the grade-FAIL branch populated ``failed_models``, so every
+    OTHER quality re-pend (verify_artifacts / code_review / test_run / semgrep /
+    pattern_lint / shape & blocker checks / prior_art coverage) could re-draw
+    the exact model that just produced the bad output — only the difficulty bump
+    nudged it. Recording the failed model here closes that gap UNIVERSALLY:
+    every quality re-pend funnels through ``_stamp_retry_feedback`` (its sole
+    chokepoint), so this one call makes all of them escalate symmetrically.
+
+    Idempotent (dedup) and a no-op when ``generating_model`` is unknown.
     """
+    gen = ctx.get("generating_model") or ""
+    if not gen:
+        return
+    failed = list(ctx.get("failed_models") or [])
+    if gen not in failed:
+        failed.append(gen)
+        ctx["failed_models"] = failed
+
+
+def _stamp_retry_feedback(ctx: dict, next_attempt: int) -> None:
+    """Prepare ``ctx`` for the next quality-retry attempt. Called by EVERY
+    quality re-pend branch (grade + all mechanical checks), so it is the single
+    place that guarantees the per-attempt invariants hold for all of them:
+
+    1. Tag freshly-written ``_schema_error``/``_prev_output`` with the attempt
+       number they were written FOR. Readers gate on this so stale feedback from
+       earlier failure modes (e.g. schema reject 2 attempts ago, then
+       availability bounce that re-queues without rewriting) doesn't leak into
+       the next prompt as ``"your last output failed: <unrelated>"``.
+    2. Record the failing model in ``failed_models`` so the retry escalation's
+       model-exclusion arm engages — not just the difficulty bump. This is a
+       QUALITY-only chokepoint (availability/infra retries ride decide_retry,
+       never this), so excluding the model is always correct here.
+    """
+    _record_failed_model(ctx)
     if "_schema_error" in ctx or "_prev_output" in ctx:
         ctx["_schema_error_for_attempt"] = int(next_attempt)
 
@@ -1642,6 +1678,34 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
     gen_model = source_ctx.get("generating_model") or ""
 
     if kind == "grade":
+        # Fix #1 — deterministic artifact-schema gate BEFORE the LLM grade.
+        # ``grade`` is the terminal chain entry, so any constrained_emit /
+        # self_reflect rewrite has already landed on ``source.result``. Shape
+        # and field-completeness are mechanical facts: a missing required field
+        # or an object-where-an-array-is-required is FAIL with a precise reason,
+        # unlike the prose grader's bare COMPLETE:NO that left capable producers
+        # retrying blind to DLQ (#289735 single-object-vs-array, #289737 field
+        # completeness). Route the failure through the SAME grade-FAIL retry /
+        # escalation path (its message rides under ``error`` where
+        # _grader_verdict_text reads it) and skip the wasted LLM grade. The
+        # grader then judges semantics only, on shape-valid artifacts.
+        _art_schema = source_ctx.get("artifact_schema")
+        if isinstance(_art_schema, dict) and _art_schema:
+            _draft = source.get("result")
+            if isinstance(_draft, str) and _draft.strip():
+                try:
+                    from mr_roboto.schema_gate import schema_gate as _schema_gate
+                    _sg = _schema_gate(output_value=_draft, schema=_art_schema)
+                except Exception:  # noqa: BLE001 — never let the gate crash grade
+                    _sg = {"passed": True, "error": ""}
+                if not _sg.get("passed"):
+                    await _apply_posthook_verdict(
+                        {"id": source_id},
+                        PostHookVerdict(
+                            source_task_id=source_id, kind="grade", passed=False,
+                            raw={"passed": False,
+                                 "error": f"schema gate: {_sg.get('error')}"}))
+                    return False  # verdict applied directly — no LLM grade spawned
         from src.core.grading import build_grading_spec, GradeResult
         excl = list(exclusions) if exclusions is not None else \
             list({m for m in [gen_model, *(source_ctx.get("grade_excluded_models") or [])] if m})
@@ -1707,8 +1771,11 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         if response_format is None:
             return False  # unconstrainable (markdown/string) — validator covers it
         if should_skip_emit(draft, artifact_schema):
-            # Draft already parses with all required keys — re-emitting would
-            # compress, not reshape. Skip the child entirely (no rewrite).
+            # Draft already PASSES full schema validation (== the schema gate
+            # would pass) — re-emitting would only risk tail-compression. Skip
+            # the child. A draft that FAILS validation (missing nested fields /
+            # wrong container) now falls through and gets re-emitted BEFORE the
+            # gate, instead of flowing on to DLQ on a blind retry.
             return False
         messages = build_emit_messages(draft, response_format)
         spec = {
@@ -1726,8 +1793,11 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 "messages": messages,
                 "failures": [],
                 "estimated_input_tokens": max(1000, len(messages[1]["content"]) // 4),
+                # Output budget tracks the FULL draft (re-emit is ~1:1 reshape),
+                # no 30000-char pre-cap. The 16000 ceiling is a model max-output
+                # guard, not a content truncation of an input.
                 "estimated_output_tokens": min(
-                    16000, max(2000, len(draft[:30000]) // 3),
+                    16000, max(2000, len(draft) // 3),
                 ),
                 "prefer_speed": True,
                 "response_format": response_format,
@@ -1759,6 +1829,9 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
             stack=source_ctx.get("stack"), layer=source_ctx.get("layer"),
         )
         messages = build_reflect_messages(source, draft, checklist=checklist)
+        # Estimate from the ACTUAL (untruncated) prompt so selection fits the
+        # context window — else the call-level cap re-truncates the draft.
+        _reflect_chars = sum(len(m.get("content") or "") for m in messages)
         spec = {
             "title": f"reflect:task#{source_id}",
             "description": "Self-reflection review of step output",
@@ -1773,7 +1846,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 "difficulty": 6,
                 "messages": messages,
                 "failures": [],
-                "estimated_input_tokens": 800,
+                "estimated_input_tokens": max(800, _reflect_chars // 4),
                 "estimated_output_tokens": 500,
                 "prefer_speed": True,
             }},
@@ -2202,6 +2275,7 @@ def _posthook_agent_and_payload(
             source_ctx.get("report_path")
             or (produces[0] if produces else None)
         )
+        candidates_path = source_ctx.get("candidates_path")
         return ("mechanical", {
             "source_task_id": a.source_task_id,
             "posthook_kind": "prior_art_min_coverage",
@@ -2210,6 +2284,7 @@ def _posthook_agent_and_payload(
                 "action": "prior_art_min_coverage",
                 "report_path": report_path,
                 "report": source_ctx.get("report"),
+                "candidates_path": candidates_path,
             },
         })
     if a.kind == "verify_falsification_present":
@@ -3845,6 +3920,19 @@ _Z1_WARNING_KINDS: frozenset[str] = frozenset({
 
 _Z1_MECHANICAL_KINDS: frozenset[str] = _Z1_BLOCKER_KINDS | _Z1_WARNING_KINDS
 
+# Z1 blockers whose verdict judges LLM PRODUCER output (fabrication / thin
+# grounding), NOT a deterministic on-disk artifact. These must NOT single-shot
+# DLQ — a retry on an escalated (stronger) model can ground correctly — so the
+# verdict dispatcher routes them through the retry-with-escalation rail
+# (_apply_simple_blocker_verdict) instead of _apply_z1_mechanical_verdict. The
+# remaining _Z1_BLOCKER_KINDS (compliance_template_present / compliance_blocker_
+# check — file-presence + on-disk overlay checks; critic_gate — a veto) stay
+# single-shot, since re-running the same artifact through the same model is
+# pointless there. See project_quality_failure_escalation_20260604.
+_PRODUCER_QUALITY_Z1_BLOCKERS: frozenset[str] = frozenset({
+    "prior_art_min_coverage",
+})
+
 
 async def _apply_z1_mechanical_verdict(
     source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
@@ -4773,6 +4861,26 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
         # Adapt the verb's problem lists into `findings`, then share the
         # existing re-pend-with-feedback rail. Blocker semantics: a failed
         # check re-pends the PRODUCER (not the validator) with the problems.
+        _adapt_shape_findings(a)
+        await _apply_simple_blocker_verdict(
+            kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
+            feedback_prefix=f"{a.kind.replace('_', ' ')} gate",
+        )
+        return
+
+    if a.kind in _PRODUCER_QUALITY_Z1_BLOCKERS:
+        # A Z1 blocker whose verdict judges LLM PRODUCER output (e.g.
+        # prior_art_min_coverage caught the synthesizer fabricating Habitica/
+        # Streaks instead of grounding in the fetched candidates, #289710
+        # 2026-06-04). Unlike the other Z1 blockers — which are deterministic
+        # against on-disk artifacts, so re-running the SAME model re-emits the
+        # SAME artifact and single-shot DLQ is correct — a stronger/escalated
+        # model WOULD ground here. Route it through the retry-with-escalation
+        # rail (_apply_simple_blocker_verdict + the _stamp_retry_feedback model
+        # exclusion) instead of _apply_z1_mechanical_verdict's single-shot DLQ,
+        # so worker_attempts climb to 3 and get_model_constraints excludes the
+        # fabricating model + bumps difficulty. See the escalation audit
+        # (project_quality_failure_escalation_20260604).
         _adapt_shape_findings(a)
         await _apply_simple_blocker_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,

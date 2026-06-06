@@ -58,6 +58,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "verify_premortem_shape": "full",
     "spec_consistency_check": "full",
     "prior_art_min_coverage": "full",
+    "prior_art_fetch": "full",  # network fetch + local workspace write; git-reversible
     "verify_against_paraflow_goldens": "full",  # comparison only
     "paraflow_audit_all": "full",  # iterates verify_against_paraflow_goldens
     "compliance_template_present": "full",

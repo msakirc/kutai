@@ -41,6 +41,42 @@ def test_v3_prep_apply_steps_route_to_pipeline_handler():
         }
 
 
+def test_v3_compare_all_fans_into_synth_producers():
+    wf = load_workflow("shopping_v3")
+    by_id = {s["id"]: s for s in wf.steps}
+    # prep gated on the compare-all tap, depends on the clarify step
+    prep = by_id["2.3a"]
+    assert prep["agent"] == "shopping_pipeline_v2" and prep["name"] == "compare_prep"
+    assert prep["skip_when"] == "clarify_choice.kind != 'compare_all'"
+    assert prep["depends_on"] == ["2.1"]
+    # five synthesizer producer dispatch steps, each per-index skip-gated
+    for i in range(5):
+        d = by_id[f"2.3_{i}_d"]
+        assert d["agent"] == "shopping_synthesizer"
+        assert d["depends_on"] == ["2.3a"]
+        assert d["skip_when"] == f"compare_flags.has_line_{i} == 'false'"
+        assert d["input_artifacts"] == [f"cmp_input_{i}"]
+        assert d["output_artifacts"] == [f"cmp_raw_{i}"]
+        a = by_id[f"2.3_{i}_a"]
+        assert a["name"] == "compare_line_apply"
+        assert a["context"]["line_index"] == i
+        assert a["output_artifacts"] == [f"cmp_card_{i}"]
+
+
+def test_v3_compare_assemble_is_native_join_and_last():
+    wf = load_workflow("shopping_v3")
+    steps = wf.steps
+    by_id = {s["id"]: s for s in steps}
+    asm = by_id["2.3z"]
+    assert asm["name"] == "compare_assemble"
+    # native depends_on join over all five line applies
+    assert asm["depends_on"] == [f"2.3_{i}_a" for i in range(5)]
+    assert asm["output_artifacts"] == ["shopping_response"]
+    assert asm["skip_when"] == "clarify_choice.kind != 'compare_all'"
+    # must be the highest-id (last) step so mission-completion delivers it
+    assert steps[-1]["id"] == "2.3z"
+
+
 def test_v3_declares_no_file_produces():
     # Producer/prep/apply steps emit plain JSON artifacts, NOT declared file
     # produces — so materialize_produces is a no-op for them (spec risk 6).

@@ -1407,6 +1407,125 @@ async def handler_synth_apply(task: dict, artifacts: dict, ctx: dict) -> dict:
     return {"cards": cards, "escalation_needed": False}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# compare-all (Approach B: fixed-cap native-join). The clarify "compare all" tap
+# fans out into ≤MAX_CLARIFY_OPTIONS synthesizer producer steps that run as normal
+# workflow tasks joined by the engine's native depends_on. No CPS, no engine loop:
+#   compare_prep -> {cmp_input_i + cmp_meta_i (×5) + compare_flags}
+#   2.3_i_dispatch (agent:shopping_synthesizer, skip_when has_line_i=='false')
+#   2.3_i_apply    (compare_line_apply, line_index=i) -> cmp_card_i
+#   compare_assemble (depends_on all 5 applies) -> shopping_response
+# A skipped line counts as a satisfied dependency, so assemble runs once line 0
+# completes. compare_prep gathers every line's snippets concurrently up front.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MAX_COMPARE_LINES = 5  # == variant_gate.MAX_CLARIFY_OPTIONS; the fixed slot count
+
+
+async def handler_compare_prep(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Build the ≤5 per-line synthesizer inputs + the has_line_i skip flags.
+
+    Reads the clarify gate's payloads, renders the comparison header, and gathers
+    each line's review snippets concurrently. Emits a fixed set of artifacts —
+    `compare_flags` plus `cmp_input_i`/`cmp_meta_i` for i in 0..4 (unused slots are
+    stubs) — so the multi-output envelope split always finds every declared key.
+    """
+    raw = artifacts.get("gate_result", "{}")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    cands = _candidates_from_json(payload.get("candidates", []))
+    base_label = payload.get("base_label") or "Ürün"
+    payloads = payload.get("clarify_payloads", {}) or {}
+    groups = [_group_from_dict(v) for v in payloads.values()][:_MAX_COMPARE_LINES]
+
+    header = step_compare_all(groups, cands, base_label=base_label) if groups else ""
+
+    # Gather snippets for every line concurrently (deep_scrape off — community
+    # scrapers are rate-limited; mirrors the legacy _handler_format_compare path).
+    snippet_piles = await asyncio.gather(
+        *[gather_review_snippets(g, cands, deep_scrape=False) for g in groups],
+        return_exceptions=True,
+    )
+
+    out: dict = {}
+    flags: dict = {"n_lines": len(groups), "header": header}
+    for i in range(_MAX_COMPARE_LINES):
+        if i < len(groups):
+            g = groups[i]
+            snippets = snippet_piles[i]
+            if isinstance(snippets, BaseException):
+                logger.warning("compare snippet gather failed for %s: %s",
+                               g.representative_title, snippets)
+                snippets = []
+            out[f"cmp_input_{i}"] = json.dumps(
+                {"representative_title": g.representative_title, "snippets": snippets},
+                ensure_ascii=False)
+            out[f"cmp_meta_{i}"] = json.dumps(
+                {"group": _group_to_dict(g), "candidates": _candidates_to_json(cands),
+                 "snippet_count": len(snippets), "escalation": False},
+                ensure_ascii=False)
+            flags[f"has_line_{i}"] = "true"
+        else:
+            out[f"cmp_input_{i}"] = json.dumps(
+                {"representative_title": "", "snippets": []}, ensure_ascii=False)
+            out[f"cmp_meta_{i}"] = json.dumps({"escalation": True}, ensure_ascii=False)
+            flags[f"has_line_{i}"] = "false"
+
+    out["compare_flags"] = json.dumps(flags, ensure_ascii=False)
+    return out
+
+
+async def handler_compare_line_apply(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Parse one line's synthesizer `cmp_raw_i` into an indexed card artifact.
+
+    `line_index` comes from the step context; reads `cmp_raw_{i}`/`cmp_meta_{i}`
+    and emits `cmp_card_{i}` = {card, escalation}.
+    """
+    i = int(ctx.get("line_index", 0))
+    meta_raw = artifacts.get(f"cmp_meta_{i}", "{}")
+    meta = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+    if meta.get("escalation") or not meta.get("group"):
+        return {f"cmp_card_{i}": json.dumps({"card": "", "escalation": True})}
+
+    group = _group_from_dict(meta["group"])
+    cands = _candidates_from_json(meta.get("candidates", []))
+    snippet_count = int(meta.get("snippet_count", 0))
+    if snippet_count == 0:
+        syn = _insufficient()
+    else:
+        syn = _parse_synthesis_raw(artifacts.get(f"cmp_raw_{i}", ""), snippet_count)
+    card = format_group_card(group, syn, cands)
+    return {f"cmp_card_{i}": json.dumps({"card": card, "escalation": False},
+                                        ensure_ascii=False)}
+
+
+async def handler_compare_assemble(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """Stack the per-line cards under the comparison header into `shopping_response`.
+
+    Mirrors `_handler_format_response`'s output shape ({formatted_text, escalation})
+    so the mission-completion delivery unwraps it; declared as the final (highest-id)
+    step on the compare branch so it is the delivered task.
+    """
+    flags_raw = artifacts.get("compare_flags", "{}")
+    flags = json.loads(flags_raw) if isinstance(flags_raw, str) else (flags_raw or {})
+    header = flags.get("header", "")
+    n = int(flags.get("n_lines", 0))
+
+    cards: list[str] = []
+    for i in range(n):
+        raw = artifacts.get(f"cmp_card_{i}")
+        if not raw:
+            continue
+        d = json.loads(raw) if isinstance(raw, str) else raw
+        if d.get("card"):
+            cards.append(d["card"])
+
+    if not cards:
+        return {"formatted_text": f"{header}\nVeri yok.".strip(), "escalation": True}
+
+    body = ("\n" + ("─" * 20) + "\n").join(cards)
+    return {"formatted_text": f"{header}\n{body}".strip(), "escalation": False}
+
+
 _STEP_HANDLERS_V2 = {
     "resolve_candidates": _handler_resolve_candidates,
     "group_label_filter_gate": _handler_group_label_filter_gate,
@@ -1418,6 +1537,10 @@ _STEP_HANDLERS_V2 = {
     "label_apply_filter_gate": handler_label_apply_filter_gate,
     "synth_prep": handler_synth_prep,
     "synth_apply": handler_synth_apply,
+    # compare-all (Approach B)
+    "compare_prep": handler_compare_prep,
+    "compare_line_apply": handler_compare_line_apply,
+    "compare_assemble": handler_compare_assemble,
 }
 
 _STEP_HANDLERS_V2.update({

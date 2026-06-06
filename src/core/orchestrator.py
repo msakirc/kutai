@@ -446,7 +446,12 @@ class Orchestrator:
             # specific category lets retry.py back off longer and let
             # the pool actually recover.
             cat = getattr(mcf, "error_category", "") or "availability"
-            result = {"status": "failed", "error": str(mcf)[:500], "error_category": cat}
+            # call_id carries the failed model name (husam/dispatcher set it to
+            # model.name). Surface it as "model" so on_task_finished can append
+            # it to context.failed_models — without this the retry-exclusion
+            # machinery (failures= propagation) is a no-op on the raw path.
+            result = {"status": "failed", "error": str(mcf)[:500],
+                      "error_category": cat, "model": getattr(mcf, "call_id", "") or ""}
             logger.warning("ModelCallFailed task #%s: %s (category=%s)", task_id, mcf, cat)
         except Exception as e:
             result = _dispatch_exc_to_result(e, task)

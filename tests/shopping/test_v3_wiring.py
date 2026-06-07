@@ -91,6 +91,23 @@ def test_v3_every_pipeline_step_has_a_registered_handler():
     assert not missing, f"steps with no handler: {missing}"
 
 
+def test_v3_every_agent_type_is_registered():
+    # get_agent() silently falls back to the generic "executor" for unknown
+    # types — an unregistered producer would run as a no-op agent producing
+    # garbage, not error. Assert every v3 agent_type resolves to itself.
+    from src.agents import AGENT_REGISTRY
+    wf = load_workflow("shopping_v3")
+    # mechanical -> mr_roboto; shopping_pipeline_v2 -> orchestrator special-case
+    # (deterministic dispatcher, covered by the handler guard above). Both bypass
+    # get_agent/AGENT_REGISTRY by design.
+    builtin = {"mechanical", "shopping_pipeline_v2"}
+    missing = [
+        s["agent"] for s in wf.steps
+        if s["agent"] not in AGENT_REGISTRY and s["agent"] not in builtin
+    ]
+    assert not missing, f"unregistered agent types: {sorted(set(missing))}"
+
+
 def test_v3_declares_no_file_produces():
     # Producer/prep/apply steps emit plain JSON artifacts, NOT declared file
     # produces — so materialize_produces is a no-op for them (spec risk 6).

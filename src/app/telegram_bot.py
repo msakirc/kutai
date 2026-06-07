@@ -2304,6 +2304,10 @@ class TelegramInterface:
         self.app.add_handler(CallbackQueryHandler(
             self._handle_variant_choice, pattern=r"^(vc|variant_choice):"
         ))
+        # 5.0b surfaces_lock — founder picks target platforms.
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_surface_choice, pattern=r"^sc:"
+        ))
         # Z10 T2B: typed event + confirmation reactions
         self.app.add_handler(CallbackQueryHandler(
             self._handle_mission_event_callback,
@@ -10519,6 +10523,97 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             "options": options,
             "base_label": base_label,
         }
+
+    async def send_surface_keyboard(
+        self,
+        chat_id: int,
+        mission_id: int,
+        task_id: int,
+        options: list,
+    ) -> None:
+        """Send the 5.0b reply keyboard asking which platforms to target.
+
+        callback_data encodes mission_id + task_id + the parsed surface
+        tokens (``sc:{mid}:{tid}:mobile,web``) so a tap survives a bot
+        restart without needing the in-memory _pending_action (which is
+        lost on restart). The token list rides in the callback so the
+        handler never has to re-read the step definition.
+        """
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from mr_roboto.surfaces_persist import parse_surface_choice
+        buttons = []
+        for opt in options:
+            toks = parse_surface_choice(opt)
+            if not toks:
+                continue
+            buttons.append([InlineKeyboardButton(
+                str(opt),
+                callback_data=f"sc:{mission_id}:{task_id}:{','.join(toks)}",
+            )])
+        if not buttons:
+            logger.warning(
+                "send_surface_keyboard: no parseable options for mission=%s task=%s",
+                mission_id, task_id,
+            )
+            return
+        markup = InlineKeyboardMarkup(buttons)
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text="📱 Bu ürün hangi platformları hedefliyor?",
+            reply_markup=markup,
+        )
+        self._pending_action[chat_id] = {
+            "kind": "surface_choice",
+            "mission_id": mission_id,
+            "task_id": task_id,
+        }
+
+    async def _handle_surface_choice(self, update, context):
+        """Founder picked target surfaces — persist surfaces.json + advance.
+
+        Parses ``sc:{mission_id}:{task_id}:{tok,tok}`` directly (survives
+        restart), writes ``.charter/surfaces.json`` via the mechanical
+        writer, then completes the parked 5.0b task so the workflow
+        advances and ``verify_surfaces_shape`` finds a conforming file.
+        """
+        await update.callback_query.answer()
+        data = update.callback_query.data or ""
+        parts = data.split(":")
+        if len(parts) != 4:
+            return
+        try:
+            mission_id = int(parts[1])
+            task_id = int(parts[2])
+        except ValueError:
+            return
+        surfaces = [s for s in parts[3].split(",") if s]
+        if not surfaces:
+            return
+        option_label = " + ".join(surfaces)
+        from mr_roboto.surfaces_persist import write_surfaces_json
+        from src.infra.db import update_task
+        try:
+            written = await write_surfaces_json(
+                mission_id=mission_id,
+                option_label=option_label,
+            )
+        except Exception as exc:
+            logger.exception("surface_choice persist failed: %s", exc)
+            try:
+                await update.callback_query.edit_message_text(
+                    "⚠️ Platform seçimi kaydedilemedi, tekrar deneyin."
+                )
+            except Exception:
+                pass
+            return
+        self._pending_action.pop(update.effective_chat.id, None)
+        await update_task(task_id, status="completed")
+        try:
+            await update.callback_query.edit_message_text(
+                f"✅ Platformlar: {', '.join(written.get('surfaces', surfaces))}"
+            )
+        except Exception:
+            pass
 
     async def send_artifact_confirm_keyboard(
         self,

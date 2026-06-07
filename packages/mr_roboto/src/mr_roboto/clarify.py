@@ -60,6 +60,87 @@ async def send_variant_keyboard(
         return False
 
 
+async def send_surface_keyboard(
+    mission_id: int | None,
+    task_id: int,
+    chat_id: int | None,
+    options: list[str],
+) -> bool:
+    """Send the surface-choice (5.0b) reply keyboard via Telegram.
+
+    Mirrors ``send_variant_keyboard``: delegates to
+    ``TelegramInterface.send_surface_keyboard`` which renders the inline
+    keyboard and registers the pending ``surface_choice`` state for the
+    callback handler. Returns False (caller leaves the task parked, not
+    completed) when Telegram is unavailable or chat_id is missing.
+    """
+    if not chat_id:
+        logger.warning(
+            "send_surface_keyboard: no chat_id for mission=%s task=%s — skipping",
+            mission_id, task_id,
+        )
+        return False
+    try:
+        tg = get_telegram()
+    except Exception as exc:
+        logger.warning("send_surface_keyboard: Telegram unavailable: %s", exc)
+        return False
+    if tg is None:
+        return False
+    try:
+        await tg.send_surface_keyboard(
+            chat_id=int(chat_id),
+            mission_id=mission_id,
+            task_id=task_id,
+            options=options,
+        )
+        return True
+    except Exception as exc:
+        logger.exception(
+            "send_surface_keyboard failed for mission=%s task=%s: %s",
+            mission_id, task_id, exc,
+        )
+        return False
+
+
+async def _resolve_chat_id(task: dict, mission_id: int | None) -> int | None:
+    """Resolve the founder chat_id (blackboard → task row → missions.context).
+
+    Same fallback chain proven by the variant_choice path (mission 49):
+    chat_id lives in the blackboard artifact bag for mission-spawned flows,
+    falls to the task row for standalone /task flows, and finally to
+    missions.context for older seed paths.
+    """
+    if mission_id is not None:
+        try:
+            from src.collaboration.blackboard import read_blackboard
+            artifacts = await read_blackboard(mission_id, "artifacts")
+            if isinstance(artifacts, dict) and artifacts.get("chat_id") is not None:
+                return artifacts.get("chat_id")
+        except Exception as exc:
+            logger.debug("_resolve_chat_id (blackboard) lookup failed: %s", exc)
+    if task.get("chat_id") is not None:
+        return task.get("chat_id")
+    if mission_id is not None:
+        try:
+            from src.infra.db import get_db as _get_db
+            import json as _json2
+            _db = await _get_db()
+            _cur = await _db.execute(
+                "SELECT context FROM missions WHERE id = ?", (mission_id,),
+            )
+            _row = await _cur.fetchone()
+            await _cur.close()
+            if _row and _row[0]:
+                _mctx = _json2.loads(_row[0])
+                if isinstance(_mctx, str):
+                    _mctx = _json2.loads(_mctx)
+                return (_mctx or {}).get("chat_id")
+        except Exception as exc:
+            logger.debug("_resolve_chat_id (missions) lookup failed: %s", exc)
+    return None
+
+
 async def clarify(task: dict) -> dict:
     payload = task.get("payload") or {}
     kind = payload.get("kind")
@@ -105,6 +186,42 @@ async def clarify(task: dict) -> dict:
         except Exception as exc:
             # Never block clarify on a budget-check error — log and proceed.
             logger.warning("clarify: attention_check failed: %s", exc)
+
+    if kind == "surface_choice":
+        # 5.0b surfaces_lock — ask the founder which platforms to target.
+        # Pre-fix this fell to the default branch and DLQ'd on "clarify
+        # payload requires 'question'": that branch can neither render the
+        # options keyboard nor write surfaces.json. Mirror variant_choice:
+        # send a keyboard, park the task; the Telegram callback writes
+        # surfaces.json + completes the task.
+        mission_id = task.get("mission_id")
+        options = payload.get("options") or []
+        chat_id = await _resolve_chat_id(task, mission_id)
+        sent = await send_surface_keyboard(mission_id, task["id"], chat_id, options)
+        if sent:
+            await update_task(task["id"], status="waiting_human")
+            return {
+                "status": "needs_clarification",
+                "kind": "surface_choice",
+                "prompt": "Bu ürün hangi platformları hedefliyor?",
+                "keyboard_sent": True,
+            }
+        # Keyboard could NOT be sent (no chat_id / Telegram down). This is a
+        # human confirmation gate with NO automated fallback (unlike
+        # variant_choice's compare-all): completing it would leave no
+        # surfaces.json, the verify_surfaces_shape check would silently DLQ.
+        # Fail-closed so the mission halts at the gate; founder fixes the
+        # chat wiring and retries from DLQ.
+        return {
+            "status": "failed",
+            "kind": "surface_choice",
+            "error": (
+                "surface_choice gate could not reach the founder "
+                f"(chat_id unresolved for mission {mission_id}); "
+                "human surface-selection gate cannot be skipped"
+            ),
+            "keyboard_sent": False,
+        }
 
     if kind == "variant_choice":
         payload_from = payload.get("payload_from", "gate_result")

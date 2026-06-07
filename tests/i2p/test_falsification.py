@@ -86,6 +86,36 @@ def test_critical_with_specific_validation_passes():
     assert res["ok"] is True
 
 
+def test_critical_accepts_concrete_methods_without_keywords():
+    """Lenient heuristic: real measurable methods that match no keyword and
+    carry no digit must still pass (mission-81 3.3/3.7 false-DLQ). Full rigor
+    lives at reviewer 3.11 — the pre-gate only rejects vague rationalizations.
+    """
+    for method in (
+        "Automated security penetration test targeting session bypass.",
+        "Quarterly full-scale disaster recovery (DR) drill simulation",
+        "Monthly backup integrity testing and point-in-time recovery validation",
+    ):
+        item = _good_item("BR-X", risk="critical")
+        item["validation_method"] = method
+        res = verify_falsification_present(
+            artifacts={"business_rules": [item]}
+        )
+        assert res["ok"] is True, (method, res)
+        assert res["critical_underspecified"] == [], (method, res)
+
+
+def test_critical_rejects_terse_nonanswer():
+    """A critical method too short to name a concrete check still fails."""
+    bad = _good_item("FR-007", risk="critical")
+    bad["validation_method"] = "we test"
+    res = verify_falsification_present(
+        artifacts={"functional_requirements": [bad]}
+    )
+    assert res["ok"] is False
+    assert res["critical_underspecified"]
+
+
 def test_walks_dict_with_items_array():
     res = verify_falsification_present(
         artifacts={

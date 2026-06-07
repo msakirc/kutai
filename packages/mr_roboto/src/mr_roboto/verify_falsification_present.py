@@ -74,21 +74,38 @@ _CRITICAL_METHOD_BLOCKLIST = (
     "tell us",
 )
 
+# A critical validation_method must carry at least this much substance to
+# name a concrete check. Guards against terse non-answers ("review it",
+# "we test") without rejecting real multi-word methods.
+_MIN_METHOD_CHARS = 12
+
 
 def _has_text(v: Any) -> bool:
     return isinstance(v, str) and bool(v.strip())
 
 
 def _is_specific_validation(text: str) -> bool:
-    """Heuristic: validation_method names a measurable / specific check."""
+    """Heuristic: validation_method is specific enough for a critical item.
+
+    Lenient by design — this is a cheap pre-gate; full LLM rigor lives at
+    reviewer 3.11. A method PASSES unless it is empty, matches a known vague
+    rationalization (``_CRITICAL_METHOD_BLOCKLIST``), or is too short to name
+    a concrete check. The keyword/digit set is a fast accept, not a
+    requirement: the narrow allowlist used to false-reject legitimate methods
+    like "penetration test", "quarterly DR drill", "point-in-time recovery
+    validation" (mission-81 3.3/3.7 DLQ), which the blocklist correctly lets
+    through.
+    """
     if not _has_text(text):
         return False
-    s = text.lower()
+    s = text.lower().strip()
     if any(b in s for b in _CRITICAL_METHOD_BLOCKLIST):
         return False
-    if any(c.isdigit() for c in s):
+    # Fast accept: a measurable threshold or a known concrete-method keyword.
+    if any(c.isdigit() for c in s) or any(k in s for k in _CRITICAL_METHOD_KEYWORDS):
         return True
-    return any(k in s for k in _CRITICAL_METHOD_KEYWORDS)
+    # Lenient fallback: enough substance to name a check (real rigor at 3.11).
+    return len(s) >= _MIN_METHOD_CHARS
 
 
 def _extract_items(value: Any) -> list[Any]:

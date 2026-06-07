@@ -382,7 +382,7 @@ def init(
 
     # ── Blend profile + benchmark into final capabilities vector ──
     try:
-        from src.models.auto_tuner import blend_capability_scores
+        from .auto_tuner import blend_capability_scores
 
         for m in _registry.all_models():
             if not m.benchmark_scores:

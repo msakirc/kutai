@@ -4,6 +4,11 @@ Auto-tuner: blends profile scores, benchmark scores, and empirical
 grading data to keep per-model capability vectors up to date.
 
 Runs periodically (every 6 h by default) as a batch recalibration.
+
+Relocated 2026-06-07 from src/models/auto_tuner.py — it tunes the
+capability vectors fatih_hoca ranks on, so it belongs in fatih_hoca.
+The move also removes a package->src dependency inversion (fatih_hoca's
+init previously reached back into src.models for blend_capability_scores).
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ import time
 from typing import Any
 
 from src.infra.logging_config import get_logger
-from fatih_hoca.capabilities import TASK_PROFILES, Cap
+from .capabilities import TASK_PROFILES, Cap
 
 log = get_logger("auto_tuner")
 

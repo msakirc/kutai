@@ -6798,7 +6798,7 @@ class TelegramInterface:
         """/tune — force an auto-tuning cycle and report results."""
         await self._reply(update,"Running tuning cycle...")
         try:
-            from src.models.auto_tuner import maybe_run_tuning
+            from fatih_hoca.auto_tuner import maybe_run_tuning
             report = await maybe_run_tuning(force=True)
 
             tuned = report.get("tuned_models", {}) if report else {}

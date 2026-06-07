@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.auto_tuner import (
+from fatih_hoca.auto_tuner import (
     MIN_CHANGE_THRESHOLD,
     TUNING_INTERVAL_SECONDS,
     _get_blend_weights,
@@ -323,7 +323,7 @@ class TestRunTuningCycle(unittest.TestCase):
 
         with patch("src.infra.db.get_model_stats", mock_get_stats), \
              patch("src.models.model_registry.get_registry", return_value=fake_registry):
-            import src.models.auto_tuner as at_mod
+            import fatih_hoca.auto_tuner as at_mod
             orig_last = at_mod._last_run_ts
             try:
                 report = self._run(run_tuning_cycle())
@@ -344,7 +344,7 @@ class TestRunTuningCycle(unittest.TestCase):
 
         with patch("src.infra.db.get_model_stats", mock_get_stats), \
              patch("src.models.model_registry.get_registry", return_value=fake_registry):
-            import src.models.auto_tuner as at_mod
+            import fatih_hoca.auto_tuner as at_mod
             orig_last = at_mod._last_run_ts
             try:
                 report = self._run(run_tuning_cycle())
@@ -376,7 +376,7 @@ class TestRunTuningCycle(unittest.TestCase):
 
         with patch("src.infra.db.get_model_stats", mock_get_stats), \
              patch("src.models.model_registry.get_registry", return_value=fake_registry):
-            import src.models.auto_tuner as at_mod
+            import fatih_hoca.auto_tuner as at_mod
             orig = at_mod._last_run_ts
             try:
                 report = self._run(run_tuning_cycle())
@@ -399,7 +399,7 @@ class TestMaybeRunTuning(unittest.TestCase):
 
     def test_skips_when_recent(self):
         """Does not run if last run was recent."""
-        import src.models.auto_tuner as at_mod
+        import fatih_hoca.auto_tuner as at_mod
         orig = at_mod._last_run_ts
         try:
             at_mod._last_run_ts = time.time()  # just ran
@@ -410,7 +410,7 @@ class TestMaybeRunTuning(unittest.TestCase):
 
     def test_runs_when_stale(self):
         """Runs if 6+ hours since last run."""
-        import src.models.auto_tuner as at_mod
+        import fatih_hoca.auto_tuner as at_mod
         model = FakeModelInfo(name="m1", capabilities=_make_caps(5.0))
         fake_registry = FakeRegistry({"m1": model})
 
@@ -528,7 +528,7 @@ class TestLitellmNameFallback(unittest.TestCase):
 
         with patch("src.infra.db.get_model_stats", mock_get_stats), \
              patch("src.models.model_registry.get_registry", return_value=fake_registry):
-            import src.models.auto_tuner as at_mod
+            import fatih_hoca.auto_tuner as at_mod
             orig = at_mod._last_run_ts
             try:
                 report = self._run(run_tuning_cycle())
@@ -572,7 +572,7 @@ class TestLitellmNameFallback(unittest.TestCase):
 
         with patch("src.infra.db.get_model_stats", mock_get_stats), \
              patch("src.models.model_registry.get_registry", return_value=fake_registry):
-            import src.models.auto_tuner as at_mod
+            import fatih_hoca.auto_tuner as at_mod
             orig = at_mod._last_run_ts
             try:
                 report = self._run(run_tuning_cycle())
@@ -601,7 +601,7 @@ class TestLastRunTimestamp(unittest.TestCase):
         fake_registry = FakeRegistry({"m1": model})
         mock_get_stats = AsyncMock(return_value=[])
 
-        import src.models.auto_tuner as at_mod
+        import fatih_hoca.auto_tuner as at_mod
         orig = at_mod._last_run_ts
         try:
             at_mod._last_run_ts = 0.0
@@ -623,7 +623,7 @@ class TestLastRunTimestamp(unittest.TestCase):
         fake_registry = FakeRegistry({"m1": model})
         mock_get_stats = AsyncMock(return_value=[])
 
-        import src.models.auto_tuner as at_mod
+        import fatih_hoca.auto_tuner as at_mod
         orig = at_mod._last_run_ts
         try:
             at_mod._last_run_ts = time.time()  # just ran
@@ -724,7 +724,7 @@ class TestPrometheusLabelEscaping(unittest.TestCase):
 
     def test_backslash_and_quote_escaped(self):
         """Model names with backslash and double-quote are escaped."""
-        from src.models.auto_tuner import _prom_escape_label
+        from fatih_hoca.auto_tuner import _prom_escape_label
         caps = {"reasoning": 5.0}
         model = FakeModelInfo(
             name='model\\"weird',
@@ -742,14 +742,14 @@ class TestPrometheusLabelEscaping(unittest.TestCase):
 
     def test_newline_escaped(self):
         """Newlines in label values are escaped to \\n."""
-        from src.models.auto_tuner import _prom_escape_label
+        from fatih_hoca.auto_tuner import _prom_escape_label
         self.assertEqual(_prom_escape_label("line1\nline2"), "line1\\nline2")
         self.assertEqual(_prom_escape_label('a"b'), 'a\\"b')
         self.assertEqual(_prom_escape_label("a\\b"), "a\\\\b")
 
     def test_normal_names_unchanged(self):
         """Normal model names pass through unmodified."""
-        from src.models.auto_tuner import _prom_escape_label
+        from fatih_hoca.auto_tuner import _prom_escape_label
         self.assertEqual(_prom_escape_label("gpt-4o"), "gpt-4o")
         self.assertEqual(_prom_escape_label("gemini/gemini-2.0-flash"),
                          "gemini/gemini-2.0-flash")

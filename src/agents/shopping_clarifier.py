@@ -18,7 +18,11 @@ class ShoppingClarifierAgent(BaseAgent):
     default_tier = "cheap"
     min_tier = "cheap"
     max_iterations = 3
-    execution_pattern = "single_shot"
+    # react_loop (default): the canonical `clarify` action below is consumed by
+    # the react loop -> status=needs_clarification -> result_router. single_shot
+    # silently dropped the clarify question (returned result=""), so in-workflow
+    # clarification never paused the mission. react also lets the agent use its
+    # shopping_user_profile tool before deciding.
 
     allowed_tools: list[str] = [
         "shopping_user_profile",
@@ -36,24 +40,22 @@ class ShoppingClarifierAgent(BaseAgent):
             "The query names a specific product, brand+model, or exact "
             "comparison. Examples: 'siemens s100', 'dyson v15 detect', "
             "'iphone 15 vs samsung s24'.\n"
-            "→ Return the query as your final answer. No questions needed.\n"
+            "→ Return the query unchanged as your final_answer. No questions.\n"
             "\n"
             "### Path B: Query is BROAD → ask 2-3 questions\n"
             "The query is a generic category that could mean many things. "
             "Examples: 'coffee machines', '3d printers', 'laptop', "
             "'samsung phones'.\n"
-            "→ Use the needs_clarification response to ask the user.\n"
+            "→ Emit a `clarify` action so the system asks the user.\n"
             "\n"
             "## How to Ask (Path B only)\n"
-            "Return a needs_clarification response:\n"
+            "You MUST return the clarify action — the system sends `question` to "
+            "the user via Telegram and waits for their reply:\n"
             "```json\n"
-            '{"action": "needs_clarification",\n'
-            ' "clarification": "Your Turkish question here",\n'
-            ' "result": ""}\n'
+            '{"action": "clarify",\n'
+            ' "question": "Your Turkish question here"}\n'
             "```\n"
-            "The system will send your clarification text to the user via "
-            "Telegram and wait for their reply. Keep it conversational and "
-            "in Turkish. Ask about:\n"
+            "Keep `question` conversational and in Turkish. Always ask about:\n"
             "1. Budget (most important)\n"
             "2. Use case\n"
             "3. Key constraint for the category\n"

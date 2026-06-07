@@ -3,6 +3,7 @@
 from src.agents.shopping_grouper import ShoppingGrouperAgent
 from src.agents.shopping_labeler import ShoppingLabelerAgent
 from src.agents.shopping_synthesizer import ShoppingSynthesizerAgent
+from src.agents.shopping_clarifier import ShoppingClarifierAgent
 
 
 def _assert_invariants(prompt: str):
@@ -51,3 +52,24 @@ def test_synthesizer_is_prompt_only_react():
     assert a.name == "shopping_synthesizer"
     assert a.allowed_tools == []
     assert getattr(a, "execution_pattern", "react_loop") == "react_loop"
+
+
+# ── T9: clarifier single_shot -> react + canonical clarify action shape ──────
+
+def test_clarifier_is_react_not_single_shot():
+    # single_shot drops the clarify question (returns result="") — the workflow
+    # clarify pause only fires when the react loop emits status=needs_clarification
+    # off a canonical action:"clarify".
+    a = ShoppingClarifierAgent()
+    assert getattr(a, "execution_pattern", "react_loop") == "react_loop"
+
+
+def test_clarifier_emits_canonical_clarify_action():
+    # react.py:1651 keys on action=="clarify" with the question under "question";
+    # the old action:"needs_clarification"/"clarification" shape was consumed by
+    # neither runner. The prompt must instruct the canonical shape.
+    p = ShoppingClarifierAgent().get_system_prompt({})
+    assert '"action": "clarify"' in p
+    assert '"question"' in p
+    # Path A still returns the query as a normal final_answer
+    assert "final_answer" in p

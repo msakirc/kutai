@@ -28,11 +28,16 @@ async def test_variant_choice_variant_resumes_mission():
 
 
 @pytest.mark.asyncio
-async def test_variant_choice_compare_all_runs_format_compare():
+async def test_variant_choice_compare_all_resumes_mission_terminal():
+    # v3: compare-all runs in the pump as the native-join branch (2.3*). The tap
+    # resumes the mission with clarify_choice{kind:compare_all} and clears pending;
+    # delivery is terminal (full per-line cards), no synchronous request() bypass.
     from src.app.telegram_bot import TelegramInterface
     iface = TelegramInterface.__new__(TelegramInterface)
     iface._pending_action = {}
-    iface._run_compare_all_and_reply = AsyncMock()
+    iface._resume_mission_at_step = AsyncMock()
+    iface.app = MagicMock()
+    iface.app.bot.send_message = AsyncMock()
     chat_id = 42
     iface._pending_action[chat_id] = {
         "kind": "variant_choice", "mission_id": 7, "task_id": 2,
@@ -44,9 +49,11 @@ async def test_variant_choice_compare_all_runs_format_compare():
     update.callback_query.answer = AsyncMock()
     context = MagicMock()
     await iface._handle_variant_choice(update, context)
-    iface._run_compare_all_and_reply.assert_awaited_once()
-    # Pending stays alive so user can still pick a line after reading cards
-    assert chat_id in iface._pending_action
+    iface._resume_mission_at_step.assert_awaited_once()
+    _, kw = iface._resume_mission_at_step.call_args
+    assert kw["mission_id"] == 7 and kw["after_task_id"] == 2
+    assert kw["clarify_choice"] == {"kind": "compare_all"}
+    assert chat_id not in iface._pending_action
 
 
 @pytest.mark.asyncio
@@ -55,7 +62,6 @@ async def test_variant_choice_stale_callback_noop():
     iface = TelegramInterface.__new__(TelegramInterface)
     iface._pending_action = {}   # no pending entry
     iface._resume_mission_at_step = AsyncMock()
-    iface._run_compare_all_and_reply = AsyncMock()
     chat_id = 42
     update = MagicMock()
     update.effective_chat.id = chat_id
@@ -63,7 +69,6 @@ async def test_variant_choice_stale_callback_noop():
     update.callback_query.answer = AsyncMock()
     await iface._handle_variant_choice(update, context=MagicMock())
     iface._resume_mission_at_step.assert_not_awaited()
-    iface._run_compare_all_and_reply.assert_not_awaited()
     update.callback_query.answer.assert_awaited_once()
 
 

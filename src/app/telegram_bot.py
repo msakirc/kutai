@@ -8599,15 +8599,15 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         # Map sub_intents to workflow names
         wf_map = {
-            "deep_research": "shopping_v2",
-            "research": "shopping_v2",
+            "deep_research": "shopping_v3",
+            "research": "shopping_v3",
             "compare": "combo_research",
             "gift": "gift_recommendation",
             "deals": "exploration",
             "quick_search": "quick_search_v2",
             "product_research": "product_research_v2",
         }
-        workflow_name = wf_map.get(sub_intent or "shopping", "shopping_v2")
+        workflow_name = wf_map.get(sub_intent or "shopping", "shopping_v3")
 
         runner = WorkflowRunner()
         mission_id = await runner.start(
@@ -11092,7 +11092,24 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 self._pending_action[chat_id] = pending
 
         if choice == "all" or choice == "compare_all":
-            await self._run_compare_all_and_reply(chat_id, mission_id, task_id, pending)
+            # v3: run compare-all in the pump as the native-join branch (2.3*).
+            # Resume the mission with clarify_choice{kind:compare_all}; the
+            # synthesizer producers run as admitted tasks (no synchronous
+            # request() bypass) and compare_assemble delivers the stacked
+            # per-line cards terminally.
+            self._pending_action.pop(chat_id, None)
+            try:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text="🔍 Tüm seçenekler için karşılaştırma hazırlanıyor…",
+                )
+            except Exception:
+                pass
+            await self._resume_mission_at_step(
+                mission_id=mission_id,
+                after_task_id=task_id,
+                clarify_choice={"kind": "compare_all"},
+            )
             return
         try:
             gid = int(choice)
@@ -11151,87 +11168,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
         await update_task(after_task_id, status="completed")
 
-    async def _run_compare_all_and_reply(
-        self,
-        chat_id: int,
-        mission_id: int,
-        task_id: int,
-        pending: dict | None = None,
-    ) -> None:
-        """Render category-style comparison then re-attach line buttons for user pick."""
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        from telegram.constants import ChatAction
-        from src.workflows.engine.artifacts import ArtifactStore
-        from src.workflows.shopping.pipeline_v2 import _handler_format_compare
-
-        # Interim feedback — N synth calls can take 10-30s
-        try:
-            await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        except Exception:
-            pass
-        progress_msg = None
-        try:
-            progress_msg = await self.app.bot.send_message(
-                chat_id=chat_id,
-                text="🔍 Tüm seçenekler için inceleme özetleri hazırlanıyor…",
-            )
-        except Exception:
-            progress_msg = None
-
-        store = ArtifactStore()
-        await store.warm_cache(mission_id)
-        gate_raw = await store.retrieve(mission_id, "gate_result") or "{}"
-        out = await _handler_format_compare(
-            task={"id": task_id},
-            artifacts={"gate_result": gate_raw},
-            ctx={"mission_id": mission_id},
-        )
-
-        # Drop progress message — final cards replace it
-        if progress_msg is not None:
-            try:
-                await self.app.bot.delete_message(chat_id=chat_id, message_id=progress_msg.message_id)
-            except Exception:
-                pass
-        text = out.get("formatted_text") or "Bilgi yok."
-
-        options = (pending or {}).get("options") or []
-        markup = None
-        if options:
-            buttons = [
-                [InlineKeyboardButton(
-                    opt["label"],
-                    callback_data=f"vc:{mission_id}:{task_id}:{opt['group_id']}",
-                )]
-                for opt in options
-            ]
-            markup = InlineKeyboardMarkup(buttons)
-
-        # Telegram caps text at 4096 chars; category compare can exceed it
-        MAX_LEN = 3800
-        if len(text) > MAX_LEN:
-            chunks: list[str] = []
-            remaining = text
-            while len(remaining) > MAX_LEN:
-                cut = remaining.rfind("\n", 0, MAX_LEN)
-                if cut <= 0:
-                    cut = MAX_LEN
-                chunks.append(remaining[:cut])
-                remaining = remaining[cut:].lstrip("\n")
-            chunks.append(remaining)
-            for chunk in chunks[:-1]:
-                await self.app.bot.send_message(
-                    chat_id=chat_id, text=chunk, parse_mode="Markdown",
-                )
-            await self.app.bot.send_message(
-                chat_id=chat_id, text=chunks[-1],
-                reply_markup=markup, parse_mode="Markdown",
-            )
-        else:
-            await self.app.bot.send_message(
-                chat_id=chat_id, text=text,
-                reply_markup=markup, parse_mode="Markdown",
-            )
+    # _run_compare_all_and_reply deleted (T10): compare-all now runs in the pump
+    # as the shopping_v3 native-join branch (2.3*), delivered terminally by
+    # compare_assemble. The old synchronous bypass called _handler_format_compare
+    # -> step_synthesize_reviews -> dispatcher.request() (the path SP5 retires).
 
     # ─── Z6 T1D: founder_actions surface ────────────────────────────────
     async def cmd_actions(

@@ -2,10 +2,10 @@
   "plan_id": "quick_search_v2",
   "version": "2.0",
   "metadata": {
-    "description": "v2 quick shopping search. Trusts each site's native ordering (top-3 per site), groups cross-site results with a cheap LLM call, synthesises reviews per group, renders reviews-first Telegram cards. Escalates to shopping_v2 if no products.",
+    "description": "v2 quick shopping search. Trusts each site's native ordering (top-3 per site), groups cross-site results with a cheap LLM call, synthesises reviews per group, renders reviews-first Telegram cards. Escalates to shopping_v3 if no products.",
     "agents_required": ["shopping_pipeline_v2"],
     "performance_target": {"max_duration_seconds": 60, "escalation_trigger": "insufficient_results"},
-    "escalation_target": "shopping_v2",
+    "escalation_target": "shopping_v3",
     "timeout_hours": 1
   },
   "phases": [

@@ -140,6 +140,7 @@ class TestWorkflowJsonFiles:
     SHOPPING_WORKFLOWS = [
         "shopping/quick_search_v2",
         "shopping/shopping_v2",
+        "shopping/shopping_v3",
         "shopping/exploration",
     ]
 

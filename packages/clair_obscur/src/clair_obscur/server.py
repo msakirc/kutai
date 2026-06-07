@@ -243,7 +243,11 @@ class ImageServer:
 
         async def _watcher():
             cfg = self._config
-            tick = min(5.0, max(1.0, cfg.idle_release_seconds / 4))
+            # Poll ~4x within the idle window so the backstop honors short
+            # windows too (capped at 5s, tiny floor to avoid a busy loop).
+            # The old `max(1.0, ...)` floor could not fire any idle window
+            # shorter than ~4s and added up to 1s of latency at the default.
+            tick = min(5.0, max(0.01, cfg.idle_release_seconds / 4))
             while self._resident:
                 await asyncio.sleep(tick)
                 if not self._resident:

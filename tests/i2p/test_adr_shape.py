@@ -376,28 +376,44 @@ def test_i2p_v3_has_component_library_step():
     )
 
 
-def test_i2p_v3_phase4_adr_steps_have_verify_siblings():
+def _check_actions(step: dict) -> set[str]:
+    """Set of payload.action across a step's post-step ``checks``.
+
+    Verification moved from standalone ``{sid}.verify`` sibling steps to
+    inline ``checks`` on the parent step (legacy removal 2026-05-25). The
+    mechanical verifier + its action are unchanged; only the carrier moved.
+    """
+    return {
+        (c.get("payload") or {}).get("action")
+        for c in (step.get("checks") or [])
+    }
+
+
+def test_i2p_v3_phase4_adr_steps_have_shape_check():
     wf = _load_wf()
     for sid in ("4.1", "4.2", "4.4", "4.6", "4.8", "4.9", "4.10", "4.2a"):
-        v = _step(wf, f"{sid}.verify")
-        assert v is not None, f"missing {sid}.verify"
-        assert v["agent"] == "mechanical"
-        assert v["payload"]["action"] == "verify_adr_shape"
+        s = _step(wf, sid)
+        assert s is not None, f"missing step {sid}"
+        assert "verify_adr_shape" in _check_actions(s), (
+            f"step {sid} missing verify_adr_shape check"
+        )
 
 
-def test_i2p_v3_stack_steps_have_cost_curve_verify():
+def test_i2p_v3_stack_steps_have_cost_curve_check():
     wf = _load_wf()
     for sid in ("4.2", "4.4", "4.6", "4.8", "4.9", "4.10"):
-        v = _step(wf, f"{sid}.verify_cost_curve")
-        assert v is not None, f"missing {sid}.verify_cost_curve"
-        assert v["payload"]["action"] == "verify_cost_curve_present"
+        s = _step(wf, sid)
+        assert s is not None, f"missing step {sid}"
+        assert "verify_cost_curve_present" in _check_actions(s), (
+            f"step {sid} missing verify_cost_curve_present check"
+        )
 
 
-def test_i2p_v3_4_14_has_register_verify():
+def test_i2p_v3_4_14_has_register_check():
     wf = _load_wf()
-    v = _step(wf, "4.14.verify_register")
-    assert v is not None
-    assert v["payload"]["action"] == "verify_adr_register"
+    s = _step(wf, "4.14")
+    assert s is not None
+    assert "verify_adr_register" in _check_actions(s)
 
 
 def test_i2p_v3_4_16_reviewer_instruction_extended():

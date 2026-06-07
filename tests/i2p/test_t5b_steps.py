@@ -27,11 +27,15 @@ def test_premortem_step_exists_and_depends_on_6_5():
     assert any("premortem.md" in p for p in produces)
 
 
-def test_premortem_verify_shape_sibling_exists():
-    s = _step("6.5z.verify_shape")
-    assert s["agent"] == "mechanical"
-    assert s["payload"]["action"] == "verify_premortem_shape"
-    assert "6.5z" in s["depends_on"]
+def test_premortem_verify_shape_check_present():
+    """verify_premortem_shape gates the premortem as an inline ``checks``
+    entry on 6.5z. The standalone 6.5z.verify_shape sibling step was retired
+    (legacy removal 2026-05-25); the verifier itself is unchanged."""
+    s = _step("6.5z")
+    check_actions = {
+        (c.get("payload") or {}).get("action") for c in (s.get("checks") or [])
+    }
+    assert "verify_premortem_shape" in check_actions
 
 
 def test_6_6_reviewer_depends_on_premortem_and_mentions_check():

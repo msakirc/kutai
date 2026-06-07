@@ -261,10 +261,13 @@ def test_workflow_step_0_6a_draft_confirm_split():
     assert draft["name"] == "non_goals_draft"
     assert "non_goals" in draft["output_artifacts"]
 
-    # Verify step gates on the draft (not the confirm).
-    assert "0.6a.verify" in by_id
-    assert by_id["0.6a.verify"]["depends_on"] == ["0.6a.draft"]
-    assert by_id["0.6a.verify"]["payload"]["action"] == "verify_non_goals_shape"
+    # Verification gates the draft as an inline `checks` entry (legacy
+    # removal 2026-05-25 retired the standalone 0.6a.verify sibling step;
+    # the verify_non_goals_shape verifier itself is unchanged).
+    draft_check_actions = {
+        (c.get("payload") or {}).get("action") for c in (draft.get("checks") or [])
+    }
+    assert "verify_non_goals_shape" in draft_check_actions
 
     # Confirm step: founder confirms the draft via the artifact-confirm
     # keyboard (attach + regenerate). Its human-facing question must NOT
@@ -272,7 +275,7 @@ def test_workflow_step_0_6a_draft_confirm_split():
     confirm = by_id["0.6a"]
     assert confirm["agent"] == "mechanical"
     assert confirm["name"] == "non_goals_confirm"
-    assert confirm["depends_on"] == ["0.6a.verify"]
+    assert confirm["depends_on"] == ["0.6a.draft"]
     pay = confirm["payload"]
     assert pay["action"] == "clarify"
     assert pay.get("attach_file_paths"), "confirm must inline the draft file"
@@ -288,7 +291,15 @@ def test_workflow_step_0_6a_draft_confirm_split():
 
 
 def test_schema_version_carried_on_artifacts():
-    """All new artifacts emit _schema_version='1'."""
+    """Producer artifacts carry a _schema_version.
+
+    The old standalone ``*.verify`` steps (whose ``*_falsification_result``
+    artifacts this once asserted) were retired — falsification verification
+    is now a post_hook, not a workflow step. This guards the producers
+    themselves: every emitted artifact carries a non-empty _schema_version
+    (3.7 business_rules is on v2 after the Z3 T4A bump, so assert presence,
+    not a literal "1").
+    """
     import json
     from pathlib import Path
 
@@ -302,13 +313,16 @@ def test_schema_version_carried_on_artifacts():
     wf = json.loads(wf_path.read_text(encoding="utf-8"))
     by_id = {s["id"]: s for s in wf["steps"]}
 
-    for sid, art in (
-        ("0.6a.draft", "non_goals"),
-        ("0.6a.verify", "non_goals_shape_result"),
-        ("3.1.verify", "functional_requirements_falsification_result"),
-        ("3.7.verify", "business_rules_falsification_result"),
+    # (step, artifact, expected_version | None=just-present)
+    for sid, art, expected in (
+        ("0.6a.draft", "non_goals", "1"),
+        ("3.1", "functional_requirements", "1"),
+        ("3.7", "business_rules", None),
     ):
         schema = by_id[sid]["artifact_schema"][art]
-        assert schema.get("_schema_version") == "1", (
-            f"step {sid} artifact {art} missing _schema_version='1'"
-        )
+        ver = schema.get("_schema_version")
+        assert ver, f"step {sid} artifact {art} missing _schema_version"
+        if expected is not None:
+            assert ver == expected, (
+                f"step {sid} artifact {art} _schema_version={ver!r} != {expected!r}"
+            )

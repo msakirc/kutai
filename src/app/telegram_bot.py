@@ -2290,6 +2290,8 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("ask", self.cmd_ask))
         # Yalayut Phase 3 — catalog auth + MCP control commands
         self.app.add_handler(CommandHandler("yalayut", self.cmd_yalayut))
+        # SP4b — press_kit workflow launcher
+        self.app.add_handler(CommandHandler("press_kit", self.cmd_press_kit))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_founder_action_callback,
             pattern=r"^fa_(done|inprogress|block)_\d+$",
@@ -13856,6 +13858,24 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                               "Unknown subcommand. Try /yalayut for overview.")
         except Exception as e:  # noqa: BLE001
             await self._reply(update, f"⚠️ /yalayut error: {e}")
+
+    async def cmd_press_kit(self, update, context):
+        """/press_kit <product_id> — launch the press_kit workflow."""
+        chat_id = update.effective_chat.id
+        args = context.args or []
+        if not args:
+            await self._reply(update, "Usage: /press_kit <product_id>")
+            return
+        product_id = args[0]
+        from src.workflows.engine.runner import WorkflowRunner
+        runner = WorkflowRunner()
+        mission_id = await runner.start(
+            workflow_name="press_kit",
+            initial_input={"product_id": product_id},
+            title=f"Press kit: {product_id}",
+            chat_id=chat_id,
+        )
+        await self._reply(update, f"Press kit mission #{mission_id} launched for {product_id}.")
 
     # ── inline keyboards ────────────────────────────────────────────────
 

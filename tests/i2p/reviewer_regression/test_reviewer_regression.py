@@ -290,8 +290,21 @@ def test_reviewer_fixture(fixture):
                 f"good fixture {path.name} verdict {actual!r} not in allowed {allowed}"
             )
         elif kind == "bad":
-            # Bad fixtures should NOT pretend to pass.
-            assert actual not in allowed, (
+            # Bad fixtures should NOT pretend to pass. The GoNoGo enum
+            # expansion (998f7630) put the reject verdict ('fail') INTO the
+            # enum, so the old "reject verdicts live outside the enum"
+            # assumption no longer holds. The passing value is data-derived
+            # from the matching `good` fixture (works for both the `verdict`
+            # field (1.13) and the `status` field (3.11/4.16/5.10/6.6) with
+            # no hardcoded enum split): a bad fixture must not emit it.
+            good_path = path.with_name("good" + path.stem[len("bad"):] + path.suffix)
+            pass_value = None
+            if good_path.exists():
+                good_fixture = json.loads(good_path.read_text(encoding="utf-8"))
+                pass_value = (good_fixture.get("expected_verdict") or {}).get(
+                    verdict_field
+                )
+            assert actual != pass_value, (
                 f"bad fixture {path.name} masquerades as pass with verdict {actual!r}"
             )
 

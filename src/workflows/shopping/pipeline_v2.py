@@ -1017,6 +1017,38 @@ async def _read_artifacts(mission_id: int, keys: list[str]) -> dict:
     return result
 
 
+async def handler_understand_query(task: dict, artifacts: dict, ctx: dict) -> dict:
+    """0.1 understand_query_check_clarity — deterministic intent parse.
+
+    Emits ``parsed_intent`` {query, needs_clarification}. The vagueness flag is a
+    light heuristic hint only — the 0.2 shopping_clarifier agent makes the final
+    Path A/B call from the query itself. Previously unhandled (no _STEP_HANDLERS_V2
+    entry), so the category/deep_research path failed at step 0.1 with
+    "Unknown step" the moment it went live.
+    """
+    raw = artifacts.get("user_query", "")
+    query = ""
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            parsed = json.loads(raw)
+            query = (parsed.get("query") or parsed.get("user_query")
+                     or parsed.get("clarified_query") or "")
+        except (json.JSONDecodeError, ValueError):
+            query = raw.strip()
+    elif isinstance(raw, str):
+        query = raw.strip()
+    if not query:
+        query = task.get("description", "")
+
+    # Vague when it reads like a bare category: few tokens, no model number /
+    # alphanumeric SKU token. The clarifier re-decides regardless.
+    tokens = query.split()
+    has_model_token = any(any(ch.isdigit() for ch in t) for t in tokens)
+    needs_clarification = (len(tokens) <= 3) and not has_model_token
+
+    return {"query": query, "needs_clarification": needs_clarification}
+
+
 async def _handler_resolve_candidates(task: dict, artifacts: dict, ctx: dict) -> dict:
     query = ""
     for key in ("clarified_query", "user_query"):
@@ -1529,6 +1561,7 @@ async def handler_compare_assemble(task: dict, artifacts: dict, ctx: dict) -> di
 
 
 _STEP_HANDLERS_V2 = {
+    "understand_query_check_clarity": handler_understand_query,
     "resolve_candidates": _handler_resolve_candidates,
     "group_label_filter_gate": _handler_group_label_filter_gate,
     "group_and_synthesize": _handler_group_and_synthesize,

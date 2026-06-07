@@ -22,7 +22,7 @@
       "output_artifacts": ["parsed_intent"],
       "instruction": "Step name: understand_query_check_clarity. Parse the user's query — intent, category, constraints, vagueness check. Sets needs_clarification flag for step 0.2.",
       "done_when": "parsed_intent has query and needs_clarification fields.",
-      "artifact_schema": {"max_output_chars": 5000, "parsed_intent": {"type": "object", "required_fields": ["query", "needs_clarification"]}}
+      "context": {"requires_grading": false}
     },
     {
       "id": "0.2", "phase": "phase_0", "name": "ask_clarifying_questions",
@@ -32,7 +32,8 @@
       "output_artifacts": ["clarified_query"],
       "instruction": "Read parsed_intent and user_query. If needs_clarification is true and constraints are absent, ask 2-3 tight questions (budget? use case? must-have feature?). If query has enough detail, return it as clarified_query immediately.",
       "done_when": "clarified_query is ready for search — either the original query or the user's answers incorporated.",
-      "may_need_clarification": true
+      "may_need_clarification": true,
+      "context": {"requires_grading": false}
     },
     {
       "id": "1.0", "phase": "phase_1", "name": "resolve_candidates",

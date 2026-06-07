@@ -7,6 +7,7 @@ from src.workflows.shopping.pipeline_v2 import (
     handler_group_prep, handler_group_apply_label_prep, handler_label_apply_filter_gate,
     handler_synth_prep, handler_synth_apply,
     handler_compare_prep, handler_compare_line_apply, handler_compare_assemble,
+    handler_understand_query,
 )
 
 
@@ -149,6 +150,31 @@ async def test_synth_apply_escalates_on_meta_escalation():
     out = await handler_synth_apply(
         task={}, artifacts={"synth_raw": "", "synth_meta": json.dumps({"escalation": True})}, ctx={})
     assert out["escalation_needed"] is True and out["cards"] == []
+
+
+# ── 0.1 understand_query (deterministic parse → parsed_intent) ──────────────
+
+@pytest.mark.asyncio
+async def test_understand_query_passes_query_through_raw():
+    out = await handler_understand_query(
+        task={}, artifacts={"user_query": "kahve makinesi"}, ctx={})
+    assert out["query"] == "kahve makinesi"
+    assert out["needs_clarification"] is True  # bare 2-token category, no model no.
+
+
+@pytest.mark.asyncio
+async def test_understand_query_specific_query_not_vague():
+    out = await handler_understand_query(
+        task={}, artifacts={"user_query": "siemens eq300 espresso"}, ctx={})
+    assert out["query"] == "siemens eq300 espresso"
+    assert out["needs_clarification"] is False  # has a model number
+
+
+@pytest.mark.asyncio
+async def test_understand_query_unwraps_json_user_query():
+    out = await handler_understand_query(
+        task={}, artifacts={"user_query": json.dumps({"query": "laptop"})}, ctx={})
+    assert out["query"] == "laptop"
 
 
 # ── compare-all triad (Approach B: fixed-cap native-join) ───────────────────

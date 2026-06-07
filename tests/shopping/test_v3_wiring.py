@@ -77,6 +77,20 @@ def test_v3_compare_assemble_is_native_join_and_last():
     assert steps[-1]["id"] == "2.3z"
 
 
+def test_v3_every_pipeline_step_has_a_registered_handler():
+    # Regression guard: step 0.1 understand_query_check_clarity shipped with NO
+    # _STEP_HANDLERS_V2 entry and DLQ'd live the moment the category path ran
+    # ("Unknown step"). Every shopping_pipeline_v2 step's name must dispatch.
+    from src.workflows.shopping.pipeline_v2 import _STEP_HANDLERS_V2
+    wf = load_workflow("shopping_v3")
+    missing = [
+        s["id"] for s in wf.steps
+        if s["agent"] == "shopping_pipeline_v2"
+        and s["name"] not in _STEP_HANDLERS_V2
+    ]
+    assert not missing, f"steps with no handler: {missing}"
+
+
 def test_v3_declares_no_file_produces():
     # Producer/prep/apply steps emit plain JSON artifacts, NOT declared file
     # produces — so materialize_produces is a no-op for them (spec risk 6).

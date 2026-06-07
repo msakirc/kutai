@@ -146,10 +146,6 @@ class LocalModelManager:
         # NerdHerd client reference — set via set_nerd_herd() by the orchestrator
         self._nerd_herd = None
 
-        # GPU scheduler for acquire/release — same as before
-        from .gpu_scheduler import get_gpu_scheduler
-        self._scheduler = get_gpu_scheduler()
-
     # ── Lazy start (called once from first ensure_model) ──────────────────
 
     async def _ensure_started(self) -> None:
@@ -412,36 +408,6 @@ class LocalModelManager:
             logger.error("Failed to load %s (demoted for 5 min)", model_name)
             return False
 
-    async def acquire_inference_slot(
-        self,
-        priority: int = 5,
-        task_id: str = "?",
-        agent_type: str = "",
-        timeout: float = 120,
-    ) -> bool:
-        """Acquire GPU inference slot via priority scheduler."""
-        from .gpu_scheduler import GPURequest, get_gpu_scheduler
-
-        scheduler = get_gpu_scheduler()
-        if priority >= 10:
-            timeout = min(timeout, 30)
-
-        request = GPURequest.make(
-            priority=priority,
-            task_id=task_id,
-            agent_type=agent_type,
-            model_needed=self.current_model or "",
-        )
-        granted = await scheduler.acquire(request, timeout=timeout)
-        if granted:
-            self._last_request_time = time.time()
-        return granted
-
-    def release_inference_slot(self) -> None:
-        """Release GPU slot."""
-        from .gpu_scheduler import get_gpu_scheduler
-        get_gpu_scheduler().release()
-
     def mark_inference_start(self) -> int:
         """Delegate to DaLLaMa swap manager."""
         return self._dallama._swap.mark_inference_start()
@@ -467,7 +433,6 @@ class LocalModelManager:
             "uptime_seconds": round(
                 time.time() - self._started_at, 1
             ) if hasattr(self, '_started_at') and self._started_at else 0,
-            "inference_busy": self._scheduler.is_busy,
         }
 
     async def get_metrics(self) -> dict:

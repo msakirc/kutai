@@ -18,8 +18,6 @@ def test_get_local_manager_returns_instance():
     assert hasattr(mgr, "get_status")
     assert hasattr(mgr, "current_model")
     assert hasattr(mgr, "is_loaded")
-    assert hasattr(mgr, "acquire_inference_slot")
-    assert hasattr(mgr, "release_inference_slot")
     assert hasattr(mgr, "mark_inference_start")
     assert hasattr(mgr, "mark_inference_end")
     assert hasattr(mgr, "swap_started_at")
@@ -85,4 +83,3 @@ def test_get_status_returns_dict():
     assert "port" in status
     assert "idle_seconds" in status
     assert "total_swaps" in status
-    assert "inference_busy" in status

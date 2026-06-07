@@ -183,6 +183,9 @@ async def test_compare_prep_emits_flags_and_per_line_slots():
     assert flags["has_line_0"] == "true" and flags["has_line_1"] == "true"
     assert flags["has_line_2"] == "false" and flags["has_line_4"] == "false"
     assert flags["n_lines"] == 2 and flags["header"]
+    # gid->line-index map so a post-delivery keyboard can surface the right
+    # stored cmp_card_i when the user drills into a line (keep-pick-after-compare).
+    assert flags["line_gids"] == ["0", "1"]
     # populated line carries the synthesizer's user-message data
     si0 = json.loads(out["cmp_input_0"])
     assert si0["representative_title"] == "Line 0"

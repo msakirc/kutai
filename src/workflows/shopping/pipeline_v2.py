@@ -1435,7 +1435,9 @@ async def handler_compare_prep(task: dict, artifacts: dict, ctx: dict) -> dict:
     cands = _candidates_from_json(payload.get("candidates", []))
     base_label = payload.get("base_label") or "Ürün"
     payloads = payload.get("clarify_payloads", {}) or {}
-    groups = [_group_from_dict(v) for v in payloads.values()][:_MAX_COMPARE_LINES]
+    items = list(payloads.items())[:_MAX_COMPARE_LINES]
+    line_gids = [str(gid) for gid, _g in items]
+    groups = [_group_from_dict(g) for _gid, g in items]
 
     header = step_compare_all(groups, cands, base_label=base_label) if groups else ""
 
@@ -1447,7 +1449,7 @@ async def handler_compare_prep(task: dict, artifacts: dict, ctx: dict) -> dict:
     )
 
     out: dict = {}
-    flags: dict = {"n_lines": len(groups), "header": header}
+    flags: dict = {"n_lines": len(groups), "header": header, "line_gids": line_gids}
     for i in range(_MAX_COMPARE_LINES):
         if i < len(groups):
             g = groups[i]

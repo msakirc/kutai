@@ -2,6 +2,10 @@
 
 Layer 0 (try_resolve): Full resolution — call API, format, return answer. No LLM.
 Layer 1 (enrich_context): Partial match — fetch data, return as context for agent.
+
+Relocated 2026-06-07 from src/core/fast_resolver.py — it is a tool helper
+(API fast-path resolver, zero LLM) whose sole consumer is
+src/tools/smart_search.py, so it belongs under src/tools/, not core.
 """
 
 import re

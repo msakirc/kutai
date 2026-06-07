@@ -18,11 +18,11 @@ async def test_layer0_resolves_weather_without_agent(tmp_path):
         await build_keyword_index()
         await seed_category_patterns()
 
-        from src.core.fast_resolver import try_resolve
+        from src.tools.fast_resolver import try_resolve
 
         task = {"title": "Istanbul hava durumu", "description": ""}
 
-        with patch("src.core.fast_resolver.call_api", new_callable=AsyncMock) as mock_call:
+        with patch("src.tools.fast_resolver.call_api", new_callable=AsyncMock) as mock_call:
             mock_call.return_value = '{"current_weather": {"temperature": 22, "weathercode": 0}}'
             result = await try_resolve(task)
 
@@ -49,11 +49,11 @@ async def test_layer1_enriches_context(tmp_path):
         await build_keyword_index()
         await seed_category_patterns()
 
-        from src.core.fast_resolver import enrich_context
+        from src.tools.fast_resolver import enrich_context
 
         task = {"title": "Istanbul'da bu hafta sonu piknik yapilir mi? hava durumu nasil?", "description": ""}
 
-        with patch("src.core.fast_resolver.call_api", new_callable=AsyncMock) as mock_call:
+        with patch("src.tools.fast_resolver.call_api", new_callable=AsyncMock) as mock_call:
             mock_call.return_value = '{"temp": 22}'
             result = await enrich_context(task)
 

@@ -44,7 +44,7 @@ async def smart_search(query: str) -> str:
 async def _try_api_registry(query: str) -> str | None:
     """Try to answer via free API registry."""
     try:
-        from src.core.fast_resolver import _find_best_match, _extract_params, _call_best_api, _format_response
+        from src.tools.fast_resolver import _find_best_match, _extract_params, _call_best_api, _format_response
 
         match = await _find_best_match(query)
         if not match or match["score"] < 0.3:

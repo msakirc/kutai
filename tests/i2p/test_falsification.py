@@ -160,6 +160,64 @@ def test_dispatch_failed_on_bad():
     assert "verify_falsification_present" in (res.error or "")
 
 
+def _wire(result: str, output_names=("functional_requirements",)):
+    """Drive the apply.py post-hook wiring that builds the `artifacts`
+    payload from a source task's raw `result` string."""
+    from general_beckman.apply import _posthook_agent_and_payload
+    from general_beckman.result_router import RequestPostHook
+
+    a = RequestPostHook(
+        source_task_id=1,
+        kind="verify_falsification_present",
+        source_ctx={"output_artifacts": list(output_names)},
+    )
+    source = {"id": 1, "result": result}
+    source_ctx = {"output_artifacts": list(output_names)}
+    _agent, spec = _posthook_agent_and_payload(a, source, source_ctx)
+    return spec["payload"]["artifacts"]
+
+
+def test_wiring_unwraps_fenced_json_array():
+    """A ```json-fenced array of items must reach the validator, not be
+    swallowed as an unparseable string (empty=True wiring failure)."""
+    import json
+
+    body = json.dumps([_good_item("BR-001"), _good_item("BR-002")])
+    fenced = f"```json\n{body}\n```"
+    artifacts = _wire(fenced)
+    res = verify_falsification_present(artifacts=artifacts)
+    assert res["empty"] is False, artifacts
+    assert res["checked"] == 2
+
+
+def test_wiring_unwraps_narration_wrapped_artifact():
+    """LLM prose preamble + a fenced artifact (mission-81 3.2 nfr) must be
+    unwrapped before json.loads — the artifact is complete, only buried."""
+    import json
+
+    inner = {"items": [_good_item("NFR-001"), _good_item("NFR-002")]}
+    result = (
+        "Okay, I will analyze the provided information to define the NFRs.\n\n"
+        "Here is the artifact:\n\n```json\n" + json.dumps(inner) + "\n```"
+    )
+    artifacts = _wire(result, output_names=("nfr_performance",))
+    res = verify_falsification_present(artifacts=artifacts)
+    assert res["empty"] is False, artifacts
+    assert res["checked"] == 2
+    assert res["ok"] is True
+
+
+def test_wiring_plain_json_still_works():
+    """Regression: an un-fenced JSON object must still parse."""
+    import json
+
+    inner = {"functional_requirements": [_good_item("FR-001")]}
+    artifacts = _wire(json.dumps(inner))
+    res = verify_falsification_present(artifacts=artifacts)
+    assert res["empty"] is False
+    assert res["checked"] == 1
+
+
 def test_required_triple_constant():
     assert REQUIRED_TRIPLE == (
         "risk_if_wrong",
@@ -189,12 +247,10 @@ def test_workflow_step_carries_falsification_post_hook():
             f"step {sid} missing verify_falsification_present post_hook"
         )
 
-    # Sibling verify steps exist; legacy_pre_falsification gate removed — now unconditional.
+    # The post_hook IS the gate now. Standalone `.verify` sibling steps were
+    # removed (the post-hook runs the same check earlier + cheaper); assert
+    # they stay gone so the wiring isn't silently double-run.
     for sid in ("3.1.verify", "3.2.verify", "3.3.verify", "3.7.verify"):
-        step = by_id[sid]
-        assert step["agent"] == "mechanical"
-        sw = step.get("skip_when") or ""
-        assert not sw or "legacy_pre_" not in sw, (
-            f"step {sid} still has a legacy_pre_ gate: {sw!r}"
+        assert sid not in by_id, (
+            f"step {sid} reappeared — post_hook is the sole falsification gate"
         )
-        assert step["payload"]["action"] == "verify_falsification_present"

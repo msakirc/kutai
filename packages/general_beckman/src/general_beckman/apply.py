@@ -2295,8 +2295,15 @@ def _posthook_agent_and_payload(
         source_result = source.get("result") or ""
         parsed: object = {}
         if isinstance(source_result, str) and source_result.strip():
+            # Cloud LLMs frequently bury the artifact under chat narration
+            # and/or a ```json fence (mission-81 3.2/3.7 DLQ'd empty=True
+            # despite emitting a complete, valid artifact). Unwrap with the
+            # same helper the materializer uses before parsing; fall back to
+            # the raw string when there's no fence.
+            from coulson.grounding import unwrap_fenced_artifact
+            candidate = unwrap_fenced_artifact(source_result) or source_result
             try:
-                parsed = json.loads(source_result)
+                parsed = json.loads(candidate)
             except (ValueError, TypeError):
                 parsed = {}
         elif isinstance(source_result, (list, dict)):

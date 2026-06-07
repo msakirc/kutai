@@ -10,7 +10,7 @@ Each variant gets its own zip under:
   <workspace_path>/press_kit/v{N}/{audience}/press_kit_v{N}_{audience}.zip
 
 Sources gathered:
-  - one_pager.md   — read from producer step (agent:planner)
+  - one_pager.md   — LLM-drafted per audience (calls _draft_one_pager_llm)
   - founder_bio.md — from `founder_bio` param
   - fact_sheet.md  — from `fact_sheet_md` param
   - quotes.md      — approved quotes from DB + passed `quotes` param
@@ -23,13 +23,14 @@ before publish. Publish is a separate verb (press_kit/publish) which uploads
 and sets published_url.
 
 Public API:
-    run(*, mission_id, product_id, workspace_path, onepager_dir="press_kit/src",
+    run(*, mission_id, product_id, spec_text, workspace_path,
         logo_path="", screenshot_paths=(), founder_bio="",
         fact_sheet_md="", quotes=(), past_mentions=()) -> dict
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import zipfile
@@ -47,9 +48,75 @@ AUDIENCE_VARIANTS: tuple[str, ...] = (
     "candidate",
 )
 
+# ── Audience-specific section configs ────────────────────────────────────────
+# Each entry maps audience → instructions snippet passed to the LLM.
+_AUDIENCE_PROMPTS: dict[str, str] = {
+    "investor": (
+        "Write a concise investor-facing one-pager. "
+        "Emphasise: traction metrics, market size, unit economics, "
+        "team credentials, fundraising context. Omit culture fluff."
+    ),
+    "journalist": (
+        "Write a journalist-facing one-pager. "
+        "Lead with the news hook (what changed, why now), include "
+        "3-5 concrete stats, founder quote, and a clear narrative arc. "
+        "Avoid marketing jargon."
+    ),
+    "partner": (
+        "Write a partner/integration-focused one-pager. "
+        "Highlight: tech stack, API surface, customer overlap, "
+        "joint integration opportunity, and go-to-market potential. "
+        "Concrete and actionable."
+    ),
+    "candidate": (
+        "Write a candidate-facing one-pager (recruiting). "
+        "Highlight: mission and why it matters, team culture, "
+        "growth trajectory, open roles, and why this is a compelling "
+        "place to work. Warm but not hyperbolic."
+    ),
+}
+
+
 # ---------------------------------------------------------------------------
 # Injected helpers (testable via monkeypatch)
 # ---------------------------------------------------------------------------
+
+async def _draft_one_pager_llm(spec_text: str, audience: str) -> str:
+    """Call LLM (OVERHEAD lane via beckman.enqueue) to draft audience one-pager."""
+    try:
+        from packages.general_beckman.src.general_beckman import enqueue as beckman_enqueue
+    except ImportError:
+        try:
+            from general_beckman import enqueue as beckman_enqueue  # type: ignore[no-redef]
+        except ImportError:
+            # Fallback for tests without DB — return stub text
+            return f"[Draft one-pager for {audience} — LLM unavailable]\n\n{spec_text[:200]}"
+
+    audience_prompt = _AUDIENCE_PROMPTS.get(audience, "Write a one-pager.")
+    prompt = (
+        f"{audience_prompt}\n\n"
+        f"Product spec:\n{spec_text}\n\n"
+        "Output: Markdown prose, 200-400 words, no JSON wrapper."
+    )
+    try:
+        result = await beckman_enqueue(
+            {
+                "title": f"Draft {audience} one-pager",
+                "goal": prompt,
+                "agent_type": "planner",
+                "lane": "overhead",
+            },
+            await_inline=True,
+        )
+        if result and result.status == "completed" and result.result:
+            content = result.result.get("content") or ""
+            if content:
+                return content
+    except Exception as exc:
+        logger.warning("press_kit_assemble: LLM draft failed", audience=audience, error=str(exc))
+
+    return f"[Draft one-pager for {audience} — see spec]\n\n{spec_text[:200]}"
+
 
 async def _get_latest_version(product_id: str) -> int:
     """Return the highest version number already stored for product_id, or 0."""
@@ -117,8 +184,8 @@ async def run(
     *,
     mission_id: int,
     product_id: str,
+    spec_text: str,
     workspace_path: str,
-    onepager_dir: str = "press_kit/src",
     logo_path: str = "",
     screenshot_paths: Sequence[str] = (),
     founder_bio: str = "",
@@ -127,9 +194,6 @@ async def run(
     past_mentions: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Assemble a versioned press kit with 4 audience variants.
-
-    Reads producer-written one-pagers from <workspace_path>/<onepager_dir>/one_pager_{audience}.md
-    (written by the 1.draft_onepager_{aud} workflow step, agent:planner). NO LLM here.
 
     Returns:
         {"ok": True, "manifest": {...}, "version": N}
@@ -144,9 +208,8 @@ async def run(
         )
         os.makedirs(kit_root, exist_ok=True)
 
-        # spec_hash computed after reading all one-pagers (accumulated below)
-        spec_hash = ""  # set after loop
-        one_pager_texts: list[str] = []
+        # Compute spec hash for freshness tracking
+        spec_hash = hashlib.sha256(spec_text.encode()).hexdigest()[:16]
 
         variants: dict[str, dict[str, Any]] = {}
 
@@ -154,16 +217,10 @@ async def run(
             aud_dir = os.path.join(kit_root, audience)
             os.makedirs(aud_dir, exist_ok=True)
 
-            # Read the producer's one-pager for this audience (written by the
-            # 1.draft_onepager_{aud} workflow step, agent:planner). NO LLM here.
-            src_op = os.path.join(workspace_path, onepager_dir, f"one_pager_{audience}.md")
-            try:
-                with open(src_op, encoding="utf-8") as fh:
-                    one_pager_text = fh.read()
-            except OSError as exc:
-                return {"ok": False, "error": f"one_pager_{audience}.md missing at {src_op}: {exc}"}
-            one_pager_texts.append(one_pager_text)
+            # 1. Draft LLM one-pager
+            one_pager_text = await _draft_one_pager_llm(spec_text, audience)
 
+            # Write source files to the per-audience staging dir
             with open(os.path.join(aud_dir, "one_pager.md"), "w", encoding="utf-8") as fh:
                 fh.write(one_pager_text)
 
@@ -210,10 +267,6 @@ async def run(
                 "zip_path": zip_path,
                 "staging_dir": aud_dir,
             }
-
-        spec_hash = hashlib.sha256(
-            "".join(one_pager_texts).encode()
-        ).hexdigest()[:16]
 
         manifest: dict[str, Any] = {
             "product_id": product_id,

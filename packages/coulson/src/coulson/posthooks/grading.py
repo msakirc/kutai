@@ -16,8 +16,13 @@ from src.infra.logging_config import get_logger
 logger = get_logger("coulson.posthooks.grading")
 
 GRADING_SYSTEM = (
-    "You are a strict evaluator. Reply ONLY with the requested fields, "
-    "one per line. Do not add explanation or commentary."
+    "You are a strict SEMANTIC evaluator. Required fields and sections are "
+    "ALREADY verified deterministically by a schema gate before you run — "
+    "structural completeness is NOT your job. Judge ONLY semantic quality: "
+    "relevance, content adequacy, coherence, structural soundness. NEVER FAIL "
+    "an output for a missing, extra, or renamed field or section — that is "
+    "checked elsewhere. Reply ONLY with the requested fields, one per line. "
+    "Do not add explanation or commentary."
 )
 
 GRADING_PROMPT = """Evaluate this task result.
@@ -26,9 +31,13 @@ Task: {title}
 Description: {description}
 Result: {response}
 
+Field presence is verified deterministically upstream. Judge ONLY whether the
+content semantically solves the task. DO NOT JUDGE field/section presence, and
+do not penalise fields named in the Description but absent from the output.
+
 Reply with EXACTLY these fields, one per line:
-RELEVANT: YES or NO
-COMPLETE: YES or NO
+RELEVANT: YES or NO (does the content address THIS task, not a different one)
+COMPLETE: YES or NO (does the CONTENT substantively solve the task — adequate depth, no stubs or hand-waving; this is semantic adequacy, NOT field presence)
 VERDICT: PASS or FAIL
 WELL_FORMED: PASS or FAIL (no repeated sections, no garbage, structurally sound)
 COHERENT: PASS or FAIL (output makes logical sense end-to-end)

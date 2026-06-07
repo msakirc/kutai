@@ -2,6 +2,35 @@ import pytest
 from src.core.grading import parse_grade_response, GradeResult
 
 
+class TestGraderSemanticOnly:
+    """Grader judges semantic quality only. Structural completeness
+    (required fields/sections present + non-empty) is verified
+    deterministically by the schema gate BEFORE the grader runs, so the
+    grader must never fail an output for field/section drift — the exact
+    mechanism behind the instruction>schema `COMPLETE:NO` DLQ class.
+    """
+
+    def test_system_prompt_declares_structure_verified_upstream(self):
+        from src.core.grading import GRADING_SYSTEM
+        s = GRADING_SYSTEM.lower()
+        # Structure is verified deterministically before the grader.
+        assert "deterministic" in s
+        # Must forbid failing for field/section drift.
+        assert "missing, extra, or renamed" in s
+        assert "never fail" in s
+
+    def test_complete_field_is_semantic_not_presence(self):
+        from src.core.grading import GRADING_PROMPT
+        p = GRADING_PROMPT.lower()
+        # COMPLETE is redefined to content adequacy, not field presence.
+        assert "complete:" in p
+        assert "content" in p
+        # Explicitly tells the grader not to judge presence / not to
+        # penalise instruction-named fields absent from the output.
+        assert "do not judge" in p or "not judge" in p
+        assert "absent from the output" in p
+
+
 class TestGradeResult:
     def test_passed_has_no_score_field(self):
         """GradeResult must not have a score field."""

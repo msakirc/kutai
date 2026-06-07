@@ -33,10 +33,27 @@ async def test_cmd_image_enqueues_cps_no_await_inline(monkeypatch):
     assert "await_inline" not in kwargs
 
 
+@pytest.fixture
+def kutai_image(tmp_path):
+    """A PNG inside the trusted kutai_images temp root (FIX 6c confinement)."""
+    import os
+    import tempfile
+    root = os.path.join(tempfile.gettempdir(), "kutai_images")
+    os.makedirs(root, exist_ok=True)
+    png = os.path.join(root, f"test_{os.getpid()}_{id(tmp_path)}.png")
+    with open(png, "wb") as f:
+        f.write(b"\x89PNG")
+    yield png
+    try:
+        os.remove(png)
+    except OSError:
+        pass
+
+
 @pytest.mark.asyncio
-async def test_image_delivery_resume_parses_json_string_and_sends_photo(monkeypatch, tmp_path):
+async def test_image_delivery_resume_parses_json_string_and_sends_photo(monkeypatch, kutai_image):
     import src.app.telegram_bot as tb
-    png = tmp_path / "out.png"; png.write_bytes(b"\x89PNG")
+    png = kutai_image
 
     sent = {}
     class _Bot:
@@ -57,9 +74,9 @@ async def test_image_delivery_resume_parses_json_string_and_sends_photo(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_image_delivery_resume_handles_dict_result_too(monkeypatch, tmp_path):
+async def test_image_delivery_resume_handles_dict_result_too(monkeypatch, kutai_image):
     import src.app.telegram_bot as tb
-    png = tmp_path / "out.png"; png.write_bytes(b"\x89PNG")
+    png = kutai_image
     sent = {}
     class _Bot:
         async def send_photo(self, chat_id, photo, caption=None): sent["ok"] = True
@@ -95,3 +112,135 @@ async def test_cmd_image_no_args_replies_usage():
     await iface.cmd_image(update, ctx)
     msg = iface._reply.await_args.args[1]
     assert "Usage" in msg or "/image" in msg
+
+
+# ─── FIX 3: error-string disclosure sanitization ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_image_delivery_err_does_not_leak_raw_error(monkeypatch):
+    """_image_delivery_err must NOT send the raw internal error verbatim to the
+    user — it must send a generic/friendly message."""
+    import src.app.telegram_bot as tb
+    raw = "provider_raised:RuntimeError:secret /home/x/.env detail"
+    sent = {}
+    monkeypatch.setattr(
+        tb, "_send_telegram_via_resume",
+        AsyncMock(side_effect=lambda chat_id, text, **kw: sent.update(
+            chat_id=chat_id, text=text) or True),
+    )
+    await tb._image_delivery_err(123, {"error": raw}, {"chat_id": 99})
+    assert sent["chat_id"] == 99
+    # The raw internal detail must not reach the user.
+    assert "secret" not in sent["text"]
+    assert "/home/x/.env" not in sent["text"]
+    assert "RuntimeError" not in sent["text"]
+    # Still a clear failure notice.
+    assert "❌" in sent["text"] or "failed" in sent["text"].lower()
+
+
+# ─── FIX 6c: delivery path confinement ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_image_delivery_resume_rejects_path_outside_temp_root(
+        monkeypatch, tmp_path):
+    """A result path outside the kutai_images temp root must NOT be sent —
+    confinement against arbitrary-file exfiltration. Generic failure instead."""
+    import src.app.telegram_bot as tb
+    rogue = tmp_path / "secret.txt"
+    rogue.write_bytes(b"top secret")
+
+    photo_called = {"n": 0}
+    monkeypatch.setattr(
+        tb, "_send_telegram_photo_via_resume",
+        AsyncMock(side_effect=lambda *a, **k: photo_called.update(
+            n=photo_called["n"] + 1) or True),
+    )
+    err_sent = {}
+    monkeypatch.setattr(
+        tb, "_send_telegram_via_resume",
+        AsyncMock(side_effect=lambda chat_id, text, **kw: err_sent.update(
+            chat_id=chat_id, text=text) or True),
+    )
+    await tb._image_delivery_resume(
+        123, {"path": str(rogue)}, {"chat_id": 99, "prompt": "x"})
+    assert photo_called["n"] == 0
+    assert err_sent.get("chat_id") == 99
+
+
+@pytest.mark.asyncio
+async def test_image_delivery_resume_accepts_path_inside_temp_root(
+        monkeypatch):
+    """A result path UNDER the kutai_images temp root is delivered normally."""
+    import os
+    import tempfile
+    import src.app.telegram_bot as tb
+
+    root = os.path.join(tempfile.gettempdir(), "kutai_images")
+    os.makedirs(root, exist_ok=True)
+    png = os.path.join(root, "ok_inside.png")
+    with open(png, "wb") as f:
+        f.write(b"\x89PNG")
+    try:
+        photo_sent = {}
+        monkeypatch.setattr(
+            tb, "_send_telegram_photo_via_resume",
+            AsyncMock(side_effect=lambda chat_id, path, caption=None: photo_sent.update(
+                chat_id=chat_id, path=path) or True),
+        )
+        await tb._image_delivery_resume(
+            123, {"path": png}, {"chat_id": 99, "prompt": "x"})
+        assert photo_sent.get("chat_id") == 99
+    finally:
+        os.remove(png)
+
+
+# ─── FIX 8: close remaining test gaps ───────────────────────────────────────
+
+
+def test_cmd_image_registered_handler():
+    """_setup_handlers must register an `image` CommandHandler."""
+    import src.app.telegram_bot as tb
+
+    iface = tb.TelegramInterface.__new__(tb.TelegramInterface)
+    captured = []
+
+    class _App:
+        def add_handler(self, handler, *a, **kw):
+            captured.append(handler)
+
+    iface.app = _App()
+    iface._setup_handlers()
+
+    commands = set()
+    for h in captured:
+        cmds = getattr(h, "commands", None)
+        if cmds:
+            commands |= set(cmds)
+    assert "image" in commands
+
+
+@pytest.mark.asyncio
+async def test_image_delivery_resume_no_file_sends_error(monkeypatch):
+    """_image_delivery_resume with a non-existent path → generic failure via
+    _send_telegram_via_resume, send_photo (photo resume) NOT called."""
+    import src.app.telegram_bot as tb
+
+    photo_called = {"n": 0}
+    monkeypatch.setattr(
+        tb, "_send_telegram_photo_via_resume",
+        AsyncMock(side_effect=lambda *a, **k: photo_called.update(
+            n=photo_called["n"] + 1) or True),
+    )
+    err_sent = {}
+    monkeypatch.setattr(
+        tb, "_send_telegram_via_resume",
+        AsyncMock(side_effect=lambda chat_id, text, **kw: err_sent.update(
+            chat_id=chat_id, text=text) or True),
+    )
+    await tb._image_delivery_resume(
+        123, {"path": "/nonexistent/does/not/exist.png"},
+        {"chat_id": 99, "prompt": "x"})
+    assert photo_called["n"] == 0
+    assert err_sent.get("chat_id") == 99

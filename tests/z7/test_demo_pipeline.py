@@ -54,36 +54,37 @@ SAMPLE_STORYBOARD = {
 # ===========================================================================
 
 class TestDemoStoryboard:
-    """Tests for demo/storyboard mr_roboto verb."""
+    """Tests for the demo/storyboard mr_roboto verb.
+
+    SP4b: the verb is now a MECHANICAL sink (no LLM). The LLM draft is the
+    `13.demo_storyboard_draft` workflow step (agent:reviewer) whose output is
+    materialized to ``<mission_workspace>/demo/storyboard_raw.json``; this verb
+    reads that raw file, normalizes scenes, and writes ``demo/storyboard.json``.
+    (Canonical sink contract also covered by
+    ``packages/mr_roboto/tests/test_demo_storyboard_sink.py``.)
+    """
 
     @pytest.mark.asyncio
-    async def test_storyboard_returns_scenes(self, tmp_path, monkeypatch):
-        """Storyboard verb calls LLM (mocked) and returns ordered scene list."""
+    async def test_storyboard_reads_raw_normalizes_and_writes(self, tmp_path):
+        """Sink reads the producer's raw file, normalizes scenes, writes JSON."""
         from mr_roboto.demo_storyboard import run as storyboard_run
 
-        # Mock the LLM call via beckman enqueue
-        async def _mock_enqueue(spec, *, parent_id=None, await_inline=False):
-            class _FakeResult:
-                status = "completed"
-                error = None
-                result = {
-                    "content": json.dumps(SAMPLE_STORYBOARD),
-                }
-            return _FakeResult()
-
-        monkeypatch.setattr("mr_roboto.demo_storyboard._enqueue_storyboard_llm", _mock_enqueue)
+        demo_dir = tmp_path / "demo"
+        demo_dir.mkdir()
+        (demo_dir / "storyboard_raw.json").write_text(
+            json.dumps(SAMPLE_STORYBOARD), encoding="utf-8"
+        )
 
         result = await storyboard_run(
             mission_id=1,
-            spec_text="A product that automates scheduling for small businesses.",
             workspace_path=str(tmp_path),
+            raw_filename="demo/storyboard_raw.json",
         )
 
         assert result["ok"] is True
         storyboard = result["storyboard"]
         assert "scenes" in storyboard
         assert len(storyboard["scenes"]) >= 1
-        # Each scene must have required fields
         for scene in storyboard["scenes"]:
             assert "id" in scene
             assert "target_seconds" in scene
@@ -91,23 +92,20 @@ class TestDemoStoryboard:
             assert "narrator_text" in scene
 
     @pytest.mark.asyncio
-    async def test_storyboard_writes_json_file(self, tmp_path, monkeypatch):
-        """Storyboard verb persists the storyboard to workspace_path/demo/storyboard.json."""
+    async def test_storyboard_writes_json_file(self, tmp_path):
+        """Sink persists the storyboard to workspace_path/demo/storyboard.json."""
         from mr_roboto.demo_storyboard import run as storyboard_run
 
-        async def _mock_enqueue(spec, *, parent_id=None, await_inline=False):
-            class _FakeResult:
-                status = "completed"
-                error = None
-                result = {"content": json.dumps(SAMPLE_STORYBOARD)}
-            return _FakeResult()
-
-        monkeypatch.setattr("mr_roboto.demo_storyboard._enqueue_storyboard_llm", _mock_enqueue)
+        demo_dir = tmp_path / "demo"
+        demo_dir.mkdir()
+        (demo_dir / "storyboard_raw.json").write_text(
+            json.dumps(SAMPLE_STORYBOARD), encoding="utf-8"
+        )
 
         result = await storyboard_run(
             mission_id=42,
-            spec_text="Demo spec.",
             workspace_path=str(tmp_path),
+            raw_filename="demo/storyboard_raw.json",
         )
 
         assert result["ok"] is True
@@ -117,40 +115,25 @@ class TestDemoStoryboard:
         assert "scenes" in loaded
 
     @pytest.mark.asyncio
-    async def test_storyboard_llm_failure_returns_error(self, tmp_path, monkeypatch):
-        """When LLM call fails, storyboard verb returns ok=False gracefully."""
+    async def test_storyboard_missing_raw_file_returns_error(self, tmp_path):
+        """Missing raw file → graceful ok=False, not an exception."""
         from mr_roboto.demo_storyboard import run as storyboard_run
-
-        async def _mock_enqueue(spec, *, parent_id=None, await_inline=False):
-            class _FakeResult:
-                status = "failed"
-                error = "model timeout"
-                result = None
-            return _FakeResult()
-
-        monkeypatch.setattr("mr_roboto.demo_storyboard._enqueue_storyboard_llm", _mock_enqueue)
 
         result = await storyboard_run(
             mission_id=1,
-            spec_text="spec",
             workspace_path=str(tmp_path),
+            raw_filename="demo/storyboard_raw.json",
         )
-
         assert result["ok"] is False
-        assert "error" in result
+        assert "raw" in result.get("error", "").lower()
 
     @pytest.mark.asyncio
-    async def test_storyboard_missing_spec_text(self, tmp_path):
-        """Empty spec_text triggers graceful error, not exception."""
-        from mr_roboto.demo_storyboard import run as storyboard_run
+    async def test_storyboard_makes_no_llm_call(self):
+        """Sink must carry no LLM symbols (founder rule: mechanical = no LLM)."""
+        import mr_roboto.demo_storyboard as mod
 
-        result = await storyboard_run(
-            mission_id=1,
-            spec_text="",
-            workspace_path=str(tmp_path),
-        )
-        assert result["ok"] is False
-        assert "spec_text" in result.get("error", "").lower() or "missing" in result.get("error", "").lower()
+        assert not hasattr(mod, "_enqueue_storyboard_llm")
+        assert not hasattr(mod, "_STORYBOARD_SYSTEM")
 
 
 # ===========================================================================

@@ -51,6 +51,7 @@ __all__ = [
     "health_summary",
     "SwapBudget",
     "record_swap",
+    "record_image_server_state",
     "push_queue_profile",
     "push_in_flight",
     "snapshot",
@@ -73,6 +74,13 @@ def _get_singleton() -> NerdHerd:
 def record_swap(model_name: str = "") -> None:
     """Record that a model swap occurred. Called by dispatcher after ensure_local_model."""
     _get_singleton().record_swap(model_name)
+
+
+def record_image_server_state(*, resident: bool, vram_mb: int) -> None:
+    """Record clair_obscur (local image-server) residency. Called by
+    clair_obscur on start/stop. Read by fatih_hoca.image_select via the
+    snapshot."""
+    _get_singleton().push_image_server_state(resident=resident, vram_mb=vram_mb)
 
 
 def push_queue_profile(profile: QueueProfile) -> None:

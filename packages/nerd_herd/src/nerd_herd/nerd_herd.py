@@ -58,6 +58,11 @@ class NerdHerd:
 
         self._server = MetricsServer(self.registry, port=metrics_port, nerd_herd=self)
 
+        # Image-server residency (clair_obscur). Default 0/False until
+        # clair_obscur.start()/.stop() pushes state.
+        self._image_server_resident: bool = False
+        self._image_server_vram_mb: int = 0
+
     async def start(self) -> None:
         await self._server.start()
         if self._inference:
@@ -114,6 +119,12 @@ class NerdHerd:
     def record_swap(self, model_name: str = "") -> None:
         self._swap_budget.record_swap()
 
+    def push_image_server_state(self, *, resident: bool, vram_mb: int) -> None:
+        """Replace image-server residency state (pushed by clair_obscur on
+        start/stop). Read by fatih_hoca.image_select._eviction_cost."""
+        self._image_server_resident = bool(resident)
+        self._image_server_vram_mb = int(vram_mb or 0)
+
     def register_collector(self, name: str, collector: Collector) -> None:
         self.registry.register(name, collector)
 
@@ -163,6 +174,8 @@ class NerdHerd:
             queue_profile=self._queue_profile,
             in_flight_calls=list(self._in_flight_calls),
             recent_swap_count=self._swap_budget.recent_count(),
+            image_server_resident=self._image_server_resident,
+            image_server_vram_mb=self._image_server_vram_mb,
         )
 
     def prometheus_lines(self) -> str:

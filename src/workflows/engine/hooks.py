@@ -1451,7 +1451,14 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
         return  # Don't store garbage artifacts
 
     # ── Final quality gate before storing ──
-    if output_value:
+    # Degeneracy detection (repetition / low-entropy / size_exceeded) targets LLM
+    # output. Deterministic dispatchers (shopping_pipeline_v2) emit structured
+    # state artifacts — candidate lists carrying review snippets — that
+    # legitimately exceed the LLM size ceiling and cannot be "degenerate". Running
+    # the check on them false-rejects (mission #84: groups_state 64915 > 20000).
+    _DETERMINISTIC_DISPATCHERS = {"shopping_pipeline_v2"}
+    _pe_agent = (task.get("agent_type") or ctx.get("agent_type") or "")
+    if output_value and _pe_agent not in _DETERMINISTIC_DISPATCHERS:
         from dogru_mu_samet import assess as cq_assess
         _artifact_schema = ctx.get("artifact_schema", {})
         _step_max = _artifact_schema.get("max_output_chars", 20_000)

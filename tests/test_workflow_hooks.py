@@ -123,6 +123,38 @@ class TestPostExecuteWorkflowStep(unittest.TestCase):
         self.assertEqual(stored_a, "Combined output")
         self.assertEqual(stored_b, "Combined output")
 
+    # Candidate-state JSON repeats the same keys per candidate, which the
+    # degeneracy detector reads as repetition (mission #84: groups_state 64915
+    # chars flagged). Legit data, not LLM garbage — the deterministic dispatcher
+    # must bypass the check; LLM agents must not.
+    _REPETITIVE = '{"title":"X","site":"a","price":1,"url":"u"}\n' * 3000
+
+    def test_deterministic_dispatcher_skips_degeneracy_gate(self):
+        store = get_artifact_store()
+        task = {
+            "context": json.dumps({
+                "is_workflow_step": True, "mission_id": 200,
+                "output_artifacts": ["groups_state"],
+            }),
+            "agent_type": "shopping_pipeline_v2",
+        }
+        result = {"result": self._REPETITIVE}
+        self._run(post_execute_workflow_step(task, result))
+        self.assertNotEqual(result.get("status"), "failed")
+        self.assertTrue(self._run(store.retrieve(200, "groups_state")))
+
+    def test_llm_step_still_degeneracy_gated(self):
+        task = {
+            "context": json.dumps({
+                "is_workflow_step": True, "mission_id": 201,
+                "output_artifacts": ["analysis"],
+            }),
+            "agent_type": "researcher",
+        }
+        result = {"result": self._REPETITIVE}
+        self._run(post_execute_workflow_step(task, result))
+        self.assertEqual(result.get("status"), "failed")
+
 
 if __name__ == "__main__":
     unittest.main()

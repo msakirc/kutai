@@ -108,6 +108,46 @@ def test_v3_every_agent_type_is_registered():
     assert not missing, f"unregistered agent types: {sorted(set(missing))}"
 
 
+def test_v3_mechanical_steps_have_top_level_executor_and_payload_action():
+    # The expander reads step.executor (top-level) + step.payload (top-level);
+    # mr_roboto routes on payload.action. 2.1 originally nested executor:"clarify"
+    # inside context with no payload -> "unknown mechanical action: None" DLQ.
+    wf = load_workflow("shopping_v3")
+    for s in wf.steps:
+        if s["agent"] == "mechanical":
+            assert s.get("executor") == "mechanical", f"{s['id']} missing top-level executor:mechanical"
+            assert (s.get("payload") or {}).get("action"), f"{s['id']} missing payload.action"
+
+
+def test_v3_clarify_variant_shape():
+    wf = load_workflow("shopping_v3")
+    s = next(x for x in wf.steps if x["id"] == "2.1")
+    assert s["payload"]["action"] == "clarify"
+    assert s["payload"]["kind"] == "variant_choice"
+    assert s["payload"]["payload_from"] == "gate_result"
+
+
+def test_all_shopping_workflows_mechanical_shape():
+    # The clarify_variant DLQ ("unknown mechanical action: None") existed in ALL
+    # FOUR shopping workflows — mechanical steps need top-level executor +
+    # payload.action, not a context.executor nesting. Guard every shopping wf.
+    for name in ("shopping_v2", "shopping_v3", "quick_search_v2",
+                 "product_research_v2"):
+        wf = load_workflow(name)
+        for s in wf.steps:
+            ctx = s.get("context") or {}
+            assert not (isinstance(ctx, dict) and ctx.get("executor")), (
+                f"{name}[{s['id']}] nests executor in context (wrong)"
+            )
+            if s.get("agent") == "mechanical" or s.get("executor") == "mechanical":
+                assert s.get("executor") == "mechanical", (
+                    f"{name}[{s['id']}] missing top-level executor:mechanical"
+                )
+                assert (s.get("payload") or {}).get("action"), (
+                    f"{name}[{s['id']}] missing payload.action"
+                )
+
+
 def test_v3_declares_no_file_produces():
     # Producer/prep/apply steps emit plain JSON artifacts, NOT declared file
     # produces — so materialize_produces is a no-op for them (spec risk 6).

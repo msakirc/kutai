@@ -42,14 +42,15 @@
     },
     {
       "id": "2.1", "phase": "phase_1", "name": "clarify_variant",
-      "title": "Clarify Variant Choice", "agent": "mechanical",
+      "title": "Clarify Variant Choice", "agent": "mechanical", "executor": "mechanical",
       "difficulty": "easy", "tools_hint": [], "depends_on": ["1.1"],
       "input_artifacts": ["gate_result"],
       "output_artifacts": ["clarify_choice"],
+      "payload": {"action": "clarify", "kind": "variant_choice", "payload_from": "gate_result"},
       "instruction": "Mechanical: clarify (variant_choice).",
       "done_when": "clarify_choice populated by user tap.",
       "skip_when": "gate_result.gate.kind != 'clarify'",
-      "context": {"executor": "clarify", "payload_from": "gate_result", "kind": "variant_choice", "requires_grading": false}
+      "context": {"requires_grading": false}
     },
     {
       "id": "2.2", "phase": "phase_1", "name": "synth_one",

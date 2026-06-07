@@ -124,7 +124,15 @@ async def _run_image(task: dict, image_call: dict) -> dict:
                                     success=True, error_category="",
                                     agent_type=agent_type, difficulty=difficulty)
         else:
-            err_cat = "fatal" if result.error.startswith("unknown_provider") else "availability"
+            # FIX 5: unknown_provider is a permanent misconfig (no provider by
+            # that name), but "fatal" is NOT a category beckman's decide_retry /
+            # TRANSIENT_CATEGORIES recognizes — it would fall through to the
+            # availability-backoff branch and get retried 3×-with-backoff before
+            # DLQ anyway, just under a misleading name. Beckman has no dedicated
+            # terminal/non-retryable category (verified in retry.py), so we use
+            # "availability" (a recognized TRANSIENT_CATEGORIES member) for both
+            # arms. The retry ladder DLQs it predictably; the category is honest.
+            err_cat = "availability"
             await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
                                     success=False, error_category=err_cat,
                                     agent_type=agent_type, difficulty=difficulty)

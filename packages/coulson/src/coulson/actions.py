@@ -1,6 +1,11 @@
-# models.py
+# actions.py
 """
 Pydantic response models for structured agent output.
+
+Relocated 2026-06-07 from src/models/models.py — it was misfiled under
+src/models/ (the LLM-catalog/selection shim dir) purely by the word
+"model". This is the ReAct agent-action contract; coulson owns agent
+execution (react.py is the sole consumer).
 
 These models define the canonical action types an agent can produce.
 They are used for:

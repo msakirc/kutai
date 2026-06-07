@@ -41,9 +41,9 @@ from src.infra.db import (
     load_task_checkpoint, record_model_call, record_cost, store_memory,
 )
 from src.infra.logging_config import get_logger
-from src.models.models import validate_action, validate_tool_args, validate_task_output
 from src.tools import TOOL_REGISTRY, execute_tool
 
+from .actions import validate_action, validate_tool_args, validate_task_output
 from .checkpoint import (
     safe_log_conversation, save_checkpoint, tool_idempotency_key,
 )

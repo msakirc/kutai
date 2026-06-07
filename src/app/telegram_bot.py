@@ -500,6 +500,7 @@ async def _image_delivery_resume(
     """
     import json
     import os
+    import tempfile
     chat_id = (state or {}).get("chat_id")
     if chat_id is None:
         return
@@ -518,11 +519,22 @@ async def _image_delivery_resume(
         payload = {}
     path = payload.get("path")
     prompt = (state.get("prompt") or "")[:200]
+    # FIX 6c: confine delivery to the kutai_images temp root. A tampered task
+    # result could otherwise name an arbitrary readable file (e.g. a secret on
+    # disk) and we would happily exfiltrate it to the user. Resolve symlinks /
+    # .. with realpath and require the result path to live under the trusted
+    # image root before sending. Anything else → generic failure (not the file).
+    image_root = os.path.realpath(
+        os.path.join(tempfile.gettempdir(), "kutai_images"))
     if path and os.path.isfile(path):
-        await _send_telegram_photo_via_resume(chat_id, path, caption=prompt)
-    else:
-        await _send_telegram_via_resume(
-            chat_id, "❌ Image failed: no image produced")
+        real_path = os.path.realpath(path)
+        if real_path == image_root or real_path.startswith(image_root + os.sep):
+            await _send_telegram_photo_via_resume(chat_id, path, caption=prompt)
+            return
+        logger.warning("image delivery: path outside trusted root — refusing",
+                       chat_id=chat_id, path=path, real_path=real_path)
+    await _send_telegram_via_resume(
+        chat_id, "❌ Image failed: no image produced")
 
 
 async def _image_delivery_err(
@@ -532,9 +544,14 @@ async def _image_delivery_err(
     chat_id = (state or {}).get("chat_id")
     if chat_id is None:
         return
-    err = (result or {}).get("error") if isinstance(result, dict) else ""
+    raw = (result or {}).get("error") if isinstance(result, dict) else ""
+    # FIX 3: never send the raw error verbatim — it can carry internal detail
+    # (e.g. ``provider_raised:RuntimeError:<path/secret>``). Log the full error
+    # server-side and show the user a generic, sanitized message.
+    logger.warning("image delivery failed",
+                   child_task_id=child_task_id, chat_id=chat_id, error=str(raw))
     await _send_telegram_via_resume(
-        chat_id, f"❌ Image failed: {err or 'generation error'}")
+        chat_id, "❌ Image generation failed — please try again.")
 
 
 def register_continuations() -> None:

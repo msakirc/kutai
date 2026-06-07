@@ -14,7 +14,7 @@ from typing import Optional
 
 from src.infra.logging_config import get_logger
 
-logger = get_logger("core.code_review")
+logger = get_logger("coulson.posthooks.code_review")
 
 
 CODE_REVIEW_SYSTEM = (

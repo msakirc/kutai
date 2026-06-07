@@ -21,14 +21,13 @@ logger = get_logger("coulson.reflection")
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Per-agent reflection checklists — MOVED to src.core.reflection_posthook
-# (SP3b Task 5). These names are re-exported here for back-compat: coulson's
-# inline self_reflect caller + the Z2/Z3 stack/layer tests import them from
-# coulson.reflection. Task 7 removes coulson's inline caller; the shim can be
-# dropped then if no external importer remains.
+# Per-agent reflection checklists — live in coulson/posthooks/reflection_posthook
+# (moved from src/core 2026-06-07, P3). These names are re-exported here for
+# back-compat: coulson's inline self_reflect caller + the Z2/Z3 stack/layer
+# tests import them from coulson.reflection.
 # ────────────────────────────────────────────────────────────────────────────
 
-from src.core.reflection_posthook import (  # noqa: F401
+from .posthooks.reflection_posthook import (  # noqa: F401
     STACK_BLOCKS,
     LAYER_BLOCKS,
     REFLECTION_BLOCKS,

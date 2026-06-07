@@ -13,7 +13,7 @@ from typing import Optional
 
 from src.infra.logging_config import get_logger
 
-logger = get_logger("core.grading")
+logger = get_logger("coulson.posthooks.grading")
 
 GRADING_SYSTEM = (
     "You are a strict evaluator. Reply ONLY with the requested fields, "

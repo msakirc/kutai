@@ -47,3 +47,17 @@ async def test_sink_missing_onepager_fails_clean(tmp_path, monkeypatch):
 def test_no_llm_symbols():
     assert not hasattr(mod, "_draft_one_pager_llm"), "LLM draft fn must be deleted"
     assert not hasattr(mod, "_AUDIENCE_PROMPTS"), "prompts moved to press_kit.json"
+
+
+def test_press_kit_workflow_shapes():
+    import json
+    wf = json.load(open("src/workflows/press_kit/press_kit.json", encoding="utf-8"))
+    steps = {s["id"]: s for s in wf["steps"]}
+    for aud in ("investor", "journalist", "partner", "candidate"):
+        p = steps[f"1.draft_onepager_{aud}"]
+        assert p["agent"] == "planner"
+        assert "executor" not in p
+        assert p["produces"] == [f"press_kit/src/one_pager_{aud}.md"]
+    asm = steps["2.assemble"]
+    assert asm["executor"] == "mechanical"
+    assert len(asm["depends_on"]) == 4

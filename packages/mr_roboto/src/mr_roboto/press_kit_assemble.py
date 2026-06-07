@@ -144,8 +144,9 @@ async def run(
         )
         os.makedirs(kit_root, exist_ok=True)
 
-        # spec_hash computed after reading all one-pagers (see below)
-        spec_hash = ""  # set after reading one-pagers
+        # spec_hash computed after reading all one-pagers (accumulated below)
+        spec_hash = ""  # set after loop
+        one_pager_texts: list[str] = []
 
         variants: dict[str, dict[str, Any]] = {}
 
@@ -161,6 +162,7 @@ async def run(
                     one_pager_text = fh.read()
             except OSError as exc:
                 return {"ok": False, "error": f"one_pager_{audience}.md missing at {src_op}: {exc}"}
+            one_pager_texts.append(one_pager_text)
 
             with open(os.path.join(aud_dir, "one_pager.md"), "w", encoding="utf-8") as fh:
                 fh.write(one_pager_text)
@@ -210,11 +212,7 @@ async def run(
             }
 
         spec_hash = hashlib.sha256(
-            "".join(
-                open(os.path.join(workspace_path, onepager_dir, f"one_pager_{a}.md"),
-                     encoding="utf-8").read()
-                for a in AUDIENCE_VARIANTS
-            ).encode()
+            "".join(one_pager_texts).encode()
         ).hexdigest()[:16]
 
         manifest: dict[str, Any] = {

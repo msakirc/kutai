@@ -4277,7 +4277,7 @@ async def _run_dispatch(task: dict) -> Action:
             res = await _pk_assemble(
                 mission_id=payload.get("mission_id") or task.get("mission_id") or 0,
                 product_id=payload.get("product_id") or "",
-                spec_text=payload.get("spec_text") or "",
+                onepager_dir=payload.get("onepager_dir") or "press_kit/src",
                 workspace_path=payload.get("workspace_path") or "",
                 logo_path=payload.get("logo_path") or "",
                 screenshot_paths=payload.get("screenshot_paths") or [],

@@ -153,7 +153,13 @@ async def _run_image(task: dict, image_call: dict) -> dict:
 
     return {
         "content": result.path, "path": result.path, "provider": result.provider,
-        "model": result.model, "cost": result.cost, "latency": result.latency,
+        "model": result.model,
+        # FIX 7: emit BOTH "cost" (legacy readers) and "cost_usd". Beckman's
+        # on_task_finished reads result.get("cost_usd") for mission spend
+        # tracking; without it image cost never accrues to the mission (moot
+        # today since providers are free=0, but correct when a paid one lands).
+        "cost": result.cost, "cost_usd": result.cost,
+        "latency": result.latency,
         "seed_used": result.seed_used,
         "is_local": getattr(model, "is_local", False),
         "ran_on": result.provider,

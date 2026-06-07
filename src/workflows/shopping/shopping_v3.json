@@ -91,7 +91,7 @@
       "title": "Apply Labels + Filter + Gate", "agent": "shopping_pipeline_v2",
       "difficulty": "medium", "tools_hint": [], "depends_on": ["1.1d"],
       "input_artifacts": ["label_raw", "groups_state"],
-      "output_artifacts": ["gate_result"],
+      "output_artifacts": ["gate_result", "clarify_choice"],
       "instruction": "Step name: label_apply_filter_gate.",
       "done_when": "gate_result.gate.kind is chosen|clarify|escalation.",
       "context": {"requires_grading": false}
@@ -104,7 +104,7 @@
       "output_artifacts": ["synth_input", "synth_meta"],
       "instruction": "Step name: synth_prep.",
       "done_when": "synth_input + synth_meta emitted.",
-      "skip_when": "gate_result.gate.kind != 'chosen'",
+      "skip_when": "clarify_choice.kind != 'chosen'",
       "context": {"requires_grading": false}
     },
     {
@@ -115,7 +115,7 @@
       "output_artifacts": ["synth_raw"],
       "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
       "done_when": "synth_raw is a JSON object.",
-      "skip_when": "gate_result.gate.kind != 'chosen'",
+      "skip_when": "clarify_choice.kind != 'chosen'",
       "context": {"requires_grading": false}
     },
     {
@@ -126,7 +126,7 @@
       "output_artifacts": ["synth_result"],
       "instruction": "Step name: synth_apply.",
       "done_when": "synth_result.cards populated.",
-      "skip_when": "gate_result.gate.kind != 'chosen'",
+      "skip_when": "clarify_choice.kind != 'chosen'",
       "context": {"requires_grading": false}
     },
     {
@@ -182,7 +182,7 @@
       "output_artifacts": ["shopping_response"],
       "instruction": "Step name: format_response.",
       "done_when": "shopping_response.formatted_text populated.",
-      "skip_when": "synth_result.cards is empty",
+      "skip_when": "clarify_choice.kind == 'compare_all'",
       "context": {"requires_grading": false}
     },
     {
@@ -203,7 +203,7 @@
       "input_artifacts": ["cmp_input_0"], "output_artifacts": ["cmp_raw_0"],
       "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
       "done_when": "cmp_raw_0 is a JSON object.",
-      "skip_when": "compare_flags.has_line_0 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false}
     },
     {
@@ -213,7 +213,7 @@
       "input_artifacts": ["cmp_raw_0", "cmp_meta_0"], "output_artifacts": ["cmp_card_0"],
       "instruction": "Step name: compare_line_apply.",
       "done_when": "cmp_card_0 populated.",
-      "skip_when": "compare_flags.has_line_0 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false, "line_index": 0}
     },
     {
@@ -223,7 +223,7 @@
       "input_artifacts": ["cmp_input_1"], "output_artifacts": ["cmp_raw_1"],
       "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
       "done_when": "cmp_raw_1 is a JSON object.",
-      "skip_when": "compare_flags.has_line_1 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false}
     },
     {
@@ -233,7 +233,7 @@
       "input_artifacts": ["cmp_raw_1", "cmp_meta_1"], "output_artifacts": ["cmp_card_1"],
       "instruction": "Step name: compare_line_apply.",
       "done_when": "cmp_card_1 populated.",
-      "skip_when": "compare_flags.has_line_1 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false, "line_index": 1}
     },
     {
@@ -243,7 +243,7 @@
       "input_artifacts": ["cmp_input_2"], "output_artifacts": ["cmp_raw_2"],
       "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
       "done_when": "cmp_raw_2 is a JSON object.",
-      "skip_when": "compare_flags.has_line_2 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false}
     },
     {
@@ -253,7 +253,7 @@
       "input_artifacts": ["cmp_raw_2", "cmp_meta_2"], "output_artifacts": ["cmp_card_2"],
       "instruction": "Step name: compare_line_apply.",
       "done_when": "cmp_card_2 populated.",
-      "skip_when": "compare_flags.has_line_2 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false, "line_index": 2}
     },
     {
@@ -263,7 +263,7 @@
       "input_artifacts": ["cmp_input_3"], "output_artifacts": ["cmp_raw_3"],
       "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
       "done_when": "cmp_raw_3 is a JSON object.",
-      "skip_when": "compare_flags.has_line_3 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false}
     },
     {
@@ -273,7 +273,7 @@
       "input_artifacts": ["cmp_raw_3", "cmp_meta_3"], "output_artifacts": ["cmp_card_3"],
       "instruction": "Step name: compare_line_apply.",
       "done_when": "cmp_card_3 populated.",
-      "skip_when": "compare_flags.has_line_3 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false, "line_index": 3}
     },
     {
@@ -283,7 +283,7 @@
       "input_artifacts": ["cmp_input_4"], "output_artifacts": ["cmp_raw_4"],
       "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
       "done_when": "cmp_raw_4 is a JSON object.",
-      "skip_when": "compare_flags.has_line_4 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false}
     },
     {
@@ -293,7 +293,7 @@
       "input_artifacts": ["cmp_raw_4", "cmp_meta_4"], "output_artifacts": ["cmp_card_4"],
       "instruction": "Step name: compare_line_apply.",
       "done_when": "cmp_card_4 populated.",
-      "skip_when": "compare_flags.has_line_4 == 'false'",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false, "line_index": 4}
     },
     {

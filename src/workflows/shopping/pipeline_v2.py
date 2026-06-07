@@ -1334,10 +1334,28 @@ async def handler_group_apply_label_prep(task: dict, artifacts: dict, ctx: dict)
     }
 
 
+def _gate_with_seed_choice(out: dict) -> dict:
+    """Wrap the gate_result with a SEEDED clarify_choice so every downstream
+    branch step keys on an artifact that ALWAYS exists.
+
+    The three downstream paths (2.0* chosen / 2.2* variant / 2.3* compare-all)
+    discriminate on clarify_choice.kind. On the chosen/escalation paths no user
+    clarify happens, so without a seed clarify_choice would be ABSENT and
+    skip_when (which defaults to NOT-skip on a missing artifact) would let the
+    variant/compare steps run spuriously and double-write shopping_response.
+    The gate seeds it; the Telegram tap overwrites it with variant|compare_all.
+    """
+    kind = (out.get("gate") or {}).get("kind")
+    seed = {"chosen": "chosen", "clarify": "pending",
+            "escalation": "escalation"}.get(kind, "pending")
+    return {"gate_result": out, "clarify_choice": {"kind": seed}}
+
+
 async def handler_label_apply_filter_gate(task: dict, artifacts: dict, ctx: dict) -> dict:
     """Apply the labeler producer's `label_raw` taxonomy, filter, and run the
-    variant gate. Emits `gate_result` in the same shape as the legacy fused
-    handler (chosen | clarify | escalation)."""
+    variant gate. Emits `gate_result` (chosen | clarify | escalation) plus a
+    seeded `clarify_choice` (chosen | pending | escalation) — the universal
+    branch discriminator (see _gate_with_seed_choice)."""
     from src.workflows.shopping.variant_gate import step_filter, step_variant_gate
     from src.workflows.shopping.labels import apply_labels
 
@@ -1347,8 +1365,9 @@ async def handler_label_apply_filter_gate(task: dict, artifacts: dict, ctx: dict
     groups = [_group_from_dict(g) for g in gs.get("groups", [])]
 
     if not groups:
-        return {"gate": {"kind": "escalation", "reason": "no_candidates"},
-                "candidates": _candidates_to_json(cands), "query": query}
+        return _gate_with_seed_choice(
+            {"gate": {"kind": "escalation", "reason": "no_candidates"},
+             "candidates": _candidates_to_json(cands), "query": query})
 
     groups = apply_labels(groups, artifacts.get("label_raw", ""))
     survivors = step_filter(groups)
@@ -1373,7 +1392,7 @@ async def handler_label_apply_filter_gate(task: dict, artifacts: dict, ctx: dict
             out["base_label"] = query.strip().title() or (survivors[0].base_model if survivors else "")
     elif gate["kind"] == "escalation":
         out["gate"]["reason"] = gate.get("reason", "unknown")
-    return out
+    return _gate_with_seed_choice(out)
 
 
 async def handler_synth_prep(task: dict, artifacts: dict, ctx: dict) -> dict:

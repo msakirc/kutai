@@ -101,10 +101,16 @@ async def test_label_apply_filter_gate_emits_gate_result():
     ]})
     out = await handler_label_apply_filter_gate(
         task={}, artifacts={"groups_state": groups_state, "label_raw": label_raw}, ctx={})
-    # two distinct lines that both match query "s25" => clarify gate
-    assert out["gate"]["kind"] in ("clarify", "chosen", "escalation")
-    if out["gate"]["kind"] == "clarify":
-        assert out["clarify_payloads"]
+    # now emits gate_result + a seeded clarify_choice (universal discriminator)
+    gr = out["gate_result"]
+    assert gr["gate"]["kind"] in ("clarify", "chosen", "escalation")
+    seed = out["clarify_choice"]["kind"]
+    assert seed in ("chosen", "pending", "escalation")
+    if gr["gate"]["kind"] == "clarify":
+        assert gr["clarify_payloads"]
+        assert seed == "pending"  # user tap overwrites with variant|compare_all
+    if gr["gate"]["kind"] == "chosen":
+        assert seed == "chosen"
 
 
 @pytest.mark.asyncio

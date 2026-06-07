@@ -25,8 +25,11 @@ def test_v3_group_residual_skips_when_no_residuals():
 def test_v3_synth_paths_are_mutually_exclusive():
     wf = load_workflow("shopping_v3")
     by_id = {s["id"]: s for s in wf.steps}
-    assert by_id["2.0a"]["skip_when"] == "gate_result.gate.kind != 'chosen'"
+    # all three branches discriminate on the seeded clarify_choice (always present)
+    assert by_id["2.0a"]["skip_when"] == "clarify_choice.kind != 'chosen'"
     assert by_id["2.2a"]["skip_when"] == "clarify_choice.kind != 'variant'"
+    assert by_id["2.3a"]["skip_when"] == "clarify_choice.kind != 'compare_all'"
+    assert by_id["3.0"]["skip_when"] == "clarify_choice.kind == 'compare_all'"
 
 
 def test_v3_prep_apply_steps_route_to_pipeline_handler():
@@ -54,7 +57,10 @@ def test_v3_compare_all_fans_into_synth_producers():
         d = by_id[f"2.3_{i}_d"]
         assert d["agent"] == "shopping_synthesizer"
         assert d["depends_on"] == ["2.3a"]
-        assert d["skip_when"] == f"compare_flags.has_line_{i} == 'false'"
+        # discriminate on the always-present clarify_choice, NOT compare_flags
+        # (which is absent when compare_prep skips -> missing-artifact defaults
+        # to run -> the spurious-compare-on-variant-path bug).
+        assert d["skip_when"] == "clarify_choice.kind != 'compare_all'"
         assert d["input_artifacts"] == [f"cmp_input_{i}"]
         assert d["output_artifacts"] == [f"cmp_raw_{i}"]
         a = by_id[f"2.3_{i}_a"]

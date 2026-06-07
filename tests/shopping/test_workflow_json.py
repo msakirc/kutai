@@ -23,9 +23,13 @@ def test_clarify_variant_is_mechanical():
         wf = json.loads(Path(p).read_text(encoding="utf-8"))
         step = next(s for s in wf["steps"] if s["name"] == "clarify_variant")
         assert step.get("agent") == "mechanical", f"{p} clarify_variant agent wrong"
-        ctx = step.get("context", {})
-        assert ctx.get("executor") == "clarify"
-        assert ctx.get("kind") == "variant_choice"
+        # mr_roboto routes on payload.action; expander reads top-level executor +
+        # payload. Nesting executor:"clarify" in context (the old shape this test
+        # used to assert) produced payload.action=None -> live DLQ.
+        assert step.get("executor") == "mechanical", f"{p} clarify_variant needs top-level executor:mechanical"
+        payload = step.get("payload", {})
+        assert payload.get("action") == "clarify", f"{p} clarify_variant payload.action"
+        assert payload.get("kind") == "variant_choice", f"{p} clarify_variant payload.kind"
 
 
 def test_synth_one_skipped_when_not_chosen():

@@ -204,6 +204,17 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
             r = t.get("result") or ""
             if len(r.strip()) < 10:
                 continue
+            # A skip_when short-circuit completes with result
+            # {"skipped": true, "reason": ...}. Such a row is NOT the delivered
+            # output — without this guard a late conditional step that skips
+            # (e.g. shopping_v3 2.3z compare_assemble on the variant path)
+            # outranks the real delivery step by id and ships its skip JSON.
+            try:
+                _pj = _json.loads(r)
+                if isinstance(_pj, dict) and _pj.get("skipped") is True:
+                    continue
+            except Exception:
+                pass
             final_result = r
             break
 

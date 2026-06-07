@@ -51,7 +51,11 @@ async def _run_subprocess(cmd: list[str], timeout: float = 300.0) -> tuple[int, 
 
 
 def _parse_storyboard_response(content: str) -> dict | None:
-    """Extract a JSON storyboard dict from LLM response content."""
+    """Parse a JSON storyboard dict from raw producer file content.
+
+    Tolerates code fences / surrounding prose since the upstream producer is
+    an LLM step whose materialized output may not be bare JSON.
+    """
     if not content:
         return None
     content = content.strip()

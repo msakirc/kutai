@@ -47,8 +47,7 @@ async def test_sink_missing_raw_file_returns_error(tmp_path):
     assert "raw" in res["error"].lower()
 
 
-@pytest.mark.asyncio
-async def test_sink_makes_no_llm_call(tmp_path, monkeypatch):
+def test_sink_makes_no_llm_call():
     import mr_roboto.demo_storyboard as mod
     assert not hasattr(mod, "_enqueue_storyboard_llm"), "LLM enqueue must be deleted"
     assert not hasattr(mod, "_STORYBOARD_SYSTEM"), "LLM prompt must be deleted"

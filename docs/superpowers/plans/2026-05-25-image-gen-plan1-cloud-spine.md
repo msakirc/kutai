@@ -1,10 +1,12 @@
-# Image Generation — Plan 1 (v2): Cloud spine + `/image`
+# Image Generation — Plan 1 (v3): Cloud spine + `/image`
+
+> **v3 (2026-06-05)** corrects three execution-blockers found validating v2 against live code: (1) image execution moves to **husam** (no `dispatcher.dispatch()` exists); (2) failed-model propagation wraps names in `Failure(...)` for the text path (raw strings crashed the selector); (3) `/image` + e2e drop **`await_inline`** for the durable CPS `on_complete` continuation / manual pump-cycle tests. See "Audit findings" below.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** End-to-end cloud image generation reachable from Telegram `/image <prompt>`, flowing through the existing beckman→hoca→dispatcher pipeline with two new thin packages (`paintress`, `renoir`) and an image scorer in `fatih_hoca`, **with full telemetry round-trip (pick_log, in-flight registry, cost) and a working failures-propagation across retries**.
+**Goal:** End-to-end cloud image generation reachable from Telegram `/image <prompt>`, flowing through the existing beckman→hoca→**husam** pipeline with two new thin packages (`paintress`, `renoir`) and an image scorer in `fatih_hoca`, **with full telemetry round-trip (pick_log, in-flight registry, token/cost) and a working failures-propagation across retries**. Result delivery is **CPS** (durable `on_complete` continuation) — **no `await_inline`** (per `feedback`/CPS-migration: await_inline is being retired).
 
-**Architecture:** Image generation is just tasks through the singular lifecycle (see `docs/superpowers/specs/2026-05-23-image-generation-design.md` §2). `paintress` = image interaction caller (≈ HaLLederiz Kadir). `renoir` = image quality judge (≈ dogru_mu_samet). `fatih_hoca` gains a static image catalog + a purpose-built scorer (`image_select.py`) routed via `select(needs_image=True)`. The dispatcher routes image picks to paintress via a modality branch in `dispatch()`; the image path writes pick_log, in-flight, and cost telemetry exactly like the text path. **This plan is cloud-only**: `clair_obscur` (local server), real eviction-cost from nerd_herd, GPU handover, and i2p integration are Plans 2 & 3.
+**Architecture:** Image generation is just tasks through the singular lifecycle (see `docs/superpowers/specs/2026-05-23-image-generation-design.md` §2). `paintress` = image interaction caller (≈ HaLLederiz Kadir). `renoir` = image quality judge (≈ dogru_mu_samet). `fatih_hoca` gains a static image catalog + a purpose-built scorer (`image_select.py`) routed via `select(needs_image=True)`. **`husam`** (`packages/husam/`, the non-agentic raw-dispatch worker) routes image picks to paintress via a modality branch **at the top of `husam.worker.run()`** — NOT the dispatcher. There is **no `LLMDispatcher.dispatch()` method** (it was removed); the raw path is `orchestrator._dispatch` → `husam.run()` → (text) `dispatcher.execute()` / (image) `paintress.generate()`. Husam is the only caller permitted to reach the dispatcher (alongside coulson). The image path writes pick_log, in-flight, and token/cost telemetry mirroring husam's text envelope (`get_dispatcher()._record_pick` + `in_flight.begin_call/end_call` + `db.record_call_tokens/record_call_cost`). **This plan is cloud-only**: `clair_obscur` (local server), real eviction-cost from nerd_herd, GPU handover, and i2p integration are Plans 2 & 3.
 
 **Tech Stack:** Python 3.10, async/await, aiosqlite, httpx (HTTP to image providers), Pillow (image validation in renoir), pytest. New packages use src-layout like `packages/fatih_hoca/`.
 
@@ -16,14 +18,21 @@
 
 ## Audit findings this rewrite addresses
 
-Prior Plan 1 had: (1) unverified dataclass-inheritance assumption that would break `registry.py` compile, (2) broken `failures` handling in the scorer that compared strings to model objects, (3) silent JSON-string vs dict mismatch in `/image` result reception, (4) missing pick_log / in-flight / cost telemetry on the image dispatch path, (5) "e2e" test that skipped beckman + orchestrator + telegram. v2 fixes each at the structural level.
+This is the **v3 correction pass** (2026-06-05). The v2 plan was validated against live code and had **three execution-blocking errors** plus the original v1 issues. v3 fixes all of them at the structural level:
 
-Recon confirmed (verbatim file:line):
-- `ModelInfo` required fields with NO defaults: `name, location, provider, litellm_name` at `packages/fatih_hoca/src/fatih_hoca/registry.py:53-56`. Any dataclass parent introducing defaulted fields above these would crash compile. **v2 dodges this by NOT subclassing — `ImageModelInfo` is independent; dispatcher branches on `isinstance(pick.model, ImageModelInfo)`.**
-- Orchestrator stringifies the dispatcher return: `"result": json.dumps(_dispatch_result)` at `src/core/orchestrator.py:326`. `TaskResult.result` is therefore a JSON string at the caller — confirmed.
-- `_record_pick` (`src/core/llm_dispatcher.py:776-833`), `begin_call/end_call` (`src/core/in_flight.py:199-282`), `record_call_tokens` (`src/infra/db.py:5814`), `record_call_cost` (`src/infra/db.py:7547`) are all **generic** — they tolerate `is_local`, `provider`, zero tokens; no LLM-only fields required. v2 calls them all from the image path.
-- Beckman has **no** SelectionFailure handler at admission. Only the dispatcher catches it (`src/core/llm_dispatcher.py:412-431`). v2 adds one for the image path.
-- The LLM **inter-task** failures-propagation does NOT exist today. `on_task_finished` writes `task.context["failed_models"]` (`src/core/orchestrator.py:824-828`) but `next_task()` never reads it back into `fatih_hoca.select(failures=...)`. v2 adds this shared mechanism — text retries get the win too.
+**v2 → v3 corrections (the blockers):**
+1. **No `dispatch()` method exists.** v2's Task 11/12 added an image branch to `LLMDispatcher.dispatch()` and asserted `get_dispatcher().dispatch(spec)`. Grep `def dispatch` = zero hits. The raw path is `orchestrator._dispatch` → **`husam.run()`** (`src/core/orchestrator.py:364-377`) → `dispatcher.execute()` (`packages/husam/src/husam/worker.py:273-288`). **v3 puts the image branch in `husam.worker.run()`**, where text raw-dispatch already lives. (The 2026-06-05 dispatcher de-accretion also moved the telemetry body to `src/telemetry/pick_recorder.py`, keeping `_record_pick` as a thin delegator — v3 reuses that delegator from husam.)
+2. **v2's failures-propagation crashes the TEXT path.** `Failure` is a dataclass with `model: str` (`packages/fatih_hoca/src/fatih_hoca/types.py:29-33`); the selector does `{f.model for f in failures}` (`selector.py:175`). v2 forwarded raw **strings** as `failures=`, so `str.model` → `AttributeError` on the first text retry. v2's unit test never caught it (it monkeypatched `fatih_hoca.select`). **v3 wraps names in `Failure(model=name, reason="prior_admission")` for the text path** (image path keeps strings — the image scorer normalizes). v3 also fixes the test's name-extractor to read `f.model` (string), matching reality.
+3. **`await_inline` is being retired and cannot drive retries inline.** `await_inline=True` inserts to DB and blocks on an `asyncio.Future` that resolves ONLY on terminal state (`general_beckman/__init__.py:986-994, 1245-1252`); execution + retry are driven by the orchestrator pump + `on_task_finished` re-enqueue across cycles. v2's `/image` and e2e tests used `await_inline`. **v3 delivers `/image` via the durable CPS `on_complete` continuation** (registry at `general_beckman/continuations.py:25-50`; Telegram singleton at `telegram_bot.py:304-353`) and **drives e2e tests via manual pump cycles** (`next_task()` → `husam.run(task)` → `on_task_finished(tid, result)`).
+
+**Original v1 issues (already fixed in v2, retained):** dataclass-inheritance compile break; scorer `failures` string-vs-object bug; JSON-string vs dict mismatch in `/image` result; missing image telemetry; "e2e" tests skipping beckman+orchestrator.
+
+Recon confirmed (corrected file:line, 2026-06-05):
+- `ModelInfo` required fields with NO defaults: `name, location, provider, litellm_name` at `registry.py:50-56`. Any defaulted dataclass parent would crash compile. **`ImageModelInfo` is independent; husam branches on `isinstance(pick.model, ImageModelInfo)` (and on `context.image_call`).**
+- Orchestrator stringifies husam's return: `"result": json.dumps(_dispatch_result)` at `orchestrator.py:378-382`. The continuation handler / `TaskResult.result` therefore sees a JSON string — confirmed; both `/image` handler and e2e parse it.
+- `_record_pick` (thin delegator, `llm_dispatcher.py` — sig `pick, task, category, success, error_category, agent_type, difficulty`), `begin_call/end_call` (`in_flight.py:199-281`, sig `category, model_name, provider, is_local, task_id, est_tokens` / `call_id`), `record_call_tokens` (`db.py:5814`, keyword-only, tolerates zero tokens), `record_call_cost` (`db.py:7547`, `(task_id, cost_usd)`) — all **generic**, recon-verified. husam's image path calls them all.
+- Beckman has **no** SelectionFailure handler at admission (grep empty). v3 adds one at the real `next_task()` selection site.
+- Inter-task failures-propagation does NOT exist: `on_task_finished` writes `task.context["failed_models"]` as a list of **name strings** (`general_beckman/__init__.py:892-896`) but `next_task()`'s `fatih_hoca.select(**_sel_kwargs)` (`:637-650`) never sets `failures=`. v3 adds the shared mechanism — text retries get the win too (correctly, via `Failure` objects).
 
 ---
 
@@ -40,13 +49,15 @@ Recon confirmed (verbatim file:line):
 - `packages/fatih_hoca/src/fatih_hoca/__init__.py:439` — `select()` modality dispatch (image short-circuit before text engine; benchmark enrichment skipped for image entries).
 
 **Modified (pipeline):**
-- `src/core/llm_dispatcher.py` — `CallCategory.IMAGE`; `dispatch()` modality branch; new `_dispatch_image()` with full telemetry mirroring `execute()`.
-- `src/core/orchestrator.py:303-310` — extend `_is_raw` to also match `image_call`.
-- `packages/general_beckman/src/general_beckman/__init__.py` — extract `_select_for_admission(spec)` helper; teach it to read `task.context["failed_models"]` and forward as `failures=` (fixes LLM retries too); add image branch (`needs_image=True`); add SelectionFailure handler.
-- `src/app/telegram_bot.py` — `/image` command, parses JSON-stringified `TaskResult.result`.
+- `src/core/llm_dispatcher.py` — add `CallCategory.IMAGE = "image"` only (telemetry helpers already generic; **no `dispatch()`/`_dispatch_image`** — that method does not exist).
+- `packages/husam/src/husam/worker.py` — image modality branch at the top of `run()`; new `_run_image(task, image_call)` with the telemetry envelope (in_flight + `get_dispatcher()._record_pick` + `record_call_tokens/cost`) wrapped in `heartbeat.keepalive()`; calls `paintress.generate`.
+- `src/core/orchestrator.py:355-363` — extend `_is_raw` to also match `image_call.raw_dispatch` (routes the task to the existing `husam.run` path; no other orchestrator change).
+- `packages/general_beckman/src/general_beckman/__init__.py` — add `_select_for_admission(spec, sel_kwargs)` helper that reads `task.context["failed_models"]`, wraps them as `Failure(...)` for the text path / forwards strings for the image path, and adds the `needs_image=True` branch; wire it at the existing `next_task()` selection site (`:637-650`); add SelectionFailure handling there.
+- `src/app/telegram_bot.py` — `/image` command (enqueue + CPS `on_complete`, **no await_inline**) + `image_delivery.resume`/`image_delivery.err` continuation handlers registered in the existing `register_continuations()`; resume handler parses the JSON-stringified result and sends the photo via the module singleton.
 
 **Test infra:**
-- root `conftest.py` `_PACKAGE_SRCS` — add `renoir` + `paintress` (same place `safety_guard` was added in commit `ae004547`).
+- root `conftest.py` `_PACKAGE_SRCS` — add `renoir` + `paintress` (same place `safety_guard` was added in commit `ae004547`; `husam` is already registered).
+- e2e/integration tests use the **manual pump-cycle** pattern (`_fresh_db` fixture → `add_task`/`enqueue` (no await_inline) → `next_task()` → `husam.run(task)` → `on_task_finished(tid, result)`); see `tests/test_beckman_next_task.py` / `tests/integration/conftest.py::temp_db` for the canonical fixtures.
 
 ---
 
@@ -1124,13 +1135,19 @@ def select(**kwargs):
     if kwargs.pop("needs_image", False):
         from .image_select import select_image
         raw_failures = kwargs.get("failures") or []
-        # Normalize to plain name strings (callers may pass Failure objects or strings).
+        # Normalize to plain name strings. Callers may pass:
+        #   - plain strings (beckman image branch forwards context.failed_models)
+        #   - real fatih_hoca Failure dataclasses where `.model` is a STRING
+        #     (types.py:29 — NOT `.model.name`)
+        #   - hypothetical objects with `.model.name`
+        # Handle all three; never raise on a spurious entry.
         failures: list[str] = []
         for f in raw_failures:
-            name = (
-                getattr(getattr(f, "model", None), "name", None)
-                or (f if isinstance(f, str) else None)
-            )
+            if isinstance(f, str):
+                name = f
+            else:
+                m = getattr(f, "model", None)
+                name = m if isinstance(m, str) else getattr(m, "name", None)
             if name:
                 failures.append(name)
         return select_image(
@@ -1140,6 +1157,8 @@ def select(**kwargs):
         )
     # ... existing text-selection body unchanged ...
 ```
+
+> **Note (v3):** the real `Failure` dataclass stores `model` as a STRING (`packages/fatih_hoca/src/fatih_hoca/types.py:29`). The normalize above handles the string case first so a real `Failure` resolves to `f.model` directly; the `getattr(m, "name", None)` arm only covers the synthetic `_F.model.name` test object and is harmless for strings.
 
 Also find the benchmark-enrichment site (`grep -n "benchmark" packages/fatih_hoca/src/fatih_hoca/__init__.py` — the call that iterates the catalog at `init()`). Wrap the iteration with a guard: `if _is_image_entry(m): continue` so image entries never enter the LLM benchmark pipeline. If the enrichment is inside a registry method rather than `__init__`, place the guard at the relevant iteration site and document the exact path in the commit.
 
@@ -1198,15 +1217,20 @@ def test_admission_select_forwards_failed_models(monkeypatch):
         "agent_type": "coder",
         "context": {"failed_models": ["groq/oss-120b", "gemini/2.5-flash"]},
     }
-    gb._select_for_admission(spec)  # the helper extracted in Task 10
+    gb._select_for_admission(spec)  # helper added in this task
     raw = captured.get("failures") or []
+    # TEXT path forwards real Failure dataclasses where `.model` is a STRING
+    # (types.py:29). Extract the name from `.model`, not `.model.name`.
     names = []
     for f in raw:
-        n = getattr(getattr(f, "model", None), "name", None) or (f if isinstance(f, str) else None)
-        if n:
+        n = getattr(f, "model", None) if not isinstance(f, str) else f
+        if isinstance(n, str) and n:
             names.append(n)
     assert "groq/oss-120b" in names
     assert "gemini/2.5-flash" in names
+    # And they must be Failure objects, not bare strings (the bug v3 fixes).
+    from fatih_hoca.types import Failure
+    assert all(isinstance(f, Failure) for f in raw)
 
 
 def test_admission_select_no_failed_models_passes_empty(monkeypatch):
@@ -1232,19 +1256,25 @@ def test_admission_select_no_failed_models_passes_empty(monkeypatch):
 Run: `.venv/Scripts/python -m pytest packages/general_beckman/tests/test_failures_propagation.py -q`
 Expected: FAIL — `AttributeError: _select_for_admission` (extracted in next step).
 
-- [ ] **Step 3: Add `_select_for_admission` helper that reads failed_models**
+- [ ] **Step 3: Add `_select_for_admission` helper that reads failed_models — without regressing text selection**
 
-In `packages/general_beckman/src/general_beckman/__init__.py`, REPLACE the inline `pick = fatih_hoca.select(...)` block at `:551-558` with a call to a new helper. Locate the block (`grep -n "fatih_hoca.select" packages/general_beckman/src/general_beckman/__init__.py`) and lift it into:
+> **v3 correction:** the v2 helper rebuilt the text-selection kwargs from scratch, **dropping** `call_category`, `needs_thinking`, and `prefer_speed` that `next_task()` already computes richly at `:637-650`. That is a silent text-selection regression. v3's helper **accepts the kwargs `next_task()` already built** and only layers on `failures` + the image branch. And it wraps failed-model **names as `Failure(...)` objects** for the text path (the selector does `{f.model for f in failures}` where `.model` is a string — passing raw strings crashes; passing `Failure(model=name)` works).
+
+In `packages/general_beckman/src/general_beckman/__init__.py`, add the helper:
 
 ```python
-def _select_for_admission(spec: dict):
-    """Single admission-time selection point. Reads failed_models from the
-    task context and forwards as `failures=` so a re-admitted retry never
-    re-picks the just-failed provider. Applies to text AND image tasks.
+def _select_for_admission(spec: dict, sel_kwargs: dict | None = None):
+    """Single admission-time selection point. Reads failed_models from the task
+    context and forwards them so a re-admitted retry never re-picks the
+    just-failed provider. Applies to text AND image tasks.
 
-    Image tasks (kind=='image' or context.image_call set) take the
-    needs_image=True branch; everything else goes through the text path."""
+    `sel_kwargs` is the rich text-selection kwargs dict next_task() already
+    computed (task/agent_type/difficulty/urgency/call_category/needs_thinking/
+    prefer_speed/est tokens). For the TEXT path we preserve it verbatim and only
+    add `failures`. For the IMAGE path we ignore it and call the image scorer.
+    """
     import fatih_hoca
+    from fatih_hoca.types import Failure
 
     ctx = spec.get("context") or {}
     if isinstance(ctx, str):
@@ -1258,29 +1288,28 @@ def _select_for_admission(spec: dict):
     is_image = bool(ctx.get("image_call")) or spec.get("kind") == "image"
     if is_image:
         ic = ctx.get("image_call") or {}
+        # Image scorer takes plain name strings (select() normalizes); forward as-is.
         return fatih_hoca.select(
             needs_image=True,
             quality_tier=ic.get("quality_tier", "fast"),
             failures=failed_models,
         )
 
-    # Text path: forward original kwargs + failures.
-    agent_type = spec.get("agent_type", "")
-    return fatih_hoca.select(
-        task=agent_type,
-        agent_type=agent_type,
-        difficulty=int(spec.get("difficulty", 5) or 5),
-        urgency=float(spec.get("urgency", 0.5) or 0.5),
-        estimated_input_tokens=int((ctx.get("llm_call") or {}).get("estimated_input_tokens") or 0),
-        estimated_output_tokens=int((ctx.get("llm_call") or {}).get("estimated_output_tokens") or 0),
-        failures=failed_models,
-    )
+    # Text path: preserve next_task()'s rich kwargs; only add failures.
+    kw = dict(sel_kwargs or {})
+    kw.setdefault("agent_type", spec.get("agent_type", ""))
+    kw.setdefault("task", kw.get("agent_type", spec.get("agent_type", "")))
+    # CRITICAL: selector does `{f.model for f in failures}` — `.model` is a
+    # STRING field on Failure (types.py:29). Raw strings would crash; wrap them.
+    kw["failures"] = [Failure(model=n, reason="prior_admission") for n in failed_models]
+    return fatih_hoca.select(**kw)
 ```
 
-Replace the prior inline call site (around line 551) with:
+Then at the existing `next_task()` selection site (`grep -n "fatih_hoca.select" packages/general_beckman/src/general_beckman/__init__.py` — currently `pick = fatih_hoca.select(**_sel_kwargs)` around `:650`), REPLACE that single call with:
 ```python
-pick = _select_for_admission(spec)
+pick = _select_for_admission(task, _sel_kwargs)
 ```
+(`task` is the candidate row being admitted in the `for task in candidates:` loop — it carries `context`, `kind`, `agent_type`; `_sel_kwargs` is the dict already built just above. Do NOT delete the `_sel_kwargs` construction — the helper consumes it.)
 
 - [ ] **Step 4: Run tests**
 
@@ -1397,21 +1426,30 @@ async def _handle_admission_pick(spec: dict, pick) -> dict:
     return {"status": "ok", "error": None, "pick": pick}
 ```
 
-At the existing call site (where `_select_for_admission` was just wired in Task 9), wrap it:
+At the existing call site (where `_select_for_admission` was wired in Task 9), pass the **already-computed pick** so prod never re-selects (the `pick is None` fallback inside the helper exists only for the unit test):
 ```python
-_outcome = await _handle_admission_pick(spec, pick=None)
+pick = _select_for_admission(task, _sel_kwargs)   # Task 9
+_outcome = await _handle_admission_pick(task, pick=pick)
 if _outcome["status"] != "ok":
-    # Mark task failed/paused; do NOT proceed to set preselected_pick.
-    # Use existing task-failure path (find via grep "mark_task_failed" or equivalent).
-    await _mark_admission_failed(task_id=task.get("id"),
-                                 status=_outcome["status"],
-                                 error=_outcome["error"])
-    continue  # or break — match the surrounding loop semantics
+    # Mark task failed/paused; do NOT proceed to attach preselected_pick.
+    await _mark_admission_failed(task, _outcome["status"], _outcome["error"])
+    continue  # match the surrounding `for task in candidates:` loop semantics
 pick = _outcome["pick"]
 task["preselected_pick"] = pick
 ```
 
-(The exact `_mark_admission_failed` symbol may be `_set_task_failed`, `mark_failed`, or inline DB write — `grep -n "status.*failed" packages/general_beckman/src/general_beckman/__init__.py` and use the existing pattern. If no helper exists, add one that writes `tasks.status = ?` and `tasks.error = ?`.)
+**`_mark_admission_failed`** — no such helper exists today (recon confirmed). Reuse the real terminal-write path: `_dlq_write` from `general_beckman.apply` (the pattern used at `:461-466`) for the `failed` case, and `update_task(task["id"], status="paused", error=...)` for `paused`. Concretely:
+```python
+async def _mark_admission_failed(task: dict, status: str, error: str) -> None:
+    if status == "failed":
+        from general_beckman.apply import _dlq_write
+        await _dlq_write(task, error=error, category="availability",
+                         attempts=int(task.get("worker_attempts") or 0) + 1)
+    else:  # paused
+        from src.infra.db import update_task
+        await update_task(task["id"], status=status, error=error[:500])
+```
+(Confirm `_dlq_write`'s current kwargs with `grep -n "def _dlq_write" packages/general_beckman/src/general_beckman/apply.py` before wiring.)
 
 - [ ] **Step 4: Run tests + regression**
 
@@ -1430,35 +1468,41 @@ git commit -m "feat(beckman): SelectionFailure handler at admission (image safe)
 
 ---
 
-## Task 11: Dispatcher image branch with FULL telemetry
+## Task 11: Husam image branch with FULL telemetry
 
 **Files:**
-- Modify: `src/core/llm_dispatcher.py` (`CallCategory`, `dispatch()`, new `_dispatch_image`)
-- Test: `tests/core/test_dispatcher_image.py`
+- Modify: `src/core/llm_dispatcher.py` (add `CallCategory.IMAGE` only)
+- Modify: `packages/husam/src/husam/worker.py` (image branch at top of `run()`; new `_run_image`)
+- Test: `packages/husam/tests/test_husam_image.py`
 
-The prior plan's `_dispatch_image` skipped pick_log, in-flight registry, and cost telemetry — exactly the "wired-on-the-surface, dead-underneath" pattern this rewrite exists to kill. v2 mirrors `execute()`'s telemetry envelope (`_begin_call` → call → `_record_pick` on success/failure → `_end_call` → `record_call_tokens` → `record_call_cost`). All those hooks are generic per recon.
+> **v3 correction:** the image lane lives in **husam**, not a (non-existent) `dispatcher.dispatch()`. Husam is the raw-dispatch worker the orchestrator already routes to (`orchestrator.py:364-377`), and the only caller (besides coulson) permitted to touch the dispatcher. The text path calls `dispatcher.execute()`, whose telemetry envelope is `begin_call → … → _record_pick(success/failure) → end_call(finally)`; token/cost rows land inside `hallederiz_kadir`. The image path **bypasses** `dispatcher.execute` (it calls `paintress.generate`), so `_run_image` must reproduce that envelope itself: `in_flight.begin_call` → `paintress.generate` (wrapped in `heartbeat.keepalive()`) → `get_dispatcher()._record_pick` (success/failure) → `in_flight.end_call` (finally) → `db.record_call_tokens` (zero tokens) → `db.record_call_cost`. `_record_pick` is the thin delegator the 2026-06-05 de-accretion kept precisely as the monkeypatch surface — husam reuses it. task_id comes from the `heartbeat.current_task_id` contextvar (same as `execute()`), since the orchestrator does not pass a task id into `husam.run`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/core/test_dispatcher_image.py
+# packages/husam/tests/test_husam_image.py
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_dispatch_image_routes_to_paintress_and_writes_telemetry(monkeypatch, tmp_path):
-    """Image dispatch must (a) return the path dict and (b) write pick_log +
-    begin_call/end_call + record_call_tokens + record_call_cost. Telemetry
-    holes are the bug this test exists to catch."""
-    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+def _img_pick(tmp_path):
     from fatih_hoca.registry import ImageModelInfo
     from fatih_hoca.types import Pick
-
     model = ImageModelInfo(
         name="pollinations/flux", provider="pollinations", location="cloud",
         endpoint="https://x/", cost_per_image=0.0,
     )
-    pick = Pick(model=model, min_time_seconds=0.0, score=6.0, top_summary="t")
+    return Pick(model=model, min_time_seconds=0.0, score=6.0, top_summary="t")
+
+
+@pytest.mark.asyncio
+async def test_husam_image_routes_to_paintress_and_writes_telemetry(monkeypatch, tmp_path):
+    """husam.run on an image task must (a) return the path dict and (b) write
+    pick_log + begin_call/end_call + record_call_tokens. Telemetry holes are
+    the bug this test exists to catch."""
+    import husam
+    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+
+    pick = _img_pick(tmp_path)
 
     async def _fake_generate(p, spec):
         from paintress import ImageResult
@@ -1467,38 +1511,36 @@ async def test_dispatch_image_routes_to_paintress_and_writes_telemetry(monkeypat
                            latency=0.1)
     monkeypatch.setattr("paintress.generate", _fake_generate)
 
-    telemetry = {"begin": 0, "end": 0, "pick_log": 0, "tokens": 0, "cost": 0}
+    tele = {"begin": 0, "end": 0, "pick_log": 0, "tokens": 0, "cost": 0}
 
     async def _bc(**kw):
-        telemetry["begin"] += 1
+        tele["begin"] += 1
         assert kw["category"] == "image"
         assert kw["model_name"] == "pollinations/flux"
         return "call-1"
-    async def _ec(call_id): telemetry["end"] += 1
+    async def _ec(call_id): tele["end"] += 1
+    # husam._run_image lazy-imports begin_call/end_call from src.core.in_flight —
+    # monkeypatch at the source module so the call-time lookup resolves the fake.
     monkeypatch.setattr("src.core.in_flight.begin_call", _bc)
     monkeypatch.setattr("src.core.in_flight.end_call", _ec)
-    # The dispatcher imports these as begin_call/end_call from the module top —
-    # monkeypatch the names actually used inside _dispatch_image.
-    monkeypatch.setattr("src.core.llm_dispatcher._begin_call", _bc)
-    monkeypatch.setattr("src.core.llm_dispatcher._end_call", _ec)
 
     async def _rct(**kw):
-        telemetry["tokens"] += 1
+        tele["tokens"] += 1
         assert kw["model"] == "pollinations/flux"
         assert kw["call_category"] == "image"
-        assert kw["prompt_tokens"] == 0
-        assert kw["completion_tokens"] == 0
-    async def _rcc(task_id, cost_usd): telemetry["cost"] += 1
+        assert kw["prompt_tokens"] == 0 and kw["completion_tokens"] == 0
+    async def _rcc(task_id, cost_usd): tele["cost"] += 1
     monkeypatch.setattr("src.infra.db.record_call_tokens", _rct)
     monkeypatch.setattr("src.infra.db.record_call_cost", _rcc)
 
     async def _rp(**kw):
-        telemetry["pick_log"] += 1
+        tele["pick_log"] += 1
         assert kw["success"] is True
         assert getattr(kw["pick"].model, "name", "") == "pollinations/flux"
+    # _record_pick is the thin delegator husam borrows; patch it on the singleton.
     monkeypatch.setattr(get_dispatcher(), "_record_pick", _rp)
 
-    spec = {
+    task = {
         "context": {"image_call": {
             "raw_dispatch": True, "prompt": "a cat", "out_dir": str(tmp_path),
             "width": 512, "height": 512,
@@ -1506,25 +1548,24 @@ async def test_dispatch_image_routes_to_paintress_and_writes_telemetry(monkeypat
         "kind": "image",
         "preselected_pick": pick,
     }
-    res = await get_dispatcher().dispatch(spec)
+    res = await husam.run(task)
     assert res["path"].endswith("out.png")
     assert res["provider"] == "pollinations"
     assert CallCategory.IMAGE.value == "image"
-
-    assert telemetry == {"begin": 1, "end": 1, "pick_log": 1, "tokens": 1, "cost": 1}
+    assert tele["begin"] == 1 and tele["end"] == 1
+    assert tele["pick_log"] == 1 and tele["tokens"] == 1
+    # Free provider (cost == 0.0) → record_call_cost is guarded out, no cost row.
+    assert tele["cost"] == 0
 
 
 @pytest.mark.asyncio
-async def test_dispatch_image_failure_still_writes_pick_log_and_ends_call(monkeypatch, tmp_path):
-    """On paintress error, pick_log fires with success=False and end_call still
-    runs in finally."""
-    from src.core.llm_dispatcher import get_dispatcher, CallCategory
-    from fatih_hoca.registry import ImageModelInfo
-    from fatih_hoca.types import Pick
+async def test_husam_image_failure_writes_pick_log_and_ends_call(monkeypatch, tmp_path):
+    """On paintress error, pick_log fires success=False, end_call runs in finally,
+    husam raises ModelCallFailed."""
+    import husam
+    from src.core.llm_dispatcher import get_dispatcher
 
-    model = ImageModelInfo(name="pollinations/flux", provider="pollinations",
-                           location="cloud", endpoint="https://x/")
-    pick = Pick(model=model, min_time_seconds=0.0, score=6.0, top_summary="t")
+    pick = _img_pick(tmp_path)
 
     async def _fail_generate(p, spec):
         from paintress import ImageResult
@@ -1533,10 +1574,10 @@ async def test_dispatch_image_failure_still_writes_pick_log_and_ends_call(monkey
     monkeypatch.setattr("paintress.generate", _fail_generate)
 
     counts = {"end": 0, "pick_log_fail": 0}
-    async def _ec(call_id): counts["end"] += 1
     async def _bc(**kw): return "c"
-    monkeypatch.setattr("src.core.llm_dispatcher._begin_call", _bc)
-    monkeypatch.setattr("src.core.llm_dispatcher._end_call", _ec)
+    async def _ec(call_id): counts["end"] += 1
+    monkeypatch.setattr("src.core.in_flight.begin_call", _bc)
+    monkeypatch.setattr("src.core.in_flight.end_call", _ec)
     monkeypatch.setattr("src.infra.db.record_call_tokens", lambda **kw: None)
     monkeypatch.setattr("src.infra.db.record_call_cost", lambda *a, **kw: None)
 
@@ -1545,228 +1586,254 @@ async def test_dispatch_image_failure_still_writes_pick_log_and_ends_call(monkey
             counts["pick_log_fail"] += 1
     monkeypatch.setattr(get_dispatcher(), "_record_pick", _rp)
 
-    spec = {"context": {"image_call": {"raw_dispatch": True, "prompt": "x",
+    task = {"context": {"image_call": {"raw_dispatch": True, "prompt": "x",
                                        "out_dir": str(tmp_path)}},
             "kind": "image", "preselected_pick": pick}
 
     from src.core.router import ModelCallFailed
     with pytest.raises(ModelCallFailed):
-        await get_dispatcher().dispatch(spec)
+        await husam.run(task)
     assert counts == {"end": 1, "pick_log_fail": 1}
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/core/test_dispatcher_image.py -q`
-Expected: FAIL — `AttributeError: IMAGE` / KeyError on image_call / no telemetry calls.
+Run: `.venv/Scripts/python -m pytest packages/husam/tests/test_husam_image.py -q`
+Expected: FAIL — `AttributeError: IMAGE` (no `CallCategory.IMAGE`) and/or husam runs the text path on the image task (no telemetry asserts hit).
 
-- [ ] **Step 3: Add `CallCategory.IMAGE` + image dispatch with full telemetry**
+- [ ] **Step 3a: Add `CallCategory.IMAGE` to the enum**
 
-In `src/core/llm_dispatcher.py`:
-
-1. Extend the enum (after `OVERHEAD`):
+In `src/core/llm_dispatcher.py`, extend `CallCategory` (after `OVERHEAD`):
 ```python
-    IMAGE = "image"
+    IMAGE = "image"     # Image generation via husam → paintress (single-shot)
 ```
+That is the ONLY change to `llm_dispatcher.py`. (Do NOT add a `dispatch()`/`_dispatch_image` — they don't exist; image execution lives in husam.)
 
-2. In `dispatch()` (around line 535), at the very top (before any LLM-call rehydration), add:
+- [ ] **Step 3b: Add the image branch + `_run_image` to `husam.worker`**
+
+In `packages/husam/src/husam/worker.py`, at the **very top of `run()`** (before the text-only `llm_call` rehydration), add the modality detection:
 ```python
-        image_call = (spec.get("context", {}) or {}).get("image_call")
-        if isinstance(image_call, dict) and image_call.get("raw_dispatch"):
-            return await self._dispatch_image(spec, image_call)
-```
-
-3. Add the new method:
-```python
-    async def _dispatch_image(self, spec: dict, image_call: dict) -> dict:
-        """Image-modality lane. Mirrors execute()'s telemetry envelope:
-        begin_call → paintress.generate → record_pick (success/failure) →
-        end_call (finally) → record_call_tokens → record_call_cost.
-
-        All telemetry hooks are LLM-shape but generic (recon verified):
-        begin/end_call accept any category/model strings; _record_pick reads
-        only pick.model.name/.is_local/.provider; record_call_tokens tolerates
-        zero token counts; record_call_cost no-ops on zero.
-        """
-        import paintress
-        import time as _time
-        from src.core.router import ModelCallFailed
-        from src.core import heartbeat as _hb
-
-        pick = spec.get("preselected_pick")
-        if pick is None:
-            raise ModelCallFailed(call_id="image",
-                                  last_error="no preselected image pick",
-                                  error_category="availability")
-
-        model = pick.model
-        # Resolve active task_id from contextvar (same pattern as execute()).
-        _active_task_id = None
+async def run(task: dict) -> dict:
+    import json as _json
+    _ctx = task.get("context")
+    if isinstance(_ctx, str):
         try:
-            from src.core.heartbeat import current_task_id as _ctid
-            _active_task_id = _ctid.get()
+            _ctx = _json.loads(_ctx)
         except Exception:
-            pass
+            _ctx = {}
+    _image_call = _ctx.get("image_call") if isinstance(_ctx, dict) else None
+    if isinstance(_image_call, dict) and _image_call.get("raw_dispatch"):
+        return await _run_image({**task, "context": _ctx}, _image_call)
+    # ── existing text path unchanged below ──
+    ...
+```
 
-        _call_id = await _begin_call(
-            category=CallCategory.IMAGE.value,
-            model_name=getattr(model, "name", ""),
-            provider=getattr(model, "provider", ""),
-            is_local=bool(getattr(model, "is_local", False)),
-            task_id=_active_task_id,
-            est_tokens=0,
+Then add `_run_image` (module-level function in `worker.py`). It reproduces `dispatcher.execute()`'s telemetry envelope but calls paintress. Husam is permitted to reach the dispatcher, but here it only borrows the `_record_pick` delegator:
+```python
+async def _run_image(task: dict, image_call: dict) -> dict:
+    """Image-modality lane. Single-shot. Mirrors dispatcher.execute()'s telemetry
+    envelope (begin_call → call → _record_pick success/failure → end_call finally
+    → record_call_tokens → record_call_cost) but calls paintress, not the LLM
+    dispatcher primitive. All hooks are generic per recon: begin/end_call accept
+    any category/model strings; _record_pick reads only pick.model.name/.is_local/
+    .provider; record_call_tokens tolerates zero tokens; record_call_cost no-ops
+    on zero (and we guard it out for free providers)."""
+    import time as _time
+    import paintress
+    import fatih_hoca
+    from fatih_hoca.registry import ImageModelInfo
+    from fatih_hoca.types import SelectionFailure
+    from src.core.in_flight import begin_call, end_call
+    from src.core.llm_dispatcher import get_dispatcher, CallCategory
+    from src.core.router import ModelCallFailed
+    from src.core import heartbeat as _hb
+
+    # Honor Beckman's admission pick; only re-select if it's missing/wrong-modality.
+    pick = task.get("preselected_pick")
+    if pick is None or not isinstance(getattr(pick, "model", None), ImageModelInfo):
+        ctx = task.get("context") if isinstance(task.get("context"), dict) else {}
+        pick = fatih_hoca.select(
+            needs_image=True,
+            quality_tier=image_call.get("quality_tier", "fast"),
+            failures=list((ctx or {}).get("failed_models") or []),
         )
+    if pick is None or isinstance(pick, SelectionFailure):
+        raise ModelCallFailed(call_id="image",
+                              last_error="no eligible image provider",
+                              error_category="availability")
+    model = pick.model
 
-        started = _time.time()
-        result = None
-        success = False
-        error_category = ""
+    # task_id from the heartbeat contextvar (orchestrator sets it, same as execute()).
+    task_id = None
+    try:
+        from src.core.heartbeat import current_task_id
+        task_id = current_task_id.get()
+    except Exception:
+        pass
+
+    agent_type = image_call.get("agent_type", "image")
+    difficulty = int(image_call.get("difficulty", 5) or 5)
+    disp = get_dispatcher()
+
+    call_id = await begin_call(
+        category=CallCategory.IMAGE.value,
+        model_name=getattr(model, "name", ""),
+        provider=getattr(model, "provider", ""),
+        is_local=bool(getattr(model, "is_local", False)),
+        task_id=task_id,
+        est_tokens=0,
+    )
+
+    started = _time.time()
+    result = None
+    try:
+        s = paintress.ImageSpec(
+            prompt=image_call.get("prompt", ""),
+            out_dir=image_call.get("out_dir") or ".",
+            negative_prompt=image_call.get("negative_prompt"),
+            width=int(image_call.get("width", 1024)),
+            height=int(image_call.get("height", 1024)),
+            seed=image_call.get("seed"),
+            quality_tier=image_call.get("quality_tier", "fast"),
+            filename_hint=image_call.get("filename_hint"),
+        )
         try:
-            out_dir = image_call.get("out_dir") or "."
-            s = paintress.ImageSpec(
-                prompt=image_call.get("prompt", ""),
-                out_dir=out_dir,
-                negative_prompt=image_call.get("negative_prompt"),
-                width=int(image_call.get("width", 1024)),
-                height=int(image_call.get("height", 1024)),
-                seed=image_call.get("seed"),
-                quality_tier=image_call.get("quality_tier", "fast"),
-                filename_hint=image_call.get("filename_hint"),
-            )
             async with _hb.keepalive():
                 result = await paintress.generate(pick, s)
-            if result.error is None:
-                success = True
-            else:
-                # Provider/quality failures are retryable; unknown_provider is fatal.
-                error_category = "fatal" if result.error.startswith("unknown_provider") else "availability"
         except Exception as exc:
-            error_category = "raw_exception"
-            try:
-                await self._record_pick(
-                    pick=pick, task="image",
-                    category=CallCategory.MAIN_WORK,  # category enum needs MAIN_WORK for pick_log compat
-                    success=False, error_category=error_category,
-                    agent_type=image_call.get("agent_type", "image"),
-                    difficulty=int(image_call.get("difficulty", 5) or 5),
-                )
-            finally:
-                await _end_call(_call_id)
-            raise
-        finally:
-            if success or error_category:
-                await self._record_pick(
-                    pick=pick, task="image",
-                    category=CallCategory.MAIN_WORK,
-                    success=success, error_category=error_category,
-                    agent_type=image_call.get("agent_type", "image"),
-                    difficulty=int(image_call.get("difficulty", 5) or 5),
-                )
-            await _end_call(_call_id)
+            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
+                                    success=False, error_category="raw_exception",
+                                    agent_type=agent_type, difficulty=difficulty)
+            raise ModelCallFailed(call_id=getattr(model, "name", "image"),
+                                  last_error=f"{exc.__class__.__name__}:{exc}",
+                                  error_category="raw_exception")
+        if result.error is None:
+            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
+                                    success=True, error_category="",
+                                    agent_type=agent_type, difficulty=difficulty)
+        else:
+            # unknown_provider is fatal; quality/provider failures are retryable.
+            err_cat = "fatal" if result.error.startswith("unknown_provider") else "availability"
+            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
+                                    success=False, error_category=err_cat,
+                                    agent_type=agent_type, difficulty=difficulty)
+            raise ModelCallFailed(call_id=getattr(model, "name", "image"),
+                                  last_error=result.error, error_category=err_cat)
+    finally:
+        await end_call(call_id)
 
-        if not success:
-            raise ModelCallFailed(
-                call_id=getattr(model, "name", "image"),
-                last_error=(result.error if result else "unknown"),
-                error_category=error_category or "availability",
-            )
+    # Per-call token telemetry (zero tokens for image; row exists for rollup).
+    duration_ms = int((_time.time() - started) * 1000)
+    try:
+        from src.infra.db import record_call_tokens, record_call_cost
+        await record_call_tokens(
+            task_id=task_id, agent_type=agent_type,
+            workflow_step_id=image_call.get("workflow_step_id"),
+            workflow_phase=image_call.get("workflow_phase"),
+            call_category=CallCategory.IMAGE.value,
+            model=getattr(model, "name", ""), provider=getattr(model, "provider", ""),
+            is_streaming=False, prompt_tokens=0, completion_tokens=0,
+            reasoning_tokens=0, total_tokens=0, duration_ms=duration_ms,
+            iteration_n=int(image_call.get("iteration_n", 0) or 0), success=True,
+        )
+        if result.cost > 0.0 and task_id is not None:
+            await record_call_cost(task_id, float(result.cost))
+    except Exception:
+        pass  # telemetry best-effort
 
-        # Per-call token telemetry (zero tokens for image; row exists for rollup).
-        duration_ms = int((_time.time() - started) * 1000)
-        try:
-            from src.infra.db import record_call_tokens, record_call_cost
-            await record_call_tokens(
-                task_id=_active_task_id, agent_type=image_call.get("agent_type", "image"),
-                workflow_step_id=image_call.get("workflow_step_id"),
-                workflow_phase=image_call.get("workflow_phase"),
-                call_category=CallCategory.IMAGE.value,
-                model=getattr(model, "name", ""),
-                provider=getattr(model, "provider", ""),
-                is_streaming=False, prompt_tokens=0, completion_tokens=0,
-                reasoning_tokens=0, total_tokens=0,
-                duration_ms=duration_ms,
-                iteration_n=int(image_call.get("iteration_n", 0) or 0),
-                success=True,
-            )
-            if result.cost > 0.0 and _active_task_id is not None:
-                await record_call_cost(task_id=_active_task_id, cost_usd=float(result.cost))
-        except Exception:
-            pass  # telemetry best-effort
-
-        return {
-            "content": result.path, "path": result.path, "provider": result.provider,
-            "model": result.model, "cost": result.cost, "latency": result.latency,
-            "seed_used": result.seed_used,
-            "is_local": getattr(model, "is_local", False),
-            "ran_on": result.provider,
-        }
+    return {
+        "content": result.path, "path": result.path, "provider": result.provider,
+        "model": result.model, "cost": result.cost, "latency": result.latency,
+        "seed_used": result.seed_used,
+        "is_local": getattr(model, "is_local", False),
+        "ran_on": result.provider,
+    }
 ```
+
+> **Confirm at impl time:** husam's existing `ModelCallFailed(...)` raise (`grep -n "ModelCallFailed" packages/husam/src/husam/worker.py`) for the exact kwarg names — match them (the text path already raises it). `_record_pick`'s `category` param is typed `CallCategory`; `CallCategory.IMAGE` satisfies it and `.value == "image"` lands in the `model_pick_log.category` column.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/Scripts/python -m pytest tests/core/test_dispatcher_image.py -q`
+Run: `.venv/Scripts/python -m pytest packages/husam/tests/test_husam_image.py -q`
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Regression — husam suite**
+
+Run: `.venv/Scripts/python -m pytest packages/husam/tests/ -q -x`
+Expected: no new failures vs `main` (the text path is untouched — the image branch only fires on `context.image_call.raw_dispatch`).
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/core/llm_dispatcher.py tests/core/test_dispatcher_image.py
-git commit -m "feat(image): dispatcher image branch with full telemetry envelope"
+git add src/core/llm_dispatcher.py packages/husam/src/husam/worker.py packages/husam/tests/test_husam_image.py
+git commit -m "feat(image): husam image branch (_run_image) with full telemetry envelope"
 ```
 
 ---
 
-## Task 12: Orchestrator routes the image lane
+## Task 12: Orchestrator routes the image lane (to husam)
 
 **Files:**
-- Modify: `src/core/orchestrator.py:303-310` (`_is_raw`)
+- Modify: `src/core/orchestrator.py:355-363` (`_is_raw` inside `_dispatch`'s `_run`)
 - Test: `tests/core/test_orchestrator_image_route.py`
 
-Recon confirmed the function is `Orchestrator._dispatch()`. Extend `_is_raw` to also match `image_call.raw_dispatch`.
+Recon confirmed: when `_is_raw` is True, `_dispatch` calls **`husam.run(...)`** (`orchestrator.py:364-377`) — not a dispatcher. Extending `_is_raw` to also match `image_call.raw_dispatch` is the ONLY orchestrator change; husam (Task 11) detects `context.image_call` and runs the image lane.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/core/test_orchestrator_image_route.py
+import json
 import pytest
 
 
 @pytest.mark.asyncio
-async def test_image_call_routes_to_dispatcher(monkeypatch):
-    """Orchestrator._dispatch must route a task whose context carries
-    image_call.raw_dispatch through dispatcher.dispatch (same path as
-    llm_call.raw_dispatch)."""
+async def test_image_call_routes_to_husam(monkeypatch):
+    """_dispatch must detect image_call.raw_dispatch and route the task through
+    husam.run (the SAME raw path llm_call.raw_dispatch uses) — there is no
+    dispatcher.dispatch()."""
     import src.core.orchestrator as orch
+    import husam
+
     seen = {}
+    async def _fake_husam_run(spec):
+        seen["spec"] = spec
+        return {"path": "/tmp/x.png", "provider": "pollinations",
+                "cost": 0.0, "latency": 0.1, "seed_used": 1}
+    monkeypatch.setattr(husam, "run", _fake_husam_run)
 
-    class _Disp:
-        async def dispatch(self, spec):
-            seen["spec"] = spec
-            return {"path": "/tmp/x.png", "provider": "pollinations",
-                    "cost": 0.0, "latency": 0.1, "seed_used": 1}
-    monkeypatch.setattr("src.core.llm_dispatcher.get_dispatcher", lambda: _Disp())
+    finished = {}
+    async def _fake_finish(task_id, result=None):
+        finished["task_id"] = task_id
+        finished["result"] = result
+    monkeypatch.setattr("general_beckman.on_task_finished", _fake_finish)
 
-    # _dispatch expects a task dict and an orchestrator self; instantiate enough
-    # of Orchestrator to call _dispatch without booting everything.
     o = orch.Orchestrator.__new__(orch.Orchestrator)
     task = {
         "id": 1, "kind": "image",
         "context": {"image_call": {"raw_dispatch": True, "prompt": "a dog"}},
         "preselected_pick": object(),
     }
-    result = await o._dispatch(task)
-    assert result["status"] == "completed"
+    await o._dispatch(task)
+
+    # husam saw the image context → _is_raw matched image_call.
     assert seen["spec"]["context"]["image_call"]["prompt"] == "a dog"
+    # The husam dict round-tripped to on_task_finished, JSON-stringified under "result".
+    raw = (finished["result"] or {}).get("result")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    assert payload["path"] == "/tmp/x.png"
 ```
+
+> If the bare `Orchestrator.__new__` + `_dispatch` call trips on context-injection or metric helpers, monkeypatch those the way the existing raw-dispatch orchestrator test does (`grep -n "raw_dispatch" tests/core/ tests/` for the closest precedent) — the assertion that matters is "husam.run saw the image context."
 
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `.venv/Scripts/python -m pytest tests/core/test_orchestrator_image_route.py -q`
-Expected: FAIL — dispatcher not invoked for image_call.
+Expected: FAIL — husam.run not invoked for image_call (the text `_is_raw` ignores `image_call`).
 
 - [ ] **Step 3: Extend the `_is_raw` branch**
 
-In `src/core/orchestrator.py` at lines 303-310, locate:
+In `src/core/orchestrator.py` (around `:355-363`, inside `_dispatch`'s nested `_run`), locate:
 ```python
         _llm_call_rd = _ctx_rd.get("llm_call") if isinstance(_ctx_rd, dict) else None
         _is_raw = isinstance(_llm_call_rd, dict) and _llm_call_rd.get("raw_dispatch") is True
@@ -1779,7 +1846,7 @@ and REPLACE with:
         _img_rd = isinstance(_img_call_rd, dict) and _img_call_rd.get("raw_dispatch") is True
         _is_raw = _llm_rd or _img_rd
 ```
-The existing `get_dispatcher().dispatch(...)` call already passes `context` + `preselected_pick`, and dispatcher.dispatch (Task 11) routes image_call → `_dispatch_image`. No further orchestrator change needed.
+The existing `husam.run({"context": _ctx_rd, "kind": ..., "preselected_pick": ..., "mission_id": ...})` call already forwards `context` + `preselected_pick`; husam (Task 11) detects `context.image_call` → `_run_image`. No further orchestrator change needed.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1790,18 +1857,18 @@ Expected: PASS.
 
 ```bash
 git add src/core/orchestrator.py tests/core/test_orchestrator_image_route.py
-git commit -m "feat(image): orchestrator routes image_call.raw_dispatch to dispatcher"
+git commit -m "feat(image): orchestrator routes image_call.raw_dispatch to husam"
 ```
 
 ---
 
-## Task 13: `/image` Telegram command — parses JSON-stringified `TaskResult.result`
+## Task 13: `/image` Telegram command — CPS delivery (no await_inline)
 
 **Files:**
-- Modify: `src/app/telegram_bot.py` (`_setup_handlers`, new `cmd_image`)
+- Modify: `src/app/telegram_bot.py` (`_setup_handlers` + new `cmd_image`; `_image_delivery_resume`/`_image_delivery_err` handlers; register them in the existing `register_continuations()`; add a `_send_telegram_photo_via_resume` helper)
 - Test: `tests/app/test_cmd_image.py`
 
-Recon confirmed: the orchestrator does `json.dumps(_dispatch_result)` at `:326`; `on_task_finished` extracts the JSON string at `:922`; **`TaskResult.result` is a JSON string at the caller**. The /image handler MUST parse it (the prior plan's handler treated it as a dict and silently failed). Mirror the dispatcher's `_task_result_to_request_response` pattern (`src/core/llm_dispatcher.py:137-163`) which already handles both shapes.
+> **v3 correction:** **no `await_inline`.** `/image` enqueues the image task and returns immediately; the photo is delivered by a durable **CPS `on_complete` continuation** — exactly the SP2 pattern `_handle_casual` / `_casual_reply_resume` already use (`telegram_bot.py:8346-8370`, `:356-384`). The resume handler runs with no live `Update`, so it reaches the bot via the module singleton (`get_telegram()`, `:304-353`) and receives `chat_id` from `cont_state`. Recon confirmed the orchestrator JSON-stringifies husam's return (`orchestrator.py:378-382`), so the continuation's `result["result"]` is a JSON **string** — the handler parses it (and tolerates the flat restart-reconcile shape), mirroring `_casual_reply_resume`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1813,76 +1880,95 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.mark.asyncio
-async def test_cmd_image_parses_json_string_result_and_sends_photo(monkeypatch, tmp_path):
-    """TaskResult.result arrives as a JSON STRING (recon verified). The handler
-    must json.loads it before reading 'path'."""
+async def test_cmd_image_enqueues_cps_no_await_inline(monkeypatch):
+    """/image must enqueue with the CPS on_complete/on_error continuation and
+    carry chat_id + prompt in cont_state. It must NOT use await_inline."""
     import src.app.telegram_bot as tb
 
-    png = tmp_path / "out.png"; png.write_bytes(b"\x89PNG")
-
-    class _TaskResult:
-        status = "completed"
-        # Mirror the real shape: orchestrator stringified the dispatcher dict.
-        result = json.dumps({"path": str(png), "provider": "pollinations"})
-        error = None
-    enq = AsyncMock(return_value=_TaskResult())
+    enq = AsyncMock(return_value=123)  # enqueue returns a task_id (no await_inline)
     monkeypatch.setattr("general_beckman.enqueue", enq)
 
     iface = tb.TelegramInterface.__new__(tb.TelegramInterface)
+    iface._reply = AsyncMock()
     update = MagicMock()
     update.effective_chat.id = 99
-    update.message.reply_photo = AsyncMock()
-    iface._reply = AsyncMock()
     ctx = MagicMock(); ctx.args = ["a", "red", "bicycle"]
 
     await iface.cmd_image(update, ctx)
 
     assert enq.await_count == 1
     spec = enq.await_args.args[0]
+    kwargs = enq.await_args.kwargs
     assert spec["context"]["image_call"]["prompt"] == "a red bicycle"
     assert spec["context"]["image_call"]["raw_dispatch"] is True
-    update.message.reply_photo.assert_awaited()
+    assert spec["kind"] == "image"
+    assert kwargs["on_complete"] == "image_delivery.resume"
+    assert kwargs["on_error"] == "image_delivery.err"
+    assert kwargs["cont_state"]["chat_id"] == 99
+    assert kwargs["cont_state"]["prompt"] == "a red bicycle"
+    assert "await_inline" not in kwargs  # explicitly NOT used
 
 
 @pytest.mark.asyncio
-async def test_cmd_image_handles_dict_result_too(monkeypatch, tmp_path):
-    """Defensive: if result.result is already a dict (test fixtures may pass
-    raw dicts), handler still works."""
+async def test_image_delivery_resume_parses_json_string_and_sends_photo(monkeypatch, tmp_path):
+    """CPS resume: result['result'] is a JSON STRING (orchestrator stringified
+    husam's dict). Handler must json.loads it, then send the photo via the
+    module singleton — there is no live Update in a resume."""
+    import src.app.telegram_bot as tb
+
+    png = tmp_path / "out.png"; png.write_bytes(b"\x89PNG")
+
+    sent = {}
+    class _Bot:
+        async def send_photo(self, chat_id, photo, caption=None):
+            sent["chat_id"] = chat_id
+            sent["bytes"] = photo.read()
+            sent["caption"] = caption
+    class _App: bot = _Bot()
+    class _TG: app = _App()
+    tb.set_telegram(_TG())
+
+    result = {"result": json.dumps({"path": str(png), "provider": "pollinations"})}
+    await tb._image_delivery_resume(123, result, {"chat_id": 99, "prompt": "a red bicycle"})
+
+    assert sent["chat_id"] == 99
+    assert sent["bytes"].startswith(b"\x89PNG")
+    assert "bicycle" in (sent["caption"] or "")
+
+
+@pytest.mark.asyncio
+async def test_image_delivery_resume_handles_dict_result_too(monkeypatch, tmp_path):
+    """Defensive: tolerate an already-dict result (flat restart-reconcile shape)."""
     import src.app.telegram_bot as tb
     png = tmp_path / "out.png"; png.write_bytes(b"\x89PNG")
 
-    class _TaskResult:
-        status = "completed"
-        result = {"path": str(png), "provider": "pollinations"}
-        error = None
-    enq = AsyncMock(return_value=_TaskResult())
-    monkeypatch.setattr("general_beckman.enqueue", enq)
+    sent = {}
+    class _Bot:
+        async def send_photo(self, chat_id, photo, caption=None):
+            sent["ok"] = True
+    class _App: bot = _Bot()
+    class _TG: app = _App()
+    tb.set_telegram(_TG())
 
-    iface = tb.TelegramInterface.__new__(tb.TelegramInterface)
-    update = MagicMock()
-    update.message.reply_photo = AsyncMock()
-    iface._reply = AsyncMock()
-    ctx = MagicMock(); ctx.args = ["x"]
-    await iface.cmd_image(update, ctx)
-    update.message.reply_photo.assert_awaited()
+    await tb._image_delivery_resume(123, {"path": str(png)}, {"chat_id": 99, "prompt": "x"})
+    assert sent.get("ok") is True
 
 
 @pytest.mark.asyncio
-async def test_cmd_image_failure_reports_error(monkeypatch):
+async def test_image_delivery_err_reports_failure(monkeypatch):
     import src.app.telegram_bot as tb
+    msgs = {}
+    class _Bot:
+        async def send_message(self, chat_id, text, **kw):
+            msgs["chat_id"] = chat_id; msgs["text"] = text
+    class _App: bot = _Bot()
+    class _TG: app = _App()
+    tb.set_telegram(_TG())
 
-    class _TaskResult:
-        status = "failed"; result = None; error = "selection_failure:availability"
-    monkeypatch.setattr("general_beckman.enqueue", AsyncMock(return_value=_TaskResult()))
-
-    iface = tb.TelegramInterface.__new__(tb.TelegramInterface)
-    update = MagicMock()
-    iface._reply = AsyncMock()
-    ctx = MagicMock(); ctx.args = ["y"]
-    await iface.cmd_image(update, ctx)
-    iface._reply.assert_awaited()
-    msg = iface._reply.await_args.args[1]
-    assert "failed" in msg.lower() or "❌" in msg
+    await tb._image_delivery_err(123, {"error": "selection_failure:availability"},
+                                 {"chat_id": 99})
+    assert msgs["chat_id"] == 99
+    assert "failed" in msgs["text"].lower() or "❌" in msgs["text"]
 
 
 @pytest.mark.asyncio
@@ -1899,35 +1985,46 @@ async def test_cmd_image_no_args_replies_usage():
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `.venv/Scripts/python -m pytest tests/app/test_cmd_image.py -q`
-Expected: FAIL — `AttributeError: cmd_image`.
+Expected: FAIL — `AttributeError: cmd_image` / `_image_delivery_resume`.
 
-- [ ] **Step 3: Register the handler**
+- [ ] **Step 3: Register the command handler + the CPS continuation handlers**
 
-In `_setup_handlers()` (telegram_bot.py around line 1927):
+In `_setup_handlers()` (telegram_bot.py, near the other `CommandHandler(...)` lines — `grep -n 'CommandHandler("' src/app/telegram_bot.py`):
 ```python
         self.app.add_handler(CommandHandler("image", self.cmd_image))
 ```
 
-- [ ] **Step 4: Implement `cmd_image` with JSON-string parsing**
+In the module-level `register_continuations()` (telegram_bot.py:472-490, where `telegram.casual_reply_resume` is registered), add:
+```python
+        register_resume("image_delivery.resume", _image_delivery_resume)
+        register_resume("image_delivery.err",    _image_delivery_err)
+```
+(`src.app.telegram_bot` is already in `continuations._HANDLER_MODULES`, so these get picked up at startup + restart-reconcile.)
 
-Add near other `cmd_*`:
+- [ ] **Step 4: Implement `cmd_image` (CPS) + the resume/err handlers**
+
+Add the command method near the other `cmd_*` methods:
 ```python
     async def cmd_image(self, update, context):
-        """/image <prompt> — generate via the cloud image pipeline."""
+        """/image <prompt> — generate via the cloud image pipeline.
+
+        CPS: enqueue + on_complete continuation; the photo is delivered from
+        _image_delivery_resume. NO await_inline (it is being retired and can't
+        drive cross-cycle retries anyway)."""
         prompt = " ".join(context.args or []).strip()
         if not prompt:
             await self._reply(update, "Usage: `/image a red bicycle`",
                               parse_mode="Markdown", reply_markup=REPLY_KEYBOARD)
             return
+        import os, tempfile
+        from general_beckman import enqueue
         chat_id = update.effective_chat.id
-        import os, json, tempfile, general_beckman
         out_dir = os.path.join(tempfile.gettempdir(), "kutai_images", str(chat_id))
         spec = {
             "title": f"image:{prompt[:40]}",
             "description": "Telegram /image generation",
             "agent_type": "image",
             "kind": "image",
-            "runner": "direct",
             "priority": 5,
             "context": {"image_call": {
                 "raw_dispatch": True, "prompt": prompt, "out_dir": out_dir,
@@ -1936,50 +2033,89 @@ Add near other `cmd_*`:
             }},
         }
         await self._reply(update, "🎨 Generating…", reply_markup=REPLY_KEYBOARD)
-        result = await general_beckman.enqueue(spec, await_inline=True)
+        await enqueue(
+            spec,
+            on_complete="image_delivery.resume",
+            on_error="image_delivery.err",
+            cont_state={"chat_id": chat_id, "prompt": prompt},
+        )
+```
 
-        # Parse TaskResult.result: it arrives as a JSON STRING from the
-        # orchestrator (json.dumps at orchestrator.py:326). Also tolerate dict
-        # for fixture/test ergonomics. Mirrors dispatcher's
-        # _task_result_to_request_response (llm_dispatcher.py:137-163).
-        path = None
-        raw = getattr(result, "result", None)
-        payload: dict = {}
-        if isinstance(raw, str):
-            try:
-                payload = json.loads(raw)
-                if not isinstance(payload, dict):
-                    payload = {}
-            except Exception:
-                payload = {}
-        elif isinstance(raw, dict):
-            payload = raw
-        if getattr(result, "status", "") == "completed":
-            path = payload.get("path")
-        if path and os.path.isfile(path):
-            with open(path, "rb") as fh:
-                await update.message.reply_photo(photo=fh, caption=prompt[:200])
-        else:
-            err = getattr(result, "error", "") or "generation failed"
-            await self._reply(update, f"❌ Image failed: {err}",
-                              reply_markup=REPLY_KEYBOARD)
+Add the module-level continuation handlers + photo helper near `_casual_reply_resume` / `_send_telegram_via_resume`:
+```python
+async def _send_telegram_photo_via_resume(chat_id: int, path: str, *, caption=None) -> bool:
+    """Send a photo from a CPS resume context (no live Update)."""
+    try:
+        tg = get_telegram()
+    except RuntimeError:
+        return False
+    if tg is None or not getattr(tg, "app", None):
+        return False
+    try:
+        with open(path, "rb") as fh:
+            await tg.app.bot.send_photo(chat_id=chat_id, photo=fh,
+                                        caption=(caption or "")[:1000])
+        return True
+    except Exception as exc:
+        logger.debug("resume telegram photo send failed", chat_id=chat_id, error=str(exc))
+        return False
+
+
+async def _image_delivery_resume(child_task_id: int, result: dict, state: dict) -> None:
+    """CPS resume for /image. state = {'chat_id': int, 'prompt': str}.
+
+    result envelope: result['result'] is husam's image dict, JSON-stringified by
+    the orchestrator. Tolerate dict + flat restart-reconcile shapes (mirrors
+    _casual_reply_resume)."""
+    import json, os
+    chat_id = (state or {}).get("chat_id")
+    if chat_id is None:
+        return
+    result = result or {}
+    inner = result.get("result")
+    if isinstance(inner, str):
+        try:
+            inner = json.loads(inner)
+        except Exception:
+            inner = {}
+    if isinstance(inner, dict):
+        payload = inner
+    elif isinstance(result.get("path"), str):
+        payload = result   # flat reconcile shape
+    else:
+        payload = {}
+    path = payload.get("path")
+    prompt = (state.get("prompt") or "")[:200]
+    if path and os.path.isfile(path):
+        await _send_telegram_photo_via_resume(chat_id, path, caption=prompt)
+    else:
+        await _send_telegram_via_resume(chat_id, "❌ Image failed: no image produced")
+
+
+async def _image_delivery_err(child_task_id: int, result: dict, state: dict) -> None:
+    """CPS on_error for /image."""
+    chat_id = (state or {}).get("chat_id")
+    if chat_id is None:
+        return
+    err = (result or {}).get("error") if isinstance(result, dict) else ""
+    await _send_telegram_via_resume(chat_id, f"❌ Image failed: {err or 'generation error'}")
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `.venv/Scripts/python -m pytest tests/app/test_cmd_image.py -q`
-Expected: PASS (4 passed).
+Expected: PASS (5 passed).
 
 - [ ] **Step 6: Verify import + handler registration**
 
-Run: `.venv/Scripts/python -c "from src.app.telegram_bot import TelegramInterface; print('ok')"`
+Run: `.venv/Scripts/python -c "from src.app.telegram_bot import TelegramInterface, _image_delivery_resume; print('ok')"`
 Expected: `ok`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add src/app/telegram_bot.py tests/app/test_cmd_image.py
-git commit -m "feat(image): /image command parses JSON-stringified TaskResult.result"
+git commit -m "feat(image): /image command + CPS photo-delivery continuation (no await_inline)"
 ```
 
 ---
@@ -1989,7 +2125,9 @@ git commit -m "feat(image): /image command parses JSON-stringified TaskResult.re
 **Files:**
 - Create: `tests/integration/test_image_e2e.py`
 
-The prior plan's "e2e" test called `dispatcher.dispatch` directly with a hand-built spec, skipping beckman + orchestrator entirely. v2's e2e drives the **whole** pipeline (beckman.enqueue awaits inline; orchestrator pump dispatches; dispatcher routes image branch; paintress is mocked at the HTTP provider layer only) and asserts the path reaches the caller through the JSON-string round-trip.
+The prior plans' "e2e" tests either called a non-existent `dispatcher.dispatch` or relied on `await_inline` (which inserts to DB and blocks on a Future resolved by a separate pump — it does NOT execute inline). **v3 drives one real pump cycle manually**, no await_inline: `enqueue` (returns task_id) → `next_task()` (admission runs `_select_for_admission` image branch → hoca image scorer → `ImageModelInfo` pick attached) → `husam.run(task)` (image lane → paintress, mocked at the provider layer so renoir + PNG-write are real) → `on_task_finished(tid, result)` (the way `orchestrator._dispatch` finishes — JSON-stringifying husam's dict).
+
+> **Verify at impl:** confirm `next_task()`'s post-selection admission gating (pool pressure / reserve / `_handle_admission_pick`) does not crash on an `ImageModelInfo` pick (it carries `name/provider/location/is_local/vram_mb` but no text-only fields like tok/s or context). If any gate reads a text-only field, guard the image branch around it. This is the one integration seam the unit tests can't prove.
 
 - [ ] **Step 1: Write the test**
 
@@ -1999,19 +2137,24 @@ import json
 import os
 import pytest
 
+import src.infra.db as _db_mod
+from src.infra.db import init_db, get_task
+import general_beckman
+from general_beckman import enqueue, next_task, on_task_finished
+import husam
 
-@pytest.mark.asyncio
-async def test_image_generation_full_pipeline(monkeypatch, tmp_path):
-    """Drive beckman.enqueue(await_inline=True). The task admits via beckman's
-    _select_for_admission (image branch → hoca image scorer), routes through
-    orchestrator._dispatch (image_call.raw_dispatch detected), reaches the
-    dispatcher's _dispatch_image, calls paintress (mocked at provider layer),
-    PNG is written, dict is JSON-stringified by orchestrator, parsed back at
-    the caller."""
-    # Mock the HTTP provider at the lowest possible layer so renoir and the
-    # path-write are real.
-    import paintress
 
+async def _fresh_db(tmp_path, monkeypatch):
+    """Isolated DB (mirrors tests/test_beckman_next_task.py::_fresh)."""
+    db_file = tmp_path / "t.db"
+    monkeypatch.setattr(_db_mod, "DB_PATH", str(db_file))
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+    _db_mod._db_connection = None
+    await init_db()
+
+
+def _fake_pollinations(seed=11):
     class _FakeProvider:
         name = "pollinations"
         def available(self): return True
@@ -2020,41 +2163,54 @@ async def test_image_generation_full_pipeline(monkeypatch, tmp_path):
             from PIL import Image
             buf = io.BytesIO()
             Image.new("RGB", (64, 64), (100, 150, 200)).save(buf, "PNG")
-            return buf.getvalue(), {"seed_used": 11}
+            return buf.getvalue(), {"seed_used": seed}
+    return _FakeProvider()
 
-    monkeypatch.setattr(paintress, "_PROVIDERS", {"pollinations": _FakeProvider()})
+
+@pytest.mark.asyncio
+async def test_image_generation_full_pipeline(monkeypatch, tmp_path):
+    """One manual pump cycle, NO await_inline. beckman admission → husam image
+    lane → paintress (mocked at provider layer; renoir + PNG-write real) →
+    on_task_finished round-trip."""
+    await _fresh_db(tmp_path, monkeypatch)
+    import paintress
+    monkeypatch.setattr(paintress, "_PROVIDERS", {"pollinations": _fake_pollinations()})
     monkeypatch.delenv("HF_TOKEN", raising=False)
 
-    import general_beckman
     spec = {
-        "title": "e2e",
-        "description": "e2e image",
-        "agent_type": "image",
-        "kind": "image",
-        "runner": "direct",
-        "priority": 5,
+        "title": "e2e", "description": "e2e image",
+        "agent_type": "image", "kind": "image", "priority": 5,
         "context": {"image_call": {
             "raw_dispatch": True, "prompt": "a mountain lake",
             "out_dir": str(tmp_path), "width": 64, "height": 64,
             "filename_hint": "lake",
         }},
     }
-    result = await general_beckman.enqueue(spec, await_inline=True)
+    tid = await enqueue(spec)                       # returns task_id (no await_inline)
+    assert isinstance(tid, int)
 
-    assert result.status == "completed", f"status={result.status} err={result.error}"
-    # TaskResult.result is a JSON string per recon — parse it.
-    raw = result.result
+    task = await next_task()                        # admission + image pick
+    assert task is not None and task["id"] == tid
+
+    result = await husam.run(task)                  # image lane
+    assert result["provider"] == "pollinations"
+    assert result["seed_used"] == 11
+    assert os.path.isfile(result["path"]) and os.path.getsize(result["path"]) > 0
+
+    # Finish the way orchestrator._dispatch does (json.dumps the husam dict).
+    await on_task_finished(tid, {"status": "completed",
+                                 "result": json.dumps(result), **result})
+    row = await get_task(tid)
+    assert row["status"] == "completed"
+    raw = row.get("result")
     payload = json.loads(raw) if isinstance(raw, str) else raw
-    assert payload.get("provider") == "pollinations"
-    assert payload.get("seed_used") == 11
-    assert os.path.isfile(payload["path"])
-    assert os.path.getsize(payload["path"]) > 0
+    assert payload["path"] == result["path"]
 ```
 
 - [ ] **Step 2: Run it**
 
 Run: `.venv/Scripts/python -m pytest tests/integration/test_image_e2e.py -q`
-Expected: PASS (1 passed). If beckman's enqueue path needs a real DB, the test may need a `tmp_path`-based DB fixture; consult `tests/conftest.py` for the existing pattern.
+Expected: PASS (1 passed). If `enqueue`'s spec schema differs (e.g. `kind` must be a top-level kwarg), match an existing `enqueue` caller in `telegram_bot.py`; if `next_task()` needs cron-seed/paused-pattern resets, copy them from `_fresh_db` in `tests/test_beckman_next_task.py`.
 
 - [ ] **Step 3: Commit**
 
@@ -2079,13 +2235,22 @@ git commit -m "test(image): e2e through beckman+orchestrator+dispatcher+paintres
 import json
 import pytest
 
+import src.infra.db as _db_mod
+from src.infra.db import init_db, get_db
+from general_beckman import enqueue, next_task, on_task_finished
+import husam
 
-@pytest.mark.asyncio
-async def test_image_call_writes_pick_log_and_token_rows(monkeypatch, tmp_path):
-    """After a successful image generation, model_pick_log AND model_call_tokens
-    must contain a row for this call. Anything less = telemetry pipeline lying."""
-    import paintress
 
+async def _fresh_db(tmp_path, monkeypatch):
+    db_file = tmp_path / "t.db"
+    monkeypatch.setattr(_db_mod, "DB_PATH", str(db_file))
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+    _db_mod._db_connection = None
+    await init_db()
+
+
+def _fake_pollinations():
     class _FakeProvider:
         name = "pollinations"
         def available(self): return True
@@ -2095,13 +2260,18 @@ async def test_image_call_writes_pick_log_and_token_rows(monkeypatch, tmp_path):
             buf = io.BytesIO()
             Image.new("RGB", (64, 64), (50, 60, 70)).save(buf, "PNG")
             return buf.getvalue(), {"seed_used": 3}
-    monkeypatch.setattr(paintress, "_PROVIDERS", {"pollinations": _FakeProvider()})
+    return _FakeProvider()
+
+
+@pytest.mark.asyncio
+async def test_image_call_writes_pick_log_and_token_rows(monkeypatch, tmp_path):
+    """After a successful husam image call, model_pick_log AND model_call_tokens
+    each gain a row for this call. Anything less = telemetry pipeline lying."""
+    await _fresh_db(tmp_path, monkeypatch)
+    import paintress
+    monkeypatch.setattr(paintress, "_PROVIDERS", {"pollinations": _fake_pollinations()})
     monkeypatch.delenv("HF_TOKEN", raising=False)
 
-    import general_beckman
-    from src.infra.db import get_db
-
-    # Baseline counts
     db = await get_db()
     cur = await db.execute("SELECT COUNT(*) FROM model_pick_log")
     base_pick = (await cur.fetchone())[0]
@@ -2110,35 +2280,43 @@ async def test_image_call_writes_pick_log_and_token_rows(monkeypatch, tmp_path):
 
     spec = {
         "title": "telemetry-roundtrip",
-        "agent_type": "image", "kind": "image", "runner": "direct", "priority": 5,
+        "agent_type": "image", "kind": "image", "priority": 5,
         "context": {"image_call": {
             "raw_dispatch": True, "prompt": "telemetry test",
             "out_dir": str(tmp_path), "width": 64, "height": 64,
             "filename_hint": "tel",
         }},
     }
-    result = await general_beckman.enqueue(spec, await_inline=True)
-    assert result.status == "completed"
+    tid = await enqueue(spec)
+    task = await next_task()
+    assert task["id"] == tid
+
+    # husam._run_image reads the task-id from this contextvar (orchestrator sets
+    # it in prod); set it so the token row attributes to the task.
+    from src.core.heartbeat import current_task_id
+    _tok = current_task_id.set(tid)
+    try:
+        result = await husam.run(task)
+    finally:
+        current_task_id.reset(_tok)
+    await on_task_finished(tid, {"status": "completed",
+                                 "result": json.dumps(result), **result})
 
     cur = await db.execute("SELECT COUNT(*) FROM model_pick_log")
     new_pick = (await cur.fetchone())[0]
     cur = await db.execute("SELECT COUNT(*) FROM model_call_tokens")
     new_tok = (await cur.fetchone())[0]
-
     assert new_pick == base_pick + 1, \
         "model_pick_log did NOT gain a row — pick_log wiring is broken"
     assert new_tok == base_tok + 1, \
         "model_call_tokens did NOT gain a row — token telemetry is broken"
 
-    # Verify the new rows are for the image call.
     cur = await db.execute(
         "SELECT picked_model, category FROM model_pick_log ORDER BY rowid DESC LIMIT 1"
     )
     row = await cur.fetchone()
     assert row[0] == "pollinations/flux"
-    # category column stores the CallCategory.value used at _record_pick time.
-    # Task 11 uses MAIN_WORK for pick_log compat — assert that, NOT 'image'.
-    assert row[1] in ("main_work", "image")
+    assert row[1] == "image"   # CallCategory.IMAGE.value
 
     cur = await db.execute(
         "SELECT call_category, model FROM model_call_tokens ORDER BY rowid DESC LIMIT 1"
@@ -2148,10 +2326,12 @@ async def test_image_call_writes_pick_log_and_token_rows(monkeypatch, tmp_path):
     assert row[1] == "pollinations/flux"
 ```
 
+> **Confirm column names** against the live schema (`grep -n "model_pick_log" src/infra/db.py` / `model_call_tokens`): the asserts assume `picked_model`/`category` and `call_category`/`model`. Adjust if the de-accretion renamed them.
+
 - [ ] **Step 2: Run + verify**
 
 Run: `.venv/Scripts/python -m pytest tests/integration/test_image_telemetry_roundtrip.py -q`
-Expected: PASS (1 passed). If it fails with "model_pick_log did NOT gain a row," the dispatcher's pick_log call in Task 11 is wired but not reaching the DB — investigate `_record_pick`'s internal write path.
+Expected: PASS (1 passed). If "model_pick_log did NOT gain a row," husam's `disp._record_pick` call (Task 11) fired but didn't reach the DB — investigate `pick_recorder.record_pick`'s write path.
 
 - [ ] **Step 3: Commit**
 
@@ -2167,33 +2347,49 @@ git commit -m "test(image): telemetry round-trip — pick_log + model_call_token
 **Files:**
 - Create: `tests/integration/test_image_retry_propagation.py`
 
-Combines Tasks 9 + 11: a paintress failure must propagate `failed_models` into the next admission via `_select_for_admission`, so the second try picks a DIFFERENT provider. Without Task 9's propagation, the second admission would re-pick the same dead provider — exactly the silent-rot the audit warned about.
+Combines Tasks 9 + 11: a paintress failure must propagate `failed_models` into the next admission via `_select_for_admission`, so the second try picks a DIFFERENT provider. Driven as **two manual pump cycles** (no await_inline). **Note the pick order:** the image scorer ranks HF (`quality_rank=8.0`) ABOVE pollinations (`6.0`), so with `HF_TOKEN` set HF is picked FIRST. So the test makes **HF the flaky one** and pollinations the fallback — cycle 1 picks HF and fails, cycle 2 excludes HF and succeeds on pollinations.
 
 - [ ] **Step 1: Write the test**
 
 ```python
 # tests/integration/test_image_retry_propagation.py
+import json
 import pytest
+
+import src.infra.db as _db_mod
+from src.infra.db import init_db, get_task, update_task
+from general_beckman import enqueue, next_task, on_task_finished
+import husam
+from src.core.router import ModelCallFailed
+
+
+async def _fresh_db(tmp_path, monkeypatch):
+    db_file = tmp_path / "t.db"
+    monkeypatch.setattr(_db_mod, "DB_PATH", str(db_file))
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+    _db_mod._db_connection = None
+    await init_db()
 
 
 @pytest.mark.asyncio
 async def test_failed_provider_excluded_on_retry(monkeypatch, tmp_path):
-    """After pollinations fails once, the next admission's hoca.select call
-    must see 'pollinations/flux' in failures (read from task.context
-    .failed_models). With HF_TOKEN set, the second attempt resolves to HF."""
-    import paintress
+    """Cycle 1: HF (top-ranked) is picked and fails → on_task_finished records it
+    in context.failed_models. Cycle 2: _select_for_admission forwards failed_models
+    → image scorer excludes HF → pollinations picked → success. Without Task 9's
+    propagation, cycle 2 would re-pick the dead HF — the silent rot the audit warned of."""
+    await _fresh_db(tmp_path, monkeypatch)
 
-    call_count = {"n": 0}
-
-    class _FlakyPollinations:
-        name = "pollinations"
+    seen = {"hf": 0}
+    class _FlakyHF:
+        name = "huggingface"
         def available(self): return True
         async def generate(self, spec, *, base_url=None):
-            call_count["n"] += 1
+            seen["hf"] += 1
             raise RuntimeError("simulated provider down")
 
-    class _FakeHF:
-        name = "huggingface"
+    class _FakePollinations:
+        name = "pollinations"
         def available(self): return True
         async def generate(self, spec, *, base_url=None):
             import io
@@ -2202,37 +2398,53 @@ async def test_failed_provider_excluded_on_retry(monkeypatch, tmp_path):
             Image.new("RGB", (64, 64), (200, 100, 100)).save(buf, "PNG")
             return buf.getvalue(), {"seed_used": 2}
 
+    import paintress
     monkeypatch.setattr(paintress, "_PROVIDERS",
-                        {"pollinations": _FlakyPollinations(),
-                         "huggingface": _FakeHF()})
+                        {"pollinations": _FakePollinations(), "huggingface": _FlakyHF()})
     monkeypatch.setenv("HF_TOKEN", "hf_xxx")
 
-    import general_beckman
     spec = {
-        "title": "retry-test",
-        "agent_type": "image", "kind": "image", "runner": "direct", "priority": 5,
+        "title": "retry-test", "agent_type": "image", "kind": "image", "priority": 5,
         "context": {"image_call": {
             "raw_dispatch": True, "prompt": "retry test",
             "out_dir": str(tmp_path), "width": 64, "height": 64,
-            "filename_hint": "ret",
+            "filename_hint": "ret", "quality_tier": "quality",
         }},
     }
-    # Beckman's availability-retry should re-admit once; the second admission
-    # reads failed_models=[pollinations/flux] and picks HF.
-    result = await general_beckman.enqueue(spec, await_inline=True)
+    tid = await enqueue(spec)
 
-    assert result.status == "completed", f"status={result.status} err={result.error}"
-    import json
-    raw = result.result
-    payload = json.loads(raw) if isinstance(raw, str) else raw
-    assert payload.get("provider") == "huggingface"
-    assert call_count["n"] >= 1  # pollinations was attempted
+    # ── CYCLE 1: HF picked (top rank) → fails.
+    task1 = await next_task()
+    assert task1["id"] == tid
+    picked1 = task1["preselected_pick"].model.name
+    assert picked1 == "huggingface/flux-schnell"
+    with pytest.raises(ModelCallFailed):
+        await husam.run(task1)
+    # Finish as orchestrator._dispatch would on failure.
+    await on_task_finished(tid, {"status": "failed", "error": "simulated provider down",
+                                 "error_category": "availability", "model": picked1})
+    row1 = await get_task(tid)
+    assert row1["status"] == "pending"
+    ctx1 = json.loads(row1.get("context") or "{}")
+    assert picked1 in ctx1.get("failed_models", [])
+    await update_task(tid, next_retry_at=None)   # clear backoff so cycle 2 admits now
+
+    # ── CYCLE 2: HF excluded → pollinations picked → success.
+    task2 = await next_task()
+    assert task2 is not None and task2["id"] == tid
+    assert task2["preselected_pick"].model.name == "pollinations/flux"
+    result = await husam.run(task2)
+    assert result["provider"] == "pollinations"
+    assert seen["hf"] >= 1   # HF was attempted before exclusion
+    await on_task_finished(tid, {"status": "completed",
+                                 "result": json.dumps(result), **result})
+    assert (await get_task(tid))["status"] == "completed"
 ```
 
 - [ ] **Step 2: Run + verify**
 
 Run: `.venv/Scripts/python -m pytest tests/integration/test_image_retry_propagation.py -q`
-Expected: PASS. If it picks pollinations on retry, Task 9's `_select_for_admission` is not actually reading `task.context["failed_models"]` — debug from there.
+Expected: PASS. If cycle 2 re-picks HF, `_select_for_admission` is not reading `task.context["failed_models"]` (Task 9) — debug there. If cycle 2's `next_task()` returns `None`, the retry backoff (`next_retry_at`) wasn't cleared, or availability didn't re-pend (check `_retry_or_dlq`).
 
 - [ ] **Step 3: Commit**
 
@@ -2249,19 +2461,19 @@ git commit -m "test(image): retry excludes failed provider via failed_models pro
 - Modify: `docs/superpowers/specs/2026-05-23-image-generation-design.md` (small status banner)
 - Test (smoke): run the full new-test set together
 
-- [ ] **Step 1: Add a "Plan 1 v2 status" line to the spec header**
+- [ ] **Step 1: Add a "Plan 1 v3 status" line to the spec header**
 
 In `docs/superpowers/specs/2026-05-23-image-generation-design.md`, under the `Status:` line, add:
 ```
-> Plan 1 v2 shipped <YYYY-MM-DD>: cloud spine + /image working, telemetry round-trip verified, failures-propagation fix shared with text path. Plans 2 (clair_obscur) and 3 (i2p) pending.
+> Plan 1 v3 shipped <YYYY-MM-DD>: cloud spine + /image working (image lane in husam, CPS photo delivery — no await_inline), telemetry round-trip verified, failures-propagation fix shared with text path. Plans 2 (clair_obscur) and 3 (i2p) pending.
 ```
 
 - [ ] **Step 2: Full new-suite smoke**
 
-Run in two passes (NOT mixed — conftest collision per `2026-05-21` handoff §4):
+Run in two passes (NOT mixed — conftest collision per `2026-05-21` handoff §4): pass 1 = package tests, pass 2 = root `tests/`.
 ```
-.venv/Scripts/python -m pytest packages/renoir/tests packages/paintress/tests packages/fatih_hoca/tests/test_image_model_info.py packages/fatih_hoca/tests/test_image_providers.py packages/fatih_hoca/tests/test_image_select.py packages/fatih_hoca/tests/test_select_image_dispatch.py packages/general_beckman/tests/test_failures_propagation.py packages/general_beckman/tests/test_admission_selection_failure.py -q
-.venv/Scripts/python -m pytest tests/core/test_dispatcher_image.py tests/core/test_orchestrator_image_route.py tests/app/test_cmd_image.py tests/integration/test_image_e2e.py tests/integration/test_image_telemetry_roundtrip.py tests/integration/test_image_retry_propagation.py -q
+.venv/Scripts/python -m pytest packages/renoir/tests packages/paintress/tests packages/husam/tests/test_husam_image.py packages/fatih_hoca/tests/test_image_model_info.py packages/fatih_hoca/tests/test_image_providers.py packages/fatih_hoca/tests/test_image_select.py packages/fatih_hoca/tests/test_select_image_dispatch.py packages/general_beckman/tests/test_failures_propagation.py packages/general_beckman/tests/test_admission_selection_failure.py -q
+.venv/Scripts/python -m pytest tests/core/test_orchestrator_image_route.py tests/app/test_cmd_image.py tests/integration/test_image_e2e.py tests/integration/test_image_telemetry_roundtrip.py tests/integration/test_image_retry_propagation.py -q
 ```
 Expected: all green.
 
@@ -2269,20 +2481,21 @@ Expected: all green.
 
 ```bash
 git add docs/superpowers/specs/2026-05-23-image-generation-design.md
-git commit -m "docs(image): mark Plan 1 v2 shipped (cloud spine working)"
+git commit -m "docs(image): mark Plan 1 v3 shipped (cloud spine working)"
 ```
 
 ---
 
-## Plan 1 v2 done-when
+## Plan 1 v3 done-when
 
-- `/image <prompt>` in Telegram returns a generated photo via Pollinations (or HF when `HF_TOKEN` set).
-- A failed provider on the first attempt is **excluded from the second attempt** via the shared `failed_models`-propagation mechanism in `_select_for_admission` (which also benefits text retries).
+- `/image <prompt>` in Telegram **delivers a generated photo via a CPS `on_complete` continuation** (Pollinations, or HF when `HF_TOKEN` set) — **no `await_inline`** anywhere.
+- The image lane executes inside **husam** (`_run_image`), not a dispatcher method — and husam is the only non-coulson caller of the dispatcher.
+- A failed provider on the first attempt is **excluded from the second attempt** via the shared `failed_models`-propagation in `_select_for_admission` (text path wraps names in `Failure(...)`; image path forwards strings) — which also fixes text retries.
 - After every successful image call, `model_pick_log` AND `model_call_tokens` each contain a row attributable to the call (verified by Task 15).
 - A `SelectionFailure` at admission (no eligible provider) marks the task failed cleanly — beckman does not crash on `pick.model.name`.
-- All new tests green; no regressions in `packages/fatih_hoca/tests/`, `packages/general_beckman/tests/`.
+- All new tests green; no regressions in `packages/husam/tests/`, `packages/fatih_hoca/tests/`, `packages/general_beckman/tests/`.
 - Local providers absent from the image catalog (`clair_obscur` is Plan 2); eviction-cost is a 0-returning stub.
 
-## Follow-on plans (assume Plan 1 v2 has merged)
-- **Plan 2 — local `clair_obscur` + GPU handover:** clair_obscur package (PID-lock/orphan-reconcile), nerd_herd image-server VRAM residency, real `_eviction_cost` (reads nerd_herd) replacing Plan 1's stub, dispatcher `dallama.unload()` handover touch in `_dispatch_image`, beckman warm-batch + swap-budget, local provider in `image_providers.py`.
+## Follow-on plans (assume Plan 1 v3 has merged)
+- **Plan 2 — local `clair_obscur` + GPU handover:** clair_obscur package (PID-lock/orphan-reconcile), nerd_herd image-server VRAM residency, real `_eviction_cost` (reads nerd_herd) replacing Plan 1's stub, the `dallama.unload()` handover touch inside `husam._run_image` (local branch), beckman warm-batch + swap-budget, local provider in `image_providers.py`.
 - **Plan 3 — i2p integration:** prompt-writing coulson task (+ templates), `swap_placeholder_images` mr_roboto mechanical, asset serving into web-preview, i2p prototype-phase wiring.

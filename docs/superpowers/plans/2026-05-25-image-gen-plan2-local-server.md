@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fill in the local half of the image-generation lane on top of Plan 1 v2's cloud spine. Adds a local image-server wrapper (`clair_obscur`) parallel to dallama, wires it through paintress as the `local_server` provider, registers a local SDXL entry in hoca's image catalog, replaces Plan 1's eviction-cost stub with the real formula reading nerd_herd, performs the dispatcher GPU handover (`dallama.unload()` → poll free VRAM → `clair_obscur.start()` → record-swap) **wrapped in `heartbeat.keepalive()` so the 30-60s+ handover never trips the 300s no-progress watchdog**, and adds beckman warm-batch awareness that drives clair_obscur's idle backstop (not a direct hard-stop — the backstop **is the stop** under normal lane switches).
+**Goal:** Fill in the local half of the image-generation lane on top of Plan 1 v3's cloud spine. Adds a local image-server wrapper (`clair_obscur`) parallel to dallama, wires it through paintress as the `local_server` provider, registers a local SDXL entry in hoca's image catalog, replaces Plan 1's eviction-cost stub with the real formula reading nerd_herd, performs the GPU handover (`dallama.unload()` → poll free VRAM → `clair_obscur.start()` → record-swap) **inside `husam._run_image`, wrapped in `heartbeat.keepalive()` so the 30-60s+ handover never trips the 300s no-progress watchdog**, and adds beckman warm-batch awareness that drives clair_obscur's idle backstop (not a direct hard-stop — the backstop **is the stop** under normal lane switches).
 
-**Architecture:** `clair_obscur` is the image-world `dallama` — a thin async process wrapper around ComfyUI (default) or AUTOMATIC1111 (env flag), holding a PID-lock at `image_server.lock`, reconciling its own orphan on boot using `psutil.Process(pid).children(recursive=True)` against the **PID written to its own lock** (NEVER process-name kills, NEVER llama-server, per CLAUDE.md). The local handover is mechanical follow-through inside Plan 1 v2's full-telemetry envelope: hoca picks `clair_obscur/sdxl-turbo`, the dispatcher unloads dallama → polls free VRAM → starts clair_obscur → records ONE swap, all inside `heartbeat.keepalive()` so the watchdog stays satisfied through the cold-start window. After each image task, beckman calls `clair_obscur.record_release_hint()` on lane switch; the backstop times the actual `stop()` after `idle_release_seconds` so a back-to-back image batch reuses the warm server without a restart.
+**Architecture:** `clair_obscur` is the image-world `dallama` — a thin async process wrapper around ComfyUI (default) or AUTOMATIC1111 (env flag), holding a PID-lock at `image_server.lock`, reconciling its own orphan on boot using `psutil.Process(pid).children(recursive=True)` against the **PID written to its own lock** (NEVER process-name kills, NEVER llama-server, per CLAUDE.md). The local handover is mechanical follow-through inside Plan 1 v3's full-telemetry envelope **in `husam._run_image`** (there is no `dispatcher.dispatch()`; image execution lives in husam): hoca picks `clair_obscur/sdxl-turbo`, husam unloads dallama → polls free VRAM → starts clair_obscur → records ONE swap, all inside `heartbeat.keepalive()` so the watchdog stays satisfied through the cold-start window. After each image task, beckman calls `clair_obscur.record_release_hint()` on lane switch; the backstop times the actual `stop()` after `idle_release_seconds` so a back-to-back image batch reuses the warm server without a restart.
 
 **Tech Stack:** Python 3.10, async/await, httpx (HTTP to ComfyUI/A1111), aiosqlite, psutil (transitive via nerd_herd; declared explicitly in clair_obscur's pyproject). Package layout mirrors `packages/dallama/` src-layout.
 
@@ -12,7 +12,7 @@
 
 **NOT in this plan (Plan 3):** i2p prototype `swap_placeholder_images` mechanical · prompt-writing coulson task + templates · asset serving wired into the web-preview host · ComfyUI/A1111 actually installed on the dev box · live GPU process in CI.
 
-**Dependency: Plan 1 v2 MUST be merged first.** Plan 2 extends `image_select.py`, `paintress/__init__.py`, `llm_dispatcher._dispatch_image`, `image_providers.py`, and beckman's admission shape — all of which Plan 1 v2 introduces. Recon confirmed `_select_for_admission` doesn't exist on `main` today; Plan 1 v2 must land before Plan 2 starts.
+**Dependency: Plan 1 v3 MUST be merged first.** Plan 2 extends `image_select.py`, `paintress/__init__.py`, **`husam.worker._run_image`** (NOT a dispatcher method — `dispatcher.dispatch()`/`_dispatch_image` do not exist), `image_providers.py`, and beckman's admission shape — all of which Plan 1 v3 introduces. Recon confirmed `_select_for_admission` and `husam._run_image` don't exist on `main` today; Plan 1 v3 must land before Plan 2 starts.
 
 **Inviolable rules (CLAUDE.md):**
 - `clair_obscur.start()` / `.stop()` / boot-orphan-reconcile MUST target **only** the image-server backend's PID via the PID written to its own `image_server.lock`. Verified by `psutil.Process(pid).cmdline()` matching the expected backend launcher (ComfyUI's `main.py` / A1111's `webui.py` / `launch.py`). MUST NEVER call `taskkill /F /IM llama-server.exe`, `psutil.process_iter(["name"])` style sweeps, or anything that could hit a co-tenant.
@@ -53,7 +53,7 @@ Recon confirmed (verbatim file:line):
 - `packages/nerd_herd/src/nerd_herd/types.py` — add `image_server_resident: bool = False` + `image_server_vram_mb: int = 0` to `SystemSnapshot`.
 - `packages/nerd_herd/src/nerd_herd/__init__.py` — add module-level `record_image_server_state(resident, vram_mb)`.
 - `packages/nerd_herd/src/nerd_herd/nerd_herd.py` — add `push_image_server_state` method; init two new attrs; extend `snapshot()` builder.
-- `src/core/llm_dispatcher.py` — extend `_dispatch_image` with `if pick.model.is_local:` branch **wrapped in `heartbeat.keepalive()`**.
+- `packages/husam/src/husam/worker.py` — extend `_run_image` with `if pick.model.is_local:` handover branch **inside the existing `heartbeat.keepalive()`**.
 - `packages/paintress/src/paintress/__init__.py` — APPEND `"clair_obscur": LocalServerProvider()` to existing `_PROVIDERS`.
 - `packages/general_beckman/src/general_beckman/__init__.py` — add post-completion hook that calls `clair_obscur.record_release_hint()` (NOT direct stop) when image lane is finishing; stamp `preselected_pick_provider` at admission.
 - root `conftest.py` `_PACKAGE_SRCS` — append `clair_obscur`.
@@ -1616,18 +1616,18 @@ git commit -m "feat(image): real eviction-cost + VRAM-fit (reads refresh_snapsho
 
 ---
 
-## Task 10: Dispatcher local handover **wrapped in `heartbeat.keepalive()`**
+## Task 10: Husam local handover **wrapped in `heartbeat.keepalive()`**
 
 **Files:**
-- Modify: `src/core/llm_dispatcher.py` — extend `_dispatch_image` with `if pick.model.is_local:` branch INSIDE the `keepalive()` context
-- Test: `tests/core/test_dispatcher_image_local.py`
+- Modify: `packages/husam/src/husam/worker.py` — extend `_run_image` with `if pick.model.is_local:` handover branch INSIDE the `keepalive()` context
+- Test: `packages/husam/tests/test_husam_image_local.py`
 
-The v2 fix: dallama unload + VRAM poll + clair_obscur cold start can take 30-60s+. The orchestrator's 300s no-progress watchdog reads heartbeats. Plan 1 v2's `_dispatch_image` wraps `paintress.generate` in `keepalive()`. v2 expands the wrap to cover unload + poll + start so the watchdog stays satisfied through the cold-start window. Recon confirmed `keepalive()` is reentrant + contextvar-safe.
+The fix: dallama unload + VRAM poll + clair_obscur cold start can take 30-60s+. The orchestrator's 300s no-progress watchdog reads heartbeats. Plan 1 v3's `husam._run_image` wraps `paintress.generate` in `keepalive()`. Plan 2 expands the wrap to cover unload + poll + start so the watchdog stays satisfied through the cold-start window. Recon confirmed `keepalive()` is reentrant + contextvar-safe.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/core/test_dispatcher_image_local.py
+# packages/husam/tests/test_husam_image_local.py
 import pytest
 
 

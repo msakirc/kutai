@@ -99,19 +99,28 @@ def _normalize_scenes(storyboard: dict) -> int:
 async def run(
     *,
     mission_id: int,
-    workspace_path: str,
+    workspace_path: str = "",
     raw_filename: str = "demo/storyboard_raw.json",
 ) -> dict[str, Any]:
     """Mechanical sink: read the producer's raw storyboard, normalize, write.
 
     The LLM draft is produced by the `13.demo_storyboard_draft` workflow step
-    (agent:reviewer) and materialized to ``<workspace>/<raw_filename>``. This
-    verb makes NO LLM call.
+    (agent:reviewer) and materialized to ``<mission_workspace>/<raw_filename>``.
+    This verb makes NO LLM call.
+
+    ``workspace_path`` is derived from ``mission_id`` when not supplied — the
+    canonical mr_roboto pattern (cf. verify_artifacts / run_cmd). The producer
+    step's ``produces`` is mission-prefixed (``mission_{mission_id}/demo/...``)
+    so the materializer writes under this same mission workspace.
 
     Returns::
         {"ok": True, "storyboard": {...}, "storyboard_path": str, "scene_count": int}
         {"ok": False, "error": str}
     """
+    if not workspace_path:
+        from src.tools.workspace import get_mission_workspace
+        workspace_path = get_mission_workspace(int(mission_id))
+
     raw_path = os.path.join(workspace_path, raw_filename)
     try:
         with open(raw_path, encoding="utf-8") as fh:

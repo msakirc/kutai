@@ -9711,7 +9711,7 @@
       "instruction": "You are a demo video scriptwriter. Read the product spec/idea in the mission workspace, then generate a JSON storyboard for a product demo video. The storyboard MUST be a single JSON object: {\"title\": string, \"total_target_seconds\": int, \"scenes\": [{\"id\": \"scene_N\", \"title\": string, \"target_seconds\": int (3-120), \"viewport_state\": string (snake_case), \"narrator_text\": string (empty if visual-only), \"visual_only\": boolean}]}. Use 3-6 scenes. Reply ONLY with the JSON object — no preamble, no code fences.",
       "done_when": "A JSON object with a non-empty scenes array is produced.",
       "produces": [
-        "demo/storyboard_raw.json"
+        "mission_{mission_id}/demo/storyboard_raw.json"
       ],
       "context": {}
     },

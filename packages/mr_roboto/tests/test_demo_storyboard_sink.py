@@ -61,7 +61,29 @@ def test_i2p_demo_split_shapes():
     sink = steps["13.demo_storyboard"]
     assert draft["agent"] == "reviewer"
     assert "executor" not in draft  # producer is NOT mechanical
-    assert draft["produces"] == ["demo/storyboard_raw.json"]
+    # mission-prefixed so the materializer writes under the mission workspace,
+    # where the (workspace-deriving) sink reads it.
+    assert draft["produces"] == ["mission_{mission_id}/demo/storyboard_raw.json"]
     assert sink["executor"] == "mechanical"
     assert sink["depends_on"] == ["13.demo_storyboard_draft"]
     assert "13.demo_storyboard" in steps["13.demo_record"]["depends_on"]
+
+
+@pytest.mark.asyncio
+async def test_sink_derives_mission_workspace_when_path_absent(tmp_path, monkeypatch):
+    """Canonical mr_roboto pattern: with no workspace_path, derive it from
+    mission_id via get_mission_workspace (cf. verify_artifacts/run_cmd)."""
+    import src.tools.workspace as ws
+    monkeypatch.setattr(ws, "get_mission_workspace", lambda mid: str(tmp_path))
+
+    demo_dir = tmp_path / "demo"
+    demo_dir.mkdir()
+    (demo_dir / "storyboard_raw.json").write_text(
+        '{"title":"D","scenes":[{"title":"a","narrator_text":"hi"}]}', encoding="utf-8"
+    )
+
+    res = await run(mission_id=7)  # no workspace_path passed
+
+    assert res["ok"] is True
+    assert (tmp_path / "demo" / "storyboard.json").is_file()
+    assert res["scene_count"] == 1

@@ -4153,7 +4153,7 @@ async def _run_dispatch(task: dict) -> Action:
         from mr_roboto.demo_storyboard import run as _demo_storyboard
         try:
             res = await _demo_storyboard(
-                mission_id=payload.get("mission_id"),
+                mission_id=payload.get("mission_id") or task.get("mission_id"),
                 workspace_path=payload.get("workspace_path") or "",
                 raw_filename=payload.get("raw_filename") or "demo/storyboard_raw.json",
             )

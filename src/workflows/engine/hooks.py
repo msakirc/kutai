@@ -321,7 +321,15 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
         # Priority: the agent's on-disk write outranks output_value — a rich
         # valid file is preserved (intake #73); only a disk file that FAILS
         # the schema yields to the (unwrapped) result (mission 81).
-        chosen = select_canonical([disk, output_value], _schema_ok)
+        #
+        # output_value is the step's SINGLE result, so it can only stand in for
+        # the produces path of a single-artifact step. For a multi-produces step
+        # (agent-writes-each: ADR decision+register, screen_inventory+shared_shell)
+        # output_value belongs to one logical artifact and must never overwrite a
+        # sibling file — so it is dropped from the candidate list and each file is
+        # materialized from its own on-disk content (Cut #2, spec 2026-06-07).
+        candidates = [disk, output_value] if single else [disk]
+        chosen = select_canonical(candidates, _schema_ok)
         if not isinstance(chosen, str):
             continue
         kind = "json" if entry.endswith(".json") else "md"

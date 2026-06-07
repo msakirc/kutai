@@ -79,6 +79,69 @@ async def test_json_unwrapped_and_stamped(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_multi_produces_output_value_does_not_contaminate_sibling(tmp_path, monkeypatch):
+    """Cut #2: ``output_value`` is the PRIMARY artifact's content and must never
+    land in a sibling file. Repro (5.0d shape: screen_inventory.md +
+    shared_shell.md): the sibling's own disk content is incomplete (fails its
+    required_sections) while output_value (the primary) coincidentally passes
+    the sibling's schema. Pre-fix, the sibling's candidates were
+    [sibling_disk(fail), output_value(pass)] -> select_canonical returned
+    output_value -> the sibling file is overwritten with the PRIMARY's content.
+    Disk-only multi candidates must keep the sibling's own content."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    primary_rel = "mission_81/.flow/screen_inventory.md"
+    sibling_rel = "mission_81/.flow/shared_shell.md"
+    (tmp_path / "mission_81/.flow").mkdir(parents=True, exist_ok=True)
+    # Sibling's OWN (incomplete) content — missing the "Navigation" section.
+    sibling_disk = "## Shell Layout\nheader only; navigation not yet described\n"
+    (tmp_path / sibling_rel).write_text(sibling_disk, encoding="utf-8")
+    (tmp_path / primary_rel).write_text("## Screens\n- login\n- home\n", encoding="utf-8")
+
+    # Schema keyed for the sibling; output_value (primary) happens to satisfy it.
+    schema = {"shared_shell": {"type": "markdown",
+                               "required_sections": ["Shell Layout", "Navigation"]}}
+    ctx = _ctx([primary_rel, sibling_rel], schema)
+    task = {"mission_id": 81, "agent_type": "designer"}
+    # Primary result that coincidentally carries both sibling sections.
+    output_value = "## Shell Layout\nfrom-primary\n## Navigation\nfrom-primary\n"
+
+    out = await materialize_produces(ctx, task, {}, output_value)
+
+    sibling_after = (tmp_path / sibling_rel).read_text(encoding="utf-8")
+    assert "navigation not yet described" in sibling_after   # sibling's own content kept
+    assert "from-primary" not in sibling_after               # PRIMARY content did NOT leak in
+    # Multi return contract: output_value returned unchanged.
+    assert out == output_value
+
+
+@pytest.mark.asyncio
+async def test_multi_produces_length_fallback_does_not_contaminate(tmp_path, monkeypatch):
+    """Length-fallback variant: when NEITHER the sibling disk nor output_value
+    passes the schema, pre-fix select_canonical fell through to the *longest*
+    candidate — a long output_value would still clobber the sibling. Disk-only
+    candidates must keep the sibling's own content regardless of length."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    primary_rel = "mission_81/.flow/screen_inventory.md"
+    sibling_rel = "mission_81/.flow/shared_shell.md"
+    (tmp_path / "mission_81/.flow").mkdir(parents=True, exist_ok=True)
+    sibling_disk = "## Shell Layout\nshort sibling body\n"
+    (tmp_path / sibling_rel).write_text(sibling_disk, encoding="utf-8")
+    (tmp_path / primary_rel).write_text("## Screens\n- login\n", encoding="utf-8")
+    # Schema nothing here satisfies (forces the most-substantial fallback).
+    schema = {"shared_shell": {"type": "markdown",
+                               "required_sections": ["Shell Layout", "Navigation", "Footer"]}}
+    ctx = _ctx([primary_rel, sibling_rel], schema)
+    task = {"mission_id": 81, "agent_type": "designer"}
+    long_output = "## Screens\n" + ("- screen line\n" * 80)   # far longer than sibling
+
+    await materialize_produces(ctx, task, {}, long_output)
+
+    sibling_after = (tmp_path / sibling_rel).read_text(encoding="utf-8")
+    assert "short sibling body" in sibling_after     # sibling kept
+    assert "screen line" not in sibling_after        # long primary did not win
+
+
+@pytest.mark.asyncio
 async def test_mission81_289715_regression(tmp_path, monkeypatch):
     """The real failure: agent wrote a narration report to the produces path
     while the correct doc sat in a ```yaml fence in result. Materializer must

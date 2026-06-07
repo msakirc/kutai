@@ -309,7 +309,17 @@ def _select_for_admission(spec: dict, sel_kwargs: dict | None = None):
 async def _handle_admission_pick(spec: dict, pick) -> dict:
     """Convert a SelectionFailure (or a None pick) into a task-status outcome
     instead of letting beckman crash downstream on pick.model.name.
-    Returns {'status': 'failed'|'paused'|'ok', 'error': str|None, 'pick': Pick|None}."""
+    Returns {'status': 'failed'|'paused'|'retry'|'ok', 'error': str|None,
+    'pick': Pick|None}.
+
+    Outcome semantics at the call site:
+      ok     → use the pick.
+      retry  → leave the task PENDING (do NOT touch worker_attempts); it is
+               retried on a later admission tick. Mirrors the text path's
+               `pick is None: continue` "wait for the pool to recover" behaviour.
+      paused → budget pause (mission paused via emit_pause).
+      failed → terminal DLQ (genuine, bounded exhaustion or non-transient reason).
+    """
     from fatih_hoca.types import SelectionFailure
 
     if pick is None:
@@ -327,6 +337,28 @@ async def _handle_admission_pick(spec: dict, pick) -> dict:
                         "pick": None}
             except Exception:
                 pass
+
+        # FIX 4: `availability` is transient — the model pool can recover on a
+        # later tick, so an image task must NOT be terminally DLQ'd on the FIRST
+        # miss (the text path returns `pick is None` → `continue`, leaving the
+        # task pending). We mirror that: return "retry" so the call site leaves
+        # the task pending and re-admits it next tick — UNLESS the task has
+        # already exhausted its bounded retry budget, in which case we DLQ
+        # terminally (genuine unsatisfiability, not livelock).
+        if pick.reason == "availability":
+            from general_beckman.retry import effective_max_attempts
+            attempts = int(spec.get("worker_attempts") or 0)
+            max_attempts = int(spec.get("max_worker_attempts") or 15)
+            cap = effective_max_attempts("availability", max_attempts)
+            if attempts < cap:
+                return {"status": "retry",
+                        "error": f"selection_failure:{pick.reason}:{pick.detail}",
+                        "pick": None}
+            # Exhausted the availability backoff ladder → terminal.
+            return {"status": "failed",
+                    "error": f"selection_failure:{pick.reason}:{pick.detail}",
+                    "pick": None}
+
         return {"status": "failed",
                 "error": f"selection_failure:{pick.reason}:{pick.detail}",
                 "pick": None}
@@ -748,8 +780,21 @@ async def next_task(lane: str | None = None):
         # kwargs).
         if pick is not None:
             _outcome = await _handle_admission_pick(task, pick=pick)
-            if _outcome["status"] != "ok":
-                await _mark_admission_failed(task, _outcome["status"], _outcome["error"])
+            _status = _outcome["status"]
+            if _status == "retry":
+                # FIX 4: transient `availability` at admission — leave the task
+                # PENDING (do NOT call _mark_admission_failed, do NOT touch
+                # worker_attempts) and abandon THIS candidate, exactly like the
+                # `pick is None: continue` below. The pool can recover and the
+                # task is re-admitted next tick; genuine exhaustion was already
+                # bounded inside _handle_admission_pick (→ "failed").
+                _log.debug(
+                    f"admission: task #{task['id']} availability miss — "
+                    f"left pending for retry ({_outcome['error']})"
+                )
+                continue
+            if _status != "ok":
+                await _mark_admission_failed(task, _status, _outcome["error"])
                 continue
             pick = _outcome["pick"]
         if pick is None:

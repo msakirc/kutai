@@ -2,7 +2,11 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_selection_failure_marks_task_failed(monkeypatch):
+async def test_selection_failure_marks_task_retry(monkeypatch):
+    """An `availability` SelectionFailure at admission must leave the task
+    PENDING for a later tick (status=='retry'), NOT terminally DLQ it — mirror
+    of the text path's `pick is None: continue` semantics. (Was previously
+    asserting `failed`, which encoded the bug.)"""
     import general_beckman as gb
     from fatih_hoca.types import SelectionFailure
 
@@ -12,6 +16,29 @@ async def test_selection_failure_marks_task_failed(monkeypatch):
                                       detail="no eligible image provider"),
     )
     spec = {"kind": "image", "agent_type": "image",
+            "context": {"image_call": {"prompt": "x"}}}
+    outcome = await gb._handle_admission_pick(spec, pick=None)
+    assert outcome["status"] == "retry"
+    assert outcome["pick"] is None
+    assert "availability" in outcome.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_availability_exhausted_dlqs(monkeypatch):
+    """When the task has already exhausted its retry budget, an availability
+    SelectionFailure must DLQ terminally (status=='failed') — bounded retry,
+    not livelock."""
+    import general_beckman as gb
+    from fatih_hoca.types import SelectionFailure
+
+    monkeypatch.setattr(
+        "general_beckman._select_for_admission",
+        lambda spec: SelectionFailure(reason="availability",
+                                      detail="no eligible image provider"),
+    )
+    # worker_attempts at the effective cap (>= max(max_worker_attempts, 15)).
+    spec = {"kind": "image", "agent_type": "image",
+            "worker_attempts": 15, "max_worker_attempts": 15,
             "context": {"image_call": {"prompt": "x"}}}
     outcome = await gb._handle_admission_pick(spec, pick=None)
     assert outcome["status"] == "failed"

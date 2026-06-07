@@ -51,3 +51,17 @@ def test_sink_makes_no_llm_call():
     import mr_roboto.demo_storyboard as mod
     assert not hasattr(mod, "_enqueue_storyboard_llm"), "LLM enqueue must be deleted"
     assert not hasattr(mod, "_STORYBOARD_SYSTEM"), "LLM prompt must be deleted"
+
+
+def test_i2p_demo_split_shapes():
+    import json
+    wf = json.load(open("src/workflows/i2p/i2p_v3.json", encoding="utf-8"))
+    steps = {s["id"]: s for s in wf["steps"]}
+    draft = steps["13.demo_storyboard_draft"]
+    sink = steps["13.demo_storyboard"]
+    assert draft["agent"] == "reviewer"
+    assert "executor" not in draft  # producer is NOT mechanical
+    assert draft["produces"] == ["demo/storyboard_raw.json"]
+    assert sink["executor"] == "mechanical"
+    assert sink["depends_on"] == ["13.demo_storyboard_draft"]
+    assert "13.demo_storyboard" in steps["13.demo_record"]["depends_on"]

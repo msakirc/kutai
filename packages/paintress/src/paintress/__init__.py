@@ -46,6 +46,12 @@ async def generate(pick, spec: ImageSpec) -> ImageResult:
 
     os.makedirs(spec.out_dir, exist_ok=True)
     path = os.path.join(spec.out_dir, _safe_filename(spec.filename_hint))
+    # Belt-and-suspenders: verify the resolved path is still inside out_dir.
+    real_out = os.path.realpath(spec.out_dir)
+    real_path = os.path.realpath(path)
+    if not (real_path.startswith(real_out + os.sep) or real_path == real_out):
+        return ImageResult(provider=provider, model=getattr(model, "name", ""),
+                           error="path_escape")
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(data)

@@ -5,6 +5,7 @@ import io
 from dataclasses import dataclass
 
 _MIN_DIM = 16
+_MAX_PIXELS = 50_000_000  # ~7000x7000; far above any real 1024x1024 gen
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,9 @@ def assess(data: bytes) -> ImageVerdict:
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(data))
+        w, h = img.size  # available from header — no decode yet
+        if w * h > _MAX_PIXELS:
+            return ImageVerdict(False, "too_large")
         img.load()
     except Exception:
         return ImageVerdict(False, "not_an_image")

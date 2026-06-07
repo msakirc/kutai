@@ -4147,14 +4147,15 @@ async def _run_dispatch(task: dict) -> Action:
     # ── Z7 T3B — demo pipeline verbs (A3 + A3.r1) ────────────────────────────
 
     if action == "demo/storyboard":
-        # Generate a demo storyboard (ordered scenes) from product spec via LLM.
+        # Mechanical sink: normalize the producer's raw storyboard + write
+        # demo/storyboard.json. The LLM draft is the 13.demo_storyboard_draft
+        # workflow step (agent:reviewer). This branch makes NO LLM call.
         from mr_roboto.demo_storyboard import run as _demo_storyboard
         try:
             res = await _demo_storyboard(
                 mission_id=payload.get("mission_id"),
-                spec_text=payload.get("spec_text") or "",
                 workspace_path=payload.get("workspace_path") or "",
-                parent_task_id=task.get("id"),
+                raw_filename=payload.get("raw_filename") or "demo/storyboard_raw.json",
             )
             if not res.get("ok"):
                 return Action(status="failed", error=res.get("error") or "demo/storyboard failed", result=res)

@@ -9698,6 +9698,24 @@
       "context": {}
     },
     {
+      "id": "13.demo_storyboard_draft",
+      "phase": "phase_13",
+      "name": "demo_storyboard_draft",
+      "agent": "reviewer",
+      "difficulty": "medium",
+      "tools_hint": ["read_file", "file_tree"],
+      "skip_when": "goal does not include public_demo",
+      "depends_on": [
+        "13.14.git_commit_green"
+      ],
+      "instruction": "You are a demo video scriptwriter. Read the product spec/idea in the mission workspace, then generate a JSON storyboard for a product demo video. The storyboard MUST be a single JSON object: {\"title\": string, \"total_target_seconds\": int, \"scenes\": [{\"id\": \"scene_N\", \"title\": string, \"target_seconds\": int (3-120), \"viewport_state\": string (snake_case), \"narrator_text\": string (empty if visual-only), \"visual_only\": boolean}]}. Use 3-6 scenes. Reply ONLY with the JSON object — no preamble, no code fences.",
+      "done_when": "A JSON object with a non-empty scenes array is produced.",
+      "produces": [
+        "mission_{mission_id}/demo/storyboard_raw.json"
+      ],
+      "context": {}
+    },
+    {
       "id": "13.demo_storyboard",
       "phase": "phase_13",
       "name": "demo_storyboard",
@@ -9708,15 +9726,16 @@
       "tools_hint": [],
       "skip_when": "goal does not include public_demo",
       "depends_on": [
-        "13.14.git_commit_green"
+        "13.demo_storyboard_draft"
       ],
       "payload": {
-        "action": "demo/storyboard"
+        "action": "demo/storyboard",
+        "raw_filename": "demo/storyboard_raw.json"
       },
       "post_hooks": [
         "demo_artifact_check"
       ],
-      "instruction": "Z7 T3B A3 — generate demo storyboard from mission spec via LLM. Produces workspace/demo/storyboard.json with ordered scenes (target_seconds, viewport_state, narrator_text). Only runs when mission goal includes public_demo.",
+      "instruction": "Mechanical sink: normalize the storyboard drafted by 13.demo_storyboard_draft and write demo/storyboard.json with ordered scenes. No LLM.",
       "done_when": "demo/storyboard.json written with at least 2 scenes.",
       "produces": [
         "demo/storyboard.json"

@@ -112,3 +112,32 @@ async def test_resume_mission_persists_clarify_choice(monkeypatch):
     import json as _json
     stored = _json.loads(call["value"])
     assert stored == {"kind": "variant", "group_id": 3}
+
+
+@pytest.mark.asyncio
+async def test_resume_writes_through_shared_store_overwriting_seed(monkeypatch):
+    """The tap MUST write clarify_choice into the SAME singleton the pump's
+    should_skip reads — else the gate-seeded 'pending' shadows it and every
+    branch skips on stale state (mission #85)."""
+    import json as _json
+    from src.app.telegram_bot import TelegramInterface
+    from src.workflows.engine.hooks import get_artifact_store
+
+    async def _noop_update(*a, **k):
+        pass
+    monkeypatch.setattr("src.infra.db.update_task", _noop_update, raising=True)
+
+    shared = get_artifact_store()
+    monkeypatch.setattr(shared, "_use_db", False)  # cache-only — no prod DB writes
+    # gate seeds the stale value into the shared cache
+    await shared.store(90185, "clarify_choice", _json.dumps({"kind": "pending"}))
+
+    iface = TelegramInterface.__new__(TelegramInterface)
+    await iface._resume_mission_at_step(
+        mission_id=90185, after_task_id=1,
+        clarify_choice={"kind": "variant", "group_id": 15},
+    )
+
+    # the pump (same singleton) now sees variant, not the seeded pending
+    got = await shared.retrieve(90185, "clarify_choice")
+    assert _json.loads(got) == {"kind": "variant", "group_id": 15}

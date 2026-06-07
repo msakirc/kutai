@@ -11173,11 +11173,18 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         clarify_choice: dict,
     ) -> None:
         """Write clarify_choice artifact + mark clarify_variant task completed so the
-        workflow advances. Implementation uses the existing db + workflow advance helpers."""
+        workflow advances.
+
+        MUST write through the shared get_artifact_store() singleton — the pump's
+        should_skip_workflow_step reads clarify_choice from THAT cache. A fresh
+        ArtifactStore() has a per-instance cache (artifacts.py:33), so the gate's
+        seeded clarify_choice='pending' in the singleton cache would shadow this
+        write and every branch step would skip on stale state (mission #85:
+        variant tap stored, but 2.2*/2.3* skipped on the cached 'pending')."""
         import json as _json
         from src.infra.db import update_task  # lazy import keeps module load cheap
-        from src.workflows.engine.artifacts import ArtifactStore
-        store = ArtifactStore()
+        from src.workflows.engine.hooks import get_artifact_store
+        store = get_artifact_store()
         await store.store(
             mission_id,
             "clarify_choice",

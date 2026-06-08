@@ -1436,6 +1436,17 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "verify_review_verdict":
+        from mr_roboto.verify_review_verdict import verify_review_verdict
+        res = verify_review_verdict(review_result=payload.get("review_result"))
+        if res["verdict_class"] == "pass":
+            return Action(status="completed", result=res)
+        # fail or malformed: surface so general_beckman routes it
+        # (fail -> route to producers, malformed -> normal DLQ).
+        return Action(status="failed",
+                      error=str(res.get("error") or "review verdict not pass"),
+                      result=res)
+
     if action == "verify_user_flow_shape":
         from mr_roboto.verify_user_flow_shape import verify_user_flow_shape
         try:

@@ -8,37 +8,40 @@
 ## Problem
 
 i2p reviewer steps (3.11 requirements_review, 4.16 architecture_review, 6.6
-project_plan_review, …) are LLM steps that judge an upstream artifact and emit
-a `*_review_result` artifact with a `status` verdict. Their instructions
-explicitly say **`REJECT (status=fail)`**, but two things are broken:
+project_plan_review, …) are LLM steps that judge upstream artifacts and emit a
+`*_review_result` with a `status` verdict. Their instructions explicitly say
+**`REJECT (status=fail)`**, but two things are broken:
 
-1. **Schema drift.** The `status` `equals` enum on these steps lists only
-   pass-class values (`['pass']`, `['pass','approved']`). The deterministic
-   schema gate (shipped 2026-06-05) now hard-checks enums, so a reviewer
-   *correctly* rejecting a bad artifact emits `status='fail'` → gate rejects
-   the verdict as malformed → the reviewer task DLQs with a misleading
-   "schema validation" error. The reviewer **succeeded** (it found a real
-   problem) but its valid verdict cannot persist.
+1. **Schema drift.** The `status` `equals` enum lists only pass-class values
+   (`['pass']`, `['pass','approved']`). The deterministic schema gate (shipped
+   2026-06-05) now hard-checks enums, so a reviewer *correctly* rejecting a bad
+   artifact emits `status='fail'` → gate rejects the verdict as malformed → the
+   reviewer task DLQs with a misleading "schema validation" error. The reviewer
+   **succeeded** (found a real problem) but its verdict cannot persist.
 
 2. **No routing.** Reviewer steps carry **no `checks` and no `post_hooks`**.
-   Even if `fail` persisted, nothing acts on it — the reviewer task would just
-   complete and its lone dependent (e.g. 4.1) would proceed to build on the
-   failed artifact. The verdict is decorative.
+   Even if `fail` persisted, nothing acts on it — the reviewer task completes and
+   its dependents proceed to build on the failed artifact. The verdict is
+   decorative.
 
-Fixing only (1) is a band-aid: it converts a DLQ-halt into a **silent
-pass-through**, which is worse for quality (the mission builds architecture on
-requirements that genuinely failed review).
+Fixing only (1) is a band-aid: it turns a DLQ-halt into a **silent
+pass-through**, worse for quality.
 
-## Why auto-routing the fix is not viable
+## Principle: the system auto-recovers; the founder is a last resort
 
-The natural fix — "reviewer fail re-pends the producer to fix it" — does not map
-onto the existing blocker rail. `_apply_simple_blocker_verdict`
-(general_beckman/apply.py:4872) re-pends the **check's own source step**. A
-reviewer is a *separate* step from the producer it reviews, so attaching a check
-to the reviewer re-pends the reviewer (re-runs the review) — the same wrong loop
-as the DLQ. The rail cannot target a named upstream step.
+This is an autonomous agent. A reviewer `fail` must drive the AI to **find the
+problematic producer(s) and retry them**, automatically. The founder is escalated
+to **only** when auto-recovery is exhausted or a fault genuinely cannot be
+localised. Founder-halt is the safety net, not the mechanism.
 
-And the target can't be inferred. Audit of all 11 reviewer steps:
+## Why the existing blocker rail does not fit
+
+`_apply_simple_blocker_verdict` (general_beckman/apply.py:4872) re-pends the
+check's **own source step**. A reviewer is a *separate* step from the producers
+it reviews, so a check on the reviewer would re-pend the reviewer (re-run the
+review) — the same wrong loop as the DLQ. The rail cannot target a named
+upstream step, and the target is not structurally inferable: most reviewers
+review **multiple** producers.
 
 | reviewer | distinct producers reviewed |
 |----------|-----------------------------|
@@ -50,118 +53,164 @@ And the target can't be inferred. Audit of all 11 reviewer steps:
 | 1.13 | 6 |
 | 3.11 | several (requirements_spec, prd, 4× falsification results) |
 
-**Most reviewers review multiple producers.** Single-producer inference works
-for only 2 of 11. "Re-pend all producers" over-fires (6.6 fail → re-pend 5
-steps, most of which were fine). And *which* producer is at fault lives in the
-reviewer's free-form `issues` text, not in structure — so deterministic
-auto-routing to the right producer is impossible without re-architecting every
-reviewer to emit per-issue machine-routable target pointers.
+Single-producer inference works for 2 of 11; "re-pend all" over-fires (6.6 →
+5 steps). The fault attribution lives in the reviewer's issues — so the router
+must read the issues, not the graph.
 
-## Design — the founder is the router
+## Design — hybrid auto-router, founder-halt as fallback
 
-A reviewer `fail` carries human-readable issues spanning several producers. The
-founder reads the issues and knows which producer to fix. So routing is a
-**founder-halt**, not an auto-loop. This sidesteps the multi-producer problem
-entirely, reuses existing human-in-loop infra, and fits the product's
-founder-controlled ethos.
+### Reviewer output becomes routable
 
-### Flow
+Reviewer `issues` change from free-form to structured:
 
 ```
-reviewer LLM step  ──emits──▶  *_review_result {status, issues, ...}
-        │
-        ▼  (post-step check, mechanical)
-  verify_review_verdict
-        │
-   status pass-class? ──yes──▶ complete; dependents proceed
-        │ no (fail)
-        ▼
-  FOUNDER-HALT (waiting_human)
-   Telegram card: "<step> review FAILED" + issues, with buttons:
-     · 🔁 Regenerate: <producer A> | <producer B> | …   (the reviewed producers)
-     · ✅ Accept anyway (override)
-        │
-   ┌────┴───────────────┐
-   ▼                    ▼
- regenerate           accept-anyway
- re-pend chosen       mark verdict overridden,
- producer with        complete reviewer,
- issues as feedback;  dependents proceed;
- producer re-runs →   audit_log the override
- reviewer re-reviews
+issues: [ { target_artifact: <artifact name | null>,
+            severity: "blocker" | "major" | "minor",
+            problem: <one line> } , … ]
+status: pass | fail            (+ approved where that reviewer uses it)
 ```
 
-### Components
+`target_artifact` is the artifact the issue is about — the reviewer knows this
+and names it when it can. It MAY be null (issue is systemic / the reviewer is
+unsure). `severity` lets minor issues pass without blocking (advisory).
 
-1. **Schema reconcile (the #1 fix, generalised).** For every reviewer step whose
-   instruction can emit a reject verdict, add the reject value to the `status`
-   `equals` enum so the verdict persists. Scope = reviewers whose instruction
-   declares `status=fail` (3.11, 4.16, 6.6 confirmed; audit the rest). Leave
-   pass-only reviewers (7.16 sprint_0_review, 12.5 legal_review, 14.2
-   launch_checklist_review — no `fail` in instruction) untouched. Verdict
-   classes: **pass-class** = `{pass, approved}` (and `needs_minor_fixes` where
-   declared — advisory, proceeds); **reject-class** = `{fail}` (halts).
+### Routing (on `status=fail`)
 
-2. **`verify_review_verdict` mechanical verifier** (new, in mr_roboto). Reads the
-   review_result `status`. pass-class → `completed`. reject-class → a new
-   verdict kind that triggers the founder-halt (NOT the producer-re-pend rail).
-   Payload carries the reviewed-producer list (derived from the reviewer's
-   `input_artifacts` → producer index at expand time) so the halt can render
-   regenerate buttons.
+```
+fail issues
+   │
+   ├─ each issue with target_artifact that maps to a producer  ──┐
+   │     (artifact → producer index, built from output_artifacts) │
+   │                                                              ▼
+   ├─ issues with null/unmappable target_artifact ──▶ ROUTER LLM ─┤  group by producer
+   │     (reads issue + the reviewed-artifact→producer list,      │
+   │      assigns each to the most likely producer, or "unknown") │
+   │                                                              ▼
+   ▼                                              re-pend each implicated producer
+ nothing mappable at all ───────────────────────▶  with its issues as retry feedback
+        │                                            (reuses _stamp_retry_feedback →
+        ▼                                             worker_attempts + model escalation)
+   FOUNDER-HALT                                              │
+                                                             ▼
+                                              producers re-run → reviewer re-reviews
+```
 
-3. **Founder-halt apply path** (general_beckman). On the reject verdict: set the
-   reviewer task `waiting_human`, send the Telegram card (issues + producer
-   regenerate buttons + accept-anyway), block dependents until resolved. Reuses
-   the clarify/artifact-confirm keyboard + callback infrastructure
-   (send_artifact_confirm_keyboard / the `sc:`/`rpc:` callback pattern).
+- **Tag path (deterministic):** issue.target_artifact → producer via the
+  artifact→producer index (the reviewer's `input_artifacts` already name the
+  reviewed artifacts; the index maps artifact → the step whose
+  `output_artifacts` produced it).
+- **LLM fallback:** untagged/unmappable issues go to a router LLM (OVERHEAD
+  call) that assigns each to a producer from the reviewed-producer set, or
+  emits `unknown`.
+- **Re-pend:** each implicated producer is re-pended with the relevant issues
+  as feedback, through the existing retry rail (`_stamp_retry_feedback` →
+  per-producer `worker_attempts` climb to 3 + model escalation). After the
+  producers fix, the reviewer re-reviews on the re-pend cascade.
+  *(Plan must confirm the re-pend cascade re-runs the reviewer after its
+  producers — the reviewer depends on them, so a dependency-aware re-pend
+  should; verify.)*
 
-4. **Callbacks** (telegram_bot):
-   - **Regenerate <producer>** → re-pend that producer step with the reviewer's
-     issues as retry feedback (reuse `regenerate_step_id` / regen rail, memory
-     4af6e21c). Producer re-runs; the reviewer re-reviews on the re-pend
-     cascade. *(Plan must confirm the re-pend cascade re-runs the reviewer after
-     the producer.)*
-   - **Accept anyway** → stamp the review_result with an `overridden_by_founder`
-     marker, complete the reviewer, let dependents proceed, write an
-     `audit_log` row.
+### Termination — the existing retry cap, no new budget
 
-### Explicitly out of scope (YAGNI)
+A reviewer `fail` is a quality failure, so it rides the **existing** retry rail
+rather than a bespoke budget. The review-fix re-pend MUST target the producer's
+**existing task row** (not a fresh attempt=0 task), so `worker_attempts`
+increments (`_stamp_retry_feedback`, apply.py:515) and the normal
+`max_worker_attempts` cap + model escalation bound the loop automatically:
 
-- Auto-routing / per-issue target pointers / reviewer output schema redesign.
-- Edit-in-place and abort-mission halt actions (founder chose regenerate +
-  accept-anyway only).
-- Retry/loop budget — there is no auto-loop; the founder paces retries.
+- Same producer re-blamed each round → its `worker_attempts` climbs → it DLQs
+  terminally at its cap (existing rail). No reviewer-specific round budget.
+- The reviewer re-runs only when a producer it depends on is re-pended-and-
+  completes, so total reviewer re-runs ≤ Σ producer attempts — also bounded.
 
-## Distinguishing reviewer-fail from reviewer-task-failure
+**Founder-halt triggers (last resort only):** (a) the router returns `unknown`
+for all blocker issues (no localisable target); (b) every implicated producer
+has exhausted its normal attempts (terminal DLQ). There is no separate round
+counter to tune.
 
-The verifier must separate **reviewer SUCCESS with a fail verdict** (well-formed
-result, status=fail → founder-halt) from **reviewer TASK failure** (model error,
-no parseable result → normal DLQ). Only the former enters the halt path.
+### Founder-halt (fallback UX)
+
+When escalated, surface to the founder via Telegram (reuse the
+clarify/artifact-confirm keyboard + callback infra) with the issues and two
+actions:
+
+- **🔁 Regenerate <producer>** — buttons for the reviewed producers; founder
+  picks one to re-run with the issues as feedback; reviewer re-reviews.
+- **✅ Accept anyway (override)** — founder overrules; stamp the review_result
+  `overridden_by_founder`, complete the reviewer, dependents proceed, write an
+  `audit_log` row.
+
+(Edit-in-place and abort-mission were considered and dropped — YAGNI.)
+
+### Distinguishing reviewer-fail from reviewer-task-failure
+
+The verifier separates **reviewer SUCCESS with a fail verdict** (well-formed
+result, status=fail → routing) from **reviewer TASK failure** (model error / no
+parseable result → normal DLQ). Only the former enters the routing path.
+
+## Components
+
+1. **Schema reconcile — all 11 reviewers.** Convert `issues` to the structured
+   shape above on every reviewer (0.6, 1.7, 1.13, 3.11, 4.16, 6.6, 7.16, 10.5,
+   11.5, 12.5, 14.2) so the subsystem is uniform. Add `fail` to the `status`
+   `equals` enum for every reviewer whose instruction can reject — audit each;
+   3.11/4.16/6.6 confirmed. Reviewers with no reject path today (e.g.
+   7.16/12.5/14.2) still get structured issues + the verify check (it completes
+   on pass), so adding a reject path later needs no rewiring. pass-class =
+   `{pass, approved}` (+ `needs_minor_fixes` advisory); reject-class = `{fail}`.
+2. **Reviewer instruction update — all 11.** Each reviewer must emit
+   `target_artifact` + `severity` per issue (name the artifact each issue is
+   about; null only when systemic).
+3. **`route_review_failure`** (new, general_beckman/coulson). The hybrid router:
+   tag-map → LLM fallback → group by producer → re-pend each producer's
+   **existing task row** with feedback (so `worker_attempts` carries forward);
+   escalate to founder-halt only on the two triggers above.
+4. **`verify_review_verdict`** check on each reviewer step: pass-class →
+   complete; reject-class → hand to `route_review_failure`.
+5. **Producer index** derivation (workflow engine): artifact → producing step.
+6. **Founder-halt path + callbacks** (general_beckman + telegram_bot): the
+   fallback card + regenerate/accept-anyway handlers.
+
+## Out of scope (YAGNI)
+
+- Per-issue auto-fix without re-running the producer (we re-pend producers, not
+  patch artifacts directly).
+- Edit-in-place / abort-mission founder actions.
+- Cross-mission learning from review failures (separate Z9 concern).
 
 ## Testing
 
-- Schema invariant (already drafted): every reviewer fixture's emitted verdict
-  is in the step's `status` enum — the gate must permit what the reviewer emits.
-  RED on 3.11/4.16/6.6 pre-fix, GREEN after enum reconcile.
-- `verify_review_verdict`: pass-class → completed; reject-class → halt verdict
-  with producer list; malformed/empty → task-failure path (not halt).
-- Producer-list derivation: reviewer input_artifacts → correct producer step ids.
-- Apply path: reject verdict sets waiting_human + blocks dependents; accept-anyway
-  completes + audit row; regenerate re-pends the chosen producer with feedback.
-- Callback handlers: button parse → correct re-pend / override.
+- Schema invariant (drafted): every reviewer fixture's emitted verdict is in the
+  step's `status` enum. RED on 3.11/4.16/6.6 pre-fix, GREEN after reconcile.
+- Structured issues: reviewer fixtures emit `[{target_artifact, severity,
+  problem}]`; schema validates.
+- Tag routing: tagged issue → correct producer via the index (deterministic, no
+  LLM).
+- LLM fallback: untagged issue → router assigns a producer or `unknown` (stub
+  the LLM).
+- Termination: re-pend targets the producer's existing row → `worker_attempts`
+  increments (not reset); all-`unknown` → founder-halt; producer terminal DLQ →
+  founder-halt.
+- Re-pend: implicated producer re-pended with the right feedback; reviewer
+  re-reviews after.
+- Founder-halt callbacks: regenerate <producer> re-pends correctly;
+  accept-anyway overrides + audit row.
 
 ## Interim / live DLQ
 
-The live mission stays halted at 3.11 — which is the **desired** end state
-(don't proceed on failed requirements). Shipping the schema reconcile first
-turns the misleading "schema validation" DLQ into the clean founder-halt once
-the subsystem lands. The schema reconcile is the first plan task and is already
-implemented + green (enum edits on 3.11/4.16/6.6 + invariant test).
+The live mission stays halted at 3.11 (the desired end state — don't proceed on
+failed requirements). The schema reconcile is the first plan task and is already
+implemented + green (enum edits on 3.11/4.16/6.6 + invariant test, uncommitted);
+it turns the misleading "schema validation" DLQ into the routed path once the
+subsystem lands.
 
 ## Key files
 
-- `src/workflows/i2p/i2p_v3.json` — reviewer `status` enums + `checks` wiring.
-- `packages/mr_roboto/src/mr_roboto/` — new `verify_review_verdict`.
-- `packages/general_beckman/src/general_beckman/apply.py` — reject-verdict halt path.
-- `src/app/telegram_bot.py` — halt card + regenerate/accept callbacks.
-- `src/workflows/engine/` — producer-index derivation for the verifier payload.
+- `src/workflows/i2p/i2p_v3.json` — reviewer `status` enums, structured `issues`,
+  `checks` wiring, per-issue instruction.
+- `packages/mr_roboto/src/mr_roboto/` — `verify_review_verdict`.
+- `packages/general_beckman/src/general_beckman/apply.py` — `route_review_failure`,
+  round budget, founder-halt escalation.
+- `packages/coulson/src/coulson/` — router LLM prompt (OVERHEAD).
+- `src/workflows/engine/` — artifact→producer index.
+- `src/app/telegram_bot.py` — founder-halt card + regenerate/accept callbacks.

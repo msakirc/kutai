@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 WF_PATHS = [
-    "src/workflows/shopping/shopping_v2.json",
+    # shopping_v2.json retired 2026-06-08 (orphaned after v3 launch). The
+    # shared v2-style handlers it used live on in quick_search/product_research.
     "src/workflows/shopping/quick_search_v2.json",
     "src/workflows/shopping/product_research_v2.json",
 ]

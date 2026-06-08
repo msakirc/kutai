@@ -4271,28 +4271,29 @@ async def _run_dispatch(task: dict) -> Action:
     # ── Z7 T3C — press kit verbs (A4 + A4.r1) ────────────────────────────────
 
     if action == "press_kit/assemble":
-        # Assemble a versioned press kit with 4 audience variants.
-        from mr_roboto.press_kit_assemble import run as _pk_assemble
+        from mr_roboto.press_kit_assemble import _get_latest_version
+        from src.comms.producers import enqueue_press_kit
         try:
-            res = await _pk_assemble(
+            product_id = payload.get("product_id") or ""
+            version = (await _get_latest_version(product_id)) + 1
+            source = {
+                "logo_path": payload.get("logo_path") or "",
+                "screenshot_paths": payload.get("screenshot_paths") or [],
+                "founder_bio": payload.get("founder_bio") or "",
+                "fact_sheet_md": payload.get("fact_sheet_md") or "",
+                "quotes": payload.get("quotes") or [],
+                "past_mentions": payload.get("past_mentions") or [],
+            }
+            tid = await enqueue_press_kit(
+                product_id=product_id,
                 mission_id=payload.get("mission_id") or task.get("mission_id") or 0,
-                product_id=payload.get("product_id") or "",
-                spec_text=payload.get("spec_text") or "",
+                version=version,
                 workspace_path=payload.get("workspace_path") or "",
-                logo_path=payload.get("logo_path") or "",
-                screenshot_paths=payload.get("screenshot_paths") or [],
-                founder_bio=payload.get("founder_bio") or "",
-                fact_sheet_md=payload.get("fact_sheet_md") or "",
-                quotes=payload.get("quotes") or [],
-                past_mentions=payload.get("past_mentions") or [],
+                spec_text=payload.get("spec_text") or "",
+                source=source,
             )
-            if not res.get("ok"):
-                return Action(
-                    status="failed",
-                    error=res.get("error") or "press_kit/assemble failed",
-                    result=res,
-                )
-            return Action(status="completed", result=res)
+            return Action(status="completed",
+                          result={"producer_task_id": tid, "version": version, "deferred": True})
         except Exception as e:
             return Action(status="failed", error=str(e))
 

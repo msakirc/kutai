@@ -107,3 +107,58 @@ async def enqueue_incident_update(*, incident_id: int, product_id: str, status_k
         cont_state={"incident_id": incident_id, "product_id": product_id,
                     "status_kind": status_kind, "affected_components": affected_components},
     )
+
+
+# Per-audience one-pager instructions (moved out of mr_roboto's verb).
+_AUDIENCE_INSTR: dict = {
+    "investor": (
+        "Write a concise investor-facing one-pager. "
+        "Emphasise: traction metrics, market size, unit economics, "
+        "team credentials, fundraising context. Omit culture fluff."
+    ),
+    "journalist": (
+        "Write a journalist-facing one-pager. "
+        "Lead with the news hook (what changed, why now), include "
+        "3-5 concrete stats, founder quote, and a clear narrative arc. "
+        "Avoid marketing jargon."
+    ),
+    "partner": (
+        "Write a partner/integration-focused one-pager. "
+        "Highlight: tech stack, API surface, customer overlap, "
+        "joint integration opportunity, and go-to-market potential. "
+        "Concrete and actionable."
+    ),
+    "candidate": (
+        "Write a candidate-facing one-pager (recruiting). "
+        "Highlight: mission and why it matters, team culture, "
+        "growth trajectory, open roles, and why this is a compelling "
+        "place to work. Warm but not hyperbolic."
+    ),
+}
+AUDIENCE_ORDER = ("investor", "journalist", "partner", "candidate")
+
+
+async def enqueue_press_kit(*, product_id: str, mission_id: int, version: int,
+                            workspace_path: str, spec_text: str, source: dict) -> int | None:
+    """Kick off the serial press-kit producer chain (first audience). The
+    comms.press_kit.resume sink stages each draft + enqueues the next audience,
+    and assembles after the last one."""
+    state = {
+        "product_id": product_id, "mission_id": mission_id, "version": version,
+        "workspace_path": workspace_path, "spec_text": spec_text,
+        "remaining": list(AUDIENCE_ORDER[1:]), "current": AUDIENCE_ORDER[0],
+        "staged": {}, "source": dict(source or {}),
+    }
+    return await _enqueue_press_kit_audience(audience=AUDIENCE_ORDER[0], state=state)
+
+
+async def _enqueue_press_kit_audience(*, audience: str, state: dict) -> int | None:
+    instr = _AUDIENCE_INSTR.get(audience, "Write a one-pager.")
+    prompt = (f"{instr}\n\nProduct spec:\n{state.get('spec_text') or ''}\n\n"
+              "Output: Markdown prose, 200-400 words, no JSON wrapper.")
+    spec = _overhead_spec(f"press_kit:{audience}:llm:{_suffix()}",
+                          f"Draft {audience} one-pager.", prompt, 600, 500)
+    st = dict(state); st["current"] = audience
+    return await enqueue(spec, lane=LANE_ONESHOT,
+                         on_complete="comms.press_kit.resume",
+                         on_error="comms.press_kit.resume_err", cont_state=st)

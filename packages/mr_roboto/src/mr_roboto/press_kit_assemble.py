@@ -10,7 +10,7 @@ Each variant gets its own zip under:
   <workspace_path>/press_kit/v{N}/{audience}/press_kit_v{N}_{audience}.zip
 
 Sources gathered:
-  - one_pager.md   — LLM-drafted per audience (calls _draft_one_pager_llm)
+  - one_pager.md   — pre-drafted per audience (passed in one_pagers dict)
   - founder_bio.md — from `founder_bio` param
   - fact_sheet.md  — from `fact_sheet_md` param
   - quotes.md      — approved quotes from DB + passed `quotes` param
@@ -22,9 +22,9 @@ After assembly, emits a founder_action (kind='generic') requesting sign-off
 before publish. Publish is a separate verb (press_kit/publish) which uploads
 and sets published_url.
 
-Public API:
-    run(*, mission_id, product_id, spec_text, workspace_path,
-        logo_path="", screenshot_paths=(), founder_bio="",
+Public API (SP4b Plan3 — CPS):
+    assemble_from_drafts(*, mission_id, product_id, version, workspace_path,
+        spec_text, one_pagers, logo_path="", screenshot_paths=(), founder_bio="",
         fact_sheet_md="", quotes=(), past_mentions=()) -> dict
 """
 from __future__ import annotations
@@ -48,74 +48,14 @@ AUDIENCE_VARIANTS: tuple[str, ...] = (
     "candidate",
 )
 
-# ── Audience-specific section configs ────────────────────────────────────────
-# Each entry maps audience → instructions snippet passed to the LLM.
-_AUDIENCE_PROMPTS: dict[str, str] = {
-    "investor": (
-        "Write a concise investor-facing one-pager. "
-        "Emphasise: traction metrics, market size, unit economics, "
-        "team credentials, fundraising context. Omit culture fluff."
-    ),
-    "journalist": (
-        "Write a journalist-facing one-pager. "
-        "Lead with the news hook (what changed, why now), include "
-        "3-5 concrete stats, founder quote, and a clear narrative arc. "
-        "Avoid marketing jargon."
-    ),
-    "partner": (
-        "Write a partner/integration-focused one-pager. "
-        "Highlight: tech stack, API surface, customer overlap, "
-        "joint integration opportunity, and go-to-market potential. "
-        "Concrete and actionable."
-    ),
-    "candidate": (
-        "Write a candidate-facing one-pager (recruiting). "
-        "Highlight: mission and why it matters, team culture, "
-        "growth trajectory, open roles, and why this is a compelling "
-        "place to work. Warm but not hyperbolic."
-    ),
-}
-
 
 # ---------------------------------------------------------------------------
-# Injected helpers (testable via monkeypatch)
+# Deterministic one-pager fallback (no LLM)
 # ---------------------------------------------------------------------------
 
-async def _draft_one_pager_llm(spec_text: str, audience: str) -> str:
-    """Call LLM (OVERHEAD lane via beckman.enqueue) to draft audience one-pager."""
-    try:
-        from packages.general_beckman.src.general_beckman import enqueue as beckman_enqueue
-    except ImportError:
-        try:
-            from general_beckman import enqueue as beckman_enqueue  # type: ignore[no-redef]
-        except ImportError:
-            # Fallback for tests without DB — return stub text
-            return f"[Draft one-pager for {audience} — LLM unavailable]\n\n{spec_text[:200]}"
-
-    audience_prompt = _AUDIENCE_PROMPTS.get(audience, "Write a one-pager.")
-    prompt = (
-        f"{audience_prompt}\n\n"
-        f"Product spec:\n{spec_text}\n\n"
-        "Output: Markdown prose, 200-400 words, no JSON wrapper."
-    )
-    try:
-        result = await beckman_enqueue(
-            {
-                "title": f"Draft {audience} one-pager",
-                "goal": prompt,
-                "agent_type": "planner",
-                "lane": "overhead",
-            },
-            await_inline=True,
-        )
-        if result and result.status == "completed" and result.result:
-            content = result.result.get("content") or ""
-            if content:
-                return content
-    except Exception as exc:
-        logger.warning("press_kit_assemble: LLM draft failed", audience=audience, error=str(exc))
-
-    return f"[Draft one-pager for {audience} — see spec]\n\n{spec_text[:200]}"
+def audience_stub(audience: str, spec_text: str) -> str:
+    """Deterministic one-pager fallback when the LLM produced nothing."""
+    return f"[Draft one-pager for {audience} — see spec]\n\n{(spec_text or '')[:200]}"
 
 
 async def _get_latest_version(product_id: str) -> int:
@@ -177,15 +117,17 @@ async def _emit_founder_action(
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Main entry point (CPS-ready — no await_inline)
 # ---------------------------------------------------------------------------
 
-async def run(
+async def assemble_from_drafts(
     *,
     mission_id: int,
     product_id: str,
-    spec_text: str,
+    version: int,
     workspace_path: str,
+    spec_text: str,
+    one_pagers: dict,
     logo_path: str = "",
     screenshot_paths: Sequence[str] = (),
     founder_bio: str = "",
@@ -193,15 +135,14 @@ async def run(
     quotes: Sequence[str] = (),
     past_mentions: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Assemble a versioned press kit with 4 audience variants.
+    """Assemble the versioned kit from already-drafted one-pagers (one per audience).
+    Body is the old run() loop with version as a param and no LLM call.
 
     Returns:
         {"ok": True, "manifest": {...}, "version": N}
         {"ok": False, "error": "..."}
     """
     try:
-        version = (await _get_latest_version(product_id)) + 1
-
         # Root output directory for this kit version
         kit_root = os.path.join(
             workspace_path, "press_kit", f"v{version}"
@@ -217,8 +158,8 @@ async def run(
             aud_dir = os.path.join(kit_root, audience)
             os.makedirs(aud_dir, exist_ok=True)
 
-            # 1. Draft LLM one-pager
-            one_pager_text = await _draft_one_pager_llm(spec_text, audience)
+            # Use pre-drafted one-pager or deterministic stub
+            one_pager_text = one_pagers.get(audience) or audience_stub(audience, spec_text)
 
             # Write source files to the per-audience staging dir
             with open(os.path.join(aud_dir, "one_pager.md"), "w", encoding="utf-8") as fh:
@@ -298,6 +239,38 @@ async def run(
     except Exception as exc:
         logger.error("press_kit_assemble: failed", error=str(exc))
         return {"ok": False, "error": str(exc)}
+
+
+async def run(
+    *,
+    mission_id: int,
+    product_id: str,
+    spec_text: str,
+    workspace_path: str,
+    logo_path: str = "",
+    screenshot_paths: Sequence[str] = (),
+    founder_bio: str = "",
+    fact_sheet_md: str = "",
+    quotes: Sequence[str] = (),
+    past_mentions: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Backward-compat thin wrapper: computes version then delegates (all stubs).
+    NOT on the live CPS path — use enqueue_press_kit instead."""
+    version = (await _get_latest_version(product_id)) + 1
+    return await assemble_from_drafts(
+        mission_id=mission_id,
+        product_id=product_id,
+        version=version,
+        workspace_path=workspace_path,
+        spec_text=spec_text,
+        one_pagers={},
+        logo_path=logo_path,
+        screenshot_paths=screenshot_paths,
+        founder_bio=founder_bio,
+        fact_sheet_md=fact_sheet_md,
+        quotes=quotes,
+        past_mentions=past_mentions,
+    )
 
 
 # ---------------------------------------------------------------------------

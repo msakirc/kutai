@@ -105,9 +105,59 @@ async def _incident_resume_err(child_task_id, result, state):
                               product_id=state.get("product_id") or "", draft=draft)
 
 
-# Stubs — fully implemented in Task 4. Must exist now for registration.
-async def _press_kit_resume(child_task_id, result, state): pass
-async def _press_kit_resume_err(child_task_id, result, state): pass
+async def _enqueue_press_kit_audience(*, audience, state):
+    from src.comms.producers import _enqueue_press_kit_audience as _p
+    return await _p(audience=audience, state=state)
+
+
+async def _assemble_press_kit(*, mission_id, product_id, version, workspace_path,
+                              spec_text, staged, source):
+    from mr_roboto.press_kit_assemble import assemble_from_drafts
+    await assemble_from_drafts(
+        mission_id=mission_id, product_id=product_id, version=version,
+        workspace_path=workspace_path, spec_text=spec_text, one_pagers=staged,
+        logo_path=source.get("logo_path", ""),
+        screenshot_paths=source.get("screenshot_paths", ()),
+        founder_bio=source.get("founder_bio", ""),
+        fact_sheet_md=source.get("fact_sheet_md", ""),
+        quotes=source.get("quotes", ()),
+        past_mentions=source.get("past_mentions", ()),
+    )
+
+
+async def _press_kit_advance(state, one_pager_text):
+    staged = dict(state.get("staged") or {})
+    staged[state["current"]] = one_pager_text
+    remaining = list(state.get("remaining") or [])
+    if remaining:
+        nxt = remaining[0]
+        new_state = dict(state)
+        new_state["staged"] = staged
+        new_state["remaining"] = remaining[1:]
+        new_state["current"] = nxt
+        await _enqueue_press_kit_audience(audience=nxt, state=new_state)
+    else:
+        await _assemble_press_kit(
+            mission_id=state.get("mission_id"), product_id=state.get("product_id"),
+            version=state.get("version"), workspace_path=state.get("workspace_path") or "",
+            spec_text=state.get("spec_text") or "", staged=staged,
+            source=state.get("source") or {},
+        )
+
+
+async def _press_kit_resume(child_task_id, result, state):
+    text = _extract_content(result).strip()
+    if not text:
+        from mr_roboto.press_kit_assemble import audience_stub
+        text = audience_stub(state["current"], state.get("spec_text") or "")
+    await _press_kit_advance(state, text)
+
+
+async def _press_kit_resume_err(child_task_id, result, state):
+    from mr_roboto.press_kit_assemble import audience_stub
+    logger.warning("press_kit %s child failed (%s) — stub", state.get("current"),
+                   (result or {}).get("error"))
+    await _press_kit_advance(state, audience_stub(state["current"], state.get("spec_text") or ""))
 
 
 def register_continuations() -> None:

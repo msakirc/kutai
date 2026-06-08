@@ -86,3 +86,50 @@ def test_incident_resume_err_uses_fallback(monkeypatch):
     asyncio.run(S._incident_resume_err(1, {"error": "exhausted"}, state))
     assert got["draft"]  # non-empty canned draft
     assert "billing" in got["draft"]
+
+
+def test_press_kit_resume_chains_to_next_audience(monkeypatch):
+    import mr_roboto.executors.comms_continuations as S
+    calls = {}
+    async def fake_next(*, audience, state):
+        calls["audience"] = audience
+        calls["staged"] = dict(state["staged"])
+        return 123
+    monkeypatch.setattr(S, "_enqueue_press_kit_audience", fake_next)
+    res = {"result": {"content": "Investor one-pager body."}}
+    state = {"product_id": "p1", "mission_id": 1, "version": 2, "workspace_path": "/tmp/ws",
+             "spec_text": "spec", "remaining": ["journalist", "partner", "candidate"],
+             "current": "investor", "staged": {}, "source": {}}
+    asyncio.run(S._press_kit_resume(1, res, state))
+    assert calls["audience"] == "journalist"
+    assert calls["staged"]["investor"] == "Investor one-pager body."
+
+
+def test_press_kit_resume_final_audience_assembles(monkeypatch):
+    import mr_roboto.executors.comms_continuations as S
+    assembled = {}
+    async def fake_assemble(**kw):
+        assembled.update(kw)
+    monkeypatch.setattr(S, "_assemble_press_kit", fake_assemble)
+    res = {"result": {"content": "Candidate one-pager body."}}
+    state = {"product_id": "p1", "mission_id": 1, "version": 2, "workspace_path": "/tmp/ws",
+             "spec_text": "spec", "remaining": [], "current": "candidate",
+             "staged": {"investor": "i", "journalist": "j", "partner": "p"}, "source": {}}
+    asyncio.run(S._press_kit_resume(1, res, state))
+    assert set(assembled["staged"].keys()) == {"investor", "journalist", "partner", "candidate"}
+
+
+def test_press_kit_resume_err_stubs_and_continues(monkeypatch):
+    import mr_roboto.executors.comms_continuations as S
+    calls = {}
+    async def fake_next(*, audience, state):
+        calls["audience"] = audience
+        calls["staged"] = dict(state["staged"])
+        return 123
+    monkeypatch.setattr(S, "_enqueue_press_kit_audience", fake_next)
+    state = {"product_id": "p1", "mission_id": 1, "version": 2, "workspace_path": "/tmp/ws",
+             "spec_text": "the spec text", "remaining": ["partner", "candidate"],
+             "current": "journalist", "staged": {"investor": "i"}, "source": {}}
+    asyncio.run(S._press_kit_resume_err(1, {"error": "exhausted"}, state))
+    assert calls["audience"] == "partner"
+    assert "journalist" in calls["staged"]  # stub was staged for the failed audience

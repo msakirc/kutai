@@ -6660,7 +6660,8 @@
               "type": "string",
               "equals": [
                 "pass",
-                "approved"
+                "approved",
+                "fail"
               ]
             },
             "issues": {}
@@ -8747,7 +8748,8 @@
               "type": "string",
               "equals": [
                 "pass",
-                "approved"
+                "approved",
+                "fail"
               ]
             },
             "issues": {},
@@ -9937,7 +9939,8 @@
               "type": "string",
               "equals": [
                 "pass",
-                "approved"
+                "approved",
+                "fail"
               ]
             },
             "issues": {}

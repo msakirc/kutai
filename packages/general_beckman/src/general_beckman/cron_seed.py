@@ -421,8 +421,9 @@ INTERNAL_CADENCES: list[dict] = [
         "payload": {"_executor": "investor_bullets"},
     },
     # Yalayut Phase 4 — daily catalog discovery (trusted cron-mode sources).
-    # Backstop cadence: the orchestrator's in-memory _check_yalayut_discovery
-    # gate resets on restart; this scheduled_tasks row survives restarts.
+    # Backstop cadence: PeriodicChecks.check_yalayut_discovery (src/core/
+    # periodic_checks.py) is an in-memory gate that resets on restart; this
+    # scheduled_tasks row survives restarts.
     {
         "title": "yalayut_discovery",
         "description": "Daily yalayut catalog discovery — pull trusted sources",

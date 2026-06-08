@@ -1392,13 +1392,13 @@ git commit -m "feat(image): catalog adds clair_obscur/sdxl-turbo"
 
 ---
 
-## Task 9: Real eviction-cost + VRAM-fit gate — reads `refresh_snapshot()`
+## Task 9: Real eviction-cost + VRAM-fit gate — reads live singleton snapshot
 
 **Files:**
 - Modify: `packages/fatih_hoca/src/fatih_hoca/image_select.py`
 - Test: `packages/fatih_hoca/tests/test_image_select_eviction.py`
 
-Recon: there is **no module-level `nerd_herd.snapshot()`**. Plan 2 v2 reads `refresh_snapshot()` (the same function beckman uses). The `_snapshot()` helper in `image_select.py` is the test-mockable seam.
+Recon (corrected 2026-06-08): the image scorer reads the **live in-process singleton** via `nerd_herd._get_singleton().snapshot()` — the same singleton `record_image_server_state()` and `record_swap()` write to, with a live GPU `vram_available_mb`. Do NOT use module-level `nerd_herd.snapshot()` (returns the client's CACHED value — stale w.r.t. residency) or `refresh_snapshot()` (async — a coroutine in this sync path). The `_snapshot()` helper in `image_select.py` is the test-mockable seam; eviction tests monkeypatch `fatih_hoca.image_select._snapshot` directly.
 
 Eviction formula (calibrated against quality_rank spread 6.0/7.5/8.0):
 - `image_server_resident` → 0 (warm batch)
@@ -1512,11 +1512,20 @@ _WARM_BATCH_BONUS = 1.0
 
 
 def _snapshot():
-    """Read nerd_herd state. Module-level `refresh_snapshot()` exists
-    (recon-verified); there is NO `nerd_herd.snapshot()` symbol."""
+    """Read LIVE in-process nerd_herd state via the singleton.
+
+    Must read `nerd_herd._get_singleton().snapshot()` — NOT module-level
+    `nerd_herd.snapshot()` (which returns the NerdHerdClient's CACHED value,
+    stale w.r.t. residency) and NOT `refresh_snapshot()` (async — calling it
+    from this sync helper returns a coroutine, so every `getattr` reads
+    False/0 and local would never be selected). The singleton is exactly
+    where `record_image_server_state()` (clair_obscur) and `record_swap()`
+    (husam) write, and its `snapshot()` builds `vram_available_mb` from a live
+    GPU read — so residency and freed VRAM are reflected synchronously. Tests
+    monkeypatch this helper directly."""
     try:
         import nerd_herd
-        return nerd_herd.refresh_snapshot()
+        return nerd_herd._get_singleton().snapshot()
     except Exception:
         from nerd_herd.types import SystemSnapshot
         return SystemSnapshot()
@@ -1814,7 +1823,12 @@ REPLACE that block so the local handover runs INSIDE the same `keepalive()` span
                         deadline = _time.time() + 30.0
                         needed = int(getattr(pick.model, "vram_mb", 0) or 0)
                         while _time.time() < deadline:
-                            snap = nerd_herd.refresh_snapshot()
+                            # Live in-process singleton snapshot: vram_available_mb
+                            # is a live GPU read, so it reflects VRAM freed by the
+                            # shutdown() above. NOT module-level refresh_snapshot()
+                            # (async coroutine in this context) nor snapshot()
+                            # (client cache).
+                            snap = nerd_herd._get_singleton().snapshot()
                             if int(getattr(snap, "vram_available_mb", 0) or 0) >= needed:
                                 break
                             await asyncio.sleep(0.5)

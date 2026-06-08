@@ -74,3 +74,22 @@ class PromptWriterAgent(BaseAgent):
             "}\n"
             "```\n"
         )
+
+
+import os as _os
+
+_DEFAULT_TEMPLATE_PATH = "docs/templates/prompt_writer/diffusion_prompt_template.md"
+
+
+def load_diffusion_prompt_template(path: str | None = None) -> str | None:
+    """Load the diffusion-prompt few-shot template. Slots are
+    {design_tokens}, {brand_voice}, {section_intent}, {placeholders}.
+    Returns None if file missing — agent still works on sys_prompt alone."""
+    p = path or _DEFAULT_TEMPLATE_PATH
+    if not _os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return None

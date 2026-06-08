@@ -5,15 +5,43 @@ mapping each placeholder_id to an enriched diffusion prompt. Pure config —
 sys_prompt + tools, zero methods beyond get_system_prompt. Single-call.
 
 Shape is enforced by:
-  (a) sys_prompt (this file) — instructs the LLM,
-  (b) artifact_schema on the i2p step (5.35.prompts) — workflow_engine's
-      constrained_emit.maybe_apply runs a post-emit structured pass when
-      the first call's output is malformed (response_format=json_schema).
+  (a) sys_prompt (this file) — instructs the LLM to emit the
+      ``result.prompts[]`` envelope described in ``get_system_prompt``.
+  (b) constrained_emit.maybe_apply — fires ONLY when the enqueuing caller
+      sets ``is_workflow_step=True`` AND ``artifact_schema=
+      PROMPT_WRITER_ARTIFACT_SCHEMA`` on the task context (i2p step 5.35
+      and the mr_roboto P3-B enqueue do this). Without those flags the
+      agent degrades gracefully: malformed JSON triggers normal retry
+      rather than a constrained re-emit.
+
+``PROMPT_WRITER_ARTIFACT_SCHEMA`` is the single source of truth for the
+artifact shape; import and reuse it in both i2p step 5.35 and the mr_roboto
+P3-B enqueue spec rather than duplicating the dict inline.
 """
+import pathlib as _pathlib
+
 from .base import BaseAgent
 from ..infra.logging_config import get_logger
 
 logger = get_logger("agents.prompt_writer")
+
+# ---------------------------------------------------------------------------
+# Canonical artifact schema — single source of truth.
+#
+# The agent emits:  {"_schema_version": "1", "prompts": [{placeholder_id, prompt}, ...]}
+# Artifact name "diffusion_prompts" matches the i2p step 5.35 ``produces`` entry.
+#
+# Reuse this constant in:
+#   • i2p step 5.35  ``artifact_schema`` field
+#   • mr_roboto P3-B enqueue  ``artifact_schema`` kwarg
+# ---------------------------------------------------------------------------
+PROMPT_WRITER_ARTIFACT_SCHEMA: dict = {
+    "diffusion_prompts": {
+        "type": "object",
+        "required_fields": ["prompts"],
+        "_schema_version": "1",
+    }
+}
 
 
 class PromptWriterAgent(BaseAgent):
@@ -76,20 +104,25 @@ class PromptWriterAgent(BaseAgent):
         )
 
 
-import os as _os
-
-_DEFAULT_TEMPLATE_PATH = "docs/templates/prompt_writer/diffusion_prompt_template.md"
+_DEFAULT_TEMPLATE_PATH = (
+    _pathlib.Path(__file__).parent.parent.parent
+    / "docs" / "templates" / "prompt_writer" / "diffusion_prompt_template.md"
+)
 
 
 def load_diffusion_prompt_template(path: str | None = None) -> str | None:
     """Load the diffusion-prompt few-shot template. Slots are
     {design_tokens}, {brand_voice}, {section_intent}, {placeholders}.
-    Returns None if file missing — agent still works on sys_prompt alone."""
-    p = path or _DEFAULT_TEMPLATE_PATH
-    if not _os.path.isfile(p):
+    Returns None if file missing — agent still works on sys_prompt alone.
+
+    The default path is resolved relative to this module's location
+    (``__file__``), not the process cwd, so the template loads correctly
+    regardless of the working directory the caller uses at runtime.
+    """
+    p = _pathlib.Path(path) if path else _DEFAULT_TEMPLATE_PATH
+    if not p.is_file():
         return None
     try:
-        with open(p, encoding="utf-8") as fh:
-            return fh.read()
+        return p.read_text(encoding="utf-8")
     except OSError:
         return None

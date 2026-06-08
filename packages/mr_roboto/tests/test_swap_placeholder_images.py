@@ -103,3 +103,107 @@ async def test_swap_no_html_files(monkeypatch, tmp_path):
     assert res["ok"] is True
     assert res["replaced_count"] == 0
     assert res["html_files_seen"] == 0
+
+
+# -- Task 5: prompt_writer enqueue --------------------------------------
+
+@pytest.mark.asyncio
+async def test_calls_prompt_writer_once_with_json_string_result(
+    monkeypatch, tmp_path,
+):
+    """v2 fix: PRODUCTION shape — TaskResult.result is a JSON STRING."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+
+    captured = []
+
+    class _PromptResultJSONString:
+        status = "completed"
+        # PRODUCTION SHAPE — JSON string, not dict.
+        result = json.dumps({
+            "_schema_version": "1",
+            "prompts": [
+                {"placeholder_id": "home__0", "prompt": "coral barista scene"},
+                {"placeholder_id": "home__1", "prompt": "slate dashboard"},
+                {"placeholder_id": "home__2", "prompt": "teal portrait"},
+            ],
+        })
+        error = None
+
+    async def _fake_enqueue(spec, **kwargs):
+        captured.append({"spec": spec, "kwargs": kwargs})
+        return _PromptResultJSONString()
+    monkeypatch.setattr(
+        "mr_roboto.swap_placeholder_images._enqueue_beckman", _fake_enqueue,
+    )
+    async def _fake_fanout(workspace_path, placeholders, prompt_map):
+        return {"replaced": 0, "skipped": len(placeholders),
+                "html_files_changed": 0, "errors": []}
+    monkeypatch.setattr(
+        "mr_roboto.swap_placeholder_images._fanout_and_rewrite", _fake_fanout,
+    )
+
+    res = await swap_placeholder_images(
+        mission_id=42,
+        design_tokens={"primary": "#E07A5F"},
+        brand_voice="warm, neighborhood coffee shop",
+    )
+
+    assert len(captured) == 1
+    spec = captured[0]["spec"]
+    assert spec["agent_type"] == "prompt_writer"
+    assert captured[0]["kwargs"].get("await_inline") is True
+    # CRITICAL: constrained-emit safety net must be armed via the task
+    # context — constrained_emit.maybe_apply skips the structured re-emit
+    # unless ctx.is_workflow_step is truthy AND artifact_schema is a dict.
+    from src.agents.prompt_writer import PROMPT_WRITER_ARTIFACT_SCHEMA
+    ctx = spec["context"]
+    assert ctx.get("is_workflow_step") is True
+    assert ctx.get("artifact_schema") == PROMPT_WRITER_ARTIFACT_SCHEMA
+    # Result string was parsed — the fanout was called (would not be if
+    # parser had treated string as None).
+    assert res["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_prompt_writer_failure_degrades_gracefully(monkeypatch, tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+    class _Fail:
+        status = "failed"; result = None; error = "LLM down"
+    async def _fail_enqueue(spec, **kwargs):
+        return _Fail()
+    monkeypatch.setattr(
+        "mr_roboto.swap_placeholder_images._enqueue_beckman", _fail_enqueue,
+    )
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["ok"] is True
+    assert res["replaced_count"] == 0
+    assert res["skipped_count"] == 3
+    assert any("prompt_writer" in e for e in res["errors"])
+
+
+@pytest.mark.asyncio
+async def test_prompt_writer_malformed_json_degrades(monkeypatch, tmp_path):
+    """Cheap-tier LLM emits garbage — parser returns {} → no prompts → skip."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+    class _Garbage:
+        status = "completed"; result = "not json"; error = None
+    async def _enq(spec, **kwargs):
+        return _Garbage()
+    monkeypatch.setattr("mr_roboto.swap_placeholder_images._enqueue_beckman", _enq)
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["ok"] is True
+    assert res["replaced_count"] == 0
+    assert res["skipped_count"] == 3

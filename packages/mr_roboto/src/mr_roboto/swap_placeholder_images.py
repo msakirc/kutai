@@ -180,9 +180,117 @@ async def swap_placeholder_images(
             "errors": [],
         }
 
-    # Task 5 fills prompt_writer; Task 6 fills fanout. Scaffold returns scan.
+    prompt_map = await _call_prompt_writer(
+        mission_id=int(mission_id), placeholders=all_placeholders,
+        design_tokens=design_tokens, brand_voice=brand_voice,
+    )
+    if prompt_map is None:
+        return {
+            "ok": True, "replaced_count": 0,
+            "skipped_count": len(all_placeholders),
+            "html_files_seen": len(html_files), "html_files_changed": 0,
+            "errors": ["prompt_writer task did not return a usable prompt map"],
+        }
+    fanout = await _fanout_and_rewrite(
+        workspace_path, all_placeholders, prompt_map,
+    )
     return {
-        "ok": True, "replaced_count": 0, "skipped_count": len(all_placeholders),
-        "html_files_seen": len(html_files), "html_files_changed": 0,
-        "errors": [],
+        "ok": True,
+        "replaced_count": fanout.get("replaced", 0),
+        "skipped_count": fanout.get("skipped", 0),
+        "html_files_seen": len(html_files),
+        "html_files_changed": fanout.get("html_files_changed", 0),
+        "errors": fanout.get("errors", []),
     }
+
+
+# ── prompt_writer enqueue (JSON-string-safe) ───────────────────────────
+
+async def _call_prompt_writer(
+    *, mission_id: int,
+    placeholders: list[dict[str, Any]],
+    design_tokens: dict | None,
+    brand_voice: str | None,
+) -> dict[str, str] | None:
+    """Enqueue one prompt_writer task. Returns placeholder_id -> prompt map,
+    or None on failure. Robust to JSON-string TaskResult.result.
+
+    CRITICAL: the task context MUST carry ``is_workflow_step=True`` AND
+    ``artifact_schema=PROMPT_WRITER_ARTIFACT_SCHEMA``. Without both,
+    ``constrained_emit.maybe_apply`` skips the structured re-emit pass and a
+    cheap-tier LLM's malformed JSON is never repaired (defeats plan §8)."""
+    from src.agents.prompt_writer import (
+        PROMPT_WRITER_ARTIFACT_SCHEMA,
+        load_diffusion_prompt_template,
+    )
+
+    visible = [
+        {"placeholder_id": p["placeholder_id"], "alt": p["alt"],
+         "width": p["width"], "height": p["height"], "section": p["section"]}
+        for p in placeholders
+    ]
+    try:
+        template_text = load_diffusion_prompt_template()
+    except Exception:
+        template_text = None
+
+    spec = {
+        "title": f"prompt_writer:mission#{mission_id}",
+        "description": "Enrich placeholder <img> intents into diffusion prompts.",
+        "agent_type": "prompt_writer",
+        "kind": "main_work",
+        "priority": 5,
+        "mission_id": mission_id,
+        "context": {
+            "design_tokens": design_tokens or {},
+            "brand_voice": brand_voice or "",
+            "placeholders": visible,
+            "diffusion_template": template_text or "",
+            # Arm the constrained-emit safety net (constrained_emit.maybe_apply
+            # reads both of these off the task context). Without them the
+            # post-emit structured pass is a no-op.
+            "is_workflow_step": True,
+            "artifact_schema": PROMPT_WRITER_ARTIFACT_SCHEMA,
+        },
+    }
+    try:
+        result = await _enqueue_beckman(spec, await_inline=True)
+    except Exception as exc:
+        logger.warning("prompt_writer enqueue raised: %s", exc)
+        return None
+
+    if getattr(result, "status", "") != "completed":
+        logger.warning(
+            "prompt_writer task did not complete (status=%r, error=%r)",
+            getattr(result, "status", ""), getattr(result, "error", ""),
+        )
+        return None
+
+    parsed = _parse_task_result(result)
+    # Tolerate both shapes: top-level prompts OR nested under "result".
+    prompts = parsed.get("prompts")
+    if prompts is None and isinstance(parsed.get("result"), dict):
+        prompts = parsed["result"].get("prompts")
+    if not isinstance(prompts, list):
+        logger.warning("prompt_writer returned no prompts list (parsed=%r)", parsed)
+        return None
+
+    out: dict[str, str] = {}
+    for entry in prompts:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("placeholder_id")
+        prompt = entry.get("prompt")
+        if isinstance(pid, str) and isinstance(prompt, str) and prompt.strip():
+            out[pid] = prompt.strip()
+    return out or None
+
+
+# Stub for Task 6 testability.
+async def _fanout_and_rewrite(
+    workspace_path: str,
+    placeholders: list[dict[str, Any]],
+    prompt_map: dict[str, str],
+) -> dict[str, Any]:
+    return {"replaced": 0, "skipped": len(placeholders),
+            "html_files_changed": 0, "errors": []}

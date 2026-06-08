@@ -369,6 +369,13 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # yalayut_discovery: drains pending demand signals + runs on-demand
     # discovery; DB writes are idempotent and re-runnable. full.
     "yalayut_discovery": "full",
+    # ---- Plan 3 — i2p image-gen integration --------------------------------
+    # swap_placeholder_images: rewrites local HTML <img src> + writes PNGs
+    # under <ws>/.web/assets/. All under the mission workspace and
+    # regenerable / git-reversible — no external publish. full.
+    "swap_placeholder_images": "full",
+    # verify_swap_placeholder_images_shape: pure read-only verifier. full.
+    "verify_swap_placeholder_images_shape": "full",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

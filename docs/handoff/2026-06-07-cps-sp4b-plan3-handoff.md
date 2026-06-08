@@ -4,7 +4,26 @@
 **Date:** 2026-06-07.
 **Author:** SP4b Plan 2 session.
 **Spec:** `docs/superpowers/specs/2026-06-07-cps-sp4b-plan2-design.md` (esp. §3 degrade mechanism), parent `docs/superpowers/specs/2026-06-05-cps-sp4b-design.md` §4–§7.
-**Plan 2 branch (reference):** `worktree-cps-sp4b-plan2`. Plan 1 (reviews CPS) = `worktree-cps-sp4b` (still unmerged at time of writing).
+**Plan 2 branch (reference):** merged to `main` `19066139`. Plan 1 (reviews CPS) = `worktree-cps-sp4b` (still unmerged at time of writing).
+
+---
+
+## Why this matters — Plan 3 is the last gate before SP5
+
+**SP5 = delete the `await_inline=True` primitive** (the blocking inline LLM call on `beckman.enqueue`). It can only happen when the ONLY remaining callers are the SP5 carve-outs + the shopping shim (which SP5 itself migrates/deletes). Live `await_inline=True` call sites on `main` today (re-grep — `rg -n "await_inline\s*=\s*True" packages/ src/`):
+
+| Call site | Owner | Status |
+|-----------|-------|--------|
+| `mr_roboto/crisis_draft_holding.py:155` | **Plan 3** | this handoff |
+| `mr_roboto/incident_draft_update.py:180` | **Plan 3** | this handoff |
+| `mr_roboto/press_kit_assemble.py:109` | **Plan 3** | this handoff |
+| `mr_roboto/reviews_classify.py:97` | **Plan 1** | branch `worktree-cps-sp4b`, NOT merged |
+| `mr_roboto/reviews_draft_reply.py:123` | **Plan 1** | branch `worktree-cps-sp4b`, NOT merged |
+| `src/core/task_classifier.py:284` | SP5 carve-out | SP5 migrates |
+| `src/app/jobs/investor_bullets.py:211` | SP5 carve-out | SP5 migrates |
+| `src/core/llm_dispatcher.py:273` (`request()` shim) | shopping | T11 delete, evidence-gated on 1 live shopping_v3 run post-restart ([[project_shopping_sp5_coupling_20260605]]) |
+
+**To unblock SP5:** (1) merge Plan 1 (reviews ×2 off the primitive), (2) finish Plan 3 (these 3 verbs off the primitive), (3) retire the shopping `request()` shim (T11). Then SP5 migrates the 2 carve-outs and deletes `await_inline` + the shim. Plan 2 (demo) already removed one caller. **Plan 3 clears 3 of the 5 mechanical-verb callers.**
 
 ---
 

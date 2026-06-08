@@ -139,7 +139,7 @@ async def test_calls_prompt_writer_once_with_json_string_result(
     monkeypatch.setattr(
         "mr_roboto.swap_placeholder_images._enqueue_beckman", _fake_enqueue,
     )
-    async def _fake_fanout(workspace_path, placeholders, prompt_map):
+    async def _fake_fanout(workspace_path, placeholders, prompt_map, mission_id):
         return {"replaced": 0, "skipped": len(placeholders),
                 "html_files_changed": 0, "errors": []}
     monkeypatch.setattr(
@@ -336,3 +336,55 @@ async def test_per_image_failure_keeps_placeholder(monkeypatch, tmp_path):
     rewritten = (web / "home.html").read_text(encoding="utf-8")
     assert rewritten.count("placehold.co") == 1
     assert rewritten.count('src="assets/') == 2
+
+
+@pytest.mark.asyncio
+async def test_image_task_spec_carries_mission_id(monkeypatch, tmp_path):
+    """BUG-FIX: image task spec must include mission_id.
+
+    Without it, compute_task_hash uses mission_id=None for every image task.
+    Two concurrent missions with identically-named HTML files (e.g. home.html)
+    produce the same placeholder_id (home__0) → same dedup hash → the 2nd
+    mission's enqueue(await_inline=True) hits the guard and add_task returns
+    None → the inline waiter keyed on None never resolves → 600 s timeout.
+    """
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+
+    class _PromptOK:
+        status = "completed"
+        result = json.dumps({
+            "_schema_version": "1",
+            "prompts": [
+                {"placeholder_id": "home__0", "prompt": "p0"},
+                {"placeholder_id": "home__1", "prompt": "p1"},
+                {"placeholder_id": "home__2", "prompt": "p2"},
+            ],
+        })
+        error = None
+
+    image_specs: list[dict] = []
+
+    async def _capture_enqueue(spec, **kwargs):
+        if spec.get("agent_type") == "image":
+            image_specs.append(spec)
+            # Return a failure so the test doesn't need real PNG files.
+            class _F:
+                status = "failed"; result = None; error = "test-sentinel"
+            return _F()
+        return _PromptOK()
+
+    monkeypatch.setattr(
+        "mr_roboto.swap_placeholder_images._enqueue_beckman", _capture_enqueue,
+    )
+
+    await swap_placeholder_images(mission_id=99)
+
+    assert image_specs, "no image task specs captured — fanout did not fire"
+    for spec in image_specs:
+        assert spec.get("mission_id") == 99, (
+            f"image task spec missing mission_id=99: {spec}"
+        )

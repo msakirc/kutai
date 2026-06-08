@@ -193,6 +193,7 @@ async def swap_placeholder_images(
         }
     fanout = await _fanout_and_rewrite(
         workspace_path, all_placeholders, prompt_map,
+        mission_id=int(mission_id),
     )
     return {
         "ok": True,
@@ -215,10 +216,21 @@ async def _call_prompt_writer(
     """Enqueue one prompt_writer task. Returns placeholder_id -> prompt map,
     or None on failure. Robust to JSON-string TaskResult.result.
 
-    CRITICAL: the task context MUST carry ``is_workflow_step=True`` AND
-    ``artifact_schema=PROMPT_WRITER_ARTIFACT_SCHEMA``. Without both,
-    ``constrained_emit.maybe_apply`` skips the structured re-emit pass and a
-    cheap-tier LLM's malformed JSON is never repaired (defeats plan §8)."""
+    ``artifact_schema`` and ``is_workflow_step`` are set in the task context
+    for two reasons:
+    - ``artifact_schema`` arms the constrained_emit POSTHOOK (wired by
+      ``general_beckman/posthooks.py::determine_posthooks`` when it finds a
+      constrainable artifact_schema in the task context).
+    - ``is_workflow_step`` triggers ``post_execute_workflow_step`` on the
+      beckman apply path.
+
+    IMPORTANT: the constrained_emit posthook runs as a CHILD task AFTER
+    ``await_inline`` returns. This executor therefore consumes the RAW LLM
+    emit — the posthook has NOT yet run when the result is read here.
+    Malformed output degrades gracefully: _parse_task_result returns {} →
+    no prompts list → the function returns None → all placeholders are
+    skipped with their original placehold.co URLs intact. The executor's own
+    graceful-degrade (not the posthook) is the real safety net for bad JSON."""
     from src.agents.prompt_writer import (
         PROMPT_WRITER_ARTIFACT_SCHEMA,
         load_diffusion_prompt_template,
@@ -290,13 +302,19 @@ async def _call_prompt_writer(
 
 async def _generate_one_image(
     *, placeholder: dict[str, Any], prompt: str, out_dir: str,
+    mission_id: int,
 ) -> str | None:
     """Enqueue one image task; return the PNG path or None.
 
     Mirrors the /image cmd shape (raw_dispatch=True, prompt, out_dir,
     width/height, filename_hint, quality_tier). Enqueued via beckman —
     Plan 1 v2's admission routes agent_type=image → dispatch_image →
-    paintress. JSON-string-safe result parse."""
+    paintress. JSON-string-safe result parse.
+
+    mission_id MUST be set so compute_task_hash includes it — without it
+    two concurrent missions with same-named HTML files (e.g. home.html)
+    share the same dedup hash, causing the 2nd mission's await_inline
+    to wait on a task owned by the 1st mission → 600 s timeout."""
     pid = placeholder["placeholder_id"]
     spec = {
         "title": f"image:{pid}",
@@ -305,6 +323,7 @@ async def _generate_one_image(
         "kind": "image",
         "runner": "direct",
         "priority": 5,
+        "mission_id": mission_id,
         "context": {
             "image_call": {
                 "raw_dispatch": True,
@@ -393,6 +412,7 @@ async def _fanout_and_rewrite(
     workspace_path: str,
     placeholders: list[dict[str, Any]],
     prompt_map: dict[str, str],
+    mission_id: int,
 ) -> dict[str, Any]:
     """Sequential per-placeholder: image enqueue → rename to <pid>.png →
     record rewrite. Per-placeholder failures kept in errors; original
@@ -412,6 +432,7 @@ async def _fanout_and_rewrite(
             continue
         path = await _generate_one_image(
             placeholder=ph, prompt=prompt, out_dir=assets_dir,
+            mission_id=mission_id,
         )
         if not path:
             skipped += 1

@@ -640,6 +640,11 @@ class Selector:
 
         # Local inference allowed check — use snapshot.vram_available_mb > 0
         if model.is_local:
+            # Minimal load mode = cloud-only. Local is structurally
+            # ineligible — clearer than a pressure veto and gives a
+            # named diag reason. (resource-signals 2026-06-09)
+            if getattr(snapshot, "load_mode", "full") == "minimal":
+                return "load_mode_minimal"
             vram_available = getattr(snapshot, "vram_available_mb", 0)
             if vram_available == 0:
                 # Only block if there are alternatives; track this as soft hint

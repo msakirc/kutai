@@ -10,10 +10,12 @@ from renoir import assess
 from .types import ImageSpec, ImageResult
 from .providers.pollinations import PollinationsProvider
 from .providers.huggingface import HuggingFaceProvider
+from .providers.local_server import LocalServerProvider
 
 _PROVIDERS: dict = {
     "pollinations": PollinationsProvider(),
     "huggingface": HuggingFaceProvider(),
+    "clair_obscur": LocalServerProvider(),
 }
 
 

@@ -98,6 +98,49 @@ async def test_dispatch_routes_verify_action(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_verify_derives_workspace_from_mission_id(
+    monkeypatch, tmp_path
+):
+    """LIVE i2p: the verify step payload carries NO workspace_path. The
+    dispatch branch must derive it from task['mission_id'] via
+    get_mission_workspace, otherwise the verifier walks nothing and the gate
+    is vacuous."""
+    captured = {}
+
+    def _fake_verify(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "surviving_placeholders": 0,
+                "expected_replaced": 0, "broken_asset_refs": []}
+    monkeypatch.setattr(
+        "mr_roboto.verify_swap_placeholder_images_shape."
+        "verify_swap_placeholder_images_shape",
+        _fake_verify,
+    )
+
+    derived_ws = str(tmp_path / "mission_42")
+
+    def _fake_get_ws(mission_id):
+        assert mission_id == 42
+        return derived_ws
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", _fake_get_ws,
+    )
+
+    task = {
+        "id": 101, "mission_id": 42, "title": "verify_test",
+        "context": {"payload": {
+            "action": "verify_swap_placeholder_images_shape",
+            # NOTE: no workspace_path, no swap_result — the live shape.
+        }},
+    }
+    res = await mr_roboto.run(task)
+    assert res.status == "completed"
+    assert captured["workspace_path"] == derived_ws
+    # Live shape: swap_result is empty, gate rests on self-derived check.
+    assert captured["swap_result"] == {}
+
+
+@pytest.mark.asyncio
 async def test_dispatch_verify_action_fails_on_inconsistency(monkeypatch):
     """When the verifier returns ok=False the dispatch branch fails the task
     (gates emit_preview_url), mirroring verify_charter_shape."""

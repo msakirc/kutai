@@ -51,9 +51,16 @@ def test_passes_when_skipped_matches_surviving_placeholders(tmp_path):
 
 def test_fails_when_replaced_count_disagrees_with_html(tmp_path):
     """If swap_result claims 3 replaced but 1 placehold.co survives and
-    errors is empty, the result is internally inconsistent — fail."""
+    errors is empty, the result is internally inconsistent — fail.
+
+    The rewritten refs in _HTML_PARTIAL must exist on disk so the layer-1
+    broken-asset-ref check passes cleanly and the layer-2 consistency check
+    is the thing under test."""
     web = tmp_path / ".web"; web.mkdir()
     (web / "home.html").write_text(_HTML_PARTIAL, encoding="utf-8")
+    (web / "assets").mkdir()
+    for n in ("home__0.png", "home__2.png"):
+        (web / "assets" / n).write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
     res = verify_swap_placeholder_images_shape(
         workspace_path=str(tmp_path),
         swap_result={"replaced_count": 3, "skipped_count": 0, "errors": []},
@@ -108,12 +115,75 @@ def test_accepts_json_string_swap_result(tmp_path):
 
 def test_garbage_json_string_coerces_to_empty(tmp_path):
     """A non-JSON string degrades to {} (replaced=0, skipped=0); a clean
-    prototype with no surviving placeholders still passes."""
+    prototype whose rewritten refs all exist on disk still passes (layer-2
+    consistency is skipped for the empty result; layer-1 finds no broken
+    refs)."""
     web = tmp_path / ".web"; web.mkdir()
     (web / "home.html").write_text(_HTML_REWRITTEN, encoding="utf-8")
+    (web / "assets").mkdir()
+    for n in ("home__0.png", "home__1.png", "home__2.png"):
+        (web / "assets" / n).write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
     res = verify_swap_placeholder_images_shape(
         workspace_path=str(tmp_path),
         swap_result="not json {",
     )
     assert res["ok"] is True
     assert res["surviving_placeholders"] == 0
+
+
+def test_live_empty_swap_result_passes_when_rewritten_assets_exist(tmp_path):
+    """LIVE i2p case: swap_result is empty (no cross-step injection). A
+    prototype whose rewritten asset refs all exist on disk passes — and the
+    gate is MEANINGFUL (it actually walked the workspace and checked the
+    refs), not vacuous."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_REWRITTEN, encoding="utf-8")
+    (web / "assets").mkdir()
+    for n in ("home__0.png", "home__1.png", "home__2.png"):
+        (web / "assets" / n).write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={},
+    )
+    assert res["ok"] is True
+    assert res["broken_asset_refs"] == []
+
+
+def test_live_empty_swap_result_fails_on_broken_asset_ref(tmp_path):
+    """LIVE i2p case: a rewritten ref points at a file that does NOT exist on
+    disk (the real corruption mode). With an empty swap_result the gate must
+    still FAIL — proving the gate is not vacuous in live."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_REWRITTEN, encoding="utf-8")
+    (web / "assets").mkdir()
+    # Only 2 of 3 referenced assets exist; home__1.png is missing.
+    for n in ("home__0.png", "home__2.png"):
+        (web / "assets" / n).write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={},
+    )
+    assert res["ok"] is False
+    assert "broken asset ref" in (res.get("error") or "").lower()
+    assert "assets/home__1.png" in res["broken_asset_refs"]
+
+
+def test_live_empty_swap_result_passes_with_only_surviving_placeholders(tmp_path):
+    """LIVE i2p graceful-degrade: nothing was rewritten (all images still
+    point at placehold.co). With an empty swap_result the gate passes —
+    surviving placeholders alone never fail the gate."""
+    html = (
+        "<!DOCTYPE html><html><body>"
+        '<img src="https://placehold.co/600x400/000/FFF?text=hero" alt="h">'
+        '<img src="https://placehold.co/260x180/3D405B/FFF?text=feat" alt="f">'
+        "</body></html>"
+    )
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(html, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={},
+    )
+    assert res["ok"] is True
+    assert res["surviving_placeholders"] == 2
+    assert res["broken_asset_refs"] == []

@@ -5137,8 +5137,17 @@ async def _run_dispatch(task: dict) -> Action:
             verify_swap_placeholder_images_shape as _verify_swap,
         )
         try:
+            # Live i2p mechanical steps carry NO workspace_path in the payload
+            # (and there is no cross-step swap_result injection), so derive the
+            # workspace from the task's mission_id the same way the swap
+            # executor does. Without this the verifier walks nothing and the
+            # gate is vacuous.
+            ws = payload.get("workspace_path")
+            if not ws and task.get("mission_id") is not None:
+                from src.tools.workspace import get_mission_workspace
+                ws = get_mission_workspace(int(task["mission_id"]))
             res = _verify_swap(
-                workspace_path=payload.get("workspace_path") or "",
+                workspace_path=ws or "",
                 swap_result=payload.get("swap_result") or {},
             )
             if not res.get("ok"):

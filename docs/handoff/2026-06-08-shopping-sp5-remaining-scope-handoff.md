@@ -13,12 +13,11 @@ The original plan migrated **only `shopping_v3`** (the category/deep_research pa
 
 ```
 request() live callers (2026-06-08, post-v3-launch):
-  GROUP 1 — src/workflows/shopping v2-style handlers (LIVE via quick_search + product_research)
-    src/workflows/shopping/pipeline_v2.py:363  _grouping_llm_call      (← step_group)
-    src/workflows/shopping/pipeline_v2.py:499  _synthesis_llm_call     (← step_synthesize_reviews)
-    src/workflows/shopping/labels.py:22        _label_llm_call         (← step_label)
-      used by handlers: group_label_filter_gate, synth_one, format_compare, group_and_synthesize
-      used by workflows: quick_search_v2.json, product_research_v2.json  (BOTH LIVE)
+  GROUP 1 — src/workflows/shopping v2-style handlers — NOW UNREACHABLE (Task A done 2026-06-08)
+    _grouping_llm_call / _synthesis_llm_call / _label_llm_call (via step_group/
+    step_synthesize_reviews/step_label, via the fused handlers). quick_search +
+    product_research migrated to producer triads; NO workflow JSON references the
+    fused steps anymore. Code still present (dead) — delete in Task C.
   GROUP 2 — src/shopping/intelligence/_llm.py:42   (SEPARATE subsystem, own spec — this handoff's focus)
   GROUP 3 — dead/uncertain: coulson/reflection.py:88, src/workflows/engine/constrained_emit.py:147
             (handoff history calls these "dead-legacy" — VERIFY liveness before deleting; constrained_emit
@@ -28,7 +27,7 @@ request() live callers (2026-06-08, post-v3-launch):
      test_z6_t7c_detect_and_bail.py ×4; tests/integration/test_agent_basic.py:340)
 ```
 
-**`request()` cannot be deleted until GROUP 1 and GROUP 2 are migrated.** `await_inline` (SP5) deletes only after `request()` is gone.
+**GROUP 1 done (Task A) — now only GROUP 2 (src/shopping) blocks `request()` deletion** (plus group-1 dead code to remove + group-3 liveness to verify). `await_inline` (SP5) deletes only after `request()` is gone.
 
 ---
 
@@ -65,10 +64,10 @@ Every inline `request()` call becomes a `prep (deterministic) → agent:<produce
 
 ## Remaining work
 
-### TASK A — migrate `quick_search_v2.json` + `product_research_v2.json` to producer triads
-Both currently use the fused v2 handlers (`group_label_filter_gate`, `synth_one`, `format_compare`) → `step_group`/`step_synthesize_reviews`/`step_label` → `request()`. Rewrite each JSON to the v3 triad structure (reusing the existing handlers + producers above). Their flows differ from v3 (quick_search = fast top-3, product_research = deep single product), so preserve each one's intent — don't just clone v3.
-- After both migrate, GROUP 1 `request()` callers (`_grouping_llm_call`, `_synthesis_llm_call`, `_label_llm_call`) + the fused handlers (`_handler_group_label_filter_gate`, `_handler_synth_one`, `_handler_format_compare`, `_handler_group_and_synthesize`) become dead → delete them. KEEP the deterministic reused fns (`step_filter`, `step_variant_gate`, `format_group_card`, `step_compare_all`, `gather_review_snippets`, `_parse_*`, `*_view`).
-- Live-validate each via Telegram (simple query → quick_search; specific product → product_research).
+### TASK A — migrate `quick_search_v2.json` + `product_research_v2.json` to producer triads — ✅ DONE 2026-06-08
+Both rewritten to the v3 producer-triad structure (reusing the existing handlers + producers + seeded-clarify_choice discriminator + native-join compare). quick_search: `per_site_n=3` + escalation to shopping_v3; product_research: `per_site_n=4`. Both keep no phase_0 (they enter with a resolved query). **GROUP 1 `request()` callers are now UNREACHABLE** (no JSON uses the fused steps). 766 shopping tests pass. Commits on `main`. **NOT yet live-validated** (needs restart + Telegram: simple query → quick_search; specific product → product_research).
+
+**Dead code remains (delete in TASK C, atomically with group 2 + request()):** the fused handlers (`_handler_group_label_filter_gate`, `_handler_synth_one`, `_handler_format_compare`, `_handler_group_and_synthesize`) + their `_STEP_HANDLERS_V2` registrations + `step_group`/`step_label`/`step_synthesize_reviews` + the 3 LLM helpers (`_grouping_llm_call` pipeline_v2:387, `_synthesis_llm_call` :592, `labels._label_llm_call` :122). Deferred because they're unreachable already and `request()` can't be deleted until group 2 lands — deleting now = test churn (mixed tests in `test_pipeline_v2.py` ~6 dead-path tests; `test_variant_flow_integration.py` + `verify_variant_flow_live.py` fully dead-path) for no SP5 gain. KEEP the deterministic reused fns (`step_filter`, `step_variant_gate`, `format_group_card`, `step_compare_all`, `gather_review_snippets`, `build_group_view`, `build_label_view`, `apply_labels`, `_parse_*`).
 
 ### TASK B — `src/shopping/` spec (the parallel-session focus the founder requested)
 `src/shopping/intelligence/_llm.py:42` is GROUP 2 — the `ShoppingPipeline` / `src/shopping/` two-tier subsystem (25.9k LOC, the simple-query/two-tier path, NOT `src/workflows/shopping/`). Per the dispatch handoff it needs its **own brainstorm + spec** — its carrier may be **interactive CPS resume / husam-inline** (a user waiting synchronously), NOT workflow steps. Steps:
@@ -77,12 +76,13 @@ Both currently use the fused v2 handlers (`group_label_filter_gate`, `synth_one`
 3. Write spec + plan; implement; validate.
 This is independent of TASK A and is the clean parallel unit.
 
-### TASK C — T11 final (after A + B both land)
+### TASK C — T11 final (after B lands; A already done)
 1. Re-grep: `rg -n "\.request\(|_request_kwargs_to_spec|_task_result_to_request_response|single_shot|execution_pattern\s*=\s*.single_shot" src packages --glob '!*/tests/*'` — STOP if any unexpected live caller.
-2. Verify GROUP 3 liveness (reflection.py:88, constrained_emit.py:147) — if live, they are separate migrations, NOT free deletes.
-3. Delete `single_shot.py` + the `single_shot` branch in `coulson/__init__.py:90-91` + rewrite the 5 entangled tests (they patch `coulson._single_shot_run`; switch them to react or remove).
-4. Delete `LLMDispatcher.request()` + `_request_kwargs_to_spec` (+ `_task_result_to_request_response` after re-grep confirms 0 callers).
-5. **THEN** SP5 deletes `await_inline`.
+2. Delete the GROUP 1 dead code (unreachable since Task A): the fused handlers + their `_STEP_HANDLERS_V2` registrations (`group_label_filter_gate`, `synth_one`, `format_compare`, `group_and_synthesize`) + `step_group`/`step_label`/`step_synthesize_reviews` + `_grouping_llm_call`/`_synthesis_llm_call`/`_label_llm_call`. Surgically remove the ~6 dead-path tests in `tests/shopping/test_pipeline_v2.py` (`test_synth_one_handler_*`, `test_format_compare_handler_*`, `test_step_group_*`); delete `tests/shopping/test_variant_flow_integration.py` + `verify_variant_flow_live.py` (fully dead-path). KEEP the deterministic reused fns.
+3. Verify GROUP 3 liveness (reflection.py:88, constrained_emit.py:147) — if live, they are separate migrations, NOT free deletes.
+4. Delete `single_shot.py` + the `single_shot` branch in `coulson/__init__.py:90-91` + rewrite the 5 entangled tests (they patch `coulson._single_shot_run`; switch them to react or remove).
+5. Delete `LLMDispatcher.request()` + `_request_kwargs_to_spec` (+ `_task_result_to_request_response` after re-grep confirms 0 callers).
+6. **THEN** SP5 deletes `await_inline`.
 
 ---
 

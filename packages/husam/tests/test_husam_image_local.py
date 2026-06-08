@@ -137,6 +137,60 @@ async def test_keepalive_wraps_long_handover(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_clair_obscur_start_failure_preserves_availability_category(monkeypatch, tmp_path):
+    """If clair_obscur.start() fails during the LOCAL handover, husam.run must
+    raise ModelCallFailed with error_category == "availability" (a TRANSIENT
+    category that rides Beckman's backoff ladder → reselect → local→cloud
+    degrade), NOT "raw_exception". The outer except must NOT downgrade it.
+
+    Also asserts the handover aborts: record_swap and paintress.generate are
+    never reached because start() failed before them."""
+    from fatih_hoca.registry import ImageModelInfo
+    from fatih_hoca.types import Pick
+    from src.core.router import ModelCallFailed
+
+    class _Mgr:
+        async def shutdown(self):
+            pass
+    monkeypatch.setattr("src.models.local_model_manager.get_local_manager",
+                        lambda: _Mgr())
+
+    class _Singleton:
+        def snapshot(self):
+            class _S:
+                vram_available_mb = 7000
+            return _S()
+    monkeypatch.setattr("nerd_herd._get_singleton", lambda: _Singleton())
+
+    touched = {"swap": False, "generate": False}
+    monkeypatch.setattr("nerd_herd.record_swap",
+                        lambda name="": touched.__setitem__("swap", True))
+
+    async def _co_start_fail():
+        raise RuntimeError("comfyui boot timeout")
+    monkeypatch.setattr("clair_obscur.start", _co_start_fail)
+
+    async def _gen(pick, spec):
+        touched["generate"] = True
+        from paintress import ImageResult
+        return ImageResult(path=str(tmp_path / "x.png"), provider="clair_obscur",
+                           model="clair_obscur/sdxl-turbo", cost=0.0)
+    monkeypatch.setattr("paintress.generate", _gen)
+
+    model = ImageModelInfo(name="clair_obscur/sdxl-turbo", provider="clair_obscur",
+                           location="local", endpoint="", vram_mb=4500)
+    pick = Pick(model=model, min_time_seconds=0.0)
+    task = {"context": {"image_call": {"raw_dispatch": True, "prompt": "x",
+                                       "out_dir": str(tmp_path)}},
+            "kind": "image", "preselected_pick": pick}
+
+    with pytest.raises(ModelCallFailed) as ei:
+        await husam_run(task)
+    assert ei.value.error_category == "availability"
+    assert touched == {"swap": False, "generate": False}
+
+
+@pytest.mark.asyncio
 async def test_cloud_image_path_skips_handover(monkeypatch, tmp_path):
     """Sanity: cloud pick must NOT touch shutdown, clair_obscur, or record_swap."""
     from fatih_hoca.registry import ImageModelInfo

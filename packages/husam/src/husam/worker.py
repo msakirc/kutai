@@ -164,6 +164,18 @@ async def _run_image(task: dict, image_call: dict) -> dict:
                         pass
                 result = await paintress.generate(pick, s)
         except Exception as exc:
+            # Preserve an already-categorized ModelCallFailed (e.g. the
+            # clair_obscur.start handover failure raises error_category=
+            # "availability" so Beckman rides the transient backoff ladder and
+            # degrades local→cloud). Re-wrapping as "raw_exception" (NOT in
+            # TRANSIENT_CATEGORIES) would defeat that graceful degrade. Only
+            # genuinely-uncategorized exceptions become "raw_exception".
+            err_cat = getattr(exc, "error_category", None) if isinstance(exc, ModelCallFailed) else None
+            if err_cat:
+                await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
+                                        success=False, error_category=err_cat,
+                                        agent_type=agent_type, difficulty=difficulty)
+                raise
             await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
                                     success=False, error_category="raw_exception",
                                     agent_type=agent_type, difficulty=difficulty)

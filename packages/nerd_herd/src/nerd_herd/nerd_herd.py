@@ -10,6 +10,7 @@ from nerd_herd.health import HealthRegistry
 from nerd_herd.inference import InferenceCollector
 from nerd_herd.exposition import MetricsServer, build_metrics_text
 from nerd_herd.swap_budget import SwapBudget
+from nerd_herd.presence import PresenceCollector
 from nerd_herd.types import GPUState, HealthStatus, InFlightCall, LocalModelState, CloudProviderState, QueueProfile, SystemSnapshot
 
 
@@ -29,6 +30,9 @@ class NerdHerd:
 
         self._gpu = GPUCollector()
         self.registry.register("gpu", self._gpu)
+
+        self._presence = PresenceCollector()
+        self.registry.register("presence", self._presence)
 
         self._load = LoadManager(
             gpu_collector=self._gpu,
@@ -156,6 +160,8 @@ class NerdHerd:
                 idle_seconds=float(live.get("idle_seconds", local.idle_seconds)),
                 kv_cache_ratio=float(live.get("kv_cache_ratio", local.kv_cache_ratio)),
             )
+        presence = self._presence.collect()
+        sysstate = self._gpu.system_state()
         return SystemSnapshot(
             vram_available_mb=self.get_vram_budget_mb() if gpu.available else 0,
             local=local,
@@ -163,6 +169,12 @@ class NerdHerd:
             queue_profile=self._queue_profile,
             in_flight_calls=list(self._in_flight_calls),
             recent_swap_count=self._swap_budget.recent_count(),
+            load_mode=self._load.get_load_mode(),
+            user_idle_s=float(presence.get("user_idle_s", 1e9)),
+            foreground_fullscreen=bool(presence.get("foreground_fullscreen", False)),
+            ram_available_mb=int(sysstate.ram_available_mb),
+            ram_total_mb=int(sysstate.ram_total_mb),
+            external_gpu_fraction=float(self._load.get_external_gpu_fraction()),
         )
 
     def prometheus_lines(self) -> str:

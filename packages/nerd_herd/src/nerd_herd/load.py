@@ -102,8 +102,11 @@ class LoadManager:
         return VRAM_BUDGETS.get(self._mode, 1.0)
 
     def get_vram_budget_mb(self) -> int:
+        # Placement, not capping (resource-signals 2026-06-09): the
+        # desktop signals + --fit own contention now. snapshot.vram_available_mb
+        # reflects the true free VRAM, never a mode-scaled fraction.
         gpu = self._gpu.gpu_state()
-        return int(gpu.vram_free_mb * self.get_vram_budget_fraction())
+        return int(gpu.vram_free_mb)
 
     def _record_external(self, ext) -> None:
         """Cache the latest external-GPU fraction from the auto-detect loop."""

@@ -43,9 +43,9 @@ def test_vram_budget_fraction():
 
 def test_vram_budget_mb(gpu_collector):
     lm = LoadManager(gpu_collector=gpu_collector)
-    assert lm.get_vram_budget_mb() == 8000  # full mode, 100%
+    assert lm.get_vram_budget_mb() == 8000  # full mode — raw free
     lm.set_load_mode("shared")
-    assert lm.get_vram_budget_mb() == 4000  # 50% of 8000
+    assert lm.get_vram_budget_mb() == 8000  # shared mode — still raw free (no cap)
 
 
 def test_local_inference_allowed():
@@ -93,3 +93,13 @@ def test_no_callback_on_same_mode():
     lm.on_mode_change(lambda old, new, src: calls.append((old, new, src)))
     lm.set_load_mode("full")  # already full
     assert calls == []
+
+
+def test_vram_budget_mb_is_raw_free_regardless_of_mode():
+    class _G:
+        def gpu_state(self):
+            from nerd_herd.types import GPUState
+            return GPUState(available=True, vram_total_mb=8000, vram_free_mb=8000)
+    lm = LoadManager(gpu_collector=_G())
+    lm.set_load_mode("shared", source="user")   # would have been 0.5x before
+    assert lm.get_vram_budget_mb() == 8000       # no cap now

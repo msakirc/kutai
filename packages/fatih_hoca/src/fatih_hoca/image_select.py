@@ -43,19 +43,14 @@ def _provider_available(m: ImageModelInfo, hf_available: bool | None) -> bool:
     if m.provider == "pollinations":
         return True
     if m.provider == "clair_obscur":
-        try:
-            import clair_obscur
-            if clair_obscur.available():
-                return True
-        except Exception:
-            pass
-        # Fallback / test seam: presence of CLAIR_OBSCUR_EXE marks the local
-        # server as configured. clair_obscur.available() additionally requires
-        # the exe to exist on disk; this fallback keeps the env var the
-        # authoritative signal for selection eligibility (the dispatch/husam
-        # branch makes the real liveness call).
+        # Read env DIRECTLY (the module-level clair_obscur.available() reads a
+        # cached singleton config, stale/untestable here) AND require the exe
+        # to exist on disk. Design §10: an absent/misconfigured backend must be
+        # filtered at SELECTION time — a path that doesn't exist must NOT pass
+        # selection, or hoca picks local and husam's start() fails at dispatch
+        # (wasted swap + retry). "Filter early, no crash."
         exe = os.getenv("CLAIR_OBSCUR_EXE", "")
-        return bool(exe)
+        return bool(exe) and os.path.exists(exe)
     return False
 
 

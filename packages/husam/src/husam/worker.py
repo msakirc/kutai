@@ -113,38 +113,57 @@ async def _run_image(task: dict, image_call: dict) -> dict:
             async with _hb.keepalive():
                 if getattr(pick.model, "is_local", False):
                     import asyncio
-                    # 1. Free VRAM by unloading any current local LLM. shutdown()
-                    #    is internally guarded (no-op if nothing loaded); DaLLaMa
-                    #    lazy-reloads on the next LLM task's ensure_model.
+                    import clair_obscur
+                    # Is the image server ALREADY warm? On a back-to-back image
+                    # batch the server is resident from the prior gen, so there
+                    # is NO eviction to do — re-running shutdown + polling VRAM +
+                    # recording a swap would (a) needlessly thrash and (b) charge
+                    # one swap PER IMAGE, exhausting hoca's swap budget (max 3/5min)
+                    # after 3 images → swap-budget guard blocks local picks →
+                    # the warm batch breaks. Spec §4: the warm path must be cheap
+                    # so a 10-placeholder batch does 1 eviction then 9 cheap gens
+                    # (emergent batching rewarded, not penalized).
                     try:
-                        from src.models.local_model_manager import get_local_manager
-                        await get_local_manager().shutdown()
-                    except Exception as _e:
-                        from src.infra.logging_config import get_logger
-                        get_logger("husam.image").warning(
-                            "local_image: dallama shutdown failed: %s", _e)
-                    # 2. Poll free VRAM until the image model fits (or ~30s).
+                        already_warm = bool(clair_obscur.status().get("resident", False))
+                    except Exception:
+                        already_warm = False
+                    if not already_warm:
+                        # COLD start (actual eviction): free VRAM, wait for fit,
+                        # and record exactly one swap.
+                        # 1. Free VRAM by unloading any current local LLM. shutdown()
+                        #    is internally guarded (no-op if nothing loaded); DaLLaMa
+                        #    lazy-reloads on the next LLM task's ensure_model.
+                        try:
+                            from src.models.local_model_manager import get_local_manager
+                            await get_local_manager().shutdown()
+                        except Exception as _e:
+                            from src.infra.logging_config import get_logger
+                            get_logger("husam.image").warning(
+                                "local_image: dallama shutdown failed: %s", _e)
+                        # 2. Poll free VRAM until the image model fits (or ~30s).
+                        try:
+                            import nerd_herd
+                            deadline = _time.time() + 30.0
+                            needed = int(getattr(pick.model, "vram_mb", 0) or 0)
+                            while _time.time() < deadline:
+                                # Live in-process singleton snapshot: vram_available_mb
+                                # is a live GPU read, so it reflects VRAM freed by the
+                                # shutdown() above. NOT module-level refresh_snapshot()
+                                # (async coroutine in this context) nor snapshot()
+                                # (client cache).
+                                snap = nerd_herd._get_singleton().snapshot()
+                                if int(getattr(snap, "vram_available_mb", 0) or 0) >= needed:
+                                    break
+                                await asyncio.sleep(0.5)
+                        except Exception as _e:
+                            from src.infra.logging_config import get_logger
+                            get_logger("husam.image").warning(
+                                "local_image: vram poll failed: %s", _e)
+                    # Start clair_obscur — ALWAYS, on both warm and cold paths.
+                    # start() is idempotent AND clears any pending release hint,
+                    # so a back-to-back image resets the warm window (keeping the
+                    # server warm for the batch). paintress always gets base_url.
                     try:
-                        import nerd_herd
-                        deadline = _time.time() + 30.0
-                        needed = int(getattr(pick.model, "vram_mb", 0) or 0)
-                        while _time.time() < deadline:
-                            # Live in-process singleton snapshot: vram_available_mb
-                            # is a live GPU read, so it reflects VRAM freed by the
-                            # shutdown() above. NOT module-level refresh_snapshot()
-                            # (async coroutine in this context) nor snapshot()
-                            # (client cache).
-                            snap = nerd_herd._get_singleton().snapshot()
-                            if int(getattr(snap, "vram_available_mb", 0) or 0) >= needed:
-                                break
-                            await asyncio.sleep(0.5)
-                    except Exception as _e:
-                        from src.infra.logging_config import get_logger
-                        get_logger("husam.image").warning(
-                            "local_image: vram poll failed: %s", _e)
-                    # 3. Start clair_obscur (idempotent; returns base_url).
-                    try:
-                        import clair_obscur
                         co_base = await clair_obscur.start()
                         try:
                             pick.model.endpoint = co_base
@@ -156,12 +175,14 @@ async def _run_image(task: dict, image_call: dict) -> dict:
                             last_error=f"clair_obscur_start_failed:{_e}",
                             error_category="availability",
                         )
-                    # 4. Record exactly one swap (charge against hoca's budget).
-                    try:
-                        import nerd_herd
-                        nerd_herd.record_swap(getattr(pick.model, "name", ""))
-                    except Exception:
-                        pass
+                    if not already_warm:
+                        # Record one swap per ACTUAL eviction (cold start only);
+                        # warm reuse records none (charge against hoca's budget).
+                        try:
+                            import nerd_herd
+                            nerd_herd.record_swap(getattr(pick.model, "name", ""))
+                        except Exception:
+                            pass
                 result = await paintress.generate(pick, s)
         except Exception as exc:
             # Preserve an already-categorized ModelCallFailed (e.g. the

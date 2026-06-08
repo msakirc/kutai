@@ -52,6 +52,9 @@ async def test_local_image_handover_ordering(monkeypatch, tmp_path):
     monkeypatch.setattr("nerd_herd.record_swap",
                         lambda name="": swaps.append(name))
 
+    # Cold start: image server NOT yet resident → full eviction sequence fires.
+    monkeypatch.setattr("clair_obscur.status", lambda: {"resident": False})
+
     async def _co_start():
         order.append("clair_obscur.start")
         return "http://127.0.0.1:8188"
@@ -89,6 +92,72 @@ async def test_local_image_handover_ordering(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_warm_batch_skips_eviction_but_keeps_server_warm(monkeypatch, tmp_path):
+    """Emergent batching (spec §4): when the image server is ALREADY resident
+    (back-to-back image batch), the eviction work must NOT run — no DaLLaMa
+    shutdown, no recorded swap (which would exhaust hoca's 3/5min swap budget
+    after 3 images and break the warm batch). But clair_obscur.start() MUST
+    still fire: it's idempotent and clears the pending release hint, resetting
+    the warm window and handing paintress the base_url."""
+    from fatih_hoca.registry import ImageModelInfo
+    from fatih_hoca.types import Pick
+
+    touched = {"unload": False, "start": False, "swap": False}
+
+    class _Mgr:
+        async def shutdown(self):
+            touched["unload"] = True
+    monkeypatch.setattr("src.models.local_model_manager.get_local_manager",
+                        lambda: _Mgr())
+
+    # Server already warm → eviction must be skipped.
+    monkeypatch.setattr("clair_obscur.status", lambda: {"resident": True})
+
+    poll_calls = {"n": 0}
+
+    class _Singleton:
+        def snapshot(self):
+            poll_calls["n"] += 1
+            class _S:
+                vram_available_mb = 7000
+            return _S()
+    monkeypatch.setattr("nerd_herd._get_singleton", lambda: _Singleton())
+    monkeypatch.setattr("nerd_herd.record_swap",
+                        lambda name="": touched.__setitem__("swap", True))
+
+    async def _co_start():
+        touched["start"] = True
+        return "http://127.0.0.1:8188"
+    monkeypatch.setattr("clair_obscur.start", _co_start)
+
+    captured = {"endpoint": None}
+
+    async def _gen(pick, spec):
+        captured["endpoint"] = pick.model.endpoint
+        from paintress import ImageResult
+        p = tmp_path / "warm.png"
+        p.write_bytes(b"\x89PNG")
+        return ImageResult(path=str(p), provider="clair_obscur",
+                           model="clair_obscur/sdxl-turbo", cost=0.0)
+    monkeypatch.setattr("paintress.generate", _gen)
+
+    model = ImageModelInfo(name="clair_obscur/sdxl-turbo", provider="clair_obscur",
+                           location="local", endpoint="", vram_mb=4500)
+    pick = Pick(model=model, min_time_seconds=0.0)
+    task = {"context": {"image_call": {"raw_dispatch": True, "prompt": "x",
+                                       "out_dir": str(tmp_path)}},
+            "kind": "image", "preselected_pick": pick}
+    res = await husam_run(task)
+    assert res["path"].endswith(".png")
+    # start() fired (endpoint set, release hint cleared); eviction skipped.
+    assert touched["start"] is True
+    assert touched["unload"] is False, "warm path must not shutdown DaLLaMa"
+    assert touched["swap"] is False, "warm path must record NO swap"
+    assert poll_calls["n"] == 0, "warm path must not poll VRAM"
+    assert captured["endpoint"] == "http://127.0.0.1:8188"
+
+
+@pytest.mark.asyncio
 async def test_keepalive_wraps_long_handover(monkeypatch, tmp_path):
     """The handover (shutdown + poll + start) must run INSIDE the keepalive()
     span so heartbeat bumps remain reachable. We assert the context does not
@@ -112,6 +181,7 @@ async def test_keepalive_wraps_long_handover(monkeypatch, tmp_path):
             return _S()
     monkeypatch.setattr("nerd_herd._get_singleton", lambda: _Singleton())
     monkeypatch.setattr("nerd_herd.record_swap", lambda name="": None)
+    monkeypatch.setattr("clair_obscur.status", lambda: {"resident": False})
 
     async def _co_start():
         return "http://127.0.0.1:8188"
@@ -165,6 +235,7 @@ async def test_clair_obscur_start_failure_preserves_availability_category(monkey
     touched = {"swap": False, "generate": False}
     monkeypatch.setattr("nerd_herd.record_swap",
                         lambda name="": touched.__setitem__("swap", True))
+    monkeypatch.setattr("clair_obscur.status", lambda: {"resident": False})
 
     async def _co_start_fail():
         raise RuntimeError("comfyui boot timeout")

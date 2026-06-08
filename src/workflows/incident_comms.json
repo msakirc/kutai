@@ -35,13 +35,13 @@
           "step_id": "2.draft_update",
           "agent": "mechanical",
           "title": "Draft customer-facing status update + founder-review gate",
-          "description": "Call incident/draft_update with the internal alert details. Redacts hostnames, stack traces, and PII. Returns draft text for founder review. The incident_update_review post-hook fires automatically on completion: it carries the drafted text into a founder_action so the founder reviews BEFORE 2.publish runs. NOTE: max 4hr SLA — if founder unavailable >4h, B6 crisis playbook escalation applies (TODO: wire SLA timer when B6 T3E lands).",
+          "description": "Call incident/draft_update with the internal alert details. It redacts hostnames/stack-traces/PII on the way IN, then (SP4b Plan 3 CPS migration) enqueues a Beckman LLM producer instead of blocking inline — so this step returns {deferred:true} immediately. The comms.incident_update CPS sink (mr_roboto.executors.comms_continuations) applies the FINAL redaction pass and emits the founder-review founder_action ASYNCHRONOUSLY when the draft is ready. The founder reviews that card BEFORE 2.publish. NOTE: max 4hr SLA — if founder unavailable >4h, B6 crisis playbook escalation applies (TODO: wire SLA timer when B6 T3E lands). NOTE: because the card is now emitted by the sink (not a post-hook off this step's result), downstream publish must gate on the founder_action ack, not on this step's instant completion — proper 2a/2b/2c workflow-step split (parent spec §5.1) is DEFERRED.",
           "executor": "mechanical",
           "payload": {
             "action": "incident/draft_update"
           },
-          "post_hooks": ["incident_update_review"],
-          "tools_hint": "mr_roboto verb: incident/draft_update. Payload: incident_id, product_id, alert_details (dict), status_kind. The incident_update_review post-hook gates 2.publish on founder approval.",
+          "post_hooks": [],
+          "tools_hint": "mr_roboto verb: incident/draft_update. Payload: incident_id, product_id, alert_details (dict), status_kind. Off await_inline (SP4b Plan 3): the founder-review card is emitted async by the comms.incident_update sink. The old incident_update_review post-hook is removed here (it no-ops now that the step returns {deferred} with no draft); its handler code is left in place for reference.",
           "produces": []
         },
         {

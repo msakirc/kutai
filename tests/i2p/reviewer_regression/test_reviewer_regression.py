@@ -379,3 +379,31 @@ def test_verify_schema_version_extracts_from_markdown_fence():
         expected_versions={"foo": "1"},
     )
     assert res["ok"] is True
+
+
+@pytest.mark.parametrize("fixture", _FIXTURES, ids=_fixture_id)
+def test_reviewer_schema_permits_emitted_verdict(fixture):
+    """A reviewer's verdict enum MUST include every verdict it can emit.
+    The deterministic schema gate hard-checks `equals`; if a reviewer says
+    REJECT(status=fail) but the result schema only allows ['pass'], the gate
+    DLQs every legitimate rejection. Live regression: 3.11 task #289752."""
+    ver, step_id, path = fixture
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    wf = _load_workflow()
+    step = _step_by_id(wf, step_id)
+    schema = step["artifact_schema"][step["output_artifacts"][0]]
+    fields = schema.get("fields") or {}
+    verdict_field = next(
+        (k for k in ("verdict", "status") if k in fields and "equals" in fields[k]),
+        None,
+    )
+    if verdict_field is None:
+        pytest.skip("no enum-constrained verdict field")
+    actual = (payload.get("expected_verdict") or {}).get(verdict_field)
+    if actual is None:
+        pytest.skip("fixture does not exercise the verdict field")
+    allowed = list(fields[verdict_field].get("equals") or [])
+    assert actual in allowed, (
+        f"{step_id} {path.name}: {verdict_field}={actual!r} not in schema enum "
+        f"{allowed} — the deterministic gate would DLQ this valid verdict"
+    )

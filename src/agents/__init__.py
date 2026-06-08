@@ -29,6 +29,7 @@ from .growth_digest_synthesizer import GrowthDigestSynthesizerAgent
 from .signal_classifier import SignalClassifierAgent
 from .query_planner import QueryPlannerAgent
 from .prior_art_synthesizer import PriorArtSynthesizerAgent
+from .prompt_writer import PromptWriterAgent
 
 AGENT_REGISTRY = {
     "planner": PlannerAgent(),
@@ -60,6 +61,7 @@ AGENT_REGISTRY = {
     "signal_classifier": SignalClassifierAgent(),
     "query_planner": QueryPlannerAgent(),
     "prior_art_synthesizer": PriorArtSynthesizerAgent(),
+    "prompt_writer": PromptWriterAgent(),
 }
 
 

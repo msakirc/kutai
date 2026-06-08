@@ -111,6 +111,57 @@ async def _run_image(task: dict, image_call: dict) -> dict:
         )
         try:
             async with _hb.keepalive():
+                if getattr(pick.model, "is_local", False):
+                    import asyncio
+                    # 1. Free VRAM by unloading any current local LLM. shutdown()
+                    #    is internally guarded (no-op if nothing loaded); DaLLaMa
+                    #    lazy-reloads on the next LLM task's ensure_model.
+                    try:
+                        from src.models.local_model_manager import get_local_manager
+                        await get_local_manager().shutdown()
+                    except Exception as _e:
+                        from src.infra.logging_config import get_logger
+                        get_logger("husam.image").warning(
+                            "local_image: dallama shutdown failed: %s", _e)
+                    # 2. Poll free VRAM until the image model fits (or ~30s).
+                    try:
+                        import nerd_herd
+                        deadline = _time.time() + 30.0
+                        needed = int(getattr(pick.model, "vram_mb", 0) or 0)
+                        while _time.time() < deadline:
+                            # Live in-process singleton snapshot: vram_available_mb
+                            # is a live GPU read, so it reflects VRAM freed by the
+                            # shutdown() above. NOT module-level refresh_snapshot()
+                            # (async coroutine in this context) nor snapshot()
+                            # (client cache).
+                            snap = nerd_herd._get_singleton().snapshot()
+                            if int(getattr(snap, "vram_available_mb", 0) or 0) >= needed:
+                                break
+                            await asyncio.sleep(0.5)
+                    except Exception as _e:
+                        from src.infra.logging_config import get_logger
+                        get_logger("husam.image").warning(
+                            "local_image: vram poll failed: %s", _e)
+                    # 3. Start clair_obscur (idempotent; returns base_url).
+                    try:
+                        import clair_obscur
+                        co_base = await clair_obscur.start()
+                        try:
+                            pick.model.endpoint = co_base
+                        except Exception:
+                            pass  # paintress local_server falls back to clair_obscur.base_url()
+                    except Exception as _e:
+                        raise ModelCallFailed(
+                            call_id=getattr(pick.model, "name", "image"),
+                            last_error=f"clair_obscur_start_failed:{_e}",
+                            error_category="availability",
+                        )
+                    # 4. Record exactly one swap (charge against hoca's budget).
+                    try:
+                        import nerd_herd
+                        nerd_herd.record_swap(getattr(pick.model, "name", ""))
+                    except Exception:
+                        pass
                 result = await paintress.generate(pick, s)
         except Exception as exc:
             await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,

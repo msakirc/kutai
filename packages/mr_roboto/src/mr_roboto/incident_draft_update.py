@@ -110,94 +110,25 @@ def _redact_alert(alert_details: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# LLM draft helper (testable via monkeypatch)
+# Shared helpers — used by run() and the CPS sink
 # ---------------------------------------------------------------------------
 
-async def _call_llm_draft(
-    severity: str,
-    affected_components: list[str],
-    safe_alert_details: dict,
-    existing_summary: str,
-    status_kind: str,
-) -> str:
-    """Call LLM (ONESHOT lane via beckman.enqueue await_inline) to draft the update.
-
-    Returns the raw draft text.  Caller redacts again before returning.
-    """
-    from general_beckman import enqueue, TaskResult
-    from general_beckman.lanes import LANE_ONESHOT
-    import time
-    import uuid
-
-    components_str = ", ".join(affected_components) if affected_components else "the service"
-    safe_details_str = _json.dumps(safe_alert_details, ensure_ascii=False)[:800]
-
-    prompt = (
-        f"You are drafting a public-facing status page update for customers.\n"
-        f"Incident severity: {severity}\n"
-        f"Affected components: {components_str}\n"
-        f"Status kind: {status_kind} "
-        f"(investigating|identified|monitoring|resolved)\n"
-        f"Current summary: {existing_summary or 'none'}\n"
-        f"Internal alert details (already redacted, for context only):\n"
-        f"{safe_details_str}\n\n"
-        f"Write 2-4 clear, calm sentences suitable for customers.\n"
-        f"Rules:\n"
-        f"- Do NOT mention internal hostnames, IPs, stack traces, or team names.\n"
-        f"- Do NOT include customer PII.\n"
-        f"- Use plain language — no jargon.\n"
-        f"- Acknowledge the impact, state what you know, give next-update ETA.\n"
-        f"Draft only — no sign-off or signature needed."
+def fallback_draft(status_kind: str, affected_components: list) -> str:
+    """Deterministic customer-facing draft when the LLM produced nothing."""
+    return (
+        f"We are currently {status_kind} an issue affecting "
+        f"{', '.join(affected_components) or 'some services'}. "
+        "We will provide an update as soon as possible."
     )
 
-    messages = [
-        {"role": "user", "content": prompt},
-    ]
 
-    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
-    spec = {
-        "title": f"incident_draft_update:llm:{_suffix}",
-        "description": "Draft customer-facing status update.",
-        "agent_type": "reviewer",
-        "kind": "overhead",
-        "priority": 2,
-        "context": {
-            "llm_call": {
-                "raw_dispatch": True,
-                "call_category": "overhead",
-                "task": "reviewer",
-                "agent_type": "reviewer",
-                "difficulty": 3,
-                "messages": messages,
-                "failures": [],
-                "estimated_input_tokens": 400,
-                "estimated_output_tokens": 200,
-            },
-        },
-    }
-
-    try:
-        task_result: TaskResult = await enqueue(spec, lane=LANE_ONESHOT, await_inline=True)
-    except Exception as exc:
-        logger.warning("incident_draft_update: LLM enqueue failed: %r", exc)
-        return ""
-
-    if task_result.status != "completed":
-        logger.warning(
-            "incident_draft_update: LLM task did not complete (status=%s): %s",
-            task_result.status,
-            getattr(task_result, "error", ""),
-        )
-        return ""
-
-    result_data = getattr(task_result, "result", None) or {}
-    content = result_data.get("content", "")
-    if isinstance(content, list):
-        content = "\n".join(
-            p.get("text", "") if isinstance(p, dict) else str(p)
-            for p in content
-        )
-    return str(content or "").strip()
+def finalize_redaction(text: str) -> str:
+    """Final safety pass over any draft before it reaches a customer-facing card."""
+    from src.security.sensitivity import redact_user_pii, redact_secrets
+    text = redact_internal(text)
+    text = redact_secrets(text)
+    text = redact_user_pii(text)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -253,43 +184,17 @@ async def run(payload: dict) -> dict:
     safe_alert_details = _redact_alert(alert_details)
     redaction_applied = safe_alert_details != alert_details
 
-    # Get LLM draft.
-    draft_raw = ""
-    try:
-        draft_raw = await _call_llm_draft(
-            severity=severity,
-            affected_components=affected_components,
-            safe_alert_details=safe_alert_details,
-            existing_summary=existing_summary,
-            status_kind=status_kind,
-        )
-    except Exception as exc:
-        logger.warning("incident_draft_update: LLM draft failed", error=str(exc))
-        draft_raw = (
-            f"We are currently {status_kind} an issue affecting "
-            f"{', '.join(affected_components) or 'some services'}. "
-            "We will provide an update as soon as possible."
-        )
-
-    # Final redaction pass over the LLM output itself.
-    from src.security.sensitivity import redact_user_pii, redact_secrets
-    draft_clean = redact_internal(draft_raw)
-    draft_clean = redact_secrets(draft_clean)
-    draft_clean = redact_user_pii(draft_clean)
-
-    logger.info(
-        "incident_draft_update: draft ready",
-        incident_id=incident_id,
-        product_id=product_id,
-        status_kind=status_kind,
-        redaction_applied=redaction_applied,
+    from src.comms.producers import enqueue_incident_update
+    tid = await enqueue_incident_update(
+        incident_id=incident_id, product_id=product_id, status_kind=status_kind,
+        severity=severity, affected_components=affected_components,
+        safe_alert_details=safe_alert_details, existing_summary=existing_summary,
     )
-
+    logger.info("incident_draft_update: producer enqueued", incident_id=incident_id,
+                product_id=product_id, status_kind=status_kind,
+                redaction_applied=redaction_applied)
     return {
-        "status": "ok",
-        "draft": draft_clean,
-        "redaction_applied": redaction_applied,
-        "incident_id": incident_id,
-        "product_id": product_id,
-        "status_kind": status_kind,
+        "status": "ok", "producer_task_id": tid, "deferred": True,
+        "redaction_applied": redaction_applied, "incident_id": incident_id,
+        "product_id": product_id, "status_kind": status_kind,
     }

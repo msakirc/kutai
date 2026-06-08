@@ -253,6 +253,16 @@ class SystemSnapshot:
     # by ranking._apply_loaded_stickiness; defaults to 0 in tests that
     # build snapshots manually.
     recent_swap_count: int = 0
+    # ── Desktop-awareness fields (2026-06-09 resource-signals) ──────
+    # Populated by NerdHerd.snapshot(). Defaults describe an absent user
+    # on an idle machine in "full" mode, so a manually-built snapshot
+    # (tests, sims) reads as "no desktop pressure" — identical to today.
+    load_mode: str = "full"
+    user_idle_s: float = 1e9          # seconds since last user input; large = away
+    foreground_fullscreen: bool = False
+    ram_available_mb: int = 0
+    ram_total_mb: int = 0
+    external_gpu_fraction: float = 0.0  # cached from the 30s auto-detect loop
 
     def pressure_for(
         self,

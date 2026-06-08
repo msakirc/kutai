@@ -14,6 +14,7 @@ import asyncio
 import logging
 from typing import Any
 
+from fatih_hoca.need_ctx import compute_need_ctx
 from fatih_hoca.ranking import rank_candidates
 from fatih_hoca.registry import ModelInfo, ModelRegistry
 from fatih_hoca.requirements import ModelRequirements
@@ -423,12 +424,25 @@ class Selector:
             logger.debug("pick telemetry log failed: %s", e)
 
         _emit_diag(None, picked=best.model.name)
+        need_ctx = 0
+        if getattr(best.model, "is_local", False):
+            try:
+                _model_ctx = int(getattr(best.model, "context_length", 0) or 0)
+            except (TypeError, ValueError):
+                _model_ctx = 0
+            need_ctx = compute_need_ctx(
+                min_context=reqs.effective_context_needed or min_context_length,
+                est_in=estimated_input_tokens,
+                est_out=estimated_output_tokens,
+                model_ctx=_model_ctx,
+            )
         return Pick(
             model=best.model,
             min_time_seconds=min_time,
             estimated_load_seconds=load_time,
             score=float(best.score),
             top_summary=top_summary,
+            need_ctx=need_ctx,
         )
 
     # ─── Eligibility Check (Layer 1) ─────────────────────────────────────────

@@ -306,6 +306,9 @@ class SystemSnapshot:
         from nerd_herd.signals.s10_failure import s10_failure
         from nerd_herd.signals.s11_cost import s11_cost
         from nerd_herd.signals.s12_pool_balance import s12_pool_balance
+        from nerd_herd.signals.s13_presence import s13_presence
+        from nerd_herd.signals.s14_contention import s14_contention
+        from nerd_herd.modifiers import M4_load_mode_weights
 
         # Resolve matrix for this model (model-specific cell wins; provider is fallback)
         provider = getattr(model, "provider", "")
@@ -397,6 +400,17 @@ class SystemSnapshot:
             "S11": s11_cost(est_call_cost=est_call_cost,
                             daily_cost_remaining=(matrix.cpd.remaining or 0.0)),
             "S12": s12_pool_balance(model, fleet_consumed=fleet_consumed),
+            "S13": s13_presence(
+                model,
+                user_idle_s=self.user_idle_s,
+                foreground_fullscreen=self.foreground_fullscreen,
+            ),
+            "S14": s14_contention(
+                model,
+                ram_available_mb=self.ram_available_mb,
+                ram_total_mb=self.ram_total_mb,
+                external_gpu_fraction=self.external_gpu_fraction,
+            ),
         }
 
         # Modifiers
@@ -404,6 +418,10 @@ class SystemSnapshot:
             difficulty=task_difficulty,
             model_is_paid=not getattr(model, "is_free", False) and not getattr(model, "is_local", False),
         )
+
+        # M4: load-mode weights on the desktop signals only. Merge over M3
+        # (which never defines S13/S14), so the multiply is a clean overlay.
+        weights.update(M4_load_mode_weights(mode=self.load_mode))
 
         # Apply M1 to negative-arm signals: amplify by limit-aware factor
         # Use the smallest-limit populated cell as the amplifier basis (worst-axis-wins)

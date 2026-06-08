@@ -5,30 +5,12 @@ import json
 
 from src.infra.logging_config import get_logger
 from src.workflows.shopping.pipeline_v2 import Candidate, ProductGroup, _strip_json_fences
-from src.workflows.shopping.prompts_v2 import LABEL_PROMPT
-
 logger = get_logger("workflows.shopping.labels")
 
 VALID_PRODUCT_TYPES = {
     "authentic_product", "accessory", "replacement_part",
     "knockoff", "refurbished", "unknown",
 }
-
-
-async def _label_llm_call(prompt: str) -> dict:
-    """Dispatch the label prompt. Split out so tests can patch this one function."""
-    from src.core.llm_dispatcher import get_dispatcher, CallCategory
-    dispatcher = get_dispatcher()
-    return await dispatcher.request(
-        category=CallCategory.MAIN_WORK,
-        task="shopping_labeler",
-        agent_type="shopping_pipeline_v2",
-        difficulty=4,
-        messages=[
-            {"role": "system", "content": "You output valid JSON only."},
-            {"role": "user", "content": prompt},
-        ],
-    )
 
 
 def _fallback_labels(groups: list[ProductGroup]) -> list[ProductGroup]:
@@ -100,28 +82,3 @@ def build_label_view(groups: list[ProductGroup], candidates: list[Candidate]) ->
             "member_count": len(g.member_indices),
         })
     return view
-
-
-async def step_label(
-    groups: list[ProductGroup],
-    candidates: list[Candidate],
-    query: str,
-) -> list[ProductGroup]:
-    """Label every group with taxonomy via one LLM call. Mutates groups in place."""
-    if not groups:
-        return groups
-
-    view = build_label_view(groups, candidates)
-
-    prompt = LABEL_PROMPT.format(
-        query=query,
-        groups_json=json.dumps(view, ensure_ascii=False),
-    )
-
-    try:
-        resp = await _label_llm_call(prompt)
-    except Exception as exc:
-        logger.warning("label LLM failed, using fallback: %s", exc)
-        return _fallback_labels(groups)
-
-    return apply_labels(groups, resp.get("content", ""))

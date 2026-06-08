@@ -1,6 +1,7 @@
-"""Purpose-built image-model scorer. Sibling to selector.py (text). Cloud-only
-in Plan 1; eviction-cost is a stub and never fires because the catalog has no
-local entries (Plan 2 adds it)."""
+"""Purpose-built image-model scorer. Sibling to selector.py (text). Plan 1
+shipped cloud-only with a stub eviction-cost. Plan 2 adds the local
+clair_obscur entry and the real eviction-cost + VRAM-fit gate, reading the
+LIVE in-process nerd_herd singleton snapshot."""
 from __future__ import annotations
 
 import os
@@ -10,18 +11,82 @@ from .registry import ImageModelInfo
 from .types import Pick, SelectionFailure
 
 
+_EVICTION_HUGE = 100.0
+_EVICTION_HIGH = 50.0
+_EVICTION_LOW = 2.0
+_WARM_BATCH_BONUS = 1.0
+
+
+def _snapshot():
+    """Read LIVE in-process nerd_herd state via the singleton.
+
+    Must read ``nerd_herd._get_singleton().snapshot()`` — NOT module-level
+    ``nerd_herd.snapshot()`` (which returns the NerdHerdClient's CACHED value,
+    stale w.r.t. residency) and NOT ``refresh_snapshot()`` (async — calling it
+    from this sync helper returns a coroutine, so every ``getattr`` reads
+    False/0 and local would never be selected). The singleton is exactly
+    where ``record_image_server_state()`` (clair_obscur) and ``record_swap()``
+    (husam) write, and its ``snapshot()`` builds ``vram_available_mb`` from a
+    live GPU read — so residency and freed VRAM are reflected synchronously.
+    Tests monkeypatch this helper directly."""
+    try:
+        import nerd_herd
+        return nerd_herd._get_singleton().snapshot()
+    except Exception:
+        from nerd_herd.types import SystemSnapshot
+        return SystemSnapshot()
+
+
 def _provider_available(m: ImageModelInfo, hf_available: bool | None) -> bool:
     if m.provider == "huggingface":
         return os.getenv("HF_TOKEN") is not None if hf_available is None else hf_available
     if m.provider == "pollinations":
         return True
-    return False  # local providers ineligible in Plan 1
+    if m.provider == "clair_obscur":
+        try:
+            import clair_obscur
+            if clair_obscur.available():
+                return True
+        except Exception:
+            pass
+        # Fallback / test seam: presence of CLAIR_OBSCUR_EXE marks the local
+        # server as configured. clair_obscur.available() additionally requires
+        # the exe to exist on disk; this fallback keeps the env var the
+        # authoritative signal for selection eligibility (the dispatch/husam
+        # branch makes the real liveness call).
+        exe = os.getenv("CLAIR_OBSCUR_EXE", "")
+        return bool(exe)
+    return False
 
 
-def _eviction_cost(m: ImageModelInfo) -> float:
-    """Stub — replaced in Plan 2 with the real formula reading nerd_herd.
-    Plan 1 is cloud-only; cloud providers always score 0 here."""
-    return 0.0
+def _eviction_cost(m: ImageModelInfo, snap=None) -> float:
+    """Real eviction cost (Plan 2). Cloud providers always score 0.
+
+    Reads the snapshot ONCE per ``select_image`` call (passed in via ``snap``);
+    falls back to ``_snapshot()`` for direct/legacy callers."""
+    if not getattr(m, "is_local", False):
+        return 0.0
+    s = snap if snap is not None else _snapshot()
+    if getattr(s, "image_server_resident", False):
+        return 0.0
+    in_flight = len(getattr(s, "in_flight_calls", []) or [])
+    if in_flight == 0:
+        local = getattr(s, "local", None)
+        in_flight = int(getattr(local, "requests_processing", 0) or 0)
+    if in_flight > 0:
+        return _EVICTION_HUGE
+    llm_loaded = bool(getattr(getattr(s, "local", None), "model_name", None))
+    qp = getattr(s, "queue_profile", None)
+    llm_queue = int(getattr(qp, "total_ready_count", 0) or 0) if qp else 0
+    if llm_loaded or llm_queue > 0:
+        return _EVICTION_HIGH
+    return _EVICTION_LOW
+
+
+def _warm_batch_bonus(m: ImageModelInfo, snap) -> float:
+    if not getattr(m, "is_local", False):
+        return 0.0
+    return _WARM_BATCH_BONUS if getattr(snap, "image_server_resident", False) else 0.0
 
 
 def select_image(
@@ -33,15 +98,26 @@ def select_image(
 ) -> Pick | SelectionFailure:
     # IMPORTANT: failures is a list of STRING provider/model names.
     failed = set(failures or [])
+    snap = _snapshot()
     candidates: list[tuple[float, ImageModelInfo]] = []
     for m in image_catalog():
         if m.name in failed:
             continue
         if not _provider_available(m, hf_available):
             continue
+        # VRAM-fit eligibility (mirrors selector.py's needs_vision gate).
+        # Local: refuse if free VRAM (after a hypothetical llama unload — we
+        # add a conservative 4GB local-recoverable allowance) can't fit.
+        if m.is_local and m.vram_mb > 0:
+            free_mb = int(getattr(snap, "vram_available_mb", 0) or 0)
+            llm_loaded_mb = 4000 if getattr(
+                getattr(snap, "local", None), "model_name", None
+            ) else 0
+            if (free_mb + llm_loaded_mb) < m.vram_mb:
+                continue
         if remaining_budget_usd is not None and m.cost_per_image > remaining_budget_usd:
             continue
-        score = m.quality_rank - _eviction_cost(m)
+        score = m.quality_rank - _eviction_cost(m, snap) + _warm_batch_bonus(m, snap)
         candidates.append((score, m))
 
     if not candidates:

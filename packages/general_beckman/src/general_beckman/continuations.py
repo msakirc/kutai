@@ -183,6 +183,8 @@ _HANDLER_MODULES: list[str] = [
     # site #6 (investor_bullets) deferred to SP5+ — see SP2 spec §Site 6
     # CPS SP3 - in-task deadlock set:
     "general_beckman.posthook_continuations",
+    # CPS SP4b Plan 3 — crisis/incident/press_kit comms sinks:
+    "mr_roboto.executors.comms_continuations",
 ]
 
 

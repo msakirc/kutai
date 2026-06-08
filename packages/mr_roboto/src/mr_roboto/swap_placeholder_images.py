@@ -11,7 +11,10 @@ Pipeline:
      Beckman routes via Plan 1 v2's _select_for_admission(needs_image=True).
   5. PNG lands directly under .web/assets/<placeholder_id>.png (paintress
      writes the file; mechanic asks paintress to put it there).
-  6. HTML <img src> rewritten to relative "assets/<id>.png".
+  6. HTML <img src> rewritten to a relative ref computed from EACH html
+     file's own dir to the flat asset (os.path.relpath): root HTML gets
+     "assets/<id>.png", a subdir screen gets "../assets/<id>.png", so the
+     ref resolves correctly from any subdir in a static file server.
   7. Graceful degrade: per-placeholder failure keeps the placehold.co URL.
 
 Mirrors marketing_copy.py's mechanical shape — internally enqueues LLM +
@@ -443,7 +446,17 @@ async def _fanout_and_rewrite(
             skipped += 1
             errors.append(f"rename failed for {pid}")
             continue
-        new_src = f"assets/{final_name}"
+        # Compute the rewritten src as the path FROM THIS HTML FILE'S OWN
+        # DIRECTORY to the flat asset file, so a static file server resolves
+        # it correctly from ANY subdir. Root HTML (.web/home.html) → the file
+        # at .web/assets/<pid>.png is reached via "assets/<pid>.png"; a subdir
+        # screen (.web/screens/onboarding.html) reaches it via
+        # "../assets/<pid>.png". Browsers resolve relative <img src> against
+        # the document's own location, so a flat "assets/<pid>.png" would 404
+        # for subdir screens (resolved → .web/screens/assets/<pid>.png).
+        asset_abs = os.path.join(assets_dir, final_name)
+        html_dir = os.path.dirname(ph["html_path"])
+        new_src = os.path.relpath(asset_abs, html_dir).replace(os.sep, "/")
         rewrites_per_file.setdefault(ph["html_path"], {})[
             tuple(ph["tag_span"])
         ] = new_src

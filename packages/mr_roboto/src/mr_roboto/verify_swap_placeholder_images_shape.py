@@ -77,7 +77,15 @@ def _walk_html(workspace_path: str) -> list[str]:
 def _is_rewritten_asset_ref(src: str) -> bool:
     """A relative, locally-rewritten asset reference (the corruption-prone
     case). NOT a placehold.co URL, NOT an absolute/scheme/protocol-relative
-    URL, NOT a data: URI, and non-empty."""
+    URL, NOT a data: URI, NOT a root-relative ("/..."), and non-empty.
+
+    A leading "/" makes the ref ROOT-ANCHORED (resolved against the server
+    document root, not the HTML file's own dir), so it is NOT the executor's
+    output — the swap step only ever emits truly-relative refs ("assets/x.png"
+    or "../assets/x.png"). Root-relative refs (e.g. a pre-existing
+    "/assets/already_real.png" the executor leaves untouched) must be skipped,
+    not resolved relative to the HTML dir, which would yield a bogus path and a
+    false broken-asset-ref."""
     s = (src or "").strip()
     if not s:
         return False
@@ -86,6 +94,8 @@ def _is_rewritten_asset_ref(src: str) -> bool:
     if _DATA_URI_RE.match(s):
         return False
     if _ABSOLUTE_URL_RE.match(s):
+        return False
+    if s.startswith("/"):
         return False
     return True
 

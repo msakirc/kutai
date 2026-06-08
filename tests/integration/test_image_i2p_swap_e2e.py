@@ -35,11 +35,18 @@ _HTML_SCREEN = """<!DOCTYPE html>
 
 
 @pytest.mark.asyncio
-async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path):
+async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path, temp_db):
     """Mocks beckman.enqueue with the production JSON-string TaskResult.result
-    shape and asserts the full host path: HTML rewritten to assets/<pid>.png,
-    PNGs written, recursive subdir screen handled, and the verify mechanic
-    accepts the consistent result."""
+    shape and asserts the full host path: HTML rewritten to a subdir-correct
+    relative asset ref (root → assets/<pid>.png, subdir screen →
+    ../assets/<pid>.png), PNGs written, recursive subdir screen handled, and
+    the verify mechanic accepts the consistent result.
+
+    Uses the ``temp_db`` fixture so the audit-log path
+    (mr_roboto.run → record_action_event → src/infra/db.py) hits an isolated,
+    schema-initialised SQLite file rather than crashing on a missing
+    registry_events table against the live DB — the test's no-live-DB claim is
+    real, not merely tolerated by a best-effort swallow."""
     ws = tmp_path / "mission_777"
     web = ws / ".web"
     (web / "screens").mkdir(parents=True)
@@ -131,6 +138,7 @@ async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path):
 
     home = (web / "home.html").read_text(encoding="utf-8")
     assert "placehold.co" not in home
+    # Root HTML: relpath from .web/ to .web/assets/ → "assets/<pid>.png".
     assert 'src="assets/home__0.png"' in home
     assert 'src="assets/home__1.png"' in home
     assert "/assets/already_real.png" in home  # untouched real src
@@ -139,7 +147,11 @@ async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path):
         encoding="utf-8"
     )
     assert "placehold.co" not in onboarding
-    assert 'src="assets/onboarding__0.png"' in onboarding
+    # Subdir screen: relpath from .web/screens/ to .web/assets/ →
+    # "../assets/<pid>.png" — resolves correctly in a static file server,
+    # whereas a flat "assets/<pid>.png" would 404 (→ .web/screens/assets/...).
+    assert 'src="../assets/onboarding__0.png"' in onboarding
+    assert 'src="assets/onboarding__0.png"' not in onboarding
 
     assert call_log.count("prompt_writer") == 1
     assert call_log.count("image") == 3

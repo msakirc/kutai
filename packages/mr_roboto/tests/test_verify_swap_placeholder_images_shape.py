@@ -168,6 +168,72 @@ def test_live_empty_swap_result_fails_on_broken_asset_ref(tmp_path):
     assert "assets/home__1.png" in res["broken_asset_refs"]
 
 
+def test_root_relative_ref_not_flagged_broken(tmp_path):
+    """A root-relative ("/assets/x.png") ref is ROOT-ANCHORED, not a
+    locally-rewritten relative asset ref. The executor leaves such pre-existing
+    refs untouched, so the verifier must NOT resolve it against the HTML dir
+    (which would yield a bogus path) — even when the file is absent on disk it
+    must NOT be flagged broken."""
+    html = (
+        "<!DOCTYPE html><html><body>"
+        '<img src="/assets/already_real.png" alt="real">'
+        "</body></html>"
+    )
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(html, encoding="utf-8")
+    # Note: NO file written at /assets/already_real.png anywhere.
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={},
+    )
+    assert res["ok"] is True
+    assert res["broken_asset_refs"] == []
+
+
+def test_subdir_dotdot_ref_resolves_correctly(tmp_path):
+    """After Fix 1 the executor emits "../assets/<pid>.png" for subdir
+    screens. The verifier resolves each ref against the HTML file's own dir,
+    so .web/screens/onboarding.html + "../assets/x.png" → .web/assets/x.png,
+    which exists → NOT broken. Confirms verifier agrees with the executor for
+    subdir HTML."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    (web / "screens" / "onboarding.html").write_text(
+        '<html><body><img src="../assets/onboarding__0.png" alt="u"></body></html>',
+        encoding="utf-8",
+    )
+    (web / "assets").mkdir()
+    (web / "assets" / "onboarding__0.png").write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={},
+    )
+    assert res["ok"] is True
+    assert res["broken_asset_refs"] == []
+
+
+def test_subdir_flat_ref_is_flagged_broken(tmp_path):
+    """Regression lock for the original bug: a subdir screen with the OLD flat
+    "assets/<pid>.png" ref resolves to .web/screens/assets/<pid>.png (missing)
+    → broken. This is exactly what the live verify gate caught."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    (web / "screens" / "onboarding.html").write_text(
+        '<html><body><img src="assets/onboarding__0.png" alt="u"></body></html>',
+        encoding="utf-8",
+    )
+    (web / "assets").mkdir()
+    # The asset exists in the FLAT dir, but the subdir-relative resolution
+    # points at .web/screens/assets/... which does not exist.
+    (web / "assets" / "onboarding__0.png").write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={},
+    )
+    assert res["ok"] is False
+    assert "broken asset ref" in (res.get("error") or "").lower()
+
+
 def test_live_empty_swap_result_passes_with_only_surviving_placeholders(tmp_path):
     """LIVE i2p graceful-degrade: nothing was rewritten (all images still
     point at placehold.co). With an empty swap_result the gate passes —

@@ -294,6 +294,75 @@ async def test_full_swap_writes_assets_and_rewrites_html_json_string(
 
 
 @pytest.mark.asyncio
+async def test_subdir_html_gets_relative_dotdot_ref(monkeypatch, tmp_path):
+    """CRITICAL multi-screen fix: assets all live in the flat .web/assets/,
+    but each HTML's rewritten <img src> is computed as os.path.relpath from
+    THAT html file's own dir to the asset. Root HTML → "assets/<pid>.png";
+    a subdir screen → "../assets/<pid>.png". A flat "assets/<pid>.png" in a
+    subdir screen would 404 in a static file server."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    (web / "home.html").write_text(
+        '<html><body>'
+        '<img src="https://placehold.co/390x220/E07A5F/FFF?text=hero" alt="hero">'
+        '</body></html>',
+        encoding="utf-8",
+    )
+    (web / "screens" / "onboarding.html").write_text(
+        '<html><body>'
+        '<img src="https://placehold.co/64x64/264653/FFF?text=u" alt="user portrait">'
+        '</body></html>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+
+    class _Prompts:
+        status = "completed"
+        result = json.dumps({
+            "prompts": [
+                {"placeholder_id": "home__0", "prompt": "coral barista"},
+                {"placeholder_id": "onboarding__0", "prompt": "teal portrait"},
+            ],
+        })
+        error = None
+
+    async def _enqueue(spec, **kwargs):
+        if spec.get("agent_type") == "prompt_writer":
+            return _Prompts()
+        ic = spec["context"]["image_call"]
+        path = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_raw.png")
+        _write_real_png(path, ic["width"], ic["height"])
+        class _Img:
+            status = "completed"
+            result = json.dumps({"path": path, "provider": "pollinations"})
+            error = None
+        return _Img()
+    monkeypatch.setattr(
+        "mr_roboto.swap_placeholder_images._enqueue_beckman", _enqueue
+    )
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["ok"] is True
+    assert res["replaced_count"] == 2
+
+    # Assets still written flat under a single .web/assets/.
+    assets = web / "assets"
+    pngs = sorted(p.name for p in assets.glob("*.png"))
+    assert pngs == ["home__0.png", "onboarding__0.png"]
+
+    # Root HTML → "assets/<pid>.png".
+    home = (web / "home.html").read_text(encoding="utf-8")
+    assert 'src="assets/home__0.png"' in home
+
+    # Subdir screen → "../assets/<pid>.png".
+    onboarding = (web / "screens" / "onboarding.html").read_text(encoding="utf-8")
+    assert 'src="../assets/onboarding__0.png"' in onboarding
+    assert 'src="assets/onboarding__0.png"' not in onboarding
+
+
+@pytest.mark.asyncio
 async def test_per_image_failure_keeps_placeholder(monkeypatch, tmp_path):
     web = tmp_path / ".web"; web.mkdir()
     (web / "home.html").write_text(_HTML, encoding="utf-8")

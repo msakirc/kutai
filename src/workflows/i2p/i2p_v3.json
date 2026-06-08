@@ -5133,12 +5133,57 @@
       "reversibility": "full"
     },
     {
+      "id": "5.35",
+      "phase": "phase_5",
+      "name": "swap_placeholder_images",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": [
+        "5.30c"
+      ],
+      "instruction": "Plan 3 — replace placehold.co <img> placeholders in every mission_{mission_id}/.web/**/*.html (recursive) with real diffusion-generated PNGs. Enqueues ONE prompt_writer LLM task (artifact_schema enforces shape via constrained_emit) to enrich each placeholder's alt text into a diffusion prompt, then one image task per placeholder through beckman (fatih_hoca.select(needs_image=True) -> dispatcher.dispatch -> paintress). Writes PNGs under mission_{mission_id}/.web/assets/<placeholder_id>.png and rewrites <img src> to assets/<id>.png. Best-effort: per-placeholder failures keep the original placehold.co URL — never blocks the mission. Skipping is acceptable; the preview surfaces with placeholders.",
+      "done_when": "swap_placeholder_images executor returns ok=true (replaced_count>=0; skipped_count>0 is acceptable when image generation is unavailable)",
+      "produces": [
+        "mission_{mission_id}/.web/assets/"
+      ],
+      "reversibility": "full",
+      "artifact_schema": {
+        "diffusion_prompts": {
+          "type": "object",
+          "required_fields": [
+            "prompts"
+          ],
+          "_schema_version": "1"
+        }
+      },
+      "payload": {
+        "action": "swap_placeholder_images"
+      }
+    },
+    {
+      "id": "5.35.verify",
+      "phase": "phase_5",
+      "name": "swap_placeholder_images_shape_check",
+      "agent": "mechanical",
+      "executor": "mechanical",
+      "depends_on": [
+        "5.35"
+      ],
+      "instruction": "Plan 3 verify-posthook. Asserts swap_placeholder_images produced a self-consistent result: surviving placehold.co URLs in mission_{mission_id}/.web/**/*.html equal skipped_count, and assets/ exists when replaced_count>0. Walks the workspace directly (mirrors verify_charter_shape's role for phase 0). Gates 5.40 emit_preview_url.",
+      "done_when": "verify_swap_placeholder_images_shape returns ok=true",
+      "reversibility": "full",
+      "payload": {
+        "action": "verify_swap_placeholder_images_shape"
+      }
+    },
+    {
       "id": "5.40",
       "phase": "phase_5",
       "name": "emit_preview_url",
       "agent": "mechanical",
       "depends_on": [
-        "5.30c"
+        "5.30c",
+        "5.35.verify"
       ],
       "executor": "emit_preview_url",
       "payload": {

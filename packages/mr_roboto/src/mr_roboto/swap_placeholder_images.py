@@ -286,11 +286,154 @@ async def _call_prompt_writer(
     return out or None
 
 
-# Stub for Task 6 testability.
+# ── Per-placeholder image fanout + HTML rewrite ────────────────────────
+
+async def _generate_one_image(
+    *, placeholder: dict[str, Any], prompt: str, out_dir: str,
+) -> str | None:
+    """Enqueue one image task; return the PNG path or None.
+
+    Mirrors the /image cmd shape (raw_dispatch=True, prompt, out_dir,
+    width/height, filename_hint, quality_tier). Enqueued via beckman —
+    Plan 1 v2's admission routes agent_type=image → dispatch_image →
+    paintress. JSON-string-safe result parse."""
+    pid = placeholder["placeholder_id"]
+    spec = {
+        "title": f"image:{pid}",
+        "description": f"Generate image for placeholder {pid}",
+        "agent_type": "image",
+        "kind": "image",
+        "runner": "direct",
+        "priority": 5,
+        "context": {
+            "image_call": {
+                "raw_dispatch": True,
+                "prompt": prompt,
+                "out_dir": out_dir,
+                "width": int(placeholder.get("width") or 512),
+                "height": int(placeholder.get("height") or 512),
+                "quality_tier": "fast",
+                "filename_hint": pid,
+            },
+        },
+    }
+    try:
+        result = await _enqueue_beckman(spec, await_inline=True)
+    except Exception as exc:
+        logger.warning("image enqueue raised for %s: %s", pid, exc)
+        return None
+    if getattr(result, "status", "") != "completed":
+        logger.info("image task for %s did not complete (status=%r)",
+                    pid, getattr(result, "status", ""))
+        return None
+    payload = _parse_task_result(result)
+    path = payload.get("path") or payload.get("content")
+    if not (path and os.path.isfile(path)):
+        logger.warning("image task for %s returned no usable path", pid)
+        return None
+    return path
+
+
+def _rename_to_pid(src_path: str, assets_dir: str, placeholder_id: str) -> str:
+    """Rename the timestamp-named PNG to a stable <pid>.png inside assets/.
+    Single rename — no copy fallback unless rename fails."""
+    os.makedirs(assets_dir, exist_ok=True)
+    final = os.path.join(assets_dir, f"{placeholder_id}.png")
+    if os.path.abspath(src_path) == os.path.abspath(final):
+        return f"{placeholder_id}.png"
+    try:
+        if os.path.exists(final):
+            os.remove(final)
+        os.replace(src_path, final)
+        return f"{placeholder_id}.png"
+    except OSError as exc:
+        logger.warning("rename failed for %s: %s", placeholder_id, exc)
+        try:
+            import shutil
+            shutil.copyfile(src_path, final)
+            return f"{placeholder_id}.png"
+        except OSError:
+            return ""
+
+
+def _swap_src_in_tag(tag: str, new_src: str) -> str:
+    """Replace src="..." inside a single <img> tag, preserving other attrs."""
+    return re.sub(r'src\s*=\s*"[^"]*"', f'src="{new_src}"', tag, count=1,
+                  flags=re.IGNORECASE)
+
+
+def _rewrite_html_srcs(
+    html_path: str, rewrites: dict[tuple[int, int], str],
+) -> bool:
+    if not rewrites:
+        return False
+    try:
+        with open(html_path, encoding="utf-8") as fh:
+            html = fh.read()
+    except OSError:
+        return False
+    # Apply tail-first so earlier spans keep their offsets.
+    ordered = sorted(rewrites.items(), key=lambda kv: kv[0][0], reverse=True)
+    changed = False
+    for (start, end), new_src in ordered:
+        old_tag = html[start:end]
+        new_tag = _swap_src_in_tag(old_tag, new_src)
+        if new_tag != old_tag:
+            html = html[:start] + new_tag + html[end:]
+            changed = True
+    if changed:
+        tmp = html_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        os.replace(tmp, html_path)
+    return changed
+
+
 async def _fanout_and_rewrite(
     workspace_path: str,
     placeholders: list[dict[str, Any]],
     prompt_map: dict[str, str],
 ) -> dict[str, Any]:
-    return {"replaced": 0, "skipped": len(placeholders),
-            "html_files_changed": 0, "errors": []}
+    """Sequential per-placeholder: image enqueue → rename to <pid>.png →
+    record rewrite. Per-placeholder failures kept in errors; original
+    placehold.co URL survives in HTML for that slot."""
+    assets_dir = _assets_dir(workspace_path)
+    rewrites_per_file: dict[str, dict[tuple[int, int], str]] = {}
+    errors: list[str] = []
+    replaced = 0
+    skipped = 0
+
+    for ph in placeholders:
+        pid = ph["placeholder_id"]
+        prompt = prompt_map.get(pid)
+        if not prompt:
+            skipped += 1
+            errors.append(f"no prompt for {pid}")
+            continue
+        path = await _generate_one_image(
+            placeholder=ph, prompt=prompt, out_dir=assets_dir,
+        )
+        if not path:
+            skipped += 1
+            errors.append(f"image gen failed for {pid}")
+            continue
+        final_name = _rename_to_pid(path, assets_dir, pid)
+        if not final_name:
+            skipped += 1
+            errors.append(f"rename failed for {pid}")
+            continue
+        new_src = f"assets/{final_name}"
+        rewrites_per_file.setdefault(ph["html_path"], {})[
+            tuple(ph["tag_span"])
+        ] = new_src
+        replaced += 1
+
+    files_changed = 0
+    for path, rewrites in rewrites_per_file.items():
+        if _rewrite_html_srcs(path, rewrites):
+            files_changed += 1
+
+    return {
+        "replaced": replaced, "skipped": skipped,
+        "html_files_changed": files_changed, "errors": errors,
+    }

@@ -207,3 +207,132 @@ async def test_prompt_writer_malformed_json_degrades(monkeypatch, tmp_path):
     assert res["ok"] is True
     assert res["replaced_count"] == 0
     assert res["skipped_count"] == 3
+
+
+# -- Task 6: per-placeholder image fanout + HTML rewrite ----------------
+
+import io  # noqa: E402,F401
+from PIL import Image as _Image  # noqa: E402
+
+
+def _write_real_png(path, w=64, h=64):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _Image.new("RGB", (w, h), (100, 150, 200)).save(path, "PNG")
+
+
+@pytest.mark.asyncio
+async def test_full_swap_writes_assets_and_rewrites_html_json_string(
+    monkeypatch, tmp_path,
+):
+    """v2 fix: production shape — image TaskResult.result is a JSON STRING."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+
+    class _OK:
+        status = "completed"
+        result = json.dumps({
+            "_schema_version": "1",
+            "prompts": [
+                {"placeholder_id": "home__0", "prompt": "p0"},
+                {"placeholder_id": "home__1", "prompt": "p1"},
+                {"placeholder_id": "home__2", "prompt": "p2"},
+            ],
+        })
+        error = None
+
+    image_idx = {"n": 0}
+
+    async def _fake_enqueue(spec, **kwargs):
+        if spec.get("agent_type") == "prompt_writer":
+            return _OK()
+        # Image task — paintress writes the file as
+        # <out_dir>/<filename_hint>_<ms>.png. We simulate that exactly.
+        ic = spec["context"]["image_call"]
+        idx = image_idx["n"]; image_idx["n"] += 1
+        png_path = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_mock{idx}.png")
+        _write_real_png(png_path, ic["width"], ic["height"])
+
+        class _ImgResult:
+            status = "completed"
+            # PRODUCTION SHAPE — JSON string.
+            result = json.dumps({
+                "path": png_path, "provider": "pollinations",
+                "model": "pollinations/flux", "cost": 0.0,
+            })
+            error = None
+        return _ImgResult()
+
+    monkeypatch.setattr(
+        "mr_roboto.swap_placeholder_images._enqueue_beckman", _fake_enqueue,
+    )
+
+    res = await swap_placeholder_images(
+        mission_id=42, design_tokens={"primary": "#E07A5F"},
+        brand_voice="warm",
+    )
+
+    assert res["ok"] is True
+    assert res["replaced_count"] == 3
+    assert res["skipped_count"] == 0
+    assert res["html_files_changed"] == 1
+
+    assets = tmp_path / ".web" / "assets"
+    pngs = sorted(p.name for p in assets.glob("*.png"))
+    assert "home__0.png" in pngs
+    assert "home__1.png" in pngs
+    assert "home__2.png" in pngs
+
+    rewritten = (web / "home.html").read_text(encoding="utf-8")
+    assert "placehold.co" not in rewritten
+    assert rewritten.count('src="assets/home__0.png"') == 1
+    assert rewritten.count('src="assets/home__1.png"') == 1
+    assert rewritten.count('src="assets/home__2.png"') == 1
+    assert "/assets/already_real.png" in rewritten  # untouched real src
+
+
+@pytest.mark.asyncio
+async def test_per_image_failure_keeps_placeholder(monkeypatch, tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML, encoding="utf-8")
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+    class _OK:
+        status = "completed"
+        result = json.dumps({
+            "_schema_version": "1",
+            "prompts": [
+                {"placeholder_id": "home__0", "prompt": "p0"},
+                {"placeholder_id": "home__1", "prompt": "p1"},
+                {"placeholder_id": "home__2", "prompt": "p2"},
+            ],
+        })
+        error = None
+    n = {"i": 0}
+    async def _flaky(spec, **kwargs):
+        if spec.get("agent_type") == "prompt_writer":
+            return _OK()
+        ic = spec["context"]["image_call"]; idx = n["i"]; n["i"] += 1
+        if idx == 1:
+            class _F:
+                status = "failed"; result = None; error = "rate-limit"
+            return _F()
+        path = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_x{idx}.png")
+        _write_real_png(path, ic["width"], ic["height"])
+        class _I:
+            status = "completed"
+            result = json.dumps({"path": path, "provider": "pollinations"})
+            error = None
+        return _I()
+    monkeypatch.setattr("mr_roboto.swap_placeholder_images._enqueue_beckman", _flaky)
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["ok"] is True
+    assert res["replaced_count"] == 2
+    assert res["skipped_count"] == 1
+    rewritten = (web / "home.html").read_text(encoding="utf-8")
+    assert rewritten.count("placehold.co") == 1
+    assert rewritten.count('src="assets/') == 2

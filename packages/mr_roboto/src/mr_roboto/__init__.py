@@ -4534,14 +4534,18 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "crisis/draft_holding":
-        # LLM-bound: reads tier playbook + event context, outputs holding-statement variants.
-        # Returns variants for founder selection — never publishes automatically.
+        from mr_roboto.crisis_draft_holding import _read_playbook
+        from src.comms.producers import enqueue_crisis_holding
         try:
-            from mr_roboto.crisis_draft_holding import run as _draft_holding
-            res = await _draft_holding(payload)
-            if res.get("status") == "error":
-                return Action(status="failed", error=res.get("error") or "draft_holding failed", result=res)
-            return Action(status="completed", result=res)
+            tier = int(payload.get("tier") or 1)
+            tid = await enqueue_crisis_holding(
+                event_id=payload.get("event_id"),
+                product_id=payload.get("product_id") or "",
+                tier=tier,
+                summary=payload.get("summary") or "",
+                playbook_excerpt=_read_playbook(tier),
+            )
+            return Action(status="completed", result={"producer_task_id": tid, "deferred": True})
         except Exception as e:
             return Action(status="failed", error=str(e))
 

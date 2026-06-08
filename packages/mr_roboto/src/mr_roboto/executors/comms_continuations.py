@@ -31,9 +31,41 @@ def _extract_content(result: dict) -> str:
     return str(content or "")
 
 
-# Stubs — fully implemented in Tasks 2-4. Must exist now for registration.
-async def _crisis_resume(child_task_id, result, state): pass
-async def _crisis_resume_err(child_task_id, result, state): pass
+async def _emit_crisis_card(*, event_id, product_id, tier, variants):
+    """Surface holding-statement variants to the founder. Never auto-posts."""
+    try:
+        from src.founder_actions import create as fa_create
+        await fa_create(
+            mission_id=None, kind="generic",
+            title=f"Crisis holding statements ready (event #{event_id}, Tier {tier}) — pick one",
+            why=("KutAI drafted holding-statement variants for the crisis. "
+                 "NEVER auto-posted — select/edit and post manually."),
+            instructions=[f"Variant {chr(65+i)}:\n\n{v}" for i, v in enumerate(variants)]
+                         + ["Pick one, edit as needed, post manually."],
+            expected_output_kind="ack_only", notify_telegram=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("crisis card emit failed: %s", exc)
+
+
+async def _crisis_resume(child_task_id, result, state):
+    from mr_roboto.crisis_draft_holding import parse_variants, canned_variants
+    variants = parse_variants(_extract_content(result))
+    if not variants:
+        variants = canned_variants(int(state.get("tier") or 1), state.get("product_id") or "")
+    await _emit_crisis_card(event_id=state.get("event_id"), product_id=state.get("product_id") or "",
+                            tier=int(state.get("tier") or 1), variants=variants)
+
+
+async def _crisis_resume_err(child_task_id, result, state):
+    from mr_roboto.crisis_draft_holding import canned_variants
+    logger.warning("crisis holding child failed (%s) — canned fallback", (result or {}).get("error"))
+    variants = canned_variants(int(state.get("tier") or 1), state.get("product_id") or "")
+    await _emit_crisis_card(event_id=state.get("event_id"), product_id=state.get("product_id") or "",
+                            tier=int(state.get("tier") or 1), variants=variants)
+
+
+# Stubs — fully implemented in Tasks 3-4. Must exist now for registration.
 async def _incident_resume(child_task_id, result, state): pass
 async def _incident_resume_err(child_task_id, result, state): pass
 async def _press_kit_resume(child_task_id, result, state): pass

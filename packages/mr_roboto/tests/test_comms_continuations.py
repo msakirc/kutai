@@ -45,3 +45,44 @@ def test_crisis_resume_err_uses_canned_fallback(monkeypatch):
     asyncio.run(S._crisis_resume_err(1, {"error": "exhausted"}, state))
     assert len(emitted["variants"]) == 2  # canned tier fallback
     assert "p1" in emitted["variants"][0]
+
+
+def test_incident_resume_surfaces_redacted_draft(monkeypatch):
+    import mr_roboto.executors.comms_continuations as S
+    got = {}
+    async def fake_emit(*, incident_id, product_id, draft):
+        got.update(dict(incident_id=incident_id, product_id=product_id, draft=draft))
+    monkeypatch.setattr(S, "_emit_incident_card", fake_emit)
+    res = {"result": {"content": "We are investigating a service issue and will update soon."}}
+    state = {"incident_id": 9, "product_id": "p1", "status_kind": "investigating",
+             "affected_components": ["api"]}
+    asyncio.run(S._incident_resume(1, res, state))
+    assert "investigating" in got["draft"].lower()
+    assert got["incident_id"] == 9
+
+
+def test_incident_resume_redacts_internal_leak(monkeypatch):
+    import mr_roboto.executors.comms_continuations as S
+    got = {}
+    async def fake_emit(*, incident_id, product_id, draft):
+        got["draft"] = draft
+    monkeypatch.setattr(S, "_emit_incident_card", fake_emit)
+    # LLM erroneously leaks a private IP — the sink's final redaction must scrub it.
+    res = {"result": {"content": "Outage on 10.0.0.5 affecting users."}}
+    state = {"incident_id": 9, "product_id": "p1", "status_kind": "investigating",
+             "affected_components": []}
+    asyncio.run(S._incident_resume(1, res, state))
+    assert "10.0.0.5" not in got["draft"]
+
+
+def test_incident_resume_err_uses_fallback(monkeypatch):
+    import mr_roboto.executors.comms_continuations as S
+    got = {}
+    async def fake_emit(*, incident_id, product_id, draft):
+        got["draft"] = draft
+    monkeypatch.setattr(S, "_emit_incident_card", fake_emit)
+    state = {"incident_id": 9, "product_id": "p1", "status_kind": "monitoring",
+             "affected_components": ["billing"]}
+    asyncio.run(S._incident_resume_err(1, {"error": "exhausted"}, state))
+    assert got["draft"]  # non-empty canned draft
+    assert "billing" in got["draft"]

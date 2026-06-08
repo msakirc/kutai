@@ -75,3 +75,35 @@ async def enqueue_crisis_holding(*, event_id: int, product_id: str, tier: int,
         cont_state={"event_id": event_id, "product_id": product_id, "tier": tier,
                     "summary": summary, "playbook_excerpt": excerpt},
     )
+
+
+async def enqueue_incident_update(*, incident_id: int, product_id: str, status_kind: str,
+                                  severity: str, affected_components: list,
+                                  safe_alert_details: dict, existing_summary: str) -> int | None:
+    """Enqueue the incident status-update producer; comms.incident_update.resume
+    applies the final redaction pass + surfaces the draft. Inputs already redacted."""
+    import json as _json
+    components_str = ", ".join(affected_components) if affected_components else "the service"
+    safe_details_str = _json.dumps(safe_alert_details, ensure_ascii=False)[:800]
+    prompt = (
+        "You are drafting a public-facing status page update for customers.\n"
+        f"Incident severity: {severity}\n"
+        f"Affected components: {components_str}\n"
+        f"Status kind: {status_kind} (investigating|identified|monitoring|resolved)\n"
+        f"Current summary: {existing_summary or 'none'}\n"
+        f"Internal alert details (already redacted, for context only):\n{safe_details_str}\n\n"
+        "Write 2-4 clear, calm sentences suitable for customers.\n"
+        "Rules:\n- Do NOT mention internal hostnames, IPs, stack traces, or team names.\n"
+        "- Do NOT include customer PII.\n- Use plain language — no jargon.\n"
+        "- Acknowledge the impact, state what you know, give next-update ETA.\n"
+        "Draft only — no sign-off or signature needed."
+    )
+    spec = _overhead_spec(f"incident_update:llm:{_suffix()}",
+                          "Draft customer-facing status update.", prompt, 400, 200)
+    return await enqueue(
+        spec, lane=LANE_ONESHOT,
+        on_complete="comms.incident_update.resume",
+        on_error="comms.incident_update.resume_err",
+        cont_state={"incident_id": incident_id, "product_id": product_id,
+                    "status_kind": status_kind, "affected_components": affected_components},
+    )

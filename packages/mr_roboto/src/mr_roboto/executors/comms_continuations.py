@@ -65,9 +65,47 @@ async def _crisis_resume_err(child_task_id, result, state):
                             tier=int(state.get("tier") or 1), variants=variants)
 
 
-# Stubs — fully implemented in Tasks 3-4. Must exist now for registration.
-async def _incident_resume(child_task_id, result, state): pass
-async def _incident_resume_err(child_task_id, result, state): pass
+async def _emit_incident_card(*, incident_id, product_id, draft):
+    """Surface the status-update draft to the founder (the old incident_update_review
+    gate, now inline in the sink — see general_beckman posthook_handlers/incident_update_review).
+    NEVER auto-publishes."""
+    try:
+        from src.founder_actions import create as fa_create
+        await fa_create(
+            mission_id=None, kind="generic",
+            title=f"Incident status update drafted (incident #{incident_id}) — review before publishing",
+            why=("KutAI drafted a customer-facing status update. NEVER auto-published — "
+                 "review/edit, then publish manually."),
+            instructions=[f"Draft:\n\n{draft[:1000]}",
+                          "Edit if needed, then publish manually.",
+                          "NEVER publish automatically — draft only."],
+            expected_output_kind="ack_only", notify_telegram=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("incident card emit failed: %s", exc)
+
+
+async def _incident_resume(child_task_id, result, state):
+    from mr_roboto.incident_draft_update import fallback_draft, finalize_redaction
+    draft_raw = _extract_content(result).strip()
+    if not draft_raw:
+        draft_raw = fallback_draft(state.get("status_kind") or "investigating",
+                                   state.get("affected_components") or [])
+    draft = finalize_redaction(draft_raw)
+    await _emit_incident_card(incident_id=state.get("incident_id"),
+                              product_id=state.get("product_id") or "", draft=draft)
+
+
+async def _incident_resume_err(child_task_id, result, state):
+    from mr_roboto.incident_draft_update import fallback_draft, finalize_redaction
+    logger.warning("incident update child failed (%s) — canned draft", (result or {}).get("error"))
+    draft = finalize_redaction(fallback_draft(state.get("status_kind") or "investigating",
+                                              state.get("affected_components") or []))
+    await _emit_incident_card(incident_id=state.get("incident_id"),
+                              product_id=state.get("product_id") or "", draft=draft)
+
+
+# Stubs — fully implemented in Task 4. Must exist now for registration.
 async def _press_kit_resume(child_task_id, result, state): pass
 async def _press_kit_resume_err(child_task_id, result, state): pass
 

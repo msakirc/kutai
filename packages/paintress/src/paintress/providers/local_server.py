@@ -15,6 +15,7 @@ from ..types import ImageSpec
 
 _PROMPT_POLL_INTERVAL = 1.0
 _PROMPT_TIMEOUT = 180.0
+_MAX_BYTES = 25 * 1024 * 1024  # 25 MB — cap against runaway provider responses
 
 
 class LocalServerProvider:
@@ -65,7 +66,7 @@ class LocalServerProvider:
         images = body.get("images") or []
         if not images:
             raise RuntimeError("a1111_no_image")
-        data = base64.b64decode(images[0])
+        data = base64.b64decode(images[0].split(",", 1)[-1])
         info = body.get("info") or "{}"
         try:
             info_d = json.loads(info)
@@ -83,9 +84,9 @@ class LocalServerProvider:
             prompt_id = (resp.json() or {}).get("prompt_id")
             if not prompt_id:
                 raise RuntimeError("comfyui_no_prompt_id")
-            deadline = asyncio.get_event_loop().time() + _PROMPT_TIMEOUT
+            deadline = asyncio.get_running_loop().time() + _PROMPT_TIMEOUT
             image_meta = None
-            while asyncio.get_event_loop().time() < deadline:
+            while asyncio.get_running_loop().time() < deadline:
                 h = await c.get(f"{base}/history/{prompt_id}")
                 h.raise_for_status()
                 hist = h.json() or {}
@@ -106,9 +107,14 @@ class LocalServerProvider:
                 "subfolder": image_meta.get("subfolder", ""),
                 "type": image_meta.get("type", "output"),
             }
-            v = await c.get(f"{base}/view", params=params)
-            v.raise_for_status()
-            return v.content, {"seed_used": spec.seed}
+            async with c.stream("GET", f"{base}/view", params=params) as v:
+                v.raise_for_status()
+                buf = bytearray()
+                async for chunk in v.aiter_bytes():
+                    buf += chunk
+                    if len(buf) > _MAX_BYTES:
+                        raise RuntimeError("response_too_large")
+            return bytes(buf), {"seed_used": spec.seed}
 
     def _build_comfyui_workflow(self, spec: ImageSpec) -> dict:
         seed = int(spec.seed) if spec.seed is not None else 0

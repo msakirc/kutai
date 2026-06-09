@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prompt-foundry"
+version = "0.1.0"
+description = "Prompt Foundry — leaf package owning prompt/profile content + build API"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

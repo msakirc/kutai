@@ -1,5 +1,26 @@
+import pytest
+import yaml
+from prompt_foundry import loader
 from prompt_foundry.loader import get_profile, PROFILE_REGISTRY
 from prompt_foundry.profile import Profile
+
+
+def test_unknown_yaml_key_is_ignored(tmp_path, monkeypatch):
+    """YAML files with unrecognised keys must load without error; unknown keys are silently dropped."""
+    profile_yaml = tmp_path / "x.yaml"
+    profile_yaml.write_text(
+        'name: x\n'
+        'system_prompt: "You are x. must never. final_answer ```json {} ```"\n'
+        'bogus_key: 1\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loader, "_PROFILES_DIR", tmp_path)
+    result = loader._load_all()
+    assert "x" in result
+    p = result["x"]
+    assert p.name == "x"
+    assert not hasattr(p, "bogus_key")
+
 
 def test_summarizer_loaded_from_yaml():
     p = get_profile("summarizer")

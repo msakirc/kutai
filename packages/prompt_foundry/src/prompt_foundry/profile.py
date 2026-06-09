@@ -33,7 +33,7 @@ class Profile:
     _prompt_version_override: Optional[str] = field(default=None, repr=False)
     _suppress_clarification: bool = field(default=False, repr=False)
     progress_callback: Optional[Callable] = field(default=None, repr=False)
-    _original_allowed_tools: object = field(default=None, repr=False)
+    _original_allowed_tools: Optional[list[str]] = field(default=None, repr=False)
 
     def get_system_prompt(self, task: dict) -> str:
         return self.system_prompt

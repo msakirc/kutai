@@ -24,6 +24,9 @@ def set_store(store: Optional[PromptStore]) -> None:
     _store = store
 
 
+# Only get_active/record_quality have module-level wrappers because they're
+# called from the leaf/coulson; save_version/list_versions are reached directly
+# via the injected adapter (PromptStore typing).
 async def get_active(key: str) -> Optional[str]:
     if _store is None:
         return None

@@ -449,6 +449,11 @@ async def main():
         except Exception as exc:
             _log.warning("API keyword index seeding failed (non-critical): %s", exc)
 
+    # Wire prompt_foundry's storage port to the DB adapter (one-time, at startup).
+    from prompt_foundry import set_store
+    from src.infra.prompt_store_adapter import DbPromptStore
+    set_store(DbPromptStore())
+
     await asyncio.gather(
         _docker_phase(),
         _noncritical_health_checks(),

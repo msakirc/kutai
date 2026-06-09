@@ -106,17 +106,64 @@ async def _assign_unresolved(unresolved: list[dict], candidates: list[tuple[str,
     return {}
 
 
-async def _escalate_to_founder(**kwargs) -> None:
-    """Safe minimal founder-halt stub. MUST NOT raise.
+async def _resolve_founder_chat_id(mission_id: int | None) -> int | None:
+    """Resolve the founder chat_id (blackboard → missions.context).
 
-    Best-effort: park the reviewer task in ``waiting_human`` so the mission
-    stops auto-advancing on an unlocalisable / exhausted reviewer failure, and
-    log a warning. The full founder-halt card (Continue/Branch/Abort notice)
-    is wired in a later task.
+    Mirrors mr_roboto.clarify._resolve_chat_id's fallback chain (minus the
+    standalone-task row, which the founder-halt never has a task dict for).
     """
-    # TODO(task 10): send the founder-halt card (Continue/Branch/Abort notice).
-    reason = kwargs.get("reason") or "unspecified"
-    reviewer_task_id = kwargs.get("reviewer_task_id")
+    if mission_id is None:
+        return None
+    try:
+        from src.collaboration.blackboard import read_blackboard
+        artifacts = await read_blackboard(mission_id, "artifacts")
+        if isinstance(artifacts, dict) and artifacts.get("chat_id") is not None:
+            return artifacts.get("chat_id")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("founder-halt chat_id (blackboard) lookup failed: %s", exc)
+    try:
+        from src.infra.db import get_db as _get_db
+        _db = await _get_db()
+        _cur = await _db.execute(
+            "SELECT context FROM missions WHERE id = ?", (mission_id,),
+        )
+        _row = await _cur.fetchone()
+        await _cur.close()
+        if _row and _row[0]:
+            _mctx = _json.loads(_row[0])
+            if isinstance(_mctx, str):
+                _mctx = _json.loads(_mctx)
+            return (_mctx or {}).get("chat_id")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("founder-halt chat_id (missions) lookup failed: %s", exc)
+    return None
+
+
+async def _escalate_to_founder(
+    *,
+    mission_id: int | None = None,
+    reviewer_id: str | None = None,
+    review_result: dict | None = None,
+    workflow: dict | None = None,
+    reason: str | None = None,
+    reviewer_task_id: int | None = None,
+    producer: str | None = None,
+) -> None:
+    """Founder-halt: PARK the reviewer + send a Telegram halt card. MUST NOT raise.
+
+    Safety-critical: an escalated review must NOT advance unreviewed. So the
+    first thing we do — before any best-effort Telegram work — is park the
+    reviewer task in ``waiting_human`` so the mission stops auto-advancing on
+    an unlocalisable / exhausted reviewer failure.
+
+    Then, best-effort (never raising): resolve the founder chat_id and the
+    producer set the reviewer reviews, and send the founder-halt card with
+    one Regenerate-producer button per producer plus an Accept-anyway button.
+    If Telegram is unavailable the parking still stands.
+    """
+    reason = reason or "unspecified"
+    # 1. Park the reviewer (the key safety fix) — must happen even if telegram
+    #    is down. update_task failure is logged but never raised.
     try:
         if reviewer_task_id is not None:
             from src.infra.db import update_task
@@ -126,16 +173,44 @@ async def _escalate_to_founder(**kwargs) -> None:
             "review escalation: could not park reviewer task",
             reviewer_task_id=reviewer_task_id, error=str(exc),
         )
+
+    # 2. Best-effort founder-halt card. Never raises.
+    try:
+        producers: list[str] = []
+        if workflow is not None and reviewer_id is not None:
+            from src.workflows.engine.producer_index import producers_for_reviewer
+            producers = producers_for_reviewer(workflow, reviewer_id)
+        chat_id = await _resolve_founder_chat_id(mission_id)
+        if chat_id is not None and reviewer_task_id is not None:
+            from src.app.telegram_bot import get_telegram
+            tg = get_telegram()
+            if tg is not None:
+                issues = (review_result or {}).get("issues") or []
+                await tg.send_review_halt_keyboard(
+                    chat_id=int(chat_id),
+                    mission_id=mission_id,
+                    reviewer_task_id=int(reviewer_task_id),
+                    reviewer_name=str(reviewer_id or "reviewer"),
+                    issues=issues,
+                    producers=producers,
+                )
+    except Exception as exc:  # noqa: BLE001 — telegram is best-effort only
+        logger.warning(
+            "review escalation: founder-halt card not sent",
+            mission_id=mission_id, reviewer_id=reviewer_id, error=str(exc),
+        )
+
     logger.warning(
-        "review escalated to founder: %s", reason,
-        mission_id=kwargs.get("mission_id"),
-        reviewer_id=kwargs.get("reviewer_id"),
-        producer=kwargs.get("producer"),
+        "review escalated to founder: reason=%s reviewer=%s" % (reason, reviewer_id),
+        mission_id=mission_id,
+        reviewer_id=reviewer_id,
+        producer=producer,
     )
 
 
 async def route_review_failure(
     *, mission_id: int, reviewer_id: str, review_result: dict, workflow: dict,
+    reviewer_task_id: int | None = None,
 ) -> dict[str, Any]:
     issues = review_result.get("issues") or []
     index = build_producer_index(workflow)
@@ -157,7 +232,8 @@ async def route_review_failure(
     if not grouped:
         await _escalate_to_founder(
             mission_id=mission_id, reviewer_id=reviewer_id,
-            review_result=review_result, workflow=workflow, reason="no_localisable_target",
+            review_result=review_result, workflow=workflow,
+            reason="no_localisable_target", reviewer_task_id=reviewer_task_id,
         )
         return {"routed": [], "escalated": True}
 
@@ -173,5 +249,6 @@ async def route_review_failure(
                 mission_id=mission_id, reviewer_id=reviewer_id,
                 review_result=review_result, workflow=workflow,
                 reason="producer_exhausted", producer=pid,
+                reviewer_task_id=reviewer_task_id,
             )
     return {"routed": routed, "escalated": escalated}

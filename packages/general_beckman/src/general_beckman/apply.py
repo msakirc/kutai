@@ -4198,8 +4198,11 @@ async def _apply_review_verdict(
                  an unsatisfied review). Loop is bounded by the producers'
                  worker_attempts cap (primary) + the reviewer's own bump
                  (backstop). Mission is NOT advanced.
-               * escalated / nothing localisable -> the founder-halt owns the
-                 rejection; complete the reviewer so other branches aren't held.
+               * escalated / nothing localisable -> route_review_failure has
+                 PARKED the reviewer in waiting_human (safety park — an
+                 escalated review must NOT advance unreviewed) and sent the
+                 founder-halt card. Do NOT complete/advance; the card
+                 (Regenerate producer / Accept anyway) owns resumption.
     MALFORMED (and any non-fail that reached here) -> the reviewer task itself
                failed to produce a parseable verdict: normal retry/DLQ on the
                reviewer task (drain the pending kind first).
@@ -4244,6 +4247,7 @@ async def _apply_review_verdict(
                 reviewer_id=str(reviewer_id),
                 review_result=review_result,
                 workflow=wf,
+                reviewer_task_id=source["id"],
             )
             logger.info(
                 "review verdict FAIL routed to producers",
@@ -4321,20 +4325,17 @@ async def _apply_review_verdict(
 
         # Escalated / nothing localisable: the producers can't carry the fix
         # (no target, or a producer hit its cap), so route_review_failure has
-        # escalated to the founder-halt. Do NOT re-pend the reviewer (it would
-        # spin on an unsatisfiable rejection). Complete it so the mission's
-        # other branches aren't held by an ungraded reviewer; the founder-halt
-        # owns the rejection from here.
-        if not new_pending:
-            await update_task(
-                verdict.source_task_id, status="completed",
-                context=_json.dumps(ctx),
-                error=None, error_category=None, next_retry_at=None,
-                retry_reason=None, failed_in_phase=None,
-            )
-            await _spawn_workflow_advance_if_mission(source, raw)
-        else:
-            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        # escalated to the founder-halt AND already PARKED the reviewer in
+        # ``waiting_human`` (the safety park — an escalated review must NOT
+        # advance unreviewed). Do NOT re-pend (it would spin on an
+        # unsatisfiable rejection) and do NOT complete/advance the mission —
+        # that would flow past the unreviewed artifact. The founder-halt card
+        # (Regenerate producer / Accept anyway) owns resumption from here:
+        # Accept completes the reviewer (override → advance), Regenerate
+        # re-pends the producer + reviewer to close the loop. We only persist
+        # the drained ``_pending_posthooks`` context so the kind doesn't
+        # re-fire; the reviewer keeps its parked status.
+        await update_task(verdict.source_task_id, context=_json.dumps(ctx))
         return
 
     # Malformed (or any non-fail verdict that reached the FAIL handler): the

@@ -12,7 +12,7 @@ Two coupled architectural defects, surfaced by a founder design review:
    - **Agent execution prompts** (29) — seeded from `get_system_prompt`, live source is the `prompt_versions` DB table (DB-versioned, A/B-tuned, auto-promoted ≥10 tasks).
    - **Coulson posthook prompts** — grading, code_review, reflection, self_critique, constrained-emit — **frozen code strings** in `packages/coulson/`.
    - **Husam-caller prompts** — husam is prompt-agnostic (caller passes `messages`); its callers each build their own: `packages/general_beckman/posthook_handlers/brand_voice_lint.py`, `…/copy_compliance_review.py`, `packages/yalayut/.../synthesize.py`, `src/tools/vision.py`.
-   - **Classifier** — `src/agents/signal_classifier.py`, hardcoded, no DB override.
+   - **Message-routing classifier** — `CLASSIFIER_PROMPT` in `src/core/task_classifier.py:299` (agent_type `"classifier"`): a frozen code string with NO DB override. (NOTE: `signal_classifier` is a *different* thing — a normal registry agent that DOES get a DB override and migrates like the other 26.)
 
    Result: same artifact (an LLM prompt) lives under **two governance regimes** — agent prompts are tunable data, everything else is frozen code requiring an edit + restart. And there is **no single way to build a prompt** — every spawner does it bespoke.
 
@@ -62,14 +62,14 @@ Proposed location: `packages/<foundry>/` (name = open founder decision; repo use
 
 Concrete adapter lives in the **app layer (`src`)**, wrapping the existing `prompt_versions` table (reuse `get_active_prompt`/`save_prompt_version`/`record_prompt_quality`/`list_prompt_versions` verbatim). Wired into the Foundry at startup via dependency injection. **No new storage tech, no data migration, no schema churn.** Packages stop *importing* the DB; the app *injects* it. This adapter is the **reference domino** for the broader "kill `src` DB dep in all packages" migration — the port pattern proven once here is replicated package-by-package later.
 
-### The 2 carve-outs (dynamic prompts)
+### The 2 carve-outs (dynamic prompts) — NOT symmetric (corrected per review B2)
 
 | Profile | Dynamic bit | Handling |
 |---------|-------------|----------|
-| `oncall_agent` | `domain` interpolated from `task.context.domain` | thin code subclass of `Profile` overriding `get_system_prompt`, registered identically — OR templated via a build-time dynamic block |
-| `writer` | branches on `_detect_markdown_schema(task)` | same — thin code subclass |
+| `writer` | branches on `_detect_markdown_schema(task)` — **pure** dict inspection, no external deps | leaf `Profile` subclass (`WriterProfile`) overriding `get_system_prompt`; `markdown_prompt` field on base `Profile` |
+| `oncall_agent` | embeds an **action whitelist** fetched via `from coulson.agent_handlers.registry import get_whitelist` (`oncall_agent.py:40`); `domain` selects the verb set but never appears as prompt text | **STAYS a thin class in `src/agents/`** — it needs `coulson`, which the leaf may NOT import. A genuine carve-out OUTSIDE the Foundry, merged into `AGENT_REGISTRY` |
 
-Recommendation: **hybrid** — 27 static → data; `oncall_agent` + `writer` stay thin `Profile` subclasses. Do NOT build a YAML templating engine for 2 cases (over-engineering).
+Recommendation: **hybrid** — 27 static → data; `writer` → leaf subclass; `oncall_agent` → stays a `src/agents` class. (The original spec wrongly modeled oncall as a `{{domain}}` string substitution — it is a `get_whitelist` call. A leaf reproduction would violate purity.)
 
 ## Coupled surfaces that must stay in sync
 
@@ -84,11 +84,12 @@ Recommendation: **hybrid** — 27 static → data; `oncall_agent` + `writer` sta
 1. **Stable per-type singletons.** `get_agent(x)`/`get_profile(x)` must return the SAME object across calls. The runtime mutates per-execution instance attrs (`_original_allowed_tools`, `progress_callback`, `_suppress_clarification`, `allowed_tools`) and restores them in `execute()`'s `finally`; tests patch a resolved instance and rely on identity (e.g. `tests/core/test_orchestrator_self_reflect_bridge.py`). The data-driven resolver MUST hand back cached singletons, not fresh objects per call.
 2. **DB override still wins at runtime.** `prompt_versions.is_active=1` (now via the injected store) beats the in-package seed. Unchanged behavior; only the seed *source* moves (code → package data).
 3. **Back-compat surface.** Keep `AGENT_REGISTRY` name + `get_agent(type)` signature (re-exported / aliased) so no external caller breaks. No external module imports a concrete `*Agent` class (verified); only tests do — those get updated.
+4. **`execute()` + `_build_context()` are NOT on the data Profile** (review B1). They live on `BaseAgent` today and are called at `src/core/orchestrator.py:227` (`get_agent(x).execute(task)`) and in coulson `react.py`/`single_shot.py` (`profile._build_context(task)`). A data Profile has neither → AttributeError on dispatch. The fix (plan Task 5.5) moves both onto the worker: `coulson.execute(profile, task)` + `coulson.build_context(profile, task)`. This MUST land before any agent is served from data. Verify with a real `coulson.execute(get_agent("summarizer"), mock_task)` end-to-end test — NOT a `build_system_prompt`-only smoke (that path misses `.execute`/`._build_context`; the green-test-dead-prod trap, `feedback_test_serialization_boundary`).
 
 ## Phased plan (canonical-first, low → high risk)
 
-1. **Scaffold the leaf + 1 profile.** Create the Foundry package: `Profile` dataclass, `profiles/` dir, `build_messages`, `PromptStore` Protocol. Migrate ONE static agent (`summarizer`). Wire the app-side DB adapter + injection. `get_agent` serves the migrated one from data; other 28 stay classes. Prove: singleton identity, execute path, DB-override, 3-invariant test on the migrated one. **Land to main.**
-2. **Bulk-migrate the 27 static profiles** to package data; delete their `.py`. Keep `oncall_agent` + `writer` as thin subclasses. Rebuild `AGENT_REGISTRY` from Foundry + the 2 subclasses.
+1. **Decouple execute/_build_context (Task 5.5) + scaffold the leaf + 1 profile.** First move `execute`/`_build_context` off the profile onto coulson (Invariant 4). Then create the Foundry package: `Profile` dataclass, `profiles/` dir, `PromptStore` Protocol. Migrate ONE static agent (`summarizer`). Wire the app-side DB adapter + injection. `get_agent` serves the migrated one from data; the rest stay classes. Prove: singleton identity, **real `coulson.execute(get_agent("summarizer"), mock_task)` e2e**, DB-override, 3-invariant test. **Land to main.**
+2. **Bulk-migrate the 26 static profiles** to package data; delete their `.py`. `writer` → leaf subclass; `oncall_agent` → stays a `src/agents` class (coulson whitelist dep). Rebuild `AGENT_REGISTRY` = Foundry profiles + the oncall carve-out.
 3. **Migrate overhead/husam-caller prompts** into the Foundry: coulson posthooks (grading/code_review/reflection/self_critique/emit + blocks), `general_beckman` posthook_handlers (brand_voice/copy_compliance), yalayut synth, vision tool, classifier. Each spawner switches to `build_messages`. This is where unanimity lands.
 4. **Retarget tests + seed path:** `test_prompt_quality.py` reads Foundry; replace `from src.agents.X import XAgent` with `get_agent("x")`; add classifier/workflow-keys-⊆-registry test; re-point `seed_from_agents()` at Foundry seed.
 5. **Guardrails:** (a) dep-purity test — Foundry imports nothing from `src` or feature packages (mirror `test_husam_does_not_import_coulson`); (b) extend `tests/test_root_stays_thin.py` — `src/agents/*.py` count stays small (Profile shim + 2 carve-outs + `__init__`), so new agents land as data.
@@ -106,7 +107,7 @@ Recommendation: **hybrid** — 27 static → data; `oncall_agent` + `writer` sta
 1. **Foundry package name** — DEFERRED; founder will name at the end. Placeholder `prompt_foundry` throughout; do not hardcode the final name into the plan until set.
 2. **Profile data format** — ✅ **per-profile YAML** (`profiles/<name>.yaml`). Block scalars for multi-line prompts. The 2 carve-outs stay Python subclasses alongside.
 3. **Broader src-DB-dep kill** — ✅ **separate track.** This spec ships ONLY the `PromptStore` port as the reference domino; replicate per-package later. This spec stays prompt-scoped.
-4. **base.py residual A.12/A.13** — ✅ **sequential / separate.** `_build_model_requirements` (produces a `fatih_hoca` selection type) and `_maybe_constrained_emit` (execution) are **NOT content** → they do NOT belong in the leaf Foundry. They relocate to `coulson`/`fatih_hoca` as a clean adjacent follow-on *after* Foundry lands. The Foundry effort stays content-only.
+4. **base.py final deletion** — ✅ **sequential / separate.** CORRECTION (review S1): `_build_model_requirements` / `_maybe_constrained_emit` **do not exist** (zero grep matches; model requirements come from `fatih_hoca.requirements_for`). The actual base.py methods are `execute` (delegates to coulson) and `_build_context` (delegates to `build_user_context` + mutates `allowed_tools`). The Foundry plan's **Task 5.5** moves BOTH off the profile contract onto coulson (`coulson.execute(profile, task)`, `coulson.build_context(profile, task)`) — that is on-thesis and is IN scope (it's the B1 blocker fix). The only out-of-scope remainder is the final `git rm src/agents/base.py` once it has no callers.
 
 ## Risk notes
 

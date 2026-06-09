@@ -11,6 +11,7 @@
 **Spec:** `docs/superpowers/specs/2026-06-09-prompt-foundry-leaf-design.md`
 
 **Invariants (carry into every task):**
+- The data `Profile` is **pure data** — it carries NO `execute()` and NO `_build_context()`. Execution and context-assembly belong to the worker (coulson), invoked as `coulson.execute(profile, task)` / `build_context(profile, task)`. (This is on-thesis: `agent.execute()` was the last residue of "agents own work".) See Task 5.5 — it MUST land before any agent is served from data.
 - `get_agent(x)` returns a **stable per-type singleton** (same object across calls).
 - DB override (`PromptStore.get_active`) still beats the in-package seed at runtime.
 - Keep `AGENT_REGISTRY` name + `get_agent(type)` signature for back-compat.
@@ -165,6 +166,7 @@ class Profile:
     enable_self_reflection: bool = False
     min_confidence: int = 0
     confidence_gate: str = "fail_closed"
+    markdown_prompt: str = ""        # writer carve-out alt branch (else "")
 
     # ── runtime-mutable per-execution attrs (NOT profile data) ──
     # Set/restored by coulson.execute(); declared here so the duck-type holds.
@@ -175,7 +177,15 @@ class Profile:
 
     def get_system_prompt(self, task: dict) -> str:
         return self.system_prompt
+
+    # NOTE: NO execute() and NO _build_context() here. Those were BaseAgent
+    # methods; they leave the profile contract entirely (Task 5.5). The worker
+    # (coulson) drives execution: coulson.execute(profile, task). Keeping them
+    # off the Profile is what lets the leaf stay pure (they delegate to
+    # src.runtime/coulson, which the leaf may not import).
 ```
+
+> `markdown_prompt` lives on the base `@dataclass` (not a subclass field) so `WriterProfile(**data)` constructs cleanly — fixes the original `TypeError` (undecorated subclass does not extend a dataclass `__init__`).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -335,7 +345,7 @@ import prompt_foundry.store as store
 
 def test_get_active_returns_none_without_store():
     store.set_store(None)
-    assert asyncio.get_event_loop().run_until_complete(store.get_active("summarizer")) is None
+    assert asyncio.run(store.get_active("summarizer")) is None
 
 def test_injected_store_is_used():
     class FakeStore:
@@ -348,9 +358,8 @@ def test_injected_store_is_used():
         async def list_versions(self, key):
             return []
     store.set_store(FakeStore())
-    loop = asyncio.get_event_loop()
-    assert loop.run_until_complete(store.get_active("summarizer")) == "DB PROMPT"
-    assert loop.run_until_complete(store.get_active("other")) is None
+    assert asyncio.run(store.get_active("summarizer")) == "DB PROMPT"
+    assert asyncio.run(store.get_active("other")) is None
     store.set_store(None)  # reset
 ```
 
@@ -509,6 +518,92 @@ git add src/infra/prompt_store_adapter.py src/app/run.py tests/infra/test_prompt
 git commit -m "feat(prompt_foundry): DB-backed PromptStore adapter + startup wiring"
 ```
 
+> **N3:** `src/app/run.py` does startup work inside `async def main()` (not at import). Put the `set_store(DbPromptStore())` call inside `main()` near `_seed_skills` (≈ run.py:434-455), NOT at module top. The Step 6 import-smoke will print `NONE` (wiring is in `main()`); instead grep-confirm `set_store(` is called in `main()` and print `OK`.
+
+---
+
+### Task 5.5: Decouple `execute()` + `_build_context()` from the profile contract (BLOCKER — land before Task 6)
+
+> **Why:** a data `Profile` has no `execute()`/`_build_context()`, but `src/core/orchestrator.py:227` calls `get_agent(agent_type).execute(task)` and coulson `react.py`/`single_shot.py` call `profile._build_context(task)`. Both methods live ONLY on `BaseAgent`. Migrating any agent to data without this first → **AttributeError on every dispatch**. The fix moves both off the profile onto the worker (coulson) — on-thesis (execution is not the agent's to own).
+
+**Files:**
+- Modify: `packages/coulson/src/coulson/context.py` (add `build_context(profile, task)`)
+- Modify: `packages/coulson/src/coulson/react.py` (call site), `…/single_shot.py` (call site)
+- Modify: `src/core/orchestrator.py:227`
+- Test: `tests/core/test_dispatch_via_coulson.py`, `packages/coulson/tests/test_build_context_helper.py`
+
+- [ ] **Step 1: Add `build_context` to coulson** — port the body of `src/agents/base.py:141-180` verbatim, replacing `self` with `profile`. DROP the dead `self._get_context_window(loaded)` branch (that method does not exist — the call is already swallowed by the try/except and always defaults `model_ctx=4096`); keep `model_ctx=4096` (or resolve via `get_loaded_litellm_name` without the profile). Preserve the skill-injection mutation of `profile.allowed_tools`/`profile._original_allowed_tools`.
+
+```python
+# packages/coulson/src/coulson/context.py
+async def build_context(profile, task: dict) -> str:
+    """Assemble the user context for `profile`. Moved off BaseAgent (Task 5.5).
+    Mutates profile.allowed_tools (per-execution copy) on skill injection."""
+    from src.runtime.context import build_user_context  # or coulson.context.build_user_context if local
+    model_ctx = 4096
+    ctx_str, injected_skills = await build_user_context(profile, task, model_ctx=model_ctx)
+    if injected_skills:
+        if not hasattr(profile, "_original_allowed_tools") or profile._original_allowed_tools is None:
+            profile._original_allowed_tools = profile.allowed_tools
+            profile.allowed_tools = list(profile.allowed_tools or [])
+        for tool in injected_skills:
+            if profile.allowed_tools is not None and tool not in profile.allowed_tools:
+                profile.allowed_tools.append(tool)
+    return ctx_str
+```
+
+> Verify whether `build_user_context` is importable from `coulson.context` (Phase B moved runtime into coulson); prefer the local import to avoid a needless `src` hop. If only `src.runtime.context` exposes it, use that — coulson already imports `src` elsewhere (its own src-purity is the separate broader track, out of scope here).
+
+- [ ] **Step 2: Swap coulson call sites** — `react.py:273` and `single_shot.py:38`: `context = await profile._build_context(task)` → `context = await build_context(profile, task)` (import `build_context` from `.context`).
+
+- [ ] **Step 3: Swap orchestrator** — `src/core/orchestrator.py:227`: `return await get_agent(agent_type).execute(task)` → 
+```python
+import coulson
+return await coulson.execute(get_agent(agent_type), task)
+```
+(Use a module-level `import coulson`; `coulson.execute(profile, task, progress_callback=None)` already takes the profile — verified at `coulson/__init__.py:54`.)
+
+- [ ] **Step 4: Write the real end-to-end test** (the one Task 7's old smoke missed):
+
+```python
+# tests/core/test_dispatch_via_coulson.py
+import pytest
+from src.agents import get_agent
+
+@pytest.mark.asyncio
+async def test_data_profile_dispatches_through_coulson(monkeypatch):
+    """A migrated data Profile (no .execute/.​_build_context) must run via coulson.execute."""
+    import coulson
+    p = get_agent("summarizer")
+    assert not hasattr(p, "execute")          # proves it's pure data
+    # mock the LLM call layer so no model loads:
+    async def fake_single_shot(profile, task, *a, **k):
+        return {"content": "ok", "model": "x", "cost": 0.0}
+    monkeypatch.setattr("coulson.single_shot.run", fake_single_shot, raising=False)
+    out = await coulson.execute(p, {"id": 1, "title": "t", "description": "summarize x",
+                                    "context": {}, "agent_type": "summarizer"})
+    assert isinstance(out, dict)
+```
+
+> The exact monkeypatch target depends on coulson's internals — patch the lowest LLM-call seam (e.g. `hallederiz_kadir` call or `dispatcher.execute`) so `coulson.execute` runs its real path without a live model. Confirm the seam by reading `coulson/single_shot.py` + `react.py` first.
+
+- [ ] **Step 5: Run**
+
+Run: `timeout 60 .venv/Scripts/python -m pytest tests/core/test_dispatch_via_coulson.py packages/coulson/tests/ -q` — NOTE: run the `tests/` file and the `packages/` file in **separate** invocations (conftest collision). Expected: PASS.
+
+- [ ] **Step 6: Grep-confirm no caller still uses the profile methods**
+
+Run: `git grep -n "\.execute(task)\|profile\._build_context\|\._build_context(task)" src/ packages/` → expected: no production hits (tests may reference; update them).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/coulson/src/coulson/context.py packages/coulson/src/coulson/react.py packages/coulson/src/coulson/single_shot.py src/core/orchestrator.py tests/core/test_dispatch_via_coulson.py
+git commit -m "refactor: execute()/_build_context() leave the profile -> coulson.execute(profile, task)"
+```
+
+> After this, `src/agents/base.py` is nearly empty (only `get_system_prompt` default + the now-unused method bodies). Leave it for now; the A.12/A.13 follow-on track deletes it. The remaining concrete-class agents (Phase 1: all but summarizer) still subclass `BaseAgent` and still have `.execute()` inherited — that is FINE, `coulson.execute(profile, task)` works for both class and data profiles (duck-typed). Only the DATA profiles lack `.execute()`, and orchestrator no longer calls it.
+
 ---
 
 ### Task 6: Serve `summarizer` from Foundry via `get_agent` (singleton-preserving)
@@ -644,8 +739,10 @@ git commit -m "test(prompt_foundry): execute-path smoke — coulson consumes dat
 ## Phase 2 — Bulk-migrate the 27 static profiles
 
 > **Pattern (apply per agent):** for each static agent file in `src/agents/`, create `profiles/<name>.yaml` whose fields equal the class attributes and whose `system_prompt` is the verbatim string returned by `get_system_prompt` (collapse the Python string-concatenation into one block scalar; preserve literal `\n`). Then delete the `.py` and remove its `__init__.py` import + registry entry. `get_agent` already prefers Foundry, so each migration is live the moment its YAML exists and the class is removed.
+>
+> **Block-scalar trailing newline (N5):** `|` (clip) appends exactly one trailing `\n`. If the original Python string ENDED in `\n` (e.g. summarizer ends `"```\n"`), use `|`. If it did NOT end in a newline, use `|-` (strip) so you don't introduce a spurious trailing `\n` that breaks an exact-equality migration check. Decide per agent by looking at the last char of the original return string.
 
-### Task 8: Migrate the 25 remaining static agents (one commit per agent)
+### Task 8: Migrate the 26 remaining static agents (one commit per agent)
 
 **Files (repeat for each):**
 - Create: `packages/prompt_foundry/src/prompt_foundry/profiles/<name>.yaml`
@@ -684,74 +781,86 @@ def test_<name>_served_from_foundry():
 
 ---
 
-### Task 9: Carve-outs `oncall_agent` + `writer` as thin `Profile` subclasses
+### Task 9: Carve-outs — `writer` (leaf subclass) + `oncall_agent` (stays a class OUTSIDE the leaf)
+
+> **Corrected (review B2):** the two carve-outs are NOT symmetric.
+> - `writer`'s dynamic bit (`_detect_markdown_schema`) is **pure** (inspects the task dict only) → it CAN be a leaf `Profile` subclass.
+> - `oncall_agent`'s dynamic bit is the **action whitelist**, fetched via `from coulson.agent_handlers.registry import get_whitelist` (`src/agents/oncall_agent.py:40`). The prompt embeds the whitelist verbs; `domain` itself never appears as text. Reproducing this in the leaf would force `import coulson` → **purity violation**. So `oncall_agent` STAYS a thin class in `src/agents/` (a genuine carve-out, outside the Foundry), registered into `AGENT_REGISTRY` alongside the Foundry profiles. It keeps `get_system_prompt` (calling `get_whitelist`) + the Profile attribute surface; it no longer needs `execute()`/`_build_context()` (Task 5.5 removed those from the dispatch path).
 
 **Files:**
-- Modify: `packages/prompt_foundry/src/prompt_foundry/profile.py` (add subclasses)
-- Modify: `packages/prompt_foundry/src/prompt_foundry/loader.py` (register subclasses)
-- Create: `profiles/oncall_agent.yaml`, `profiles/writer.yaml` (static fields + base prompt)
-- Delete: `src/agents/oncall_agent.py`, `src/agents/writer.py`
-- Test: `packages/prompt_foundry/tests/test_carveouts.py`
+- Modify: `packages/prompt_foundry/src/prompt_foundry/profile.py` (add `WriterProfile` + `_detect_markdown_schema`)
+- Modify: `packages/prompt_foundry/src/prompt_foundry/loader.py` (register `WriterProfile`)
+- Create: `packages/prompt_foundry/src/prompt_foundry/profiles/writer.yaml` (static fields + base prompt + `markdown_prompt`)
+- Modify: `src/agents/oncall_agent.py` (slim to a thin carve-out class: drop BaseAgent inheritance if it breaks nothing, OR keep it — it still works duck-typed; key point is it stays in `src/agents/`, NOT migrated to YAML)
+- Modify: `src/agents/__init__.py` (register `oncall_agent` class instance into the merged registry)
+- Test: `packages/prompt_foundry/tests/test_carveouts.py`, `tests/agents/test_oncall_carveout.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 # packages/prompt_foundry/tests/test_carveouts.py
 from prompt_foundry.loader import get_profile
 
-def test_oncall_interpolates_domain():
-    p = get_profile("oncall_agent")
-    base = p.get_system_prompt({})
-    withdom = p.get_system_prompt({"context": {"domain": "payments"}})
-    assert "payments" in withdom
-    assert "payments" not in base  # default domain 'ops'
-
-def test_writer_branches_on_markdown_schema(tmp_path):
+def test_writer_plain_branch():
     p = get_profile("writer")
-    plain = p.get_system_prompt({"title": "blog post"})
+    plain = p.get_system_prompt({"title": "blog post"})  # no markdown schema, no produces
     assert isinstance(plain, str) and len(plain) > 20
+
+def test_writer_markdown_branch():
+    p = get_profile("writer")
+    task = {"context": {"artifact_schema": {"type": "markdown"}}}  # markdown + no produces
+    md = p.get_system_prompt(task)
+    assert md == p.markdown_prompt and md != p.system_prompt
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+```python
+# tests/agents/test_oncall_carveout.py
+from src.agents import get_agent
 
-Run: `.venv/Scripts/python -m pytest packages/prompt_foundry/tests/test_carveouts.py -q` (`timeout 60`)
-Expected: FAIL — profiles not present / no subclass behavior.
+def test_oncall_served_and_embeds_whitelist():
+    p = get_agent("oncall_agent")
+    assert p.name == "oncall_agent"
+    prompt = p.get_system_prompt({"context": {"domain": "ops"}})
+    assert "Action whitelist" in prompt  # verbs injected, not a literal {{domain}}
 
-- [ ] **Step 3: Read the originals**, then add subclasses to `profile.py`:
+def test_oncall_stays_in_src_agents():
+    p = get_agent("oncall_agent")
+    assert type(p).__module__.startswith("src.agents") or type(p).__module__ == "agents.oncall_agent"
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `.venv/Scripts/python -m pytest packages/prompt_foundry/tests/test_carveouts.py -q` (`timeout 60`); `timeout 60 .venv/Scripts/python -m pytest tests/agents/test_oncall_carveout.py -q`
+Expected: FAIL (writer profile + subclass behavior absent; oncall test depends on registry merge in Step 5).
+
+- [ ] **Step 3: Add `WriterProfile` to the leaf** — port `_detect_markdown_schema` VERBATIM from `src/agents/writer.py:22-51` (handles double-JSON-encoded context; returns False when `produces` is non-empty):
 
 ```python
 # append to packages/prompt_foundry/src/prompt_foundry/profile.py
-
-class OncallProfile(Profile):
-    def get_system_prompt(self, task: dict) -> str:
-        domain = (task.get("context") or {}).get("domain", "ops")
-        return self.system_prompt.replace("{{domain}}", domain)
-
+import json
 
 def _detect_markdown_schema(task: dict) -> bool:
-    # Verbatim port of src/agents/writer.py module helper — copy its body here.
+    # VERBATIM port of src/agents/writer.py module helper. Copy its exact body
+    # here (double-decode of context; produces-present → False; artifact_schema
+    # type == "markdown" → True). Pure dict inspection — no src/coulson import.
     ...
 
-
 class WriterProfile(Profile):
-    # `markdown_prompt` carries the alternate branch text (loaded from YAML).
-    markdown_prompt: str = ""
-
     def get_system_prompt(self, task: dict) -> str:
         if _detect_markdown_schema(task):
             return self.markdown_prompt or self.system_prompt
         return self.system_prompt
 ```
 
-> Port `_detect_markdown_schema` verbatim from `src/agents/writer.py`. In `oncall_agent.yaml`, put `{{domain}}` where the original interpolated `domain`. In `writer.yaml`, add a `markdown_prompt: |` field with the markdown-branch string and make `WriterProfile` a dataclass field (add `markdown_prompt: str = ""` to the dataclass if subclass fields don't load — simplest: add it to base `Profile` as an optional field).
+> `markdown_prompt` is already a field on the base `@dataclass Profile` (Task 2 fix), so `WriterProfile(**data)` with `markdown_prompt:` in `writer.yaml` constructs cleanly. `WriterProfile` need NOT be `@dataclass`-decorated (it adds no new fields).
 
-- [ ] **Step 4: Register subclasses in the loader** — map names to classes:
+- [ ] **Step 4: Register `WriterProfile` in the loader**
 
 ```python
-# loader.py — replace the generic Profile(**data) construction:
-from .profile import Profile, OncallProfile, WriterProfile
+# loader.py — class-map for profiles needing a subclass:
+from .profile import Profile, WriterProfile
 
-_PROFILE_CLASSES = {"oncall_agent": OncallProfile, "writer": WriterProfile}
+_PROFILE_CLASSES = {"writer": WriterProfile}
 
 def _load_all() -> dict[str, Profile]:
     registry = {}
@@ -763,12 +872,21 @@ def _load_all() -> dict[str, Profile]:
     return registry
 ```
 
-- [ ] **Step 5: Delete the classes + de-register**
+Write `writer.yaml` with the base prompt as `system_prompt: |` and the markdown branch as `markdown_prompt: |` (both verbatim from `writer.py`). Then `git rm src/agents/writer.py` + remove its `__init__.py` import/entry.
 
-```bash
-git rm src/agents/oncall_agent.py src/agents/writer.py
+- [ ] **Step 5: Keep `oncall_agent` as a registered carve-out class** — do NOT migrate it to YAML. In `src/agents/__init__.py`, keep its import and merge it into the registry:
+
+```python
+from prompt_foundry import PROFILE_REGISTRY, get_profile
+from .oncall_agent import OncallAgent
+
+# Foundry profiles + the oncall carve-out (needs coulson.get_whitelist; can't live in the leaf)
+AGENT_REGISTRY = {**PROFILE_REGISTRY, "oncall_agent": OncallAgent()}
+
+def get_agent(agent_type: str):
+    return AGENT_REGISTRY.get(agent_type) or AGENT_REGISTRY["executor"]
 ```
-Remove their imports + registry entries from `src/agents/__init__.py`.
+(`get_profile` precedence is folded into the merged dict; identity holds because both `PROFILE_REGISTRY` values and the single `OncallAgent()` are built once at import.)
 
 - [ ] **Step 6: Run tests**
 
@@ -776,7 +894,7 @@ Run: `.venv/Scripts/python -m pytest packages/prompt_foundry/tests/ -q` (`timeou
 Run: `timeout 60 .venv/Scripts/python -m pytest tests/agents/ -q`
 Expected: PASS.
 
-- [ ] **Step 7: Commit** — `git commit -m "refactor(prompt_foundry): oncall_agent + writer as thin Profile subclasses"`.
+- [ ] **Step 7: Commit** — `git commit -m "refactor(prompt_foundry): writer as leaf subclass; oncall stays a src/agents carve-out (coulson whitelist dep)"`.
 
 ---
 
@@ -786,20 +904,24 @@ Expected: PASS.
 - Modify: `src/agents/__init__.py`
 - Test: `tests/agents/test_foundry_get_agent.py`
 
-- [ ] **Step 1: Reduce `__init__.py`** — only `base.py` (still hosts A.12/A.13 residual until the follow-on track) need remain class-backed. `AGENT_REGISTRY` becomes a thin view over Foundry:
+- [ ] **Step 1: Reduce `__init__.py`** — `AGENT_REGISTRY` becomes Foundry profiles + the single `oncall_agent` carve-out class:
 
 ```python
 # agents/__init__.py
-from prompt_foundry import PROFILE_REGISTRY, get_profile
+from prompt_foundry import PROFILE_REGISTRY
+from .oncall_agent import OncallAgent
 
-# Back-compat: AGENT_REGISTRY name preserved; now a view of Foundry profiles.
-AGENT_REGISTRY = PROFILE_REGISTRY
+# Back-compat: AGENT_REGISTRY name preserved. Foundry data profiles + the
+# oncall carve-out (stays a class — needs coulson.get_whitelist; not in the leaf).
+AGENT_REGISTRY = {**PROFILE_REGISTRY, "oncall_agent": OncallAgent()}
 
 
 def get_agent(agent_type: str):
     """Get profile by type; fallback to executor (Foundry profile)."""
-    return get_profile(agent_type) or PROFILE_REGISTRY["executor"]
+    return AGENT_REGISTRY.get(agent_type) or AGENT_REGISTRY["executor"]
 ```
+
+> **N1 ordering:** `executor` MUST already be migrated to `executor.yaml` (it is in the Task 8 list) BEFORE this task runs, or `AGENT_REGISTRY["executor"]` `KeyError`s. Run Task 10 strictly after `executor` is migrated. `base.py` is now effectively dead (Task 5.5 emptied the dispatch path); leave it for the A.12/A.13 follow-on to delete.
 
 - [ ] **Step 2: Run full agents suite**
 
@@ -922,6 +1044,7 @@ Sources to migrate (each = a `rubrics/<key>.yaml` + a call-site swap):
 | `copy_compliance` | `packages/general_beckman/.../posthook_handlers/copy_compliance_review.py:_check_privacy_mismatch_llm` | husam spec messages |
 | `yalayut_synth` | `packages/yalayut/.../discovery/synthesize.py:llm_synthesize` | husam spec messages |
 | `vision` | `src/tools/vision.py:analyze_image` | husam spec messages (note: includes image blocks — keep image assembly in caller, only the text system/user via build_messages) |
+| `classifier` | `src/core/task_classifier.py:299` (`CLASSIFIER_PROMPT`) | the real frozen no-DB-override classifier prompt (review S2). NOTE: distinct from the `signal_classifier` agent (which IS in the registry and migrated in Task 8). This is the message-routing classifier. Migrate its prompt to `rubrics/classifier.yaml` + `build_messages`. |
 
 > **REFLECTION_BLOCKS / STACK_BLOCKS / LAYER_BLOCKS:** these are *content keyed by agent/stack/layer*, not single rubrics. Move the dicts into `rubrics/reflection_blocks.yaml` (and stack/layer) as data; have `build_reflection_prompt` read them via a Foundry helper. Keep the *flag* `enable_self_reflection` (Profile field) and the P5 bridge wiring (`src/core/dispatch_prep.py`) untouched.
 
@@ -973,7 +1096,7 @@ def test_override_loaded_from_injected_store():
         async def list_versions(self, k): return []
     store.set_store(S())
     p = _P()
-    asyncio.get_event_loop().run_until_complete(coulson._load_db_prompt_override(p))
+    asyncio.run(coulson._load_db_prompt_override(p))
     assert p._prompt_version_override == "FROM STORE"
     store.set_store(None)
 ```
@@ -1231,4 +1354,4 @@ Expected: PASS.
 
 ## Out of scope (separate tracks)
 - Broader src-DB-dep kill for other packages (this ships only the reference port).
-- base.py A.12/A.13 residual relocation (`_build_model_requirements` → fatih_hoca, `_maybe_constrained_emit` → coulson).
+- Final deletion of `src/agents/base.py`. Task 5.5 already empties its dispatch role (`execute`/`_build_context` moved to coulson). The methods the original spec called "A.12/A.13 residual" (`_build_model_requirements`, `_maybe_constrained_emit`) **do not exist** in the code (verified: zero grep matches; model requirements come from `fatih_hoca.requirements_for`). So this follow-on is just: confirm `base.py` has no live callers, then delete it + tighten `test_root_stays_thin` to `{"__init__.py"}`.

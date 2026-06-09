@@ -1,4 +1,5 @@
 # agents/__init__.py
+from prompt_foundry import get_profile as _get_profile
 from .base import BaseAgent
 from .planner import PlannerAgent
 from .architect import ArchitectAgent
@@ -11,7 +12,6 @@ from .visual_reviewer import VisualReviewerAgent
 from .researcher import ResearcherAgent
 from .analyst import AnalystAgent
 from .writer import WriterAgent
-from .summarizer import SummarizerAgent
 from .assistant import AssistantAgent
 from .executor import ExecutorAgent
 from .shopping_advisor import ShoppingAdvisorAgent
@@ -42,7 +42,6 @@ AGENT_REGISTRY = {
     "researcher": ResearcherAgent(),
     "analyst": AnalystAgent(),
     "writer": WriterAgent(),
-    "summarizer": SummarizerAgent(),
     "assistant": AssistantAgent(),
     "executor": ExecutorAgent(),
     "shopping_advisor": ShoppingAdvisorAgent(),
@@ -63,6 +62,16 @@ AGENT_REGISTRY = {
 }
 
 
-def get_agent(agent_type: str) -> BaseAgent:
-    """Get agent by type, fallback to executor."""
+def get_agent(agent_type: str):
+    """Get agent/profile by type. Foundry data profiles take precedence;
+    legacy class instances are the fallback; executor is the final default.
+
+    Returns a stable per-type singleton: Foundry's get_profile returns the
+    registry singleton (built once at Foundry import), and the class
+    instances here are constructed once at module import — identity holds
+    across calls for both paths.
+    """
+    p = _get_profile(agent_type)
+    if p is not None:
+        return p
     return AGENT_REGISTRY.get(agent_type, AGENT_REGISTRY["executor"])

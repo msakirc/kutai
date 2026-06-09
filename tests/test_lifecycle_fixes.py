@@ -154,12 +154,15 @@ class TestSummaryViaBeckmanPostHook:
         RequestPostHook('summary:*')) and ``reviewer`` (consumes grade /
         code_review) agent configs, whose verdicts apply via the durable
         posthook.summary.resume / posthook.grade.resume continuations."""
-        from src.agents import AGENT_REGISTRY
-        assert "summarizer" in AGENT_REGISTRY, \
-            "SummarizerAgent must be registered to consume RequestPostHook('summary:*')"
-        assert "reviewer" in AGENT_REGISTRY, \
-            "ReviewerAgent must be registered to consume grade / code_review post-hooks"
-        # The deleted wrapper agents must NOT be registered.
+        # summarizer is now served from the Prompt Foundry (data Profile), so it
+        # is reached via get_agent rather than living in the class AGENT_REGISTRY.
+        from src.agents import AGENT_REGISTRY, get_agent
+        assert get_agent("summarizer").name == "summarizer", \
+            "summarizer must be reachable to consume RequestPostHook('summary:*')"
+        assert get_agent("reviewer").name == "reviewer", \
+            "reviewer must be reachable to consume grade / code_review post-hooks"
+        # The deleted wrapper agents must NOT resolve to a real agent (they fall
+        # back to the executor default).
         assert "artifact_summarizer" not in AGENT_REGISTRY
         assert "grader" not in AGENT_REGISTRY
         assert "code_reviewer" not in AGENT_REGISTRY

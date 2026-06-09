@@ -22,9 +22,9 @@ async def test_profile_dispatches_through_coulson(monkeypatch):
     from src.agents import get_agent
 
     p = get_agent("summarizer")
-    # summarizer is still class-backed at this phase, but the orchestrator path
-    # no longer touches .execute() — coulson.execute(profile, task) drives it.
-    # This is exactly the contract a future pure-data Profile (no .execute) needs.
+    # summarizer is now a pure-data Foundry Profile (no .execute()); the
+    # orchestrator path calls coulson.execute(profile, task) to drive it.
+    assert not hasattr(p, "execute"), "summarizer must be pure data (no .execute)"
 
     captured = {}
 

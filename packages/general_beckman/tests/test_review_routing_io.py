@@ -203,7 +203,7 @@ async def _seed_reviewer(db_path: str, *, mission_id: int, step_id: str) -> int:
 
 
 @pytest.mark.asyncio
-async def test_verdict_fail_routes_to_producer_and_completes_reviewer(
+async def test_verdict_fail_routes_to_producer_and_repends_reviewer(
     tmp_path, monkeypatch,
 ):
     db_path = str(tmp_path / "kutai.db")
@@ -250,8 +250,82 @@ async def test_verdict_fail_routes_to_producer_and_completes_reviewer(
     assert prod["status"] == "pending"
     assert prod["worker_attempts"] == 2
     assert "no traceability" in json.loads(prod["context"])["_schema_error"]
-    # Reviewer completed (it correctly produced a rejection).
-    assert rev["status"] == "completed"
+    # Reviewer RE-PENDED (not completed) so it re-reviews the fixed artifacts
+    # after the producer re-completes. Completing it would let the mission flow
+    # past an unsatisfied review (advance.py never re-runs a completed step).
+    assert rev["status"] == "pending"
+    assert rev["status"] != "completed"
+
+
+@pytest.mark.asyncio
+async def test_verdict_fail_repends_reviewer_and_does_not_advance(
+    tmp_path, monkeypatch,
+):
+    """Loop-closure: a completed producer + a completed reviewer that just
+    emitted FAIL must end with BOTH rows back to `pending` (producer
+    worker_attempts bumped; reviewer re-pended so it re-reviews the fix) AND
+    the mission must NOT advance past the reviewer."""
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    _reset_db_singleton(db_path)
+    from src.infra.db import init_db
+    await init_db()
+    _reset_db_singleton(db_path)
+
+    steps = [
+        {"id": "3.4", "output_artifacts": ["requirements_spec"]},
+        {"id": "3.11", "input_artifacts": ["requirements_spec"],
+         "output_artifacts": ["review_result"]},
+    ]
+    _patch_workflow(monkeypatch, steps)
+
+    mid = await _seed_mission_with_checkpoint(db_path, "i2p_v3")
+    # Completed producer (attempts=1) and a completed reviewer that just FAILed.
+    producer_id = await _seed_producer(
+        db_path, mission_id=mid, step_id="3.4", worker_attempts=1,
+        status="completed",
+    )
+    reviewer_id = await _seed_reviewer(db_path, mission_id=mid, step_id="3.11")
+
+    # Assert the mission does NOT advance: spy on the advance spawn.
+    import general_beckman.apply as apply_mod
+    advanced = []
+
+    async def _no_advance(source, raw):
+        advanced.append(source.get("id"))
+
+    monkeypatch.setattr(apply_mod, "_spawn_workflow_advance_if_mission", _no_advance)
+
+    from general_beckman.apply import _apply_posthook_verdict
+    from general_beckman.result_router import PostHookVerdict
+
+    verdict = PostHookVerdict(
+        source_task_id=reviewer_id, kind="verify_review_verdict", passed=False,
+        raw={
+            "verdict_class": "fail",
+            "issues": [{"target_artifact": "requirements_spec",
+                        "severity": "blocker", "problem": "missing error states"}],
+        },
+    )
+    await _apply_posthook_verdict({"id": reviewer_id}, verdict)
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        prod = dict(await (await db.execute(
+            "SELECT * FROM tasks WHERE id=?", (producer_id,))).fetchone())
+        rev = dict(await (await db.execute(
+            "SELECT * FROM tasks WHERE id=?", (reviewer_id,))).fetchone())
+
+    # Producer re-pended, worker_attempts incremented 1 -> 2.
+    assert prod["status"] == "pending"
+    assert prod["worker_attempts"] == 2
+    # Reviewer re-pended (NOT completed) with its own worker_attempts backstop
+    # bump, so it re-runs after the producer re-completes.
+    assert rev["status"] == "pending"
+    assert rev["status"] != "completed"
+    assert int(rev["worker_attempts"] or 0) == 1  # 0 -> 1 backstop bump
+    # The mission must NOT have advanced past the reviewer.
+    assert advanced == []
 
 
 @pytest.mark.asyncio

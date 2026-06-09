@@ -4159,9 +4159,17 @@ async def _apply_review_verdict(
 ) -> None:
     """Apply a verify_review_verdict outcome from a reviewer step.
 
-    FAIL    -> route to the at-fault producer(s) via review_routing; the
-               reviewer step itself is marked completed (it correctly produced
-               a rejection — the producers carry the retry).
+    FAIL    -> route to the at-fault producer(s) via review_routing.
+               * producer(s) re-pended (routed, not escalated) -> RE-PEND the
+                 reviewer itself back to `pending` too, so it re-reviews the
+                 fixed artifacts after the producers re-complete (the reviewer
+                 depends_on its producers; advance.py never re-runs a COMPLETED
+                 reviewer, so completing it here would let the mission flow past
+                 an unsatisfied review). Loop is bounded by the producers'
+                 worker_attempts cap (primary) + the reviewer's own bump
+                 (backstop). Mission is NOT advanced.
+               * escalated / nothing localisable -> the founder-halt owns the
+                 rejection; complete the reviewer so other branches aren't held.
     MALFORMED (and any non-fail that reached here) -> the reviewer task itself
                failed to produce a parseable verdict: normal retry/DLQ on the
                reviewer task (drain the pending kind first).
@@ -4224,10 +4232,69 @@ async def _apply_review_verdict(
             )
             return
 
-        # The reviewer did its job: drain its pending kind and complete it so
-        # the mission can flow on (the producers carry the fix via re-pend).
+        # Drain the reviewer's verify_review_verdict kind regardless of outcome.
         new_pending = [k for k in pending if k != "verify_review_verdict"]
         ctx["_pending_posthooks"] = new_pending
+
+        routed = list(outcome.get("routed") or [])
+        escalated = bool(outcome.get("escalated"))
+
+        # Close the review loop. advance.py pre-expands every task and only
+        # unblocks a step once its depends_on rows are completed; a COMPLETED
+        # reviewer never re-runs when its producer re-completes. So completing
+        # the reviewer here would let the mission flow PAST an unsatisfied
+        # review (producers fixed, but the artifact never re-reviewed).
+        #
+        # Instead: when at least one producer was actually re-pended (routed
+        # non-empty AND nothing escalated), RE-PEND THE REVIEWER ITSELF back to
+        # `pending`. The reviewer `depends_on` its producers, so get_ready_tasks
+        # runs the producers first (their deps are satisfied) then re-runs the
+        # reviewer once they re-complete → it re-reviews the FIXED artifacts.
+        # The loop's primary bound is the producers' existing worker_attempts
+        # cap (when they exhaust, route_review_failure escalates — handled by
+        # the `escalated` branch below). The reviewer also takes its own
+        # worker_attempts bump as a backstop bound against a producer that can
+        # never satisfy it.
+        if routed and not escalated:
+            attempts = int(source.get("worker_attempts") or 0) + 1
+            max_attempts = int(source.get("max_worker_attempts") or 15)
+            # Reset the reviewer's prior verdict so it re-reviews fresh: stash
+            # the rejected verdict as prev-output context, mirror the producer
+            # re-pend feedback mechanics (_stamp_retry_feedback), and flip back
+            # to pending. The mission is NOT advanced — the re-run gates on the
+            # producers via depends_on.
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            ctx["_schema_error"] = (
+                "Previous review REJECTED upstream artifact(s); the "
+                f"producer(s) {routed} were re-pended to fix it. Re-review the "
+                "corrected artifacts fresh."
+            )
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id, status="pending",
+                worker_attempts=attempts, max_worker_attempts=max_attempts,
+                context=_json.dumps(ctx),
+                result=None,
+                error="reviewer rejected artifact — re-pended to re-review after producer fix",
+                error_category="quality", next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            logger.info(
+                "review verdict FAIL — re-pended reviewer to re-review after producer fix",
+                source_id=verdict.source_task_id, mission_id=mission_id,
+                reviewer_id=reviewer_id, routed=routed,
+                worker_attempts=attempts,
+            )
+            return
+
+        # Escalated / nothing localisable: the producers can't carry the fix
+        # (no target, or a producer hit its cap), so route_review_failure has
+        # escalated to the founder-halt. Do NOT re-pend the reviewer (it would
+        # spin on an unsatisfiable rejection). Complete it so the mission's
+        # other branches aren't held by an ungraded reviewer; the founder-halt
+        # owns the rejection from here.
         if not new_pending:
             await update_task(
                 verdict.source_task_id, status="completed",

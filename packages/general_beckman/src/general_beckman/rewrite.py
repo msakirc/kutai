@@ -37,6 +37,24 @@ def _is_workflow_step(task_ctx: dict) -> bool:
     return bool(task_ctx.get("workflow_step") or task_ctx.get("is_workflow_step"))
 
 
+def _is_workflow_step_marked(task_ctx: dict) -> bool:
+    """True when *task_ctx* carries any workflow-step marker.
+
+    The expander stamps BOTH ``is_workflow_step: True`` and a
+    ``workflow_step_id`` on every expanded step
+    (workflows/engine/expander.py). Accept either (plus the legacy
+    ``workflow_step`` key) so a step reviewer is recognised even if one
+    marker is dropped on the DB round-trip. Scoped to the reviewer-vs-child
+    bookkeeping decision in Rule 1 — _is_workflow_step (the broader Rule 2
+    gate) is intentionally left unchanged.
+    """
+    return bool(
+        task_ctx.get("workflow_step")
+        or task_ctx.get("is_workflow_step")
+        or task_ctx.get("workflow_step_id")
+    )
+
+
 # Config-only LLM reviewer agents that run as post-hooks but — unlike
 # GraderAgent / CodeReviewerAgent — have no ``execute`` override to build a
 # ``posthook_verdict`` payload. They emit a plain ``{"verdict": ..., "findings":
@@ -292,12 +310,38 @@ def _rewrite_one(task: dict, task_ctx: dict, a: Action) -> list[Action]:
         task_ctx.get("source_task_id") is not None
         and bool(task_ctx.get("posthook_kind"))
     )
+    # A genuine posthook CHILD (grade/code_review/summary/self_reflect/...) is
+    # identified by carrying BOTH source_task_id AND posthook_kind — that is
+    # what is_posthook_task above tests. SP3 (70435cd1) added a broader
+    # ``agent_type in {"reviewer","summarizer"}`` clause to bookkeep those
+    # children (grade/code_review run as raw_dispatch "reviewer" CHILDREN;
+    # summary as a "summarizer" CHILD). But that clause ALSO swallowed i2p
+    # workflow-STEP reviewers — steps with ``"agent": "reviewer"`` expand to
+    # agent_type="reviewer", carry a workflow_step_id, and have NO
+    # source_task_id/posthook_kind. Treating them as bookkeeping skipped
+    # determine_posthooks, so their declared verify_review_verdict check never
+    # emitted and reviewer-failure routing was inert in prod.
+    #
+    # Narrow the clause: a reviewer/summarizer is bookkeeping only when it is
+    # NOT a workflow-step task that is also a non-child. Concretely, exempt the
+    # workflow-step reviewer (has workflow_step_id/is_workflow_step AND is not a
+    # posthook child) so determine_posthooks emits its checks; a genuine
+    # posthook CHILD stays bookkeeping via is_posthook_task (it carries
+    # source_task_id+posthook_kind and is not flagged as a workflow step), and a
+    # bare reviewer/summarizer with neither marker stays bookkeeping too.
+    is_workflow_step_reviewer = (
+        agent_type in {"reviewer", "summarizer"}
+        and _is_workflow_step_marked(task_ctx)
+        and not is_posthook_task
+    )
     is_bookkeeping = (
         payload_action == "workflow_advance"
         # SP3: reviewer = grade/code_review child; summarizer = summary child.
         # Both are bookkeeping — a mission-bearing edge case must not let a
         # summary/grade child spawn MissionAdvance or a recursive grade hook.
-        or agent_type in {"reviewer", "summarizer"}
+        # EXCEPT a genuine i2p workflow-STEP reviewer, which must emit its
+        # verify_review_verdict check (see is_workflow_step_reviewer above).
+        or (agent_type in {"reviewer", "summarizer"} and not is_workflow_step_reviewer)
         or is_posthook_task  # mechanical/reviewer posthook tasks shouldn't recurse
     )
 

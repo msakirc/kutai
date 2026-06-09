@@ -23,16 +23,15 @@ Nothing in the apply/route/mr_roboto path is stubbed — the only patches are
 checkpoint in a temp DB) and (b) the Telegram send (so the founder-halt card
 doesn't reach a real bot), and we ASSERT on that send to prove escalation.
 
-WIRING NOTE (why this e2e starts at _apply_request_posthook, not at
-on_task_finished(reviewer)): a workflow-step reviewer is expanded with
-agent_type="reviewer". rewrite.py Rule 1 classifies agent_type=="reviewer"
-as *bookkeeping* (it was added for grade/code_review reviewer CHILDREN) and
-skips determine_posthooks for it — so the reviewer's verify_review_verdict
-RequestPostHook is never emitted through on_task_finished(reviewer) today.
-determine_posthooks ITSELF returns ["verify_review_verdict"] for the reviewer
-(verified), so the gap is purely the rewrite emission step. We therefore drive
-the chain from the REAL apply entry the emission would call, and the rest of
-the pipeline below it is fully exercised. See report / concern.
+WIRING NOTE: Case 1 now drives the WHOLE chain from STEP 1 — the real
+emission via on_task_finished(reviewer) → route_result → rewrite_actions →
+apply_actions — with nothing in the emission→enqueue→verifier→apply→re-pend
+chain stubbed (only load_workflow + the Telegram send are patched). This
+proves the emission gap is closed: rewrite.py no longer bookkeeps a
+workflow-STEP reviewer (agent_type="reviewer" + workflow_step_id, NO
+source_task_id/posthook_kind), so its verify_review_verdict RequestPostHook is
+actually emitted. Case 2 (systemic/founder-halt) continues to drive from the
+apply entry to keep its assertions focused on the route_review_failure branch.
 """
 import json
 
@@ -181,6 +180,66 @@ async def _drive_full_chain(db_path: str, mission_id: int, reviewer_id: int):
     await on_task_finished(child["id"], result)
 
 
+async def _drive_full_chain_from_step1(db_path: str, mission_id: int, reviewer_id: int):
+    """Drive the chain from STEP 1 — the REAL rewrite-layer EMISSION.
+
+    Instead of hand-calling _apply_request_posthook, finish the reviewer task
+    through the production entry: on_task_finished(reviewer_id, result). That
+    runs route_result -> rewrite_actions (which, post-fix, emits the
+    verify_review_verdict RequestPostHook for the workflow-STEP reviewer instead
+    of bookkeeping it) -> apply_actions (enqueues the mechanical child). The rest
+    of the chain (mr_roboto verifier + on_task_finished on the child) is then
+    exercised exactly as _drive_full_chain does — nothing stubbed.
+    """
+    import json as _json
+    import aiosqlite as _aiosqlite
+    import mr_roboto
+    from src.core.orchestrator import _mech_action_to_result
+    from general_beckman import on_task_finished
+    from src.infra.db import get_task
+
+    reviewer = await get_task(reviewer_id)
+    review_result = _json.loads(reviewer.get("result") or "{}")
+
+    # 1) REAL EMISSION: finish the reviewer through the production entry. The
+    #    agent envelope mirrors what the orchestrator hands beckman for a
+    #    completed reviewer step — status=completed + the verdict JSON in result.
+    await on_task_finished(
+        reviewer_id,
+        {"status": "completed", "result": _json.dumps(review_result)},
+    )
+
+    # 2) The emission must have enqueued the mechanical verifier child. If the
+    #    reviewer were (wrongly) bookkept, no child exists and this fetch fails —
+    #    which is exactly the regression this STEP-1 drive guards against.
+    async with _aiosqlite.connect(db_path) as db:
+        db.row_factory = _aiosqlite.Row
+        row = await (await db.execute(
+            "SELECT * FROM tasks WHERE mission_id=? AND agent_type='mechanical' "
+            "AND context LIKE '%verify_review_verdict%' "
+            "ORDER BY id DESC LIMIT 1", (mission_id,))).fetchone()
+    assert row is not None, (
+        "emission gap: finishing the workflow-step reviewer enqueued no "
+        "verify_review_verdict mechanical child — rewrite.py still bookkeeps it"
+    )
+    child = dict(row)
+    child_ctx = _json.loads(child["context"])
+    child_payload = child_ctx["payload"]
+    assert child_payload["action"] == "verify_review_verdict"
+    assert child_payload["review_result"] is not None
+
+    # 3) REAL mr_roboto verifier + REAL orchestrator Action->result wrap.
+    mech_task = dict(child)
+    if "payload" not in mech_task and "payload" in child_ctx:
+        mech_task["payload"] = child_ctx["payload"]
+    action = await mr_roboto.run(mech_task)
+    result = _mech_action_to_result(action)
+
+    # 4) REAL on_task_finished on the child → route -> rewrite (synthesise the
+    #    PostHookVerdict) -> apply -> _apply_review_verdict -> route_review_failure.
+    await on_task_finished(child["id"], result)
+
+
 # ---------------------------------------------------------------------------
 # Case 1: tagged FAIL -> autonomous producer re-pend + reviewer re-pend,
 # no founder escalation.
@@ -229,7 +288,10 @@ async def test_tagged_fail_full_chain_repends_producer_no_founder(
         db_path, mission_id=mid, step_id="3.11", review_result=review_result,
     )
 
-    await _drive_full_chain(db_path, mid, reviewer_id)
+    # Case 1 drives from STEP 1: the REAL rewrite-layer emission via
+    # on_task_finished(reviewer). Proves emission→enqueue→verifier→apply→re-pend
+    # end-to-end with nothing in that chain stubbed (only load_workflow + tg).
+    await _drive_full_chain_from_step1(db_path, mid, reviewer_id)
 
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row

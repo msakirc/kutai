@@ -58,6 +58,10 @@ Proposed location: `packages/<foundry>/` (name = open founder decision; repo use
    - `async list_versions(key) -> list[dict]`
    The Foundry uses an **injected** store for tuned overrides. With no store wired, `build_messages` returns the in-package seed → the Foundry works standalone; the store is a *plug-in*, not a *requirement*.
 
+### Forward-compat: a future DB package will own all DB ops
+
+The founder plans a dedicated DB-layer package that lifts DB ops out of every package. The Foundry is built to plug straight into it: the `PromptStore` **port IS the seam** that future package sits behind, and its methods are deliberately **storage-generic** (`get_active(key)`, `save_version`, `record_quality`, `list_versions`) — no `prompt_versions`-table vocabulary leaks into the port. The concrete `DbPromptStore` adapter (below) is **disposable scaffolding**: when the DB package lands, re-point the adapter at it and the leaf never changes. Therefore: **no foundry-owned sqlite file now** (it would be thrown away); stay on the shared-table adapter (zero migration).
+
 ### Storage stays the DB — behind the port
 
 Concrete adapter lives in the **app layer (`src`)**, wrapping the existing `prompt_versions` table (reuse `get_active_prompt`/`save_prompt_version`/`record_prompt_quality`/`list_prompt_versions` verbatim). Wired into the Foundry at startup via dependency injection. **No new storage tech, no data migration, no schema churn.** Packages stop *importing* the DB; the app *injects* it. This adapter is the **reference domino** for the broader "kill `src` DB dep in all packages" migration — the port pattern proven once here is replicated package-by-package later.

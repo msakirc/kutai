@@ -466,9 +466,12 @@ Expected: FAIL — `No module named 'src.infra.prompt_store_adapter'`.
 # src/infra/prompt_store_adapter.py
 """Concrete PromptStore over the existing prompt_versions DB table.
 
-This is the app-side adapter wired into prompt_foundry at startup. It is the
-ONLY thing that bridges the leaf to src DB — the reference 'port' pattern for
-the broader src-DB-dep kill (separate track).
+DISPOSABLE SCAFFOLDING. This is the app-side adapter wired into prompt_foundry
+at startup, and the ONLY thing bridging the leaf to src DB. A future dedicated
+DB-layer package will own all DB ops; when it lands, re-point THIS adapter at it
+— the leaf and the PromptStore port never change. Do NOT add a foundry-owned
+sqlite file; that would be thrown away by the DB package. Keep this adapter thin
+and isolated to this one file.
 """
 from __future__ import annotations
 from typing import Optional

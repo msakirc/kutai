@@ -1,17 +1,22 @@
-"""Wiring contract — the 7 status-verdict reviewer steps each declare the
+"""Wiring contract — the verdict reviewer steps each declare the
 verify_review_verdict mechanical check in their `checks` array.
 
 This is what makes determine_posthooks emit a verify_review_verdict posthook
 after each reviewer completes, so a FAIL verdict routes to the at-fault
-producer (apply._apply_review_verdict) instead of dead-ending. 10.5 is
-excluded (different findings/severity model).
+producer (apply._apply_review_verdict) instead of dead-ending.
+
+10.5 (encryption_and_logging_review) uses a findings/severity model instead of
+the {status, issues[]} shape, but is now wired too: the verifier is
+findings-aware (critical/high finding -> fail, mapped to issues by
+findings_to_issues), so it routes the same way.
 """
 import json
 
 import pytest
 
-# The 7 reviewers that emit a {status, issues[]} status-verdict.
-REVIEWER_STEP_IDS = ["1.13", "3.11", "4.16", "6.6", "7.16", "12.5", "14.2"]
+# The 7 reviewers that emit a {status, issues[]} status-verdict, plus 10.5
+# which emits per-artifact findings (findings-aware verifier path).
+REVIEWER_STEP_IDS = ["1.13", "3.11", "4.16", "6.6", "7.16", "10.5", "12.5", "14.2"]
 
 
 def _steps():

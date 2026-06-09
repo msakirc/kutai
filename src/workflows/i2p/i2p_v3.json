@@ -7920,6 +7920,9 @@
     },
     {
       "id": "10.5",
+      "checks": [
+        { "kind": "verify_review_verdict", "payload": { "action": "verify_review_verdict" } }
+      ],
       "phase": "phase_10",
       "name": "encryption_and_logging_review",
       "agent": "reviewer",
@@ -7940,7 +7943,7 @@
         "encryption_verification_result",
         "logging_security_result"
       ],
-      "instruction": "Verify encryption: all data in transit uses TLS 1.2+, sensitive data at rest is encrypted, database connections use SSL, encryption keys stored securely, key rotation exists. Review logging security: passwords and tokens never logged, PII masked, log injection prevented, log files have appropriate permissions, error logs don't expose internals. Emit `findings` for each artifact as an array of {check, severity (critical|high|medium|low|info), description, remediation}; entries at severity critical or high block the gate until resolved (fix the underlying issue or document a real mitigation — do NOT just downgrade severity).",
+      "instruction": "Verify encryption: all data in transit uses TLS 1.2+, sensitive data at rest is encrypted, database connections use SSL, encryption keys stored securely, key rotation exists. Review logging security: passwords and tokens never logged, PII masked, log injection prevented, log files have appropriate permissions, error logs don't expose internals. Emit `findings` for each artifact as an array of {check, severity (critical|high|medium|low|info), description, remediation, target_artifact}; entries at severity critical or high block the gate until resolved (fix the underlying issue or document a real mitigation — do NOT just downgrade severity). For each critical/high finding set `target_artifact` to the input artifact responsible so the gate can route the fix: use `owasp_audit_result` for encryption findings and `observability_strategy` for logging findings; use null only when the problem is systemic and cannot be attributed to a single input artifact (those route to the founder for a decision).",
       "done_when": "encryption_verification_result and logging_security_result exist with no critical/high findings outstanding.",
       "artifact_schema": {
         "encryption_verification_result": {
@@ -7970,6 +7973,10 @@
                   },
                   "remediation": {
                     "type": "string"
+                  },
+                  "target_artifact": {
+                    "type": "string",
+                    "optional": true
                   }
                 }
               },
@@ -8010,6 +8017,10 @@
                   },
                   "remediation": {
                     "type": "string"
+                  },
+                  "target_artifact": {
+                    "type": "string",
+                    "optional": true
                   }
                 }
               },

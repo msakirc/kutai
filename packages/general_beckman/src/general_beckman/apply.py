@@ -4134,6 +4134,122 @@ def _adapt_shape_findings(verdict: PostHookVerdict) -> None:
     object.__setattr__(verdict, "raw", raw)
 
 
+async def _load_mission_workflow(mission_id: int) -> dict | None:
+    """Return a plain workflow dict ({"steps": [...]}) for a mission, or None.
+
+    Resolves the workflow name from the mission's checkpoint, then loads +
+    parses the JSON via the engine loader. Used by the reviewer-failure router
+    (build_producer_index needs the steps' input/output_artifacts)."""
+    try:
+        from src.infra.db import get_workflow_checkpoint
+        from src.workflows.engine.loader import load_workflow
+        checkpoint = await get_workflow_checkpoint(int(mission_id))
+        if not checkpoint or not checkpoint.get("workflow_name"):
+            return None
+        wf = load_workflow(str(checkpoint["workflow_name"]))
+        return {"steps": list(wf.steps)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("review verdict: could not load mission workflow",
+                       mission_id=mission_id, error=str(exc))
+        return None
+
+
+async def _apply_review_verdict(
+    *, source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a verify_review_verdict outcome from a reviewer step.
+
+    FAIL    -> route to the at-fault producer(s) via review_routing; the
+               reviewer step itself is marked completed (it correctly produced
+               a rejection — the producers carry the retry).
+    MALFORMED (and any non-fail that reached here) -> the reviewer task itself
+               failed to produce a parseable verdict: normal retry/DLQ on the
+               reviewer task (drain the pending kind first).
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    verdict_class = str(raw.get("verdict_class") or "").lower()
+    # The reviewer's OWN step id (not a phase fallback) — the router resolves
+    # the producer set from this step's input_artifacts.
+    reviewer_id = str(ctx.get("workflow_step_id") or ctx.get("step_id") or "")
+    mission_id = source.get("mission_id")
+
+    if verdict_class == "fail":
+        wf = await _load_mission_workflow(mission_id) if mission_id is not None else None
+        if wf is None:
+            # Can't localise without the workflow graph — escalate via the
+            # router's own founder-halt path by falling back to a reviewer DLQ
+            # so the mission doesn't silently swallow the rejection.
+            logger.warning(
+                "review verdict FAIL but no workflow — DLQ reviewer",
+                source_id=verdict.source_task_id, mission_id=mission_id,
+            )
+            new_pending = [k for k in pending if k != "verify_review_verdict"]
+            ctx["_pending_posthooks"] = new_pending
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+            await _retry_or_dlq(
+                source, category="quality",
+                error="reviewer rejected artifact but workflow graph unavailable",
+            )
+            return
+
+        review_result = {
+            "status": "fail",
+            "issues": raw.get("issues") or [],
+        }
+        try:
+            from general_beckman.review_routing import route_review_failure
+            outcome = await route_review_failure(
+                mission_id=int(mission_id),
+                reviewer_id=str(reviewer_id),
+                review_result=review_result,
+                workflow=wf,
+            )
+            logger.info(
+                "review verdict FAIL routed to producers",
+                source_id=verdict.source_task_id, mission_id=mission_id,
+                reviewer_id=reviewer_id, outcome=outcome,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("review routing raised — DLQ reviewer",
+                           source_id=verdict.source_task_id, error=str(exc))
+            new_pending = [k for k in pending if k != "verify_review_verdict"]
+            ctx["_pending_posthooks"] = new_pending
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+            await _retry_or_dlq(
+                source, category="quality",
+                error=f"review routing failed: {str(exc)[:200]}",
+            )
+            return
+
+        # The reviewer did its job: drain its pending kind and complete it so
+        # the mission can flow on (the producers carry the fix via re-pend).
+        new_pending = [k for k in pending if k != "verify_review_verdict"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None, next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, raw)
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    # Malformed (or any non-fail verdict that reached the FAIL handler): the
+    # reviewer task itself failed to emit a parseable verdict. Drain the kind
+    # and route the REVIEWER task through normal retry/DLQ.
+    new_pending = [k for k in pending if k != "verify_review_verdict"]
+    ctx["_pending_posthooks"] = new_pending
+    await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+    error_str = str(raw.get("error") or "reviewer produced no parseable verdict")[:300]
+    await _retry_or_dlq(source, category="quality", error=error_str)
+
+
 async def _apply_simple_blocker_verdict(
     kind: str,
     source: dict,
@@ -4861,6 +4977,20 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
         await _apply_type_sync_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
         )
+        return
+
+    if a.kind == "verify_review_verdict":
+        # Reviewer-failure routing. The reviewer step ran a mr_roboto
+        # verify_review_verdict check over its own *_review_result. A FAIL
+        # verdict means the reviewer correctly REJECTED an upstream artifact:
+        # route the failure to the at-fault PRODUCER(s) (re-pend their existing
+        # rows with feedback), NOT back to the reviewer itself — falling
+        # through to the default blocker rail would wrongly re-pend the
+        # reviewer. A MALFORMED verdict means the reviewer task itself produced
+        # no parseable verdict → it is a genuine reviewer failure → normal
+        # retry/DLQ on the reviewer task. (Verdict payload rides verdict.raw;
+        # see rewrite.py Rule 0c which carries verdict_class/issues there.)
+        await _apply_review_verdict(source=source, ctx=ctx, pending=pending, verdict=a)
         return
 
     if a.kind in _CHECK_KINDS:

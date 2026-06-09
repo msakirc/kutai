@@ -10,6 +10,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-09-prompt-foundry-leaf-design.md`
 
+## Execution environment (worktree — READ FIRST, applies to every task)
+
+This plan runs in a git worktree at `.claude/worktrees/prompt-foundry`. The `.venv` and editable package installs live in the MAIN repo, NOT the worktree. Rules:
+
+- **Python interpreter:** main venv absolute path — `C:\Users\sakir\Dropbox\Workspaces\kutay\.venv\Scripts\python.exe` (bash: `/c/Users/sakir/Dropbox/Workspaces/kutay/.venv/Scripts/python`). The plan's `.venv/Scripts/python` shorthand = THIS absolute path. There is no `.venv` inside the worktree.
+- **How imports resolve:** worktree-root `conftest.py` prepends worktree `src` + a HARDCODED list of `packages/*/src` to `sys.path` at collection, and evicts pre-imported package modules so worktree code shadows the main venv's editable installs. So **run tests via `python -m pytest` from the worktree root** — worktree code is under test automatically.
+- **`prompt_foundry` is NEW → NOT in conftest's list.** Task 1 MUST add `packages/prompt_foundry/src` to `conftest.py`'s `_PACKAGE_SRCS` AND add `"prompt_foundry"` to the eviction set, else `import prompt_foundry` fails under pytest.
+- **Do NOT `pip install -e` anything into the main venv** — it would register a soon-deleted worktree path into the live prod venv. Rely on the conftest path injection. (The plan's original "pip install -e" steps are superseded by the conftest edit.)
+- **Bare `python -c "import …"` smokes do NOT trigger conftest** → they fail for worktree-only packages. Prefer a tiny pytest, or prepend `PYTHONPATH` (worktree root + package src dirs). When in doubt, assert via pytest, not a `-c` smoke.
+- **Never mix `tests/` and `packages/` paths in one pytest invocation** (conftest plugin collision) — separate calls. Always `timeout`.
+
 **Invariants (carry into every task):**
 - The data `Profile` is **pure data** — it carries NO `execute()` and NO `_build_context()`. Execution and context-assembly belong to the worker (coulson), invoked as `coulson.execute(profile, task)` / `build_context(profile, task)`. (This is on-thesis: `agent.execute()` was the last residue of "agents own work".) See Task 5.5 — it MUST land before any agent is served from data.
 - `get_agent(x)` returns a **stable per-type singleton** (same object across calls).
@@ -75,16 +86,19 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 3: Install editable + verify import fails cleanly (modules not yet created)**
+- [ ] **Step 3: Register the package in `conftest.py` (NOT pip install — see Execution environment)**
 
-Run: `.venv/Scripts/python -m pip install -e packages/prompt_foundry`
-Expected: install succeeds; `import prompt_foundry` will fail until Tasks 2-4 create the modules. That is expected — proceed.
+Edit the worktree-root `conftest.py`:
+1. Add to `_PACKAGE_SRCS`: `_ROOT / "packages" / "prompt_foundry" / "src",`
+2. Add `"prompt_foundry"` to the eviction `if root in {…}` set.
+
+This puts `packages/prompt_foundry/src` on `sys.path` under pytest so `import prompt_foundry` resolves to the worktree copy. (The `pyproject.toml` still exists for the eventual standalone install, but we do NOT `pip install -e` into the shared prod venv.)
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add packages/prompt_foundry/pyproject.toml packages/prompt_foundry/src/prompt_foundry/__init__.py
-git commit -m "feat(prompt_foundry): scaffold leaf package skeleton"
+git add packages/prompt_foundry/pyproject.toml packages/prompt_foundry/src/prompt_foundry/__init__.py conftest.py
+git commit -m "feat(prompt_foundry): scaffold leaf package skeleton + conftest registration"
 ```
 
 ---

@@ -25,10 +25,6 @@ See ``docs/superpowers/specs/2026-06-09-shopping-intelligence-cps-migration-desi
 
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
-
-logger = get_logger("shopping.intelligence._llm")
-
 
 async def _llm_call(
     prompt: str,

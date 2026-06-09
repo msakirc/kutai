@@ -1295,8 +1295,9 @@ async def build_context(profile, task: dict) -> str:
     # If not yet set, create the snapshot first so execute()'s finally
     # block can restore the original.
     if injected_skills:
-        if not hasattr(profile, "_original_allowed_tools") or profile._original_allowed_tools is None:
+        if not getattr(profile, "_tools_overridden", False):
             profile._original_allowed_tools = profile.allowed_tools
+            profile._tools_overridden = True
             profile.allowed_tools = list(profile.allowed_tools or [])
         for tool in injected_skills:
             if profile.allowed_tools is not None and tool not in profile.allowed_tools:

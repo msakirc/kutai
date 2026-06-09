@@ -97,10 +97,20 @@ async def execute(profile, task: dict, progress_callback: Callable | None = None
         # here; behaviour is preserved via the post-hook chain.
         return _result
     finally:
-        # Restore original allowed_tools if any setup phase overrode it
-        if hasattr(profile, '_original_allowed_tools'):
+        # Restore original allowed_tools ONLY if a setup phase actually
+        # overrode it. We gate on a dedicated sentinel (_tools_overridden)
+        # rather than hasattr/`is not None`: for a data Profile,
+        # _original_allowed_tools is a declared dataclass field (always
+        # present, defaults None), so hasattr is always True — restoring
+        # unconditionally would wipe allowed_tools to None and silently
+        # corrupt the singleton. And `is not None` is wrong because
+        # _apply_auto_strip legitimately snapshots None and must restore None.
+        # getattr(...,False) keeps this correct for class-backed BaseAgents
+        # which never declare the field.
+        if getattr(profile, '_tools_overridden', False):
             profile.allowed_tools = profile._original_allowed_tools
-            del profile._original_allowed_tools
+            profile._original_allowed_tools = None
+            profile._tools_overridden = False
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -258,6 +268,7 @@ def _apply_tools_hint(profile, task_ctx: dict) -> None:
     tools_hint = task_ctx.get("tools_hint")
     if tools_hint is not None and isinstance(tools_hint, list):
         profile._original_allowed_tools = profile.allowed_tools
+        profile._tools_overridden = True
         profile.allowed_tools = tools_hint
 
 
@@ -285,14 +296,18 @@ def _apply_auto_strip(profile, task_ctx: dict) -> None:
         return
 
     if profile.allowed_tools is not None:
-        if not hasattr(profile, '_original_allowed_tools'):
+        if not getattr(profile, '_tools_overridden', False):
             profile._original_allowed_tools = profile.allowed_tools
+            profile._tools_overridden = True
         profile.allowed_tools = [
             t for t in profile.allowed_tools if t not in _strip_set
         ]
     else:
         from src.tools import list_tool_names
-        profile._original_allowed_tools = profile.allowed_tools
+        # Legitimately snapshots None (all-tools) — must be restored to None.
+        if not getattr(profile, '_tools_overridden', False):
+            profile._original_allowed_tools = profile.allowed_tools
+            profile._tools_overridden = True
         profile.allowed_tools = [
             t for t in list_tool_names() if t not in _strip_set
         ]

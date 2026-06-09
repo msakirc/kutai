@@ -51,6 +51,8 @@ def test_build_context_injects_skills_into_copy(monkeypatch):
     assert shared == ["read_file"]
     # Snapshot captured the original so execute()'s finally can restore it.
     assert p._original_allowed_tools == ["read_file"]
+    # Sentinel set so the finally restores (and does not wipe to None).
+    assert p._tools_overridden is True
 
 
 def test_build_context_appends_to_existing_snapshot(monkeypatch):
@@ -61,8 +63,10 @@ def test_build_context_appends_to_existing_snapshot(monkeypatch):
 
     monkeypatch.setattr(ctx, "build_user_context", fake_build_user_context)
     p = _make_profile(["read_file", "file_tree"])
-    # Simulate execute()'s _apply_tools_hint snapshot already in place.
+    # Simulate execute()'s _apply_tools_hint snapshot already in place — a real
+    # prior snapshot also sets the sentinel.
     p._original_allowed_tools = ["read_file"]
+    p._tools_overridden = True
 
     asyncio.run(ctx.build_context(p, {"id": 1}))
 

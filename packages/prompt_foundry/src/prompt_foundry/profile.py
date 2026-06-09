@@ -34,6 +34,13 @@ class Profile:
     _suppress_clarification: bool = field(default=False, repr=False)
     progress_callback: Optional[Callable] = field(default=None, repr=False)
     _original_allowed_tools: Optional[list[str]] = field(default=None, repr=False)
+    # Sentinel: True only when a setup step has snapshotted allowed_tools into
+    # _original_allowed_tools and must restore it in execute()'s finally. A plain
+    # `is not None` guard is insufficient — auto-strip legitimately snapshots None
+    # (original allowed_tools is None) and must restore None. For a data Profile,
+    # _original_allowed_tools is a declared field (always present), so hasattr is
+    # always True; without this flag the finally would wipe allowed_tools to None.
+    _tools_overridden: bool = field(default=False, repr=False)
 
     def get_system_prompt(self, task: dict) -> str:
         return self.system_prompt

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 # Bump this whenever routes or response schemas change.
 # The client checks this on connect and triggers a sidecar restart on mismatch.
-API_VERSION = 2
+API_VERSION = 3
 
 logger = get_logger("nerd_herd.exposition")
 

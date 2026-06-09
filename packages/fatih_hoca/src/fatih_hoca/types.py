@@ -23,6 +23,11 @@ class Pick:
     # "did the runner-up score nearly as high?"). Empty when select()
     # didn't compute alternatives (eligibility-only path).
     top_summary: str = ""
+    # Exact local context window to load (ceil-2048, floored MIN_CTX, capped
+    # to the model's trained window). Computed by select() from the task
+    # estimates + chosen model. The dispatcher loads at this value instead
+    # of deriving ctx itself. 0 for cloud picks / legacy callers.
+    need_ctx: int = 0
 
 
 @dataclass

@@ -230,7 +230,7 @@ class LocalModelManager:
         # here used to skip the reload, causing llama-server to silently
         # truncate prompts or outputs beyond its loaded ctx. If min_context
         # exceeds what's loaded, fall through to the full reload path so
-        # calculate_dynamic_context can re-size the window.
+        # the context window can be re-sized.
         status = self._dallama.status
         if status.model_name == model_name and status.healthy:
             loaded_ctx = int(getattr(status, "context_length", 0) or 0)

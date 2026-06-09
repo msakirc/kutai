@@ -4,7 +4,7 @@
 
 **Goal:** Teach KutAI's existing pressure engine to sense the desktop (user presence + machine contention) so local-vs-cloud placement and task deferral yield to the human automatically, and move context-sizing out of the dispatcher into Fatih's pick.
 
-**Architecture:** No new package, no "governor". Two new local-only pressure signals (S12 presence, S13 contention) feed the existing Nerd-Herd `pressure_for` fold; a new M4 modifier re-expresses "load mode" as per-signal weights on S12/S13. Placement (Fatih ranking) and deferral (Beckman admission) fall out of the existing scalar with zero new policy. `need_ctx` becomes a `Pick` field computed by Fatih and consumed by the dispatcher.
+**Architecture:** No new package, no "governor". Two new local-only pressure signals (S13 presence, S14 contention) feed the existing Nerd-Herd `pressure_for` fold; a new M4 modifier re-expresses "load mode" as per-signal weights on S13/S14. Placement (Fatih ranking) and deferral (Beckman admission) fall out of the existing scalar with zero new policy. `need_ctx` becomes a `Pick` field computed by Fatih and consumed by the dispatcher.
 
 **Tech Stack:** Python 3.10, `dataclasses`, `pynvml`+`psutil` (already deps), Windows `ctypes` (`GetLastInputInfo`, `GetForegroundWindow`), pytest.
 
@@ -18,14 +18,14 @@
 
 **New files**
 - `packages/nerd_herd/src/nerd_herd/presence.py` — `PresenceCollector`: input-idle seconds + foreground-fullscreen. Windows ctypes, degrades to "away / not-fullscreen" off-Windows or on error.
-- `packages/nerd_herd/src/nerd_herd/signals/s12_presence.py` — `s12_presence(...)`, local-only, negative-only.
-- `packages/nerd_herd/src/nerd_herd/signals/s13_contention.py` — `s13_contention(...)`, local-only, negative-only.
+- `packages/nerd_herd/src/nerd_herd/signals/s13_presence.py` — `s13_presence(...)`, local-only, negative-only.
+- `packages/nerd_herd/src/nerd_herd/signals/s14_contention.py` — `s14_contention(...)`, local-only, negative-only.
 - `packages/fatih_hoca/src/fatih_hoca/need_ctx.py` — `compute_need_ctx(...)` (the single owner of context sizing).
-- Tests alongside: `packages/nerd_herd/tests/test_presence.py`, `test_s12_presence.py`, `test_s13_contention.py`, `test_m4_load_mode.py`, `test_pressure_desktop_integration.py`; `packages/fatih_hoca/tests/test_need_ctx.py`, `test_minimal_mode_eligibility.py`.
+- Tests alongside: `packages/nerd_herd/tests/test_presence.py`, `test_s13_presence.py`, `test_s14_contention.py`, `test_m4_load_mode.py`, `test_pressure_desktop_integration.py`; `packages/fatih_hoca/tests/test_need_ctx.py`, `test_minimal_mode_eligibility.py`.
 
 **Modified files**
-- `packages/nerd_herd/src/nerd_herd/types.py` — `SystemSnapshot` gains desktop fields; `pressure_for` computes S12/S13 + applies M4.
-- `packages/nerd_herd/src/nerd_herd/combine.py` — S12/S13 join `OTHER_BUCKET`.
+- `packages/nerd_herd/src/nerd_herd/types.py` — `SystemSnapshot` gains desktop fields; `pressure_for` computes S13/S14 + applies M4.
+- `packages/nerd_herd/src/nerd_herd/combine.py` — S13/S14 join `OTHER_BUCKET`.
 - `packages/nerd_herd/src/nerd_herd/modifiers.py` — add `M4_load_mode_weights`.
 - `packages/nerd_herd/src/nerd_herd/load.py` — cache last external-GPU fraction; raw VRAM (drop cap).
 - `packages/nerd_herd/src/nerd_herd/nerd_herd.py` — `snapshot()` populates desktop fields; register `PresenceCollector`.
@@ -289,7 +289,7 @@ Expected: FAIL — `get_external_gpu_fraction`/`_record_external` absent.
 
 In `packages/nerd_herd/src/nerd_herd/load.py`:
 
-(a) In `__init__`, after `self._detect_task = None`, add:
+(a) In `__init__`, after `self._detect_task: asyncio.Task | None = None` (load.py:66), add:
 ```python
         self._last_external_fraction: float = 0.0
 ```
@@ -306,7 +306,7 @@ In `packages/nerd_herd/src/nerd_herd/load.py`:
     def get_external_gpu_fraction(self) -> float:
         """Last external-GPU fraction seen by the 30s auto-detect loop.
 
-        Read by snapshot() / S13 — cheap, no pynvml probe on the hot path.
+        Read by snapshot() / S14 — cheap, no pynvml probe on the hot path.
         """
         return self._last_external_fraction
 ```
@@ -426,58 +426,58 @@ git commit -m "feat(nerd_herd): populate desktop signals in snapshot()"
 
 ## Phase 2 — The two signals
 
-### Task 5: S12 user-presence signal
+### Task 5: S13 user-presence signal
 
 **Files:**
-- Create: `packages/nerd_herd/src/nerd_herd/signals/s12_presence.py`
-- Test: `packages/nerd_herd/tests/test_s12_presence.py`
+- Create: `packages/nerd_herd/src/nerd_herd/signals/s13_presence.py`
+- Test: `packages/nerd_herd/tests/test_s13_presence.py`
 
 Contract: local-only, negative-only. Fullscreen present → −10 sentinel. Present-normal → graded −0.3…−0.6 by recency. Away (idle ≥ AWAY_IDLE_S) → 0.0. Cloud → 0.0.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# packages/nerd_herd/tests/test_s12_presence.py
+# packages/nerd_herd/tests/test_s13_presence.py
 from types import SimpleNamespace
-from nerd_herd.signals.s12_presence import s12_presence, PRESENT_IDLE_S
+from nerd_herd.signals.s13_presence import s13_presence, PRESENT_IDLE_S
 
 LOCAL = SimpleNamespace(is_local=True)
 CLOUD = SimpleNamespace(is_local=False)
 
 
 def test_cloud_always_zero():
-    assert s12_presence(CLOUD, user_idle_s=0.0, foreground_fullscreen=True) == 0.0
+    assert s13_presence(CLOUD, user_idle_s=0.0, foreground_fullscreen=True) == 0.0
 
 
 def test_away_is_zero():
-    assert s12_presence(LOCAL, user_idle_s=10_000.0, foreground_fullscreen=False) == 0.0
+    assert s13_presence(LOCAL, user_idle_s=10_000.0, foreground_fullscreen=False) == 0.0
 
 
 def test_fullscreen_hard_veto():
-    assert s12_presence(LOCAL, user_idle_s=1.0, foreground_fullscreen=True) == -10.0
+    assert s13_presence(LOCAL, user_idle_s=1.0, foreground_fullscreen=True) == -10.0
 
 
 def test_present_normal_is_graded_negative():
-    v = s12_presence(LOCAL, user_idle_s=1.0, foreground_fullscreen=False)
+    v = s13_presence(LOCAL, user_idle_s=1.0, foreground_fullscreen=False)
     assert -0.6 <= v <= -0.3
 
 
 def test_just_past_present_threshold_fades_to_zero():
     # At exactly PRESENT_IDLE_S the penalty has decayed to ~0.
-    v = s12_presence(LOCAL, user_idle_s=PRESENT_IDLE_S, foreground_fullscreen=False)
+    v = s13_presence(LOCAL, user_idle_s=PRESENT_IDLE_S, foreground_fullscreen=False)
     assert -0.05 <= v <= 0.0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `timeout 30 pytest packages/nerd_herd/tests/test_s12_presence.py -v`
+Run: `timeout 30 pytest packages/nerd_herd/tests/test_s13_presence.py -v`
 Expected: FAIL — module missing.
 
-- [ ] **Step 3: Implement S12**
+- [ ] **Step 3: Implement S13**
 
 ```python
-# packages/nerd_herd/src/nerd_herd/signals/s12_presence.py
-"""S12 — user-presence pressure (local pool only).
+# packages/nerd_herd/src/nerd_herd/signals/s13_presence.py
+"""S13 — user-presence pressure (local pool only).
 
 Negative-only "yield the machine to the human" signal. Cloud models are
 unaffected (zero desktop impact). Tuning constants are starting guesses —
@@ -496,7 +496,7 @@ PRESENT_PENALTY_FLOOR = -0.3    # penalty at the active/away boundary's near edg
 FULLSCREEN_VETO = -10.0         # sentinel — survives M3/M4 weights, pegs scalar -1.0
 
 
-def s12_presence(model: Any, *, user_idle_s: float, foreground_fullscreen: bool) -> float:
+def s13_presence(model: Any, *, user_idle_s: float, foreground_fullscreen: bool) -> float:
     if not getattr(model, "is_local", False):
         return 0.0
     if user_idle_s >= PRESENT_IDLE_S:
@@ -514,82 +514,82 @@ def s12_presence(model: Any, *, user_idle_s: float, foreground_fullscreen: bool)
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `timeout 30 pytest packages/nerd_herd/tests/test_s12_presence.py -v`
+Run: `timeout 30 pytest packages/nerd_herd/tests/test_s13_presence.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/nerd_herd/src/nerd_herd/signals/s12_presence.py packages/nerd_herd/tests/test_s12_presence.py
-git commit -m "feat(nerd_herd): S12 user-presence pressure signal"
+git add packages/nerd_herd/src/nerd_herd/signals/s13_presence.py packages/nerd_herd/tests/test_s13_presence.py
+git commit -m "feat(nerd_herd): S13 user-presence pressure signal"
 ```
 
 ---
 
-### Task 6: S13 machine-contention signal
+### Task 6: S14 machine-contention signal
 
 **Files:**
-- Create: `packages/nerd_herd/src/nerd_herd/signals/s13_contention.py`
-- Test: `packages/nerd_herd/tests/test_s13_contention.py`
+- Create: `packages/nerd_herd/src/nerd_herd/signals/s14_contention.py`
+- Test: `packages/nerd_herd/tests/test_s14_contention.py`
 
 Contract: local-only, negative-only. external-GPU heavy → −10 sentinel. RAM pressure → graded negative on `% used` above a floor. Cloud → 0.0.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# packages/nerd_herd/tests/test_s13_contention.py
+# packages/nerd_herd/tests/test_s14_contention.py
 from types import SimpleNamespace
-from nerd_herd.signals.s13_contention import s13_contention
+from nerd_herd.signals.s14_contention import s14_contention
 
 LOCAL = SimpleNamespace(is_local=True)
 CLOUD = SimpleNamespace(is_local=False)
 
 
 def test_cloud_always_zero():
-    assert s13_contention(CLOUD, ram_available_mb=10, ram_total_mb=32000,
+    assert s14_contention(CLOUD, ram_available_mb=10, ram_total_mb=32000,
                           external_gpu_fraction=0.9) == 0.0
 
 
 def test_external_gpu_heavy_hard_veto():
-    assert s13_contention(LOCAL, ram_available_mb=16000, ram_total_mb=32000,
+    assert s14_contention(LOCAL, ram_available_mb=16000, ram_total_mb=32000,
                           external_gpu_fraction=0.7) == -10.0
 
 
 def test_low_ram_pressure_is_zero():
     # 50% used (16000/32000 avail) → below the 0.80 floor → 0.0
-    assert s13_contention(LOCAL, ram_available_mb=16000, ram_total_mb=32000,
+    assert s14_contention(LOCAL, ram_available_mb=16000, ram_total_mb=32000,
                           external_gpu_fraction=0.0) == 0.0
 
 
 def test_high_ram_pressure_graded_negative():
     # ~94% used (2000/32000 avail) → between floor and cap → graded negative
-    v = s13_contention(LOCAL, ram_available_mb=2000, ram_total_mb=32000,
+    v = s14_contention(LOCAL, ram_available_mb=2000, ram_total_mb=32000,
                        external_gpu_fraction=0.0)
     assert -1.0 < v < 0.0
 
 
 def test_critical_ram_pegs_minus_one():
     # ~98% used → at/above cap → -1.0
-    v = s13_contention(LOCAL, ram_available_mb=300, ram_total_mb=32000,
+    v = s14_contention(LOCAL, ram_available_mb=300, ram_total_mb=32000,
                        external_gpu_fraction=0.0)
     assert v == -1.0
 
 
 def test_zero_total_ram_is_safe():
-    assert s13_contention(LOCAL, ram_available_mb=0, ram_total_mb=0,
+    assert s14_contention(LOCAL, ram_available_mb=0, ram_total_mb=0,
                           external_gpu_fraction=0.0) == 0.0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `timeout 30 pytest packages/nerd_herd/tests/test_s13_contention.py -v`
+Run: `timeout 30 pytest packages/nerd_herd/tests/test_s14_contention.py -v`
 Expected: FAIL — module missing.
 
-- [ ] **Step 3: Implement S13**
+- [ ] **Step 3: Implement S14**
 
 ```python
-# packages/nerd_herd/src/nerd_herd/signals/s13_contention.py
-"""S13 — machine-contention pressure (local pool only).
+# packages/nerd_herd/src/nerd_herd/signals/s14_contention.py
+"""S14 — machine-contention pressure (local pool only).
 
 Negative-only. Two inputs, both already collected elsewhere:
   - external-GPU fraction (cached from the 30s auto-detect loop)
@@ -607,7 +607,7 @@ RAM_USED_FLOOR = 0.80               # below this used-fraction → no pressure
 RAM_USED_CAP = 0.95                 # at/above → full -1.0
 
 
-def s13_contention(
+def s14_contention(
     model: Any,
     *,
     ram_available_mb: int,
@@ -632,19 +632,19 @@ def s13_contention(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `timeout 30 pytest packages/nerd_herd/tests/test_s13_contention.py -v`
+Run: `timeout 30 pytest packages/nerd_herd/tests/test_s14_contention.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/nerd_herd/src/nerd_herd/signals/s13_contention.py packages/nerd_herd/tests/test_s13_contention.py
-git commit -m "feat(nerd_herd): S13 machine-contention pressure signal"
+git add packages/nerd_herd/src/nerd_herd/signals/s14_contention.py packages/nerd_herd/tests/test_s14_contention.py
+git commit -m "feat(nerd_herd): S14 machine-contention pressure signal"
 ```
 
 ---
 
-### Task 7: Add S12/S13 to the combine fold
+### Task 7: Add S13/S14 to the combine fold
 
 **Files:**
 - Modify: `packages/nerd_herd/src/nerd_herd/combine.py:17`
@@ -657,21 +657,21 @@ git commit -m "feat(nerd_herd): S13 machine-contention pressure signal"
 from nerd_herd.combine import combine_signals, OTHER_BUCKET
 
 
-def test_s12_s13_in_other_bucket():
-    assert "S12" in OTHER_BUCKET
+def test_s13_s14_in_other_bucket():
     assert "S13" in OTHER_BUCKET
+    assert "S14" in OTHER_BUCKET
 
 
-def test_s12_graded_negative_flows_through():
-    sig = {k: 0.0 for k in ("S1","S2","S3","S4","S5","S6","S7","S9","S10","S11","S12","S13")}
-    sig["S12"] = -0.6
+def test_s13_graded_negative_flows_through():
+    sig = {k: 0.0 for k in ("S1","S2","S3","S4","S5","S6","S7","S9","S10","S11","S13","S14")}
+    sig["S13"] = -0.6
     out = combine_signals(signals=sig, weights={})
     assert out.scalar < 0.0
 
 
-def test_s13_sentinel_pegs_minus_one():
-    sig = {k: 0.0 for k in ("S1","S2","S3","S4","S5","S6","S7","S9","S10","S11","S12","S13")}
-    sig["S13"] = -10.0
+def test_s14_sentinel_pegs_minus_one():
+    sig = {k: 0.0 for k in ("S1","S2","S3","S4","S5","S6","S7","S9","S10","S11","S13","S14")}
+    sig["S14"] = -10.0
     out = combine_signals(signals=sig, weights={})
     assert out.scalar == -1.0
 ```
@@ -679,20 +679,20 @@ def test_s13_sentinel_pegs_minus_one():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `timeout 30 pytest packages/nerd_herd/tests/test_combine_desktop.py -v`
-Expected: FAIL — S12/S13 not in `OTHER_BUCKET`.
+Expected: FAIL — S13/S14 not in `OTHER_BUCKET`.
 
-- [ ] **Step 3: Add S12/S13 to OTHER_BUCKET**
+- [ ] **Step 3: Add S13/S14 to OTHER_BUCKET**
 
-In `packages/nerd_herd/src/nerd_herd/combine.py`, change line 17:
+In `packages/nerd_herd/src/nerd_herd/combine.py`, change line 17 (S12 is the existing free-cloud pool-balance signal — keep it):
 ```python
-OTHER_BUCKET = ("S1", "S7", "S9", "S10", "S11")
+OTHER_BUCKET = ("S1", "S7", "S9", "S10", "S11", "S12")
 ```
 to:
 ```python
-OTHER_BUCKET = ("S1", "S7", "S9", "S10", "S11", "S12", "S13")
+OTHER_BUCKET = ("S1", "S7", "S9", "S10", "S11", "S12", "S13", "S14")
 ```
 
-(No other change: `combine_signals` already iterates `OTHER_BUCKET + ...`, takes worst-of-negatives per bucket, and `weights.get(k, 1.0)` defaults missing weights to 1.0. S12/S13 are negative-only so they never enter the `POSITIVE_ARM_SIGNALS` noisy-OR.)
+(No other change: `combine_signals` already iterates `OTHER_BUCKET + ...`, takes worst-of-negatives per bucket, and `weights.get(k, 1.0)` defaults missing weights to 1.0. S13/S14 are negative-only so they never enter the `POSITIVE_ARM_SIGNALS = ("S9", "S12")` noisy-OR — do NOT add them there.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -703,7 +703,7 @@ Expected: PASS.
 
 ```bash
 git add packages/nerd_herd/src/nerd_herd/combine.py packages/nerd_herd/tests/test_combine_desktop.py
-git commit -m "feat(nerd_herd): fold S12/S13 into OTHER_BUCKET"
+git commit -m "feat(nerd_herd): fold S13/S14 into OTHER_BUCKET"
 ```
 
 ---
@@ -725,27 +725,27 @@ from nerd_herd.modifiers import M4_load_mode_weights
 
 def test_full_silences_desktop_signals():
     w = M4_load_mode_weights(mode="full")
-    assert w["S12"] == 0.0 and w["S13"] == 0.0
+    assert w["S13"] == 0.0 and w["S14"] == 0.0
 
 
 def test_otomatik_passthrough():
     # "full" is the auto-managed default; "heavy"/"shared" express strength.
     w = M4_load_mode_weights(mode="heavy")
-    assert w["S12"] >= 1.0 and w["S13"] >= 1.0
+    assert w["S13"] >= 1.0 and w["S14"] >= 1.0
 
 
 def test_shared_amplifies_more_than_heavy():
-    assert M4_load_mode_weights(mode="shared")["S12"] > M4_load_mode_weights(mode="heavy")["S12"]
+    assert M4_load_mode_weights(mode="shared")["S13"] > M4_load_mode_weights(mode="heavy")["S13"]
 
 
 def test_unknown_mode_is_passthrough():
     w = M4_load_mode_weights(mode="bogus")
-    assert w["S12"] == 1.0 and w["S13"] == 1.0
+    assert w["S13"] == 1.0 and w["S14"] == 1.0
 
 
-def test_only_touches_s12_s13():
+def test_only_touches_s13_s14():
     w = M4_load_mode_weights(mode="shared")
-    assert set(w.keys()) == {"S12", "S13"}
+    assert set(w.keys()) == {"S13", "S14"}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -757,7 +757,7 @@ Expected: FAIL — function missing.
 
 In `packages/nerd_herd/src/nerd_herd/modifiers.py`, append:
 ```python
-# ── M4: Load-mode weights on desktop signals (S12/S13) ─────────────
+# ── M4: Load-mode weights on desktop signals (S13/S14) ─────────────
 # Re-expresses "yük modu" as per-signal weights, replacing the dead
 # VRAM-% cap. Minimal is handled upstream by selector eligibility
 # (load_mode_minimal), so it doesn't need a veto weight here — passthrough.
@@ -770,10 +770,10 @@ _M4_BY_MODE: dict[str, float] = {
 
 
 def M4_load_mode_weights(*, mode: str) -> dict[str, float]:
-    """Per-signal weights for S12/S13 driven by load mode. Multiplied into
+    """Per-signal weights for S13/S14 driven by load mode. Multiplied into
     the M3 weight dict before the fold. Unknown mode → passthrough (1.0)."""
     factor = _M4_BY_MODE.get(mode, 1.0)
-    return {"S12": factor, "S13": factor}
+    return {"S13": factor, "S14": factor}
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -785,12 +785,12 @@ Expected: PASS.
 
 ```bash
 git add packages/nerd_herd/src/nerd_herd/modifiers.py packages/nerd_herd/tests/test_m4_load_mode.py
-git commit -m "feat(nerd_herd): M4 load-mode weights for S12/S13"
+git commit -m "feat(nerd_herd): M4 load-mode weights for S13/S14"
 ```
 
 ---
 
-### Task 9: Wire S12/S13 + M4 into `pressure_for`
+### Task 9: Wire S13/S14 + M4 into `pressure_for`
 
 **Files:**
 - Modify: `packages/nerd_herd/src/nerd_herd/types.py` (`pressure_for`, ~257-404)
@@ -815,7 +815,7 @@ def _snap(**kw):
 
 
 def test_away_full_mode_no_desktop_pressure():
-    # away (idle huge) + full mode → S12/S13 contribute nothing
+    # away (idle huge) + full mode → S13/S14 contribute nothing
     snap = _snap(user_idle_s=1e9, load_mode="full")
     assert snap.pressure_for(LOCAL).scalar >= 0.0
 
@@ -827,7 +827,7 @@ def test_present_otomatik_pushes_local_negative():
 
 def test_full_mode_silences_presence_even_when_present():
     snap = _snap(user_idle_s=1.0, load_mode="full")
-    # S12 would be -0.6 but M4 weight 0.0 zeroes it
+    # S13 would be -0.6 but M4 weight 0.0 zeroes it
     assert snap.pressure_for(LOCAL).scalar >= 0.0
 
 
@@ -844,27 +844,27 @@ def test_external_gpu_veto_in_otomatik():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `timeout 30 pytest packages/nerd_herd/tests/test_pressure_desktop_integration.py -v`
-Expected: FAIL — S12/S13 not computed; full mode doesn't silence.
+Expected: FAIL — S13/S14 not computed; full mode doesn't silence.
 
-- [ ] **Step 3: Compute S12/S13 and apply M4 in `pressure_for`**
+- [ ] **Step 3: Compute S13/S14 and apply M4 in `pressure_for`**
 
 In `packages/nerd_herd/src/nerd_herd/types.py`, inside `pressure_for`:
 
 (a) Add imports next to the other signal imports:
 ```python
-        from nerd_herd.signals.s12_presence import s12_presence
-        from nerd_herd.signals.s13_contention import s13_contention
+        from nerd_herd.signals.s13_presence import s13_presence
+        from nerd_herd.signals.s14_contention import s14_contention
         from nerd_herd.modifiers import M4_load_mode_weights
 ```
 
-(b) In the `sig = { ... }` dict, after the `"S11": ...` entry, add:
+(b) In the `sig = { ... }` dict, after the `"S12": s12_pool_balance(...)` entry (the last entry today), add:
 ```python
-            "S12": s12_presence(
+            "S13": s13_presence(
                 model,
                 user_idle_s=self.user_idle_s,
                 foreground_fullscreen=self.foreground_fullscreen,
             ),
-            "S13": s13_contention(
+            "S14": s14_contention(
                 model,
                 ram_available_mb=self.ram_available_mb,
                 ram_total_mb=self.ram_total_mb,
@@ -875,11 +875,11 @@ In `packages/nerd_herd/src/nerd_herd/types.py`, inside `pressure_for`:
 (c) After `weights = M3_difficulty_weights(...)` (the existing M3 call), merge M4:
 ```python
         # M4: load-mode weights on the desktop signals only. Merge over M3
-        # (which never defines S12/S13), so the multiply is a clean overlay.
+        # (which never defines S13/S14), so the multiply is a clean overlay.
         weights.update(M4_load_mode_weights(mode=self.load_mode))
 ```
 
-(d) Update the docstring count line `"""Compute pressure breakdown via 10 signals + 4 modifiers."""` → `"""Compute pressure breakdown via 12 signals + 4 modifiers."""`.
+(d) Docstring: the real line (types.py:273) is `"""Compute pressure breakdown via signals + modifiers."""` with **no counts** — leave it as-is, or (optional) make it `"""... via 13 signals + 4 modifiers."""`. Do NOT use a count-bearing `old_string` as the Edit anchor; it won't match.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -889,13 +889,13 @@ Expected: PASS.
 - [ ] **Step 5: Regression — existing pressure tests unchanged**
 
 Run: `timeout 120 pytest packages/nerd_herd/tests/ -q`
-Expected: PASS. (Manually-built `SystemSnapshot`s default to away/full → S12/S13 = 0 → identical scalars to before.)
+Expected: PASS. (Manually-built `SystemSnapshot`s default to away/full → S13/S14 = 0 → identical scalars to before.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add packages/nerd_herd/src/nerd_herd/types.py packages/nerd_herd/tests/test_pressure_desktop_integration.py
-git commit -m "feat(nerd_herd): wire S12/S13 + M4 into pressure_for"
+git commit -m "feat(nerd_herd): wire S13/S14 + M4 into pressure_for"
 ```
 
 ---
@@ -1442,7 +1442,7 @@ def test_away_keeps_local():
 
 
 def test_user_gaming_forces_cloud():
-    # fullscreen present + heavy mode → local S12 veto → cloud wins
+    # fullscreen present + heavy mode → local S13 veto → cloud wins
     snap = _snap(user_idle_s=1.0, foreground_fullscreen=True, load_mode="heavy")
     pick = select_for_simulation(task_name="coder", difficulty=4,
                                  estimated_output_tokens=500, snapshot=snap,
@@ -1468,7 +1468,7 @@ git commit -m "test(fatih_hoca): desktop state flips placement local<->cloud"
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-05-31-resource-signals-design.md` (mark Status: implemented; link this plan)
-- Modify: `CLAUDE.md` (one line under the Phase 2d note: S12/S13 + M4 desktop signals live)
+- Modify: `CLAUDE.md` (one line under the Phase 2d note: S13/S14 + M4 desktop signals live)
 
 - [ ] **Step 1: Run the affected suites with timeouts**
 
@@ -1479,20 +1479,20 @@ Expected: PASS. Record the counts.
 - [ ] **Step 2: Update the spec status + CLAUDE.md**
 
 In the spec header, change `**Status:** Approved design, ready for implementation plan.` → `**Status:** Implemented (plan `docs/superpowers/plans/2026-06-09-desktop-resource-signals.md`).`
-In `CLAUDE.md`, append to the Phase 2d pitfall note: "S12 user-presence + S13 machine-contention are local-only pressure signals (OTHER_BUCKET); load mode = M4 weights on them (Full silences / Heavy·Shared amplify / Minimal = eligibility veto). Desktop fields on `SystemSnapshot`; presence sensed in `nerd_herd/presence.py`; external-GPU read from the 30s auto-detect cache; need_ctx now on `Pick`."
+In `CLAUDE.md`, append to the Phase 2d pitfall note: "S13 user-presence + S14 machine-contention are local-only pressure signals (OTHER_BUCKET); load mode = M4 weights on them (Full silences / Heavy·Shared amplify / Minimal = eligibility veto). Desktop fields on `SystemSnapshot`; presence sensed in `nerd_herd/presence.py`; external-GPU read from the 30s auto-detect cache; need_ctx now on `Pick`."
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-05-31-resource-signals-design.md CLAUDE.md
-git commit -m "docs: mark resource-signals implemented; note S12/S13/M4 in CLAUDE.md"
+git commit -m "docs: mark resource-signals implemented; note S13/S14/M4 in CLAUDE.md"
 ```
 
 ---
 
 ## Tuning follow-ups (NOT this plan — log after a live mission)
 
-- S12/S13 thresholds (`ACTIVE_IDLE_S`, `PRESENT_IDLE_S`, presence penalty band, `RAM_USED_FLOOR/CAP`, `EXTERNAL_GPU_VETO_FRACTION`) are starting guesses. Tune against real `kutai.jsonl` presence/RAM distributions, the way S1/S9 thresholds were tuned.
+- S13/S14 thresholds (`ACTIVE_IDLE_S`, `PRESENT_IDLE_S`, presence penalty band, `RAM_USED_FLOOR/CAP`, `EXTERNAL_GPU_VETO_FRACTION`) are starting guesses. Tune against real `kutai.jsonl` presence/RAM distributions, the way S1/S9 thresholds were tuned.
 - Confirm the auto-detect loop's mode downgrades now visibly bias selection (they were dead before M4). Watch a real game/render session.
 - Telegram button labels still say full/heavy/shared/minimal; consider relabeling to the spec's Full/Otomatik/Heavy-Shared/Minimal preset language (out of scope here).
 - **Spec §3.5 VRAM safety margin (~0.5-1 GB) — consciously DEFERRED, not implemented.** P1 (need-ctx) + small load windows already removed the OOM, so the margin is belt-and-suspenders hardening on `--fit`, not a fix. Add it to DaLLaMa's load flags only if a spike-OOM is observed post-launch. Flagged here so it isn't mistaken for covered.

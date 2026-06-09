@@ -45,6 +45,21 @@ from src.core.in_flight import (
 )
 
 
+# ─── Context-size resolver ───────────────────────────────────────────────────
+
+def _resolve_load_ctx(*, need_ctx: int, min_context: int, est_in: int, est_out: int) -> int:
+    """Pick's need_ctx wins; fall back to min_context, then the legacy
+    token heuristic. Kept as a thin fallback for cloud picks / tests that
+    don't carry need_ctx."""
+    if need_ctx and need_ctx > 0:
+        return need_ctx
+    if min_context and min_context > 0:
+        return min_context
+    if est_in or est_out:
+        return int((est_in + est_out) * 1.3) + 512
+    return 0
+
+
 # ─── Call Categories ─────────────────────────────────────────────────────────
 
 class CallCategory(Enum):
@@ -359,9 +374,12 @@ class LLMDispatcher:
             # Local model load
             if model.is_local and getattr(model, "location", "") != "ollama":
                 is_thinking = model.thinking_model and needs_thinking
-                _min_ctx = min_context
-                if _min_ctx <= 0 and (estimated_input_tokens or estimated_output_tokens):
-                    _min_ctx = int((estimated_input_tokens + estimated_output_tokens) * 1.3) + 512
+                _min_ctx = _resolve_load_ctx(
+                    need_ctx=int(getattr(pick, "need_ctx", 0) or 0),
+                    min_context=min_context,
+                    est_in=estimated_input_tokens,
+                    est_out=estimated_output_tokens,
+                )
                 # Record swap intent BEFORE ensure_model so the budget
                 # reflects ATTEMPTED swaps, not just successful ones
                 # (production triage 2026-05-01: 96% force-kill rate

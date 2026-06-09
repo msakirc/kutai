@@ -72,3 +72,22 @@ def M3_difficulty_weights(*, difficulty: int, model_is_paid: bool = False) -> di
             "S10": 1.0, "S11": 0.7, "S12": 0.5,
         }
     return {k: 1.0 for k in ("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S9", "S10", "S11", "S12")}
+
+
+# ── M4: Load-mode weights on desktop signals (S13/S14) ─────────────
+# Re-expresses "yük modu" as per-signal weights, replacing the dead
+# VRAM-% cap. Minimal is handled upstream by selector eligibility
+# (load_mode_minimal), so it doesn't need a veto weight here — passthrough.
+_M4_BY_MODE: dict[str, float] = {
+    "full": 0.0,      # ignore the user — desktop signals silenced
+    "heavy": 1.5,     # cloud-bias strength: amplify desktop penalty
+    "shared": 2.0,    # stronger cloud bias
+    "minimal": 1.0,   # local already vetoed at eligibility; passthrough
+}
+
+
+def M4_load_mode_weights(*, mode: str) -> dict[str, float]:
+    """Per-signal weights for S13/S14 driven by load mode. Multiplied into
+    the M3 weight dict before the fold. Unknown mode → passthrough (1.0)."""
+    factor = _M4_BY_MODE.get(mode, 1.0)
+    return {"S13": factor, "S14": factor}

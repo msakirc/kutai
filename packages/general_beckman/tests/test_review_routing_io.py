@@ -358,3 +358,63 @@ async def test_verdict_malformed_retries_reviewer(tmp_path, monkeypatch):
     # routed to any producer.
     assert rev["status"] in ("pending", "failed")  # retry or DLQ, never completed
     assert rev["status"] != "completed"
+
+
+# ---------------------------------------------------------------------------
+# Part (b): the mechanical-check enqueue builder injects the reviewer's
+# produced verdict as payload["review_result"]. Without this the mr_roboto
+# verifier reads None -> classifies malformed -> wrong DLQ instead of routing.
+# ---------------------------------------------------------------------------
+
+
+def _build_payload(source_result):
+    """Run _posthook_agent_and_payload for a verify_review_verdict check whose
+    source step produced *source_result*; return the built mechanical payload."""
+    from general_beckman.apply import _posthook_agent_and_payload
+    from general_beckman.result_router import RequestPostHook
+
+    source_ctx = {
+        "checks": [{"kind": "verify_review_verdict",
+                    "payload": {"action": "verify_review_verdict"}}],
+    }
+    a = RequestPostHook(
+        source_task_id=7, kind="verify_review_verdict", source_ctx=source_ctx)
+    source = {"id": 7, "result": source_result}
+    agent, spec = _posthook_agent_and_payload(a, source, source_ctx)
+    assert agent == "mechanical"
+    return spec["payload"]
+
+
+def test_injects_review_result_from_dict_result():
+    review = {"status": "fail",
+              "issues": [{"target_artifact": "requirements_spec",
+                          "severity": "blocker", "problem": "p"}]}
+    payload = _build_payload(review)
+    assert payload["action"] == "verify_review_verdict"
+    assert payload["review_result"] == review
+    assert payload["review_result"]["status"] == "fail"
+    assert payload["review_result"]["issues"][0]["target_artifact"] == "requirements_spec"
+
+
+def test_injects_review_result_from_fenced_string_result():
+    review = {"status": "fail",
+              "issues": [{"target_artifact": "requirements_spec",
+                          "severity": "blocker", "problem": "p"}]}
+    fenced = "Here is my verdict:\n```json\n" + json.dumps(review) + "\n```\n"
+    payload = _build_payload(fenced)
+    assert payload["action"] == "verify_review_verdict"
+    assert payload["review_result"]["status"] == "fail"
+    assert payload["review_result"]["issues"][0]["problem"] == "p"
+
+
+def test_injects_review_result_from_bare_json_string():
+    review = {"status": "pass", "issues": []}
+    payload = _build_payload(json.dumps(review))
+    assert payload["review_result"] == review
+
+
+def test_unparseable_result_leaves_review_result_none():
+    # No JSON at all -> classifies malformed downstream, not a wrong route.
+    payload = _build_payload("the reviewer narrated prose with no verdict")
+    assert payload["action"] == "verify_review_verdict"
+    assert payload["review_result"] is None

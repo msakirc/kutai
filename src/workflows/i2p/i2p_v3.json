@@ -2052,6 +2052,9 @@
     },
     {
       "id": "1.13",
+      "checks": [
+        { "kind": "verify_review_verdict", "payload": { "action": "verify_review_verdict" } }
+      ],
       "phase": "phase_1",
       "name": "research_quality_review",
       "agent": "reviewer",
@@ -3368,6 +3371,9 @@
     },
     {
       "id": "3.11",
+      "checks": [
+        { "kind": "verify_review_verdict", "payload": { "action": "verify_review_verdict" } }
+      ],
       "phase": "phase_3",
       "name": "requirements_review",
       "agent": "reviewer",
@@ -4543,6 +4549,9 @@
     },
     {
       "id": "4.16",
+      "checks": [
+        { "kind": "verify_review_verdict", "payload": { "action": "verify_review_verdict" } }
+      ],
       "phase": "phase_4",
       "name": "architecture_review",
       "agent": "reviewer",
@@ -5548,6 +5557,9 @@
     },
     {
       "id": "6.6",
+      "checks": [
+        { "kind": "verify_review_verdict", "payload": { "action": "verify_review_verdict" } }
+      ],
       "phase": "phase_6",
       "name": "project_plan_review",
       "agent": "reviewer",
@@ -6628,6 +6640,9 @@
     },
     {
       "id": "7.16",
+      "checks": [
+        { "kind": "verify_review_verdict", "payload": { "action": "verify_review_verdict" } }
+      ],
       "phase": "phase_7",
       "name": "sprint_0_review",
       "agent": "reviewer",
@@ -8712,6 +8727,9 @@
     },
     {
       "id": "12.5",
+      "checks": [
+        { "kind": "verify_review_verdict", "payload": { "action": "verify_review_verdict" } }
+      ],
       "phase": "phase_12",
       "name": "legal_review",
       "agent": "reviewer",
@@ -9914,6 +9932,9 @@
     },
     {
       "id": "14.2",
+      "checks": [
+        { "kind": "verify_review_verdict", "payload": { "action": "verify_review_verdict" } }
+      ],
       "phase": "phase_14",
       "name": "launch_checklist_review",
       "agent": "reviewer",

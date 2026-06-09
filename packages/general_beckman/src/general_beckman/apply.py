@@ -1915,6 +1915,36 @@ def _find_check_payload(source_ctx: dict, kind: str) -> dict | None:
 def _posthook_agent_and_payload(
     a: RequestPostHook, source: dict, source_ctx: dict,
 ) -> tuple[str, dict]:
+    if a.kind == "verify_review_verdict":
+        # Reviewer-failure routing check. Unlike the file-bounds checks below,
+        # this verifier reads the SOURCE step's produced verdict (the reviewer's
+        # own {status, issues[]} artifact), which the declared checks[].payload
+        # does NOT carry. Build the base payload as usual, then inject the
+        # reviewer's result as `review_result` by parsing source.result with the
+        # SAME unwrap+json.loads the materializer / verify_falsification_present
+        # path uses. On any parse failure leave review_result=None so mr_roboto
+        # classifies it `malformed` (→ retry the reviewer, not route to a
+        # producer). A dict result is used directly.
+        payload = _find_check_payload(source_ctx, a.kind) or {}
+        source_result = source.get("result")
+        parsed: object | None = None
+        if isinstance(source_result, (dict, list)):
+            parsed = source_result
+        elif isinstance(source_result, str) and source_result.strip():
+            from coulson.grounding import unwrap_fenced_artifact
+            candidate = unwrap_fenced_artifact(source_result) or source_result
+            try:
+                parsed = json.loads(candidate)
+            except (ValueError, TypeError):
+                parsed = None
+        payload = {**payload, "action": a.kind, "review_result": parsed}
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": payload,
+        })
+
     if a.kind in _CHECK_KINDS:
         # Parameterized check: use the producer's declared `checks[].payload`
         # VERBATIM (it already names the exact file + bounds — no derivation

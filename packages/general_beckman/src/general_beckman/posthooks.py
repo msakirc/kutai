@@ -536,6 +536,28 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         "verify_cost_curve_present", "ADR carries a cost-curve section."),
     "verify_adr_register": _shape_check_spec(
         "verify_adr_register", "ADR register.md is consistent with the .adr dir."),
+    # Reviewer-failure routing — a blocker `checks`-pot member declared on the
+    # 7 status-verdict reviewer steps (1.13/3.11/4.16/6.6/7.16/12.5/14.2). The
+    # mr_roboto verify_review_verdict action reads the reviewer's own
+    # {status, issues[]} verdict (injected as payload["review_result"] by
+    # apply._posthook_agent_and_payload) and classifies it pass/fail/malformed.
+    # FAIL routes the failure to the at-fault PRODUCER(s) via route_review_failure
+    # (apply._apply_review_verdict — an explicit branch that fires BEFORE the
+    # generic _CHECK_KINDS blocker rail); MALFORMED retries the reviewer task.
+    # Registered here so _derive_check_kinds includes it and determine_posthooks
+    # emits a posthook for any step listing it in checks[]. NOT a shape check —
+    # it routes to producers, not the simple-blocker re-pend-self rail.
+    "verify_review_verdict": PostHookSpec(
+        kind="verify_review_verdict",
+        verb="verify_review_verdict",
+        default_severity="blocker",
+        auto_wire_triggers=[],
+        description=(
+            "Reviewer-failure routing: classify a reviewer's {status, issues[]} "
+            "verdict (pass/fail/malformed). FAIL re-pends the at-fault producer(s); "
+            "malformed retries the reviewer."
+        ),
+    ),
     # Z1 T5C (B4) — standalone critic-gate post-hook. Inline critic-gate
     # already fires inside git_commit + notify_user; this slot lets a
     # workflow step declare `post_hooks: ["critic_gate"]` to bolt the gate

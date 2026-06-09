@@ -42,7 +42,9 @@ async def test_review_halt_accept_completes_reviewer_and_audits():
                new=AsyncMock()) as rp, \
          patch("src.infra.db.update_task", new=AsyncMock()) as upd, \
          patch("src.infra.db.record_action_event",
-               new=AsyncMock(return_value=1)) as rec:
+               new=AsyncMock(return_value=1)) as rec, \
+         patch("general_beckman.enqueue",
+               new=AsyncMock(return_value=99)) as enq:
         await iface._handle_review_halt(update, MagicMock())
 
     update.callback_query.answer.assert_awaited_once()
@@ -54,6 +56,15 @@ async def test_review_halt_accept_completes_reviewer_and_audits():
     assert rec.call_args.kwargs["verb"] == "review_override"
     assert rec.call_args.kwargs["mission_id"] == 7
     assert rec.call_args.kwargs["task_id"] == 55
+    # L3: a workflow_advance must be spawned so a reviewer with no downstream
+    # dependents still advances the mission (otherwise it stalls).
+    enq.assert_awaited_once()
+    spawned = enq.call_args.args[0]
+    assert spawned["agent_type"] == "mechanical"
+    assert spawned["mission_id"] == 7
+    payload = spawned["context"]["payload"]
+    assert payload["action"] == "workflow_advance"
+    assert payload["mission_id"] == 7
 
 
 @pytest.mark.asyncio

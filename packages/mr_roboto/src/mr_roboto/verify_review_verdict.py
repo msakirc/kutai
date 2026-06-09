@@ -10,6 +10,9 @@ Two reviewer output shapes are accepted:
 1. STATUS shape (the 7 standard reviewers): a top-level
    ``{"status": pass|approved|needs_minor_fixes|fail, "issues": [...]}``.
    ``status`` drives the verdict; ``issues`` rides along to the router.
+   Step 1.13 (research_quality_review) carries the verdict under ``verdict``
+   instead of ``status`` (its artifact_schema field is ``verdict``) — either
+   key is read; malformed only when NEITHER is present.
 
 2. FINDINGS shape (step 10.5 encryption_and_logging_review): the reviewer has
    no pass/fail status. Instead it emits one or two findings arrays
@@ -103,11 +106,13 @@ def verify_review_verdict(*, review_result: Any) -> dict[str, Any]:
             return {"ok": False, "verdict_class": "fail", "issues": blocking}
         return {"ok": True, "verdict_class": "pass", "issues": []}
 
-    # STATUS shape (the 7 standard reviewers).
-    if "status" not in review_result:
+    # STATUS shape (the 7 standard reviewers use `status`; step 1.13
+    # research_quality_review uses `verdict`). Accept either key — malformed
+    # only when NEITHER is present (and it isn't a findings shape).
+    if "status" not in review_result and "verdict" not in review_result:
         return {"ok": False, "verdict_class": "malformed",
                 "error": "no parseable review verdict", "issues": []}
-    status = str(review_result.get("status") or "").lower()
+    status = str(review_result.get("status") or review_result.get("verdict") or "").lower()
     issues = review_result.get("issues") or []
     if status in _FAIL_CLASS:
         return {"ok": False, "verdict_class": "fail", "issues": issues}

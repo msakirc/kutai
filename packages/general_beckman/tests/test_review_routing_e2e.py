@@ -313,6 +313,74 @@ async def test_tagged_fail_full_chain_repends_producer_no_founder(
 
 
 # ---------------------------------------------------------------------------
+# Case 0 (happy path): PASS verdict -> reviewer COMPLETES and the mission
+# advances (workflow_advance spawned). NOT re-pended, NOT DLQ'd.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_pass_full_chain_completes_reviewer_and_advances(
+    tmp_path, monkeypatch,
+):
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    _reset_db_singleton(db_path)
+    from src.infra.db import init_db
+    await init_db()
+    _reset_db_singleton(db_path)
+
+    steps = [
+        {"id": "3.4", "output_artifacts": ["requirements_spec"]},
+        {"id": "3.11", "input_artifacts": ["requirements_spec"],
+         "output_artifacts": ["review_result"]},
+    ]
+    _patch_workflow(monkeypatch, steps)
+
+    # Telegram send patched (a clean PASS sends no halt card; assert empty).
+    import src.app.telegram_bot as tg_mod
+
+    class _FakeTg:
+        def __init__(self):
+            self.halt_calls = []
+
+        async def send_review_halt_keyboard(self, **kw):
+            self.halt_calls.append(kw)
+
+    fake_tg = _FakeTg()
+    monkeypatch.setattr(tg_mod, "get_telegram", lambda: fake_tg)
+
+    mid = await _seed_mission_with_checkpoint(db_path, chat_id=4242)
+    producer_id = await _seed_producer(
+        db_path, mission_id=mid, step_id="3.4", worker_attempts=1,
+    )
+    review_result = {"status": "pass", "issues": []}
+    reviewer_id = await _seed_reviewer(
+        db_path, mission_id=mid, step_id="3.11", review_result=review_result,
+    )
+
+    await _drive_full_chain_from_step1(db_path, mid, reviewer_id)
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        rev = dict(await (await db.execute(
+            "SELECT * FROM tasks WHERE id=?", (reviewer_id,))).fetchone())
+        # A workflow_advance mechanical child must have been spawned.
+        advance = await (await db.execute(
+            "SELECT COUNT(*) FROM tasks WHERE mission_id=? AND "
+            "agent_type='mechanical' AND context LIKE '%workflow_advance%'",
+            (mid,))).fetchone()
+
+    # Reviewer COMPLETED (happy path) — NOT re-pended, NOT failed/DLQ'd.
+    assert rev["status"] == "completed", (
+        f"PASS verdict must complete the reviewer, got {rev['status']!r}"
+    )
+    assert rev["status"] != "pending"
+    assert rev["status"] != "failed"
+    # Mission advance spawned so the workflow flows past the satisfied review.
+    assert advance[0] == 1, "PASS must spawn a workflow_advance"
+    # No founder escalation on a clean pass.
+    assert fake_tg.halt_calls == []
+
+
+# ---------------------------------------------------------------------------
 # Case 2: untagged/systemic FAIL -> founder-halt (reviewer parked, producer
 # untouched, halt card sent).
 # ---------------------------------------------------------------------------

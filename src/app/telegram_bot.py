@@ -10739,6 +10739,29 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if verb == "accept":
             # Override: complete the parked reviewer so the mission proceeds.
             await update_task(reviewer_task_id, status="completed")
+            # Completing the reviewer is not enough: advance.py never re-runs a
+            # COMPLETED step, and a reviewer with no downstream dependents would
+            # leave the mission stalled (no get_ready_tasks trigger). Spawn a
+            # mechanical workflow_advance so the engine re-evaluates and the
+            # mission flows past the now-satisfied review — mirrors the apply
+            # path's _spawn_workflow_advance_if_mission.
+            try:
+                import general_beckman
+                from general_beckman.apply import _mechanical_context
+                await general_beckman.enqueue({
+                    "title": f"Workflow advance: mission #{mission_id}",
+                    "description": "",
+                    "agent_type": "mechanical",
+                    "mission_id": mission_id,
+                    "depends_on": [],
+                    "context": _mechanical_context(
+                        "workflow_advance",
+                        mission_id=mission_id,
+                        completed_task_id=reviewer_task_id,
+                    ),
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("review accept: workflow_advance spawn failed: %s", exc)
             try:
                 from src.infra.db import record_action_event
                 await record_action_event(

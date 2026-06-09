@@ -4189,6 +4189,12 @@ async def _apply_review_verdict(
 ) -> None:
     """Apply a verify_review_verdict outcome from a reviewer step.
 
+    PASS    -> the reviewer accepted the artifact. Drain the
+               verify_review_verdict kind and (when nothing else is pending)
+               COMPLETE the reviewer + spawn a workflow_advance so the mission
+               flows past the satisfied review. Without this branch a clean
+               PASS fell through to the malformed handler and got re-pended /
+               DLQ'd — breaking the happy path of every wired reviewer.
     FAIL    -> route to the at-fault producer(s) via review_routing.
                * producer(s) re-pended (routed, not escalated) -> RE-PEND the
                  reviewer itself back to `pending` too, so it re-reviews the
@@ -4338,7 +4344,40 @@ async def _apply_review_verdict(
         await update_task(verdict.source_task_id, context=_json.dumps(ctx))
         return
 
-    # Malformed (or any non-fail verdict that reached the FAIL handler): the
+    if verdict_class == "pass":
+        # Happy path: the reviewer accepted the artifact. Drain the
+        # verify_review_verdict kind; when nothing else is pending on the
+        # reviewer, COMPLETE it and advance the mission so the workflow flows
+        # past the satisfied review. Mirrors _apply_simple_blocker_verdict's
+        # pass path (drain → complete-if-empty → _spawn_workflow_advance).
+        new_pending = [k for k in pending if k != "verify_review_verdict"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None, next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", raw)
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        logger.info(
+            "review verdict PASS — reviewer completed",
+            source_id=verdict.source_task_id, mission_id=mission_id,
+            reviewer_id=reviewer_id,
+        )
+        return
+
+    # Malformed (or any non-fail/non-pass verdict that reached here): the
     # reviewer task itself failed to emit a parseable verdict. Drain the kind
     # and route the REVIEWER task through normal retry/DLQ.
     new_pending = [k for k in pending if k != "verify_review_verdict"]

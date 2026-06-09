@@ -30,6 +30,41 @@ def test_unknown_status_is_malformed():
     assert res["verdict_class"] == "malformed"
 
 
+# ── verdict-key shape (step 1.13 research_quality_review uses `verdict`) ───
+
+def test_verdict_key_fail_routes():
+    """Step 1.13 emits {"verdict": "fail", ...} — must classify as fail, not
+    malformed (its artifact_schema field is `verdict`, not `status`)."""
+    from mr_roboto.verify_review_verdict import verify_review_verdict
+    res = verify_review_verdict(review_result={
+        "verdict": "fail",
+        "issues": [{"target_artifact": "market_research_report",
+                    "severity": "blocker", "problem": "no evidence"}],
+    })
+    assert res["ok"] is False
+    assert res["verdict_class"] == "fail"
+    assert res["issues"]
+
+
+def test_verdict_key_pass_ok():
+    from mr_roboto.verify_review_verdict import verify_review_verdict
+    res = verify_review_verdict(review_result={"verdict": "pass"})
+    assert res["ok"] is True
+    assert res["verdict_class"] == "pass"
+
+
+def test_verdict_key_needs_minor_fixes_passes():
+    from mr_roboto.verify_review_verdict import verify_review_verdict
+    res = verify_review_verdict(review_result={"verdict": "needs_minor_fixes"})
+    assert res["verdict_class"] == "pass"
+
+
+def test_neither_status_nor_verdict_is_malformed():
+    from mr_roboto.verify_review_verdict import verify_review_verdict
+    res = verify_review_verdict(review_result={"foo": "bar"})
+    assert res["verdict_class"] == "malformed"
+
+
 def test_dispatch_pass_completes():
     from mr_roboto import run as mr_run
     task = {"id": 0, "mission_id": 0,

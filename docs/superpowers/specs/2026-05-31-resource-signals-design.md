@@ -1,7 +1,7 @@
 # Design — Desktop-Aware Resource Signals (the "Resource Governor" moon shot, reframed)
 
 **Date:** 2026-05-31
-**Status:** Approved design, ready for implementation plan.
+**Status:** Implemented 2026-06-09 (plan `docs/superpowers/plans/2026-06-09-desktop-resource-signals.md`; branch `worktree-desktop-resource-signals`). New signals are S13 (presence) / S14 (contention) — S12 was taken by `s12_pool_balance`.
 **Supersedes direction of:** `docs/handoff/2026-05-31-p2-resource-governor-handoff.md` and `docs/handoff/2026-05-31-load-mode-redesign-ideas.md` (both proposed a standalone "governor" — rejected; see §2).
 **Prereq shipped:** P1 need-ctx (commit `2330f1ab`) — OOM fire is out.
 **Mines for evidence only:** `docs/superpowers/specs/2026-05-31-vram-aware-load-sizing-design.md` (its current-state/evidence section; its §B/§C/§D VRAM-cap mechanism is the WRONG lever — ignore).

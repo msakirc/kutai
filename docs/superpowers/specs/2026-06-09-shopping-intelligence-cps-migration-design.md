@@ -29,9 +29,11 @@ WHERE task_name='shopping_advisor' GROUP BY call_category;
 ```
 DB: `C:\Users\sakir\ai\kutai\kutai.db` (read-only `?mode=ro&immutable=1`; live bot holds WAL — readers OK; `PYTHONIOENCODING=utf-8`).
 
-## Decision (carrier A, mechanism A1)
+## Decision (carrier A; minimal — inert seam only)
 
-Re-home via the **producer-triad pattern** that the live workflow already uses. For the dormant mid-ReAct tools, **mechanism A1**: drop the tools rather than build a mid-ReAct CPS primitive. Capability that has live value (review synth) is already served by an admitted producer; the rest are dormant and explicitly deferred.
+The live LLM-shopping capability already runs admitted via the **producer-triad pattern** (`shopping_synthesizer`). No new primitive is built and **no mid-ReAct LLM is admitted** — the dormant `_llm_call` path is simply made inert. All callers fall back to their existing rule paths.
+
+> An earlier draft also dropped 4 dormant LLM agent tools ("mechanism A1"). Adversarial review showed those tools are live in `deal_analyst`/`product_researcher` → dropping = a ruling-#1 strip. **Dropping is rejected** (see change #2). Inerting `_llm_call` alone is sufficient and touches nothing else.
 
 Scope **excludes** wiring the 7 dead modules into new live workflow phases (founder: "no need to wire them now").
 
@@ -48,34 +50,30 @@ Docstring must state:
 
 The function signature is preserved (callers unchanged), so the 13 modules stay intact (ruling #2). Nothing is deleted.
 
-### 2. Drop the 4 dormant LLM-backed agent tools
+### 2. Touch NO agent tool lists, drop NO tools — `_llm_call` (change #1) alone is sufficient
 
-Remove from `src/tools/__init__.py` (the `_tool_*` fns + their `_optional_tools[...]` registry entries, ~lines 538–691):
-- `shopping_reviews` (`_tool_shopping_reviews`)
-- `shopping_compare` (`_tool_shopping_compare`)
-- `shopping_timing` (`_tool_shopping_timing`)
-- `shopping_alternatives` (`_tool_shopping_alternatives`)
+**This is the only change needed.** Inerting `_llm_call` removes the single `request()` caller in `src/shopping` (acceptance #1). No agent, tool registry, or `allowed_tools` is edited.
 
-Remove the same four names from `src/agents/shopping_advisor.py::allowed_tools`.
+> **Rejected (was A1 "drop tools"):** an earlier draft dropped `shopping_reviews`/`shopping_compare`/`shopping_timing`/`shopping_alternatives` from the registry + `shopping_advisor.allowed_tools`. Adversarial review found this **violates ruling #1.** The dormancy evidence (2026-04-18) covers only the `shopping_advisor` OVERHEAD/`_llm_call` path — it says nothing about the other two agents. The four tools are also in **live** agents `deal_analyst` (`src/agents/deal_analyst.py:27-30`, prompt `:49,:51`) and `product_researcher` (`src/agents/product_researcher.py:28-29`), reachable via `/compare` (`telegram_bot.py:8869` → `combo_research.json`) plus `exploration`/`gift_recommendation`/`price_watch`. Tool resolution (`coulson/context.py:62-66`) intersects `allowed_tools` against the registry by name, so dropping a registry entry **silently strips it from those live agents** — exactly the "deterministic-strip of a live tool capability" ruling #1 forbids. Dropping is therefore out.
 
-Rationale: review synthesis is served live by the `shopping_synthesizer` producer; the other three are dormant (last fired 2026-04-18) and, once `_llm_call` is inert, would advertise an "LLM synthesis" they no longer perform — dishonest to keep. This removes **dormant non-admitted paths**, not live capability.
+After change #1, those four tools keep working — they call `_llm_call`, get `""`, and return their **rule-based** result. That is honest rule-based behavior (the tool still does its job), not a false "LLM-backed" claim, and not a strip (the capability — review/compare/timing/alternatives output — is still produced).
 
-### 3. Keep the rule-based-effective tools
+### 3. The rule-based-effective tools (unchanged, noted)
 
-`shopping_search`, `shopping_constraints`, `shopping_fetch_reviews`, `shopping_user_profile`, `shopping_price_watch`, `web_search`, blackboard, `api_*` stay on `shopping_advisor`. `shopping_search` wraps `query_analyzer.analyze_query`, which calls `_llm_call` but has a complete `_fallback_analyze()` rule path — it degrades cleanly and keeps working. (It too has been rule-based-effective since 2026-04-18.)
+`shopping_search` (wraps `query_analyzer.analyze_query` → `_fallback_analyze()` on `""`), `shopping_constraints` (rule-based; imports `_llm_call` but never invokes it), `shopping_fetch_reviews`, `shopping_user_profile`, `shopping_price_watch` all degrade cleanly and keep working.
 
 ### 4. Keep all 13 intelligence modules (ruling #2)
 
-No module deleted. Each retains its rule-based fallback. Each remains re-homeable as a producer triad when a real live trigger is wanted.
+No module deleted. Each retains its rule-based fallback (verified — Appendix A). Each remains re-homeable as a producer triad when a real live trigger is wanted.
 
-## Ruling #1 compliance argument (the one sensitive spot — for founder veto)
+## Ruling #1 compliance argument
 
-Dropping the four tools + inerting `_llm_call` removes **only dormant, non-admitted LLM paths**:
+After the correction (change #2 = no tool drops), the migration touches **exactly one inert, dormant code path** — `_llm_call`'s `request()` body:
 - The single live LLM-shopping capability — **review synthesis — is preserved**, running admitted through `shopping_synthesizer` in the v3 workflow. Not stripped.
-- The other paths have not fired since 2026-04-18; the live agent does not call them. Removing a dead path is not "deterministic-strip of a live capability."
-- No capability is silently downgraded to rules **while still claimed as LLM-backed** — the tools that claimed LLM synthesis are removed outright; the modules that stay are honest about their rule-based fallback.
+- All 13 modules and all agent tool lists are **untouched**. Every tool that called `_llm_call` continues to return a result (now always rule-based). No capability is removed; the LLM *enrichment* of a path that has not fired since 2026-04-18 is what goes inert.
+- Nothing is silently downgraded **while still claimed as LLM-backed** to the user — these are tool outputs, not user-facing "powered by LLM" claims; and the modules' fallbacks are their designed degrade path.
 
-If the founder considers any of the four a capability that *should* be live, the correct response is to **wire it as a producer triad** (a follow-up, out of this scope), not to keep the `request()` path.
+If the founder wants any of these capabilities to use an LLM **live**, the correct response is to **wire it as a producer triad** (a follow-up, out of this scope) — never to reintroduce the `request()` path.
 
 ## Out of scope (residuals, documented not done)
 
@@ -85,10 +83,10 @@ If the founder considers any of the four a capability that *should* be live, the
 ## Acceptance
 
 1. `rg "\.request\(" src/shopping` → **0 matches** (was 1: `_llm.py:42`).
-2. `rg "_llm_call" src/shopping` still resolves (helper kept; 13 importers intact) — no `ImportError`.
-3. `timeout 120 pytest tests/` for shopping suites green (749 shopping tests from the Group 1 baseline). Tests asserting the four dropped tools exist/synthesize via LLM are updated to assert rule-based behavior or removed if they only covered the dropped tool surface.
-4. `shopping_advisor.allowed_tools` no longer lists the four; agent prompt's "Available Shopping Tools" section reconciled (no dangling references to removed tools).
-5. Live smoke (founder, post-restart): `/shop`, `/price`, `/watch`, `/research_product` still return results (rule-based + v3 producers); no orphaned children; v3 producers still admitted in DB.
+2. `rg "_llm_call" src/shopping` still resolves (helper kept; 13 importers intact) — no `ImportError`. `_llm_call` no longer imports `get_dispatcher`/`CallCategory`.
+3. `timeout 120 pytest tests/` shopping suites green. **No tool is dropped, so no tool-existence test breaks** — `tests/test_shopping_tools.py::TestShoppingCompareSerialization` (reads `_optional_tools["shopping_compare"]`) stays green. The `_llm_call`-mocking tests (`tests/shopping/test_intelligence.py`, `test_output_quality.py:817`, `test_scenarios.py`) patch the module-level symbol, so inerting the *body* is invisible to them — they keep passing untouched. No agent `allowed_tools` changes → no agent test churn.
+4. No agent tool list or prompt is edited (change #2 = no drops). Nothing to reconcile.
+5. Live smoke (founder, post-restart): `/shop`, `/price`, `/watch`, `/compare`, `/research_product` still return results (rule-based + v3 producers); no orphaned children; v3 producers still admitted in DB.
 
 ## Hand-back
 
@@ -103,18 +101,20 @@ On green: hand to the **SP5 deletion sweep** (handoff deletion order step 2) —
 
 ## Appendix A — `_llm_call` callers and their rule fallbacks (verified)
 
-| Module | `_llm_call` site | Has rule fallback on `""`? | Live tool? |
+All sites verified by adversarial review: each guards the parse (`if response:` / `if not response: return ...`) so `""` cleanly degrades — no unguarded `json.loads("")`. No module is dropped; tools listed for context only.
+
+| Module | `_llm_call` site | Guard + rule fallback on `""` | Tool (all KEPT) |
 |---|---|---|---|
-| `review_synthesizer.synthesize_reviews` | :229 | yes (rating-based) | `shopping_reviews` → DROP (live home = `shopping_synthesizer` producer) |
-| `timing.advise_timing` | :214 | yes (calendar/seasonal) | `shopping_timing` → DROP |
-| `alternatives.generate_alternatives` | :139 | yes (static maps) | `shopping_alternatives` → DROP |
-| `delivery_compare.compare_delivery` | :284 | yes (store defaults) | `shopping_compare` → DROP |
-| `query_analyzer.analyze_query` | :227 | yes (`_fallback_analyze`) | `shopping_search` → KEEP (rule-effective) |
-| `constraints.check_constraints` | (imports only) | n/a (rule-based) | `shopping_constraints` → KEEP |
-| `search_planner.generate_search_plan` | :159 | yes (`_build_rule_based_plan`) | dead — KEEP module |
-| `return_analyzer.analyze_return_policy` | :248 | yes (static policies) | dead — KEEP module |
-| `installment_calculator.calculate_installments` | (imports only) | yes (default rates) | dead — KEEP module |
-| `combo_builder.build_combos` | :270 | yes (rule compat) | dead — KEEP module |
-| `substitution.suggest_substitutes` | :157 | yes (static map) | dead — KEEP module |
-| `special/complementary.suggest_complements` | :445 | yes (static map) | dead — KEEP module |
-| `special/used_market.assess_used_viability` | :417 | yes (rule lookup) | dead — KEEP module |
+| `review_synthesizer.synthesize_reviews` | :229 | `if llm_response:` (:234) → rating-based sentiment | `shopping_reviews` (live LLM home = `shopping_synthesizer` producer) |
+| `timing.advise_timing` | :214 | `if llm_response:` (:218) → neutral/calendar aggregate | `shopping_timing` |
+| `alternatives.generate_alternatives` | :139 | `if not response: return []` (:140) → static maps | `shopping_alternatives` |
+| `delivery_compare.compare_delivery` | :284 | `if llm_resp:` (:289) → store defaults | `shopping_compare` |
+| `query_analyzer.analyze_query` | :227 | `if llm_response:` (:233) + `except` → `_fallback_analyze()` (:275) | `shopping_search` |
+| `constraints.check_constraints` | (imports only) | rule-based; never calls `_llm_call` | `shopping_constraints` |
+| `search_planner.generate_search_plan` | :159 | `if not response: return None` (:164) → `_build_rule_based_plan` | dead — module kept |
+| `return_analyzer.analyze_return_policy` | :248 | `if llm_resp:` (:252) → static policies | dead — module kept |
+| `installment_calculator.calculate_installments` | (imports only) | default rates; never calls `_llm_call` | dead — module kept |
+| `combo_builder.build_combos` | :270 | `if llm_resp:` (:274) → rule compat | dead — module kept |
+| `substitution.suggest_substitutes` | :157 | `if not response: return []` (:158) → static map | dead — module kept |
+| `special/complementary.suggest_complements` | :445 | `if not raw: return []` (:446) → **empty list** | dead — module kept |
+| `special/used_market.assess_used_viability` | :417 | `raw.find("{")` guard + `try/except` (:417-426) → rule lookup | dead — module kept |

@@ -37,10 +37,10 @@
     "_schema_version": "1",
     "status": "fail",
     "issues": [
-      "non-functional requirements missing entirely",
-      "acceptance criteria absent",
-      "PRD lacks named-competitor section",
-      "FR-001 missing falsification triple (Z1 P4)"
+      {"target_artifact": "requirements_spec_summary", "severity": "blocker", "problem": "non-functional requirements missing entirely"},
+      {"target_artifact": "requirements_spec_summary", "severity": "major", "problem": "acceptance criteria absent"},
+      {"target_artifact": "prd_final_summary", "severity": "major", "problem": "PRD lacks named-competitor section"},
+      {"target_artifact": "functional_requirements_falsification_result", "severity": "blocker", "problem": "FR-001 missing falsification triple (Z1 P4)"}
     ]
   }
 }

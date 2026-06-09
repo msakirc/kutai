@@ -31,11 +31,11 @@
     "_schema_version": "1",
     "status": "fail",
     "issues": [
-      "no sprints planned",
-      "no milestones",
-      "no risks identified",
-      "no DoD criteria",
-      "estimates missing"
+      {"target_artifact": "sprint_plans", "severity": "blocker", "problem": "no sprints planned"},
+      {"target_artifact": "milestones", "severity": "blocker", "problem": "no milestones"},
+      {"target_artifact": "risk_assessment", "severity": "major", "problem": "no risks identified"},
+      {"target_artifact": "definition_of_done", "severity": "major", "problem": "no DoD criteria"},
+      {"target_artifact": "effort_estimates", "severity": "major", "problem": "estimates missing"}
     ]
   }
 }

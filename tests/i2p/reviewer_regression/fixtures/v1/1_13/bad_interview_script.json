@@ -44,7 +44,7 @@
     "_schema_version": "1",
     "verdict": "fail",
     "issues": [
-      "Interview-script grounding (14): interview_count=0 at public_launch ambition; hard-reject."
+      {"target_artifact": "interview_script", "severity": "blocker", "problem": "Interview-script grounding (14): interview_count=0 at public_launch ambition; hard-reject."}
     ]
   }
 }

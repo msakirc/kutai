@@ -37,10 +37,10 @@
     "_schema_version": "1",
     "verdict": "fail",
     "issues": [
-      "Competitive positioning (11): named_competitors is empty; reject.",
-      "Competitive positioning (11): missing sections — only Landscape and Value Thesis present.",
-      "Competitive positioning (12): Differentiators do not cite any charter Solution.",
-      "Competitive positioning (13): Switching Costs & Risks section missing."
+      {"target_artifact": "competitive_positioning", "severity": "blocker", "problem": "Competitive positioning (11): named_competitors is empty; reject."},
+      {"target_artifact": "competitive_positioning", "severity": "blocker", "problem": "Competitive positioning (11): missing sections — only Landscape and Value Thesis present."},
+      {"target_artifact": "competitive_positioning", "severity": "major", "problem": "Competitive positioning (12): Differentiators do not cite any charter Solution."},
+      {"target_artifact": "competitive_positioning", "severity": "major", "problem": "Competitive positioning (13): Switching Costs & Risks section missing."}
     ]
   }
 }

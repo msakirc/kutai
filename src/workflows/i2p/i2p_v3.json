@@ -2075,7 +2075,7 @@
       "output_artifacts": [
         "research_review_result"
       ],
-      "instruction": "Review market_research_report AND (when present, modern Z1 missions) product_charter + reverse_pitch + competitive_positioning + interview_script for:\n\nResearch quality:\n1) Claims without evidence,\n2) Logical gaps,\n3) Missing data,\n4) Bias,\n5) Internal contradictions,\n6) Feature matrix and pricing completeness,\n7) Gap analysis quality.\n\nCharter coherence (Z1 Tier 1 — only when product_charter is present):\n8) Charter coherence — do Positioning, Brand Keywords, JTBD, Mission, and Solutions read as one mind, or as 5 disjoint LLM passes? Flag inconsistencies.\n9) Solutions completeness — every Solution must carry a populated `Boundaries` field AND a `Guiding principles` field. Reject if any solution lacks either, or if the section uses placeholder text.\n10) Reverse-pitch alignment — does the charter support the press-release headline, sub-head, customer quote, and founder quote? Flag any contradiction (e.g. headline promises 'free forever' but charter has a paid tier).\n\nCompetitive positioning (Z1 Tier 2 C2 — only when competitive_positioning is present):\n11) competitive_positioning.md exists with all six sections (Landscape / Value Thesis / Strengths-Weaknesses / Our Differentiators / Switching Costs & Risks / Notes) and `named_competitors` is non-empty.\n12) Differentiators cite at least one Solution from the charter by name (or labeled ID). Reject if Differentiators are generic and do not reference any charter Solution.\n13) Switching Costs & Risks section is non-empty (real prose, not a stub).\n\nInterview-script grounding (Z1 Tier 2 A4 — only when interview_script is present):\n14) interview_script.md exists. If `interview_count == 0` (no transcripts in mission_{mission_id}/.intake/interviews/) AND `mission.ambition` is `private_beta` or higher, soft-warn (verdict=needs_minor_fixes with issue tagged 14). If `mission.ambition` is `public_launch`, hard-reject (verdict=fail).\n\nPrior-art coverage (Z1 Tier 6 B / P5 — only when prior_art_report is present):\n15) prior_art_report.attempted_solutions must be non-empty AND have at least 2 entries with a resolvable URL (status != 'dead'). If 0-1 resolvable entries AND `mission.ambition` ∈ {private_beta, public_launch, revenue_product}, soft-warn (verdict=needs_minor_fixes).\n16) key_lessons must be non-empty — generic platitudes ('failed due to bad UX') without a concrete signal (revenue, churn, launch year, founder quote) count as missing. Reject if all lessons are platitudes.\n17) verdict field on the report must NOT be 'inconclusive' when graveyard_count >= 3. Three or more dead/dormant prior attempts is a strong negative signal that the founder must acknowledge.\n\nReject (verdict != pass) if any section uses placeholder text (TODO, TBD, <fill in>, lorem ipsum) or if any solution lacks `boundaries` / `guiding_principles` or if checks 11-13 fail or if check 16 fails. Output: verdict (pass/fail/needs_minor_fixes), issues list — each issue tagged by which check (1-17) it failed.\n\nIMPORTANT: produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact.",
+      "instruction": "Review market_research_report AND (when present, modern Z1 missions) product_charter + reverse_pitch + competitive_positioning + interview_script for:\n\nResearch quality:\n1) Claims without evidence,\n2) Logical gaps,\n3) Missing data,\n4) Bias,\n5) Internal contradictions,\n6) Feature matrix and pricing completeness,\n7) Gap analysis quality.\n\nCharter coherence (Z1 Tier 1 — only when product_charter is present):\n8) Charter coherence — do Positioning, Brand Keywords, JTBD, Mission, and Solutions read as one mind, or as 5 disjoint LLM passes? Flag inconsistencies.\n9) Solutions completeness — every Solution must carry a populated `Boundaries` field AND a `Guiding principles` field. Reject if any solution lacks either, or if the section uses placeholder text.\n10) Reverse-pitch alignment — does the charter support the press-release headline, sub-head, customer quote, and founder quote? Flag any contradiction (e.g. headline promises 'free forever' but charter has a paid tier).\n\nCompetitive positioning (Z1 Tier 2 C2 — only when competitive_positioning is present):\n11) competitive_positioning.md exists with all six sections (Landscape / Value Thesis / Strengths-Weaknesses / Our Differentiators / Switching Costs & Risks / Notes) and `named_competitors` is non-empty.\n12) Differentiators cite at least one Solution from the charter by name (or labeled ID). Reject if Differentiators are generic and do not reference any charter Solution.\n13) Switching Costs & Risks section is non-empty (real prose, not a stub).\n\nInterview-script grounding (Z1 Tier 2 A4 — only when interview_script is present):\n14) interview_script.md exists. If `interview_count == 0` (no transcripts in mission_{mission_id}/.intake/interviews/) AND `mission.ambition` is `private_beta` or higher, soft-warn (verdict=needs_minor_fixes with issue tagged 14). If `mission.ambition` is `public_launch`, hard-reject (verdict=fail).\n\nPrior-art coverage (Z1 Tier 6 B / P5 — only when prior_art_report is present):\n15) prior_art_report.attempted_solutions must be non-empty AND have at least 2 entries with a resolvable URL (status != 'dead'). If 0-1 resolvable entries AND `mission.ambition` ∈ {private_beta, public_launch, revenue_product}, soft-warn (verdict=needs_minor_fixes).\n16) key_lessons must be non-empty — generic platitudes ('failed due to bad UX') without a concrete signal (revenue, churn, launch year, founder quote) count as missing. Reject if all lessons are platitudes.\n17) verdict field on the report must NOT be 'inconclusive' when graveyard_count >= 3. Three or more dead/dormant prior attempts is a strong negative signal that the founder must acknowledge.\n\nReject (verdict != pass) if any section uses placeholder text (TODO, TBD, <fill in>, lorem ipsum) or if any solution lacks `boundaries` / `guiding_principles` or if checks 11-13 fail or if check 16 fails. Output: verdict (pass/fail/needs_minor_fixes), issues list — each issue tagged by which check (1-17) it failed.\n\nIMPORTANT: produce your answer as a JSON object in your final response. Do NOT keep searching — use what you found. Your response text IS the artifact. Emit `issues` as an array; each element is {target_artifact, severity (blocker|major|minor), problem}. Set `target_artifact` to the name of the input artifact the issue is about (one of your input_artifacts); use null only when the issue is systemic and cannot be attributed to a single artifact. Set status=fail if any blocker/major issue exists.",
       "done_when": "research_review_result exists with clear quality assessment.",
       "artifact_schema": {
         "research_review_result": {
@@ -2089,7 +2089,17 @@
                 "needs_minor_fixes"
               ]
             },
-            "issues": {}
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "target_artifact": { "type": "string" },
+                  "severity": { "type": "string", "equals": ["blocker", "major", "minor"] },
+                  "problem": { "type": "string" }
+                }
+              }
+            }
           },
           "_schema_version": "1"
         }
@@ -3398,7 +3408,7 @@
       "context": {
         "estimated_output_tokens": 6000
       },
-      "instruction": "Review requirements_spec against prd_final for completeness, consistency, testability, and feasibility. Check that every user story has traceable requirements, no orphaned requirements exist, NFR targets are realistic, and security requirements cover all sensitive areas.\n\nZ1 Tier 2 (P4) — falsification rigor:\n- REJECT (status=fail) if any FR / NFR / BR / system_quality_attribute / persona is missing the falsification triple (risk_if_wrong, validation_method, falsification_signal).\n- REJECT when risk_if_wrong='critical' and validation_method is vague (e.g., 'users will tell us', 'we'll see how it goes'). Critical-risk items MUST name a measurable / specific check (numbers OR keywords like interview / monitor / test / audit / benchmark / fact-check).\n- REJECT items where falsification_signal is non-observable (e.g., 'something feels off' is not observable; 'p95 latency exceeds 800ms over 3 days' is observable).\n\nZ1 Tier 2 (A2) — non-goals contradiction check:\n- The mechanical sibling check_against_non_goals surfaces token-overlap matches between non_goals.md and this artifact body. CONSUME those matches as input — they pre-flag obvious contradictions.\n- REJECT (status=fail) any FR / NFR / BR that maps to a non-goal listed in mission_{mission_id}/.charter/non_goals.md (e.g., non-goal='No real-time multiplayer features' → reject any FR introducing WebSocket multiplayer).\n- Subtle contradictions are your judgment; the mechanical check only flags lexical overlap.\n\nOUTPUT FORMAT: Return ONLY a JSON object with EXACTLY two top-level fields:\n{\n  \"status\": \"pass\" | \"fail\" | \"needs_revision\",\n  \"issues\": [ { \"severity\": \"...\", \"file\": \"...\", \"line\": <int|null>, \"description\": \"...\", \"suggested_fix\": \"...\" }, ... ]\n}\n\nIMPORTANT: emit `status` FIRST so it lands even when output is truncated. Cap issues at 12 entries — group similar findings into one issue rather than listing each occurrence.",
+      "instruction": "Review requirements_spec against prd_final for completeness, consistency, testability, and feasibility. Check that every user story has traceable requirements, no orphaned requirements exist, NFR targets are realistic, and security requirements cover all sensitive areas.\n\nZ1 Tier 2 (P4) — falsification rigor:\n- REJECT (status=fail) if any FR / NFR / BR / system_quality_attribute / persona is missing the falsification triple (risk_if_wrong, validation_method, falsification_signal).\n- REJECT when risk_if_wrong='critical' and validation_method is vague (e.g., 'users will tell us', 'we'll see how it goes'). Critical-risk items MUST name a measurable / specific check (numbers OR keywords like interview / monitor / test / audit / benchmark / fact-check).\n- REJECT items where falsification_signal is non-observable (e.g., 'something feels off' is not observable; 'p95 latency exceeds 800ms over 3 days' is observable).\n\nZ1 Tier 2 (A2) — non-goals contradiction check:\n- The mechanical sibling check_against_non_goals surfaces token-overlap matches between non_goals.md and this artifact body. CONSUME those matches as input — they pre-flag obvious contradictions.\n- REJECT (status=fail) any FR / NFR / BR that maps to a non-goal listed in mission_{mission_id}/.charter/non_goals.md (e.g., non-goal='No real-time multiplayer features' → reject any FR introducing WebSocket multiplayer).\n- Subtle contradictions are your judgment; the mechanical check only flags lexical overlap.\n\nOUTPUT FORMAT: Return ONLY a JSON object with EXACTLY two top-level fields:\n{\n  \"status\": \"pass\" | \"fail\" | \"needs_revision\",\n  \"issues\": [ { \"severity\": \"...\", \"file\": \"...\", \"line\": <int|null>, \"description\": \"...\", \"suggested_fix\": \"...\" }, ... ]\n}\n\nIMPORTANT: emit `status` FIRST so it lands even when output is truncated. Cap issues at 12 entries — group similar findings into one issue rather than listing each occurrence. Emit `issues` as an array; each element is {target_artifact, severity (blocker|major|minor), problem}. Set `target_artifact` to the name of the input artifact the issue is about (one of your input_artifacts); use null only when the issue is systemic and cannot be attributed to a single artifact. Set status=fail if any blocker/major issue exists.",
       "done_when": "requirements_review_result is a JSON object with `status` (pass|fail|needs_revision) and `issues` array.",
       "artifact_schema": {
         "requirements_review_result": {
@@ -3411,7 +3421,17 @@
                 "fail"
               ]
             },
-            "issues": {}
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "target_artifact": { "type": "string" },
+                  "severity": { "type": "string", "equals": ["blocker", "major", "minor"] },
+                  "problem": { "type": "string" }
+                }
+              }
+            }
           },
           "_schema_version": "1"
         }
@@ -4569,7 +4589,7 @@
       "output_artifacts": [
         "architecture_review_result"
       ],
-      "instruction": "Review TDD for: every FR addressable, all NFRs have design elements, no SPOFs, security findings addressed, consistency, feasibility, over-engineering check. Also review auth design, file storage, and other security-sensitive areas specifically.\n\nZ1 Tier 2 (P3+C7+A8) — ADR-aware checks:\n- For each ADR JSON under `mission_{mission_id}/.adr/`: the universal shape (adr_id, title, status, context, decision, consequences, options_considered ≥2, chosen_option_id, falsification_signal, reversal_cost, supersedes_adr_id, _schema_version) is fully populated.\n- `chosen_option_id` resolves into `options_considered` (no orphan picks).\n- `falsification_signal` is non-empty AND measurable (a concrete threshold or signal — not just \"if it doesn't work\").\n- `reversal_cost` is `low | medium | high`.\n- Each ADR cites which charter `solution.id` it serves (charter `Solutions We Own`).\n- For STACK ADRs (4.2, 4.4, 4.6, 4.8, 4.9, 4.10): every option has a populated `monthly_cost_curve`; the ADR has `cost_at_target_users_usd` (number); reject if `cost_at_target_users_usd > z0.cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.\n- The component-library ADR from step 4.2a is present and references the tech-stack ADR from 4.2 via `supersedes_adr_id` or an explicit `stack_adr_ref` field.\n- Reject the architecture_review_result with `status: fail` if any of the above checks miss; list each failure under `issues[]`.\n\nZ1 Tier 2 (A2) — non-goals contradiction check:\n- Read mission_{mission_id}/.charter/non_goals.md if present.\n- REJECT (status=fail) any architectural choice or ADR option that maps to a listed non-goal (e.g., non-goal='No real-time features' → reject WebSocket / SSE / event-bus stack picks; non-goal='No mobile-app version' → reject React Native / Flutter ADRs).\n- Surface the matching non-goal text in the issue description so the architect can revise.\n\nZ1 Tier 2 (P4) — falsification rigor:\n- REJECT ADR options whose chosen rationale lacks risk_if_wrong + validation_method + falsification_signal.\n- REJECT when risk_if_wrong='critical' but validation_method is vague.",
+      "instruction": "Review TDD for: every FR addressable, all NFRs have design elements, no SPOFs, security findings addressed, consistency, feasibility, over-engineering check. Also review auth design, file storage, and other security-sensitive areas specifically.\n\nZ1 Tier 2 (P3+C7+A8) — ADR-aware checks:\n- For each ADR JSON under `mission_{mission_id}/.adr/`: the universal shape (adr_id, title, status, context, decision, consequences, options_considered ≥2, chosen_option_id, falsification_signal, reversal_cost, supersedes_adr_id, _schema_version) is fully populated.\n- `chosen_option_id` resolves into `options_considered` (no orphan picks).\n- `falsification_signal` is non-empty AND measurable (a concrete threshold or signal — not just \"if it doesn't work\").\n- `reversal_cost` is `low | medium | high`.\n- Each ADR cites which charter `solution.id` it serves (charter `Solutions We Own`).\n- For STACK ADRs (4.2, 4.4, 4.6, 4.8, 4.9, 4.10): every option has a populated `monthly_cost_curve`; the ADR has `cost_at_target_users_usd` (number); reject if `cost_at_target_users_usd > z0.cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.\n- The component-library ADR from step 4.2a is present and references the tech-stack ADR from 4.2 via `supersedes_adr_id` or an explicit `stack_adr_ref` field.\n- Reject the architecture_review_result with `status: fail` if any of the above checks miss; list each failure under `issues[]`.\n\nZ1 Tier 2 (A2) — non-goals contradiction check:\n- Read mission_{mission_id}/.charter/non_goals.md if present.\n- REJECT (status=fail) any architectural choice or ADR option that maps to a listed non-goal (e.g., non-goal='No real-time features' → reject WebSocket / SSE / event-bus stack picks; non-goal='No mobile-app version' → reject React Native / Flutter ADRs).\n- Surface the matching non-goal text in the issue description so the architect can revise.\n\nZ1 Tier 2 (P4) — falsification rigor:\n- REJECT ADR options whose chosen rationale lacks risk_if_wrong + validation_method + falsification_signal.\n- REJECT when risk_if_wrong='critical' but validation_method is vague. Emit `issues` as an array; each element is {target_artifact, severity (blocker|major|minor), problem}. Set `target_artifact` to the name of the input artifact the issue is about (one of your input_artifacts); use null only when the issue is systemic and cannot be attributed to a single artifact. Set status=fail if any blocker/major issue exists.",
       "done_when": "architecture_review_result exists with comprehensive assessment.",
       "artifact_schema": {
         "architecture_review_result": {
@@ -4583,7 +4603,17 @@
                 "fail"
               ]
             },
-            "issues": {},
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "target_artifact": { "type": "string" },
+                  "severity": { "type": "string", "equals": ["blocker", "major", "minor"] },
+                  "problem": { "type": "string" }
+                }
+              }
+            },
             "security_findings": {}
           },
           "_schema_version": "1"
@@ -5583,7 +5613,7 @@
       "output_artifacts": [
         "project_plan_review_result"
       ],
-      "instruction": "Review project plan: all stories assigned, dependencies respected, balanced loads, realistic milestones, risk mitigations as tasks, testing in every sprint, buffer exists. If timeline unrealistic, trigger needs_clarification. Z1 T5A (P6): also verify compliance_blocker_check did not surface pending docs for phase ≤6.\n\nZ1 Tier 5 (A6) PREMORTEM CHECK — after the standard plan review, also examine the `premortem` artifact. For EVERY scenario with `plausibility >= 4`, confirm a corresponding monitoring rule exists (either `mapped_monitoring_rule` is non-null AND points to a real rule_id, or risk_assessment / monitoring inventory contains a rule that would catch the named cause). If a high-plausibility scenario has no monitoring coverage, REJECT the review (status != pass) with an `issues` entry naming the unmapped scenario; surface as needs_clarification so the founder either accepts the gap explicitly or amends monitoring.",
+      "instruction": "Review project plan: all stories assigned, dependencies respected, balanced loads, realistic milestones, risk mitigations as tasks, testing in every sprint, buffer exists. If timeline unrealistic, trigger needs_clarification. Z1 T5A (P6): also verify compliance_blocker_check did not surface pending docs for phase ≤6.\n\nZ1 Tier 5 (A6) PREMORTEM CHECK — after the standard plan review, also examine the `premortem` artifact. For EVERY scenario with `plausibility >= 4`, confirm a corresponding monitoring rule exists (either `mapped_monitoring_rule` is non-null AND points to a real rule_id, or risk_assessment / monitoring inventory contains a rule that would catch the named cause). If a high-plausibility scenario has no monitoring coverage, REJECT the review (status != pass) with an `issues` entry naming the unmapped scenario; surface as needs_clarification so the founder either accepts the gap explicitly or amends monitoring. Emit `issues` as an array; each element is {target_artifact, severity (blocker|major|minor), problem}. Set `target_artifact` to the name of the input artifact the issue is about (one of your input_artifacts); use null only when the issue is systemic and cannot be attributed to a single artifact. Set status=fail if any blocker/major issue exists.",
       "done_when": "project_plan_review_result exists. Timeline is realistic or human has approved adjusted scope.",
       "post_hooks": [
         "compliance_blocker_check"
@@ -5600,7 +5630,17 @@
                 "fail"
               ]
             },
-            "issues": {}
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "target_artifact": { "type": "string" },
+                  "severity": { "type": "string", "equals": ["blocker", "major", "minor"] },
+                  "problem": { "type": "string" }
+                }
+              }
+            }
           },
           "_schema_version": "1"
         }
@@ -6665,7 +6705,7 @@
       "output_artifacts": [
         "sprint_0_review_result"
       ],
-      "instruction": "Review all Sprint 0 deliverables: repository structure, CI/CD pipelines, Docker setup, design system components, test infrastructure, staging environment, developer documentation. Verify everything works end-to-end. Run index_workspace to build the codebase index â€” this enables query_codebase for all subsequent implementation steps.",
+      "instruction": "Review all Sprint 0 deliverables: repository structure, CI/CD pipelines, Docker setup, design system components, test infrastructure, staging environment, developer documentation. Verify everything works end-to-end. Run index_workspace to build the codebase index â€” this enables query_codebase for all subsequent implementation steps. Emit `issues` as an array; each element is {target_artifact, severity (blocker|major|minor), problem}. Set `target_artifact` to the name of the input artifact the issue is about (one of your input_artifacts); use null only when the issue is systemic and cannot be attributed to a single artifact. Set status=fail if any blocker/major issue exists.",
       "done_when": "sprint_0_review_result exists.",
       "artifact_schema": {
         "sprint_0_review_result": {
@@ -6679,7 +6719,17 @@
                 "fail"
               ]
             },
-            "issues": {}
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "target_artifact": { "type": "string" },
+                  "severity": { "type": "string", "equals": ["blocker", "major", "minor"] },
+                  "problem": { "type": "string" }
+                }
+              }
+            }
           }
         }
       },
@@ -8756,7 +8806,7 @@
       "output_artifacts": [
         "legal_review_result"
       ],
-      "instruction": "Final legal review: internal consistency across all documents, no contradictions, all third-party services mentioned are actually used, all user rights are technically implementable, all placeholders flagged for professional legal review. Trigger needs_clarification for items requiring human/legal counsel.",
+      "instruction": "Final legal review: internal consistency across all documents, no contradictions, all third-party services mentioned are actually used, all user rights are technically implementable, all placeholders flagged for professional legal review. Trigger needs_clarification for items requiring human/legal counsel. Emit `issues` as an array; each element is {target_artifact, severity (blocker|major|minor), problem}. Set `target_artifact` to the name of the input artifact the issue is about (one of your input_artifacts); use null only when the issue is systemic and cannot be attributed to a single artifact. Set status=fail if any blocker/major issue exists.",
       "done_when": "legal_review_result exists.",
       "artifact_schema": {
         "legal_review_result": {
@@ -8770,7 +8820,17 @@
                 "fail"
               ]
             },
-            "issues": {},
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "target_artifact": { "type": "string" },
+                  "severity": { "type": "string", "equals": ["blocker", "major", "minor"] },
+                  "problem": { "type": "string" }
+                }
+              }
+            },
             "requires_legal_counsel": {}
           }
         }
@@ -9950,7 +10010,7 @@
       "output_artifacts": [
         "checklist_review"
       ],
-      "instruction": "Review launch_checklist: all steps have success criteria, rollback triggers defined, timing realistic, dependencies correct, communication plan included.",
+      "instruction": "Review launch_checklist: all steps have success criteria, rollback triggers defined, timing realistic, dependencies correct, communication plan included. Emit `issues` as an array; each element is {target_artifact, severity (blocker|major|minor), problem}. Set `target_artifact` to the name of the input artifact the issue is about (one of your input_artifacts); use null only when the issue is systemic and cannot be attributed to a single artifact. Set status=fail if any blocker/major issue exists.",
       "done_when": "checklist_review exists.",
       "artifact_schema": {
         "checklist_review": {
@@ -9964,7 +10024,17 @@
                 "fail"
               ]
             },
-            "issues": {}
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "fields": {
+                  "target_artifact": { "type": "string" },
+                  "severity": { "type": "string", "equals": ["blocker", "major", "minor"] },
+                  "problem": { "type": "string" }
+                }
+              }
+            }
           }
         }
       },

@@ -33,3 +33,23 @@ def test_full_mode_allows_local():
     reason = sel._check_eligibility(model=_local_model(), reqs=reqs,
                                     failed_models=set(), snapshot=snap)
     assert reason is None
+
+
+def test_is_servable_allows_held_local_under_minimal(monkeypatch):
+    sel = _selector()
+    snap = SimpleNamespace(load_mode="minimal", vram_available_mb=8000, cloud={})
+    # is_servable calls self._nerd_herd.snapshot(); stub it
+    sel._nerd_herd = SimpleNamespace(snapshot=lambda: snap)
+    reqs = ModelRequirements(task="coder", difficulty=5)
+    model = _local_model()  # is_local=True, is_loaded=True
+    assert sel.is_servable(model=model, reqs=reqs) is True
+
+
+def test_is_servable_rejects_unloaded_local_under_minimal(monkeypatch):
+    sel = _selector()
+    snap = SimpleNamespace(load_mode="minimal", vram_available_mb=8000, cloud={})
+    sel._nerd_herd = SimpleNamespace(snapshot=lambda: snap)
+    reqs = ModelRequirements(task="coder", difficulty=5)
+    model = _local_model()
+    model.is_loaded = False   # not yet loaded -> minimal must still block
+    assert sel.is_servable(model=model, reqs=reqs) is False

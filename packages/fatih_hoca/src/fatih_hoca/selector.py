@@ -680,6 +680,14 @@ class Selector:
                 and getattr(model, "is_local", False)
                 and getattr(model, "is_loaded", False)):
             return True
+        if (reason == "load_mode_minimal"
+                and getattr(model, "is_local", False)
+                and getattr(model, "is_loaded", False)):
+            # A held, already-loaded local model may CONTINUE under minimal —
+            # minimal blocks starting new local load, not finishing in-flight
+            # work (residency already paid). Mirrors the no_vram_available
+            # continuation carve-out. (resource-signals 2026-06-09)
+            return True
         return False
 
     # ─── Helpers ─────────────────────────────────────────────────────────────

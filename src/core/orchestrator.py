@@ -16,6 +16,7 @@ from .periodic_checks import PeriodicChecks
 from .dispatch_prep import bridge_self_reflection
 from ..workflows.engine.task_refresh import refresh_workflow_agent_type
 import mr_roboto
+import coulson
 from ..agents import get_agent
 from ..tools.workspace import get_mission_workspace, get_mission_workspace_relative
 from ..tools.git_ops import ensure_git_repo, create_mission_branch
@@ -224,7 +225,7 @@ class Orchestrator:
             if agent_type == "shopping_pipeline_v2":
                 from src.workflows.shopping.pipeline_v2 import ShoppingPipelineV2
                 return await ShoppingPipelineV2().run(task)
-            return await get_agent(agent_type).execute(task)
+            return await coulson.execute(get_agent(agent_type), task)
 
         # Z6 W2 — set audit_context for the per-task execution. Any
         # credential vault read fired by the agent or vendor_call tool now

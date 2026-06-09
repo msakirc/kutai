@@ -47,7 +47,7 @@ from .actions import validate_action, validate_tool_args, validate_task_output
 from .checkpoint import (
     safe_log_conversation, save_checkpoint, tool_idempotency_key,
 )
-from .context import build_system_prompt
+from .context import build_context, build_system_prompt
 from .dispatch_helpers import (
     pick_for_iter, record_pool_empty_forensics, result_to_response_dict,
 )
@@ -270,7 +270,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 )
     else:
         system_prompt = build_system_prompt(profile, task)
-        context = await profile._build_context(task)
+        context = await build_context(profile, task)
 
         logger.info(
             f"[Task #{task_id}] System prompt ({len(system_prompt)} chars):\n"

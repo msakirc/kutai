@@ -8,7 +8,7 @@ import json
 
 from fatih_hoca import requirements_for
 from src.infra.logging_config import get_logger
-from .context import build_system_prompt
+from .context import build_context, build_system_prompt
 from .parsing import parse_action
 
 logger = get_logger("runtime.single_shot")
@@ -35,7 +35,7 @@ async def run(profile, task: dict) -> dict:
     )
 
     system_prompt = build_system_prompt(profile, task)
-    context = await profile._build_context(task)
+    context = await build_context(profile, task)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user",   "content": context},

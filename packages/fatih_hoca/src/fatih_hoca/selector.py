@@ -493,12 +493,11 @@ class Selector:
             if model.provider not in self._available_providers:
                 return f"no_api_key({model.provider})"
 
-        # Context length check — static trained ceiling only. The dynamic
-        # `effective_context_at_current_vram` method exists on ModelInfo
-        # for future scoring use, but MUST NOT be used as a hard filter:
-        # snapshot VRAM is transient (a prior swap holds VRAM that gets
-        # freed the moment DaLLaMa unloads to make room), and the
-        # calculated effective value collapses to 4096 during tight
+        # Context length check — static trained ceiling only. We filter on
+        # model.context_length (the model's documented trained ceiling), NOT
+        # a dynamic VRAM-derived value: snapshot VRAM is transient (a prior
+        # swap holds VRAM that gets freed the moment DaLLaMa unloads to make
+        # room), and a VRAM-derived estimate collapses to 4096 during tight
         # windows — filtering there rejected the entire local fleet for
         # analyst tasks (2026-04-24 incident). llama-server's --fit plus
         # the circuit-breaker OOM retry path are the real load-time gates;

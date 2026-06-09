@@ -55,58 +55,11 @@ def test_user_gaming_forces_cloud():
 
 
 def test_away_keeps_local():
-    """With no desktop pressure (user away, load_mode=full → M4=0),
-    placement is governed by cap score + loaded stickiness.
-
-    Primary assertion: local wins (loaded 55-cap + 1.10× stickiness beats
-    a cold 70-cap cloud at difficulty=3).
-
-    Fallback assertion (robust contrast): if the weighting configuration
-    causes cloud to win even when the user is away, we at least prove that
-    the GAMING scenario (fullscreen + heavy) is strictly MORE cloud-ward
-    than the away scenario.  The directional contrast is the meaningful
-    claim; an absolute "local wins" is weighting-sensitive.
-    """
-    away_snap = _snap(user_idle_s=1e9, load_mode="full")
-    away_pick = select_for_simulation(
-        task_name="coder",
-        difficulty=3,
-        estimated_output_tokens=500,
-        snapshot=away_snap,
-        providers_cfg=PROVIDERS,
-    )
-
-    if away_pick.pool == "local":
-        # Primary assertion: local stickiness won as expected.
-        assert away_pick.pool == "local"
-    else:
-        # Fallback: weighting caused cloud to win even when away.  Verify
-        # the contrast — gaming must push MORE toward cloud than away does.
-        # Both picks here are "cloud" but the gaming scenario is the trigger;
-        # if the away baseline is already cloud, the gaming signal is still
-        # directionally correct (it can't make it more local).
-        gaming_snap = _snap(
-            user_idle_s=1.0, foreground_fullscreen=True, load_mode="heavy"
-        )
-        gaming_pick = select_for_simulation(
-            task_name="coder",
-            difficulty=3,
-            estimated_output_tokens=500,
-            snapshot=gaming_snap,
-            providers_cfg=PROVIDERS,
-        )
-        # The contrast invariant: gaming makes placement at least as cloud-
-        # ward as away (both non-local) — desktop signals are operative.
-        assert gaming_pick.pool != "local", (
-            f"away_pick.pool={away_pick.pool!r} (already cloud), "
-            f"but gaming_pick.pool={gaming_pick.pool!r} — "
-            "desktop signals appear inverted or inoperative."
-        )
-        # Annotate why we're in the fallback path so the test report is clear.
-        import warnings
-        warnings.warn(
-            f"test_away_keeps_local: away scenario chose cloud (pool={away_pick.pool!r}, "
-            f"model={away_pick.model_name!r}) — cap-score weighting overcame local "
-            "stickiness at difficulty=3. Robust contrast invariant verified instead.",
-            stacklevel=1,
-        )
+    # Binding: with no desktop pressure (away + full mode), the loaded local
+    # stub must win an easy task on stickiness + cost. This is a real
+    # assertion — it fails if the away path ever inverts to cloud.
+    snap = _snap(user_idle_s=1e9, load_mode="full")
+    pick = select_for_simulation(task_name="coder", difficulty=3,
+                                 estimated_output_tokens=500, snapshot=snap,
+                                 providers_cfg=PROVIDERS)
+    assert pick.pool == "local"

@@ -366,8 +366,6 @@ def rank_candidates(
             if not model.is_loaded:
                 reasons.append("needs_swap")
             reasons.append("local")
-            # Skip load mode penalty — snapshot doesn't carry vram_budget_fraction;
-            # the selector already filtered models that exceed the VRAM budget.
         elif model.is_free:
             cost_score = 85
             reasons.append("free_cloud")

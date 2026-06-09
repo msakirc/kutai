@@ -15,6 +15,17 @@ logger = get_logger("nerd_herd.presence")
 AWAY_IDLE_S = 1e9  # sentinel "no user" idle value used on failure/off-Windows
 
 
+def _idle_seconds_from_ticks(*, now_ms: int, last_ms: int) -> float:
+    """Idle seconds from GetTickCount values, correct across the 32-bit wrap.
+
+    GetTickCount is an unsigned 32-bit ms counter that wraps every ~49.7
+    days. Modular subtraction in 32-bit space gives the true elapsed ms
+    regardless of wrap; no negative/garbage values.
+    """
+    delta_ms = (now_ms - last_ms) & 0xFFFFFFFF
+    return delta_ms / 1000.0
+
+
 class PresenceCollector:
     name = "presence"
 
@@ -49,10 +60,14 @@ class PresenceCollector:
 
         info = LASTINPUTINFO()
         info.cbSize = ctypes.sizeof(LASTINPUTINFO)
-        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetTickCount.restype = wintypes.DWORD
+        if not user32.GetLastInputInfo(ctypes.byref(info)):
             raise OSError("GetLastInputInfo failed")
-        millis_now = ctypes.windll.kernel32.GetTickCount()
-        return max(0.0, (millis_now - info.dwTime) / 1000.0)
+        return _idle_seconds_from_ticks(
+            now_ms=kernel32.GetTickCount(), last_ms=info.dwTime
+        )
 
     def _fullscreen_impl(self) -> bool:
         if not self._is_windows:
@@ -61,6 +76,11 @@ class PresenceCollector:
         from ctypes import wintypes
 
         user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetDesktopWindow.restype = wintypes.HWND
+        user32.GetShellWindow.restype = wintypes.HWND
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user32.GetWindowRect.restype = wintypes.BOOL
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return False

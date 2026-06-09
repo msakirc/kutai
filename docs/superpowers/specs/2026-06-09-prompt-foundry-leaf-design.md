@@ -101,12 +101,12 @@ Recommendation: **hybrid** — 27 static → data; `oncall_agent` + `writer` sta
 - Live: 1 multi-step mission touching coder/reviewer/researcher; confirm prompts resolve + self-reflection fires for coder + a posthook (grading) runs via the new build path.
 - **DO NOT** mix `tests/` and `packages/` in one pytest call (conftest collision). Use `.venv/Scripts/python`; always `timeout`.
 
-## Open decisions for founder
+## Decisions (resolved 2026-06-09)
 
-1. **Foundry package name** — Turkish-character convention (e.g. a "scribe/wordsmith" persona). Placeholder: `prompt_foundry`.
-2. **Profile data format** — per-profile YAML (lean; clean diffs) vs a single `profiles.py` dict (one-glance; avoids a YAML parse dep + the 2 carve-outs are already Python). Lean per-profile YAML.
-3. **Sequencing of the broader src-DB-dep kill** — this spec ships the *first* port (PromptStore). Replicate per-package as a separate tracked track, or fold the next package in here? (Lean: separate track; this spec stays prompt-scoped.)
-4. **Fold in base.py residual A.12/A.13** (`_build_model_requirements`, `_maybe_constrained_emit` still in `base.py`) — the generic `Profile` is the natural home to also retire those. Combined or sequential?
+1. **Foundry package name** — DEFERRED; founder will name at the end. Placeholder `prompt_foundry` throughout; do not hardcode the final name into the plan until set.
+2. **Profile data format** — ✅ **per-profile YAML** (`profiles/<name>.yaml`). Block scalars for multi-line prompts. The 2 carve-outs stay Python subclasses alongside.
+3. **Broader src-DB-dep kill** — ✅ **separate track.** This spec ships ONLY the `PromptStore` port as the reference domino; replicate per-package later. This spec stays prompt-scoped.
+4. **base.py residual A.12/A.13** — ✅ **sequential / separate.** `_build_model_requirements` (produces a `fatih_hoca` selection type) and `_maybe_constrained_emit` (execution) are **NOT content** → they do NOT belong in the leaf Foundry. They relocate to `coulson`/`fatih_hoca` as a clean adjacent follow-on *after* Foundry lands. The Foundry effort stays content-only.
 
 ## Risk notes
 

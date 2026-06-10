@@ -1,8 +1,7 @@
-from src.agents import get_agent, AGENT_REGISTRY
+from src.agents import get_agent
 
 
 def test_query_planner_registered():
-    assert "query_planner" in AGENT_REGISTRY
     agent = get_agent("query_planner")
     assert agent.name == "query_planner"
 

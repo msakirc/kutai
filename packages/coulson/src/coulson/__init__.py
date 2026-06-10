@@ -214,7 +214,7 @@ async def _load_db_prompt_override(profile) -> None:
     """Load active prompt override from the injected prompt store (no src dep)."""
     profile._prompt_version_override = None
     try:
-        from prompt_foundry.store import get_active
+        from finch.store import get_active
         db_prompt = await get_active(profile.name)
         if db_prompt:
             profile._prompt_version_override = db_prompt

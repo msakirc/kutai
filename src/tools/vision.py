@@ -42,7 +42,7 @@ async def analyze_image(filepaths: "list[str] | str", question: str = "Describe 
         logger.info("analyzing image(s)", count=len(path_list), first=path_list[0])
 
         import husam
-        from prompt_foundry import build_messages as _build_vision_messages
+        from finch import build_messages as _build_vision_messages
 
         # Build content: one text block (from Foundry rubric) then one image block per file.
         # build_messages returns [system_msg, user_msg]; we extract the text and keep

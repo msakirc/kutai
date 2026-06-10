@@ -9,7 +9,7 @@ Each test verifies:
 from __future__ import annotations
 
 import json
-from prompt_foundry import build_messages
+from finch import build_messages
 
 
 # ── OLD CONSTANTS (kept here for equivalence verification only) ──────────────

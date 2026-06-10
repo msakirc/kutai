@@ -467,7 +467,7 @@ async def _check_privacy_mismatch_llm(
     copy_excerpt = copy_text[:2000]
     policy_excerpt = privacy_policy[:3000]
 
-    from prompt_foundry import build_messages
+    from finch import build_messages
     _msgs = build_messages("copy_compliance", {
         "copy_excerpt": copy_excerpt,
         "policy_excerpt": policy_excerpt,

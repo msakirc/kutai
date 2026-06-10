@@ -1,5 +1,5 @@
 # agents/__init__.py
-from prompt_foundry import PROFILE_REGISTRY, get_profile as _get_profile
+from finch import PROFILE_REGISTRY, get_profile as _get_profile
 from .base import BaseAgent
 from .oncall_agent import OncallAgent
 

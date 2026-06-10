@@ -3,7 +3,7 @@ import pytest
 
 
 def test_brand_voice_uses_foundry_build():
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     msgs = build_messages("brand_voice", {
         "profile_name": "TestBrand",
@@ -22,7 +22,7 @@ def test_brand_voice_uses_foundry_build():
 
 def test_brand_voice_messages_char_exact():
     """Message output must be character-exact vs old inline constants."""
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     # Old constants preserved here for equivalence check
     _OLD_SYSTEM = (

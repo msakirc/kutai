@@ -34,7 +34,7 @@ import json
 # coulson.posthooks.reflection_posthook.{STACK_BLOCKS,...} names — and the
 # coulson.reflection / src.core.reflection_posthook re-exports of them —
 # resolve to the same objects. (Phase 3 Task 12 Batch H — HYBRID.)
-from prompt_foundry import (  # noqa: F401  re-exported for back-compat
+from finch import (  # noqa: F401  re-exported for back-compat
     STACK_BLOCKS,
     LAYER_BLOCKS,
     REFLECTION_BLOCKS,
@@ -92,7 +92,7 @@ def build_reflection_prompt(
 # ────────────────────────────────────────────────────────────────────────────
 # Reflection child — reviewer message build (lifted from coulson self_reflect).
 # REFLECT_SYSTEM_BASE is the reviewer system base; its TEXT now lives in the
-# Foundry leaf (prompt_foundry.reflection_blocks) and is imported at the top.
+# Foundry leaf (finch.reflection_blocks) and is imported at the top.
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -192,7 +192,7 @@ def build_emit_messages(draft: str, response_format: dict) -> list[dict]:
     # this builder owns only the dynamic schema_text / draft fields. The schema
     # response_format object + should_skip_emit stay in coulson (not prompt
     # content). (Phase 3 Task 12 Batch H.)
-    from prompt_foundry import build_messages
+    from finch import build_messages
     return build_messages(
         "constrained_emit",
         {"schema_text": schema_text, "draft": draft_for_prompt},

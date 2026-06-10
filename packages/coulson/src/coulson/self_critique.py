@@ -83,7 +83,7 @@ def build_self_critique_message(
     # builder owns only the dynamic field resolution (paths_block formatting +
     # diff_summary fallback). The rubric has an empty system, so the one-shot
     # critic string is the user message content. (Phase 3 Task 12 Batch H.)
-    from prompt_foundry import build_messages
+    from finch import build_messages
     msgs = build_messages(
         "self_critique",
         {

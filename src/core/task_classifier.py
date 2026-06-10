@@ -242,7 +242,7 @@ async def _enqueue_inline_classifier(
 
 async def _classify_with_llm(title: str, description: str) -> TaskClassification:
     """Classify using the standard router — just another LLM call."""
-    from prompt_foundry import build_messages
+    from finch import build_messages
     _msgs = build_messages("classifier", {
         "task_description": f"{title}: {description[:500]}",
     })

@@ -68,7 +68,7 @@ async def test_classifier_picks_prompt_driven(desc: str, expected: str):
     These tests do NOT make real LLM calls — they verify that the prompt
     structure correctly encodes pick/reject rules for all agents.
     """
-    from prompt_foundry import build_messages
+    from finch import build_messages
     # Build a representative prompt and check the agent type is mentioned
     msgs = build_messages("classifier", {"task_description": desc})
     prompt_content = msgs[1]["content"]

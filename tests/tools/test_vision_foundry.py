@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 def test_vision_rubric_text_char_exact():
     """The text block content from build_messages must be char-exact vs the question string."""
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     question = "Describe what you see in this image."
     msgs = build_messages("vision", {"question": question})
@@ -15,7 +15,7 @@ def test_vision_rubric_text_char_exact():
 
 def test_vision_rubric_custom_question():
     """Custom questions pass through verbatim."""
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     question = "Is this a cat or a dog? What colour is it?"
     msgs = build_messages("vision", {"question": question})

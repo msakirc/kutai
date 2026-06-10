@@ -15,7 +15,7 @@ class TestGraderSemanticOnly:
         # to the Foundry "grading" rubric (build_messages). Intent unchanged:
         # the system message must declare structure is verified upstream and
         # forbid failing for field/section drift.
-        from prompt_foundry import build_messages
+        from finch import build_messages
         msgs = build_messages("grading", {
             "title": "t", "description": "d", "response": "r",
         })
@@ -29,7 +29,7 @@ class TestGraderSemanticOnly:
     def test_complete_field_is_semantic_not_presence(self):
         # COMPLETE-field semantics now live in the Foundry "grading" rubric
         # user_template (was GRADING_PROMPT). Intent unchanged.
-        from prompt_foundry import build_messages
+        from finch import build_messages
         msgs = build_messages("grading", {
             "title": "t", "description": "d", "response": "r",
         })

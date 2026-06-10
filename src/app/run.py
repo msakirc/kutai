@@ -449,8 +449,8 @@ async def main():
         except Exception as exc:
             _log.warning("API keyword index seeding failed (non-critical): %s", exc)
 
-    # Wire prompt_foundry's storage port to the DB adapter (one-time, at startup).
-    from prompt_foundry import set_store
+    # Wire finch's storage port to the DB adapter (one-time, at startup).
+    from finch import set_store
     from src.infra.prompt_store_adapter import DbPromptStore
     set_store(DbPromptStore())
 

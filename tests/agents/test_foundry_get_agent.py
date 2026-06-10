@@ -12,7 +12,7 @@ def test_summarizer_served_from_foundry():
     assert p.max_iterations == 3
     assert p.allowed_tools == ["read_file", "file_tree", "web_search"]
     # data-backed Profile, NOT the old SummarizerAgent class:
-    assert type(p).__module__.startswith("prompt_foundry")
+    assert type(p).__module__.startswith("finch")
 
 
 def test_summarizer_singleton_identity():

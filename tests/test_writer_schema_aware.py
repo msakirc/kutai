@@ -7,7 +7,7 @@ because ``result`` carried only a summary blurb while the actual content
 lived in a file the validator never read (i2p_v3 steps 7.15, 11.4, 12.1
 before this change).
 
-Ported from src/agents/writer.py (deleted Task 9) to prompt_foundry leaf.
+Ported from src/agents/writer.py (deleted Task 9) to finch leaf.
 """
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ import json
 
 import pytest
 
-from prompt_foundry.profile import _detect_markdown_schema, WriterProfile
-from prompt_foundry import get_profile
+from finch.profile import _detect_markdown_schema, WriterProfile
+from finch import get_profile
 
 
 def _writer() -> WriterProfile:

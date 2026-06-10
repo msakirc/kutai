@@ -1,6 +1,6 @@
 """Concrete PromptStore over the existing prompt_versions DB table.
 
-DISPOSABLE SCAFFOLDING. This is the app-side adapter wired into prompt_foundry
+DISPOSABLE SCAFFOLDING. This is the app-side adapter wired into finch
 at startup, and the ONLY thing bridging the leaf to src DB. A future dedicated
 DB-layer package will own all DB ops; when it lands, re-point THIS adapter at it
 — the leaf and the PromptStore port never change. Do NOT add a foundry-owned

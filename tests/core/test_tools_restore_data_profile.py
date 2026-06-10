@@ -13,7 +13,7 @@ through ``coulson.execute`` (with the react seam mocked) and asserts
 """
 import asyncio
 
-from prompt_foundry.profile import Profile
+from finch.profile import Profile
 
 
 def test_data_profile_allowed_tools_survive_two_dispatches(monkeypatch):

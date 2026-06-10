@@ -17,8 +17,8 @@ import json
 
 import pytest
 
-from prompt_foundry import get_profile
-from prompt_foundry.profile import WriterProfile, _detect_markdown_schema
+from finch import get_profile
+from finch.profile import WriterProfile, _detect_markdown_schema
 
 
 # ── Originals, recovered from git show HEAD:src/agents/writer.py ──────────
@@ -59,7 +59,7 @@ def _plain_task():
 
 def test_writer_is_writer_profile_subclass(writer):
     assert isinstance(writer, WriterProfile)
-    assert issubclass(WriterProfile, __import__("prompt_foundry").Profile)
+    assert issubclass(WriterProfile, __import__("finch").Profile)
 
 
 # ── Branch selection ───────────────────────────────────────────────────────

@@ -188,7 +188,7 @@ async def seed_from_agents() -> int:
     """
     seeded = 0
     try:
-        from prompt_foundry import PROFILE_REGISTRY
+        from finch import PROFILE_REGISTRY
         dummy = {"id": 0, "title": "seed", "description": "seed"}
         for name, profile in PROFILE_REGISTRY.items():
             try:

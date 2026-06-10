@@ -2,7 +2,7 @@
 import pytest
 
 from src.agents import get_agent, AGENT_REGISTRY
-from prompt_foundry import PROFILE_REGISTRY
+from finch import PROFILE_REGISTRY
 from general_beckman.posthooks import _NO_POSTHOOKS_AGENT_TYPES
 from coulson.reflection import REFLECTION_BLOCKS
 
@@ -102,7 +102,7 @@ def test_registered_in_agent_registry():
 
 
 def test_get_agent_returns_correct_type():
-    from prompt_foundry import Profile
+    from finch import Profile
     agent = get_agent("integration_reviewer")
     assert isinstance(agent, Profile)
 
@@ -110,7 +110,7 @@ def test_get_agent_returns_correct_type():
 # ─── Classifier coverage ─────────────────────────────────────────────────
 
 def test_classifier_contains_integration_reviewer_entry():
-    from prompt_foundry import build_messages
+    from finch import build_messages
     classifier_prompt = build_messages("classifier", {"task_description": "check cross-module signatures"})[1]["content"]
     assert "integration_reviewer" in classifier_prompt, (
         "task_classifier CLASSIFIER_PROMPT must mention integration_reviewer"
@@ -118,7 +118,7 @@ def test_classifier_contains_integration_reviewer_entry():
 
 
 def test_classifier_keywords_present():
-    from prompt_foundry import build_messages
+    from finch import build_messages
     classifier_prompt = build_messages("classifier", {"task_description": "check cross-module signatures"})[1]["content"]
     keywords = ["cross-file", "cross-module", "signatures match", "boundary"]
     for kw in keywords:

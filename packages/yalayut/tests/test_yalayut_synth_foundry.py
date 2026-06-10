@@ -2,7 +2,7 @@
 
 
 def test_yalayut_synth_uses_foundry_build():
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     msgs = build_messages("yalayut_synth", {
         "name_original": "my-cool-skill",
@@ -18,7 +18,7 @@ def test_yalayut_synth_uses_foundry_build():
 
 def test_yalayut_synth_messages_char_exact():
     """User content must be character-exact vs old inline prompt."""
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     name_original = "awesome-lib"
     raw_text_slice = "A library for doing awesome things in Python."

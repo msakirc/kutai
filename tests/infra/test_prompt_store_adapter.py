@@ -4,7 +4,7 @@ from src.infra.prompt_store_adapter import DbPromptStore
 
 @pytest.mark.asyncio
 async def test_adapter_satisfies_protocol():
-    from prompt_foundry.store import PromptStore
+    from finch.store import PromptStore
     assert isinstance(DbPromptStore(), PromptStore)
 
 

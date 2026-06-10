@@ -3,7 +3,7 @@ import pytest
 
 
 def test_copy_compliance_uses_foundry_build():
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     msgs = build_messages("copy_compliance", {
         "copy_excerpt": "We never sell your data.",
@@ -19,7 +19,7 @@ def test_copy_compliance_uses_foundry_build():
 
 def test_copy_compliance_messages_char_exact():
     """User content must be character-exact vs old inline prompt."""
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     copy_excerpt = "We help teams save 10 hours/week guaranteed."
     policy_excerpt = "We collect usage data to improve the service."

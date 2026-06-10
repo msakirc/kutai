@@ -90,7 +90,7 @@ async def llm_synthesize(raw_text: str, source_meta: dict) -> dict:
     from src.infra.logging_config import get_logger as _gl
     _log = _gl("yalayut.synthesize")
 
-    from prompt_foundry import build_messages
+    from finch import build_messages
     _msgs = build_messages("yalayut_synth", {
         "name_original": source_meta.get("name_original", ""),
         "raw_text": raw_text[:2000],

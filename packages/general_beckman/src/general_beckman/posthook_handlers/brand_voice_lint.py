@@ -354,7 +354,7 @@ async def _run_llm_tone_pass(
     truncated_text = text[:4000]
     truncated_body = (voice_body_md or "")[:800]
 
-    from prompt_foundry import build_messages
+    from finch import build_messages
     messages = build_messages("brand_voice", {
         "profile_name": voice_display_name,
         "voice_body": truncated_body,

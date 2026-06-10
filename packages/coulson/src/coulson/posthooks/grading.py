@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.infra.logging_config import get_logger
-from prompt_foundry import build_messages
+from finch import build_messages
 
 logger = get_logger("coulson.posthooks.grading")
 

@@ -2,7 +2,7 @@
 
 
 def test_classifier_uses_foundry_build():
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     msgs = build_messages("classifier", {
         "task_description": "build a todo app: create a simple todo list",
@@ -21,7 +21,7 @@ def test_classifier_uses_foundry_build():
 
 def test_classifier_rubric_has_all_agent_types():
     """Rubric must contain all major agent type rules."""
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     msgs = build_messages("classifier", {"task_description": "x"})
     content = msgs[1]["content"]
@@ -33,7 +33,7 @@ def test_classifier_rubric_has_all_agent_types():
 
 def test_classifier_rubric_task_description_injection():
     """task_description field is substituted into the correct position."""
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     unique_task = "ZZZ-unique-task-description-XYZ"
     msgs = build_messages("classifier", {"task_description": unique_task})
@@ -43,7 +43,7 @@ def test_classifier_rubric_task_description_injection():
 
 def test_classifier_rubric_json_example_present():
     """The JSON respond-as example must be present with single braces (not double)."""
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
 
     msgs = build_messages("classifier", {"task_description": "fix a bug"})
     content = msgs[1]["content"]
@@ -77,7 +77,7 @@ def test_classifier_char_exact_vs_old_constant():
 
     old_prompt_raw = m.group(1)
 
-    from prompt_foundry.build import build_messages
+    from finch.build import build_messages
     task_desc = "build a todo app: create a simple todo list"[:500]
     old_content = old_prompt_raw.format(task_description=task_desc)
 

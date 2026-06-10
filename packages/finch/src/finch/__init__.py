@@ -1,4 +1,4 @@
-"""Prompt Foundry — leaf package owning prompt/profile content + build API.
+"""Finch — leaf package owning prompt/profile content + build API.
 
 Depends on NOTHING in src/ or feature packages. Storage is injected via
 set_store(); with no store, profiles fall back to in-package YAML seeds.

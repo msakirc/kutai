@@ -4,8 +4,8 @@ The TEXT moved here from coulson (HYBRID); coulson keeps composition. These
 tests lock the data shape + the package-level exports the back-compat
 re-exports depend on.
 """
-import prompt_foundry as pf
-from prompt_foundry.reflection_blocks import (
+import finch as pf
+from finch.reflection_blocks import (
     REFLECT_SYSTEM_BASE,
     REFLECTION_BLOCKS,
     STACK_BLOCKS,

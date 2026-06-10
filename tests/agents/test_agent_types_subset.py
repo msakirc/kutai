@@ -8,7 +8,7 @@ oncall_agent = class carve-out that stays in src/agents but IS in AGENT_REGISTRY
 import json
 import pathlib
 
-from prompt_foundry import PROFILE_REGISTRY
+from finch import PROFILE_REGISTRY
 
 _WORKTREE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 

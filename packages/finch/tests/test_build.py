@@ -1,4 +1,4 @@
-from prompt_foundry.build import build_messages, register_rubric
+from finch.build import build_messages, register_rubric
 
 
 def test_build_messages_system_plus_user():

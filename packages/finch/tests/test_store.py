@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-import prompt_foundry.store as store
+import finch.store as store
 
 
 @pytest.fixture(autouse=True)

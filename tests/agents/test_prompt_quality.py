@@ -1,6 +1,6 @@
 import pytest
 from src.agents import get_agent, AGENT_REGISTRY
-from prompt_foundry import PROFILE_REGISTRY
+from finch import PROFILE_REGISTRY
 
 # Build the union of Foundry-data profiles and class-backed agents,
 # excluding carve-outs that have dynamic prompts.

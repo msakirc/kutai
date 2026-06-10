@@ -1,4 +1,4 @@
-from prompt_foundry.profile import Profile
+from finch.profile import Profile
 
 def test_profile_exposes_runtime_surface():
     p = Profile(

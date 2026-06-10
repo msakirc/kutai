@@ -1,5 +1,5 @@
 import asyncio
-import prompt_foundry.store as store
+import finch.store as store
 import coulson
 
 

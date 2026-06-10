@@ -3,7 +3,7 @@ import subprocess
 import sys
 import pathlib
 
-SRC = pathlib.Path(__file__).parent.parent / "src" / "prompt_foundry"
+SRC = pathlib.Path(__file__).parent.parent / "src" / "finch"
 
 _FORBIDDEN = (
     "import src",
@@ -20,7 +20,7 @@ _FORBIDDEN = (
 
 
 def test_no_src_or_feature_imports():
-    """Scan all .py files under prompt_foundry/src for forbidden import markers."""
+    """Scan all .py files under finch/src for forbidden import markers."""
     bad = []
     for py in SRC.rglob("*.py"):
         text = py.read_text(encoding="utf-8")
@@ -31,9 +31,9 @@ def test_no_src_or_feature_imports():
 
 
 def test_import_in_clean_subprocess():
-    """Import prompt_foundry without src/ on path — proves leaf-ness."""
+    """Import finch without src/ on path — proves leaf-ness."""
     r = subprocess.run(
-        [sys.executable, "-c", "import prompt_foundry; print('ok')"],
+        [sys.executable, "-c", "import finch; print('ok')"],
         capture_output=True,
         text=True,
     )

@@ -2,7 +2,7 @@
 
 Locks:
   * reflection block CONTENT now lives in the Foundry leaf
-    (prompt_foundry.reflection_blocks); coulson keeps composition. The
+    (finch.reflection_blocks); coulson keeps composition. The
     back-compat names (coulson.reflection / coulson.posthooks.reflection_posthook)
     must resolve to the SAME leaf objects.
   * build_reflection_prompt / build_reflect_messages composition is char-exact
@@ -10,7 +10,7 @@ Locks:
   * build_emit_messages text comes from rubrics/constrained_emit.yaml via
     build_messages and is char-exact vs the original.
 """
-import prompt_foundry as pf
+import finch as pf
 from coulson.posthooks.reflection_posthook import (
     REFLECTION_BLOCKS,
     STACK_BLOCKS,

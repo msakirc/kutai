@@ -1,8 +1,8 @@
 import pytest
 import yaml
-from prompt_foundry import loader
-from prompt_foundry.loader import get_profile, PROFILE_REGISTRY
-from prompt_foundry.profile import Profile
+from finch import loader
+from finch.loader import get_profile, PROFILE_REGISTRY
+from finch.profile import Profile
 
 
 def test_unknown_yaml_key_is_ignored(tmp_path, monkeypatch):

@@ -1,7 +1,6 @@
 # agents/__init__.py
 from prompt_foundry import get_profile as _get_profile
 from .base import BaseAgent
-from .coder import CoderAgent
 from .implementer import ImplementerAgent
 from .fixer import FixerAgent
 from .test_generator import TestGeneratorAgent
@@ -29,7 +28,6 @@ from .query_planner import QueryPlannerAgent
 from .prior_art_synthesizer import PriorArtSynthesizerAgent
 
 AGENT_REGISTRY = {
-    "coder": CoderAgent(),
     "implementer": ImplementerAgent(),
     "fixer": FixerAgent(),
     "test_generator": TestGeneratorAgent(),

@@ -84,6 +84,8 @@ class MetricsServer:
         return web.json_response({
             "load_mode": nh.get_load_mode(),
             "vram_budget_fraction": nh.get_vram_budget_fraction(),
+            # raw free VRAM since 2026-06-09 (no mode cap; placement not capping).
+            # Name kept for serialization-boundary compat (client.py reads this key).
             "vram_budget_mb": nh.get_vram_budget_mb(),
             "local_inference_allowed": nh.is_local_inference_allowed(),
             "auto_managed": nh._load.is_auto_managed(),

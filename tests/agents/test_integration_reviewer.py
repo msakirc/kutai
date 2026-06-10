@@ -2,6 +2,7 @@
 import pytest
 
 from src.agents import get_agent, AGENT_REGISTRY
+from prompt_foundry import PROFILE_REGISTRY
 from general_beckman.posthooks import _NO_POSTHOOKS_AGENT_TYPES
 from coulson.reflection import REFLECTION_BLOCKS
 
@@ -57,7 +58,7 @@ def test_prompt_cross_file_field(prompt):
 # ─── allowed_tools ────────────────────────────────────────────────────────
 
 def test_allowed_tools_exact(agent):
-    assert set(agent.allowed_tools) == {"read_file", "file_tree", "ast_signatures"}, (
+    assert set(agent.allowed_tools) == {"read_file", "file_tree", "ast_signatures", "inspect_layer"}, (
         f"Unexpected allowed_tools: {agent.allowed_tools}"
     )
 
@@ -95,15 +96,15 @@ def test_reflection_block_content():
 # ─── Registry ─────────────────────────────────────────────────────────────
 
 def test_registered_in_agent_registry():
-    assert "integration_reviewer" in AGENT_REGISTRY, (
-        "integration_reviewer not registered in AGENT_REGISTRY"
+    assert "integration_reviewer" in PROFILE_REGISTRY, (
+        "integration_reviewer not registered in PROFILE_REGISTRY"
     )
 
 
 def test_get_agent_returns_correct_type():
-    from src.agents.integration_reviewer import IntegrationReviewerAgent
+    from prompt_foundry import Profile
     agent = get_agent("integration_reviewer")
-    assert isinstance(agent, IntegrationReviewerAgent)
+    assert isinstance(agent, Profile)
 
 
 # ─── Classifier coverage ─────────────────────────────────────────────────

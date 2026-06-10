@@ -6,7 +6,6 @@ from .researcher import ResearcherAgent
 from .analyst import AnalystAgent
 from .writer import WriterAgent
 from .assistant import AssistantAgent
-from .executor import ExecutorAgent
 from .shopping_advisor import ShoppingAdvisorAgent
 from .product_researcher import ProductResearcherAgent
 from .deal_analyst import DealAnalystAgent
@@ -29,7 +28,6 @@ AGENT_REGISTRY = {
     "analyst": AnalystAgent(),
     "writer": WriterAgent(),
     "assistant": AssistantAgent(),
-    "executor": ExecutorAgent(),
     "shopping_advisor": ShoppingAdvisorAgent(),
     "product_researcher": ProductResearcherAgent(),
     "deal_analyst": DealAnalystAgent(),
@@ -60,4 +58,8 @@ def get_agent(agent_type: str):
     p = _get_profile(agent_type)
     if p is not None:
         return p
-    return AGENT_REGISTRY.get(agent_type, AGENT_REGISTRY["executor"])
+    result = AGENT_REGISTRY.get(agent_type)
+    if result is not None:
+        return result
+    # executor is now a Foundry profile; fall back to it as the default.
+    return _get_profile("executor")

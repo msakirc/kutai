@@ -179,27 +179,27 @@ async def list_prompt_versions(agent_type: str) -> list[dict]:
 
 async def seed_from_agents() -> int:
     """
-    Seed the prompt_versions table with current hardcoded prompts from all
-    agent classes. Only seeds if no version exists yet for that agent type.
+    Seed the prompt_versions table with current prompts from the Foundry
+    profile registry. Only seeds if no version exists yet for that agent type.
     Returns the number of prompts seeded.
+
+    oncall_agent is NOT in PROFILE_REGISTRY (it's a class carve-out with a
+    dynamic prompt); it is intentionally not seeded here.
     """
     seeded = 0
     try:
-        from src.agents import get_agent, AGENT_REGISTRY
-        # Create a dummy task for prompt extraction
-        dummy_task = {"id": 0, "title": "seed", "description": "seed"}
-        for agent_type in AGENT_REGISTRY:
+        from prompt_foundry import PROFILE_REGISTRY
+        dummy = {"id": 0, "title": "seed", "description": "seed"}
+        for name, profile in PROFILE_REGISTRY.items():
             try:
-                existing = await get_active_prompt(agent_type)
-                if existing:
+                if await get_active_prompt(name):
                     continue  # already has a versioned prompt
-                agent = get_agent(agent_type)
-                prompt = agent.get_system_prompt(dummy_task)
+                prompt = profile.get_system_prompt(dummy)
                 if prompt and len(prompt) > 20:
                     await save_prompt_version(
-                        agent_type=agent_type,
+                        agent_type=name,
                         prompt_text=prompt,
-                        notes="Auto-seeded from hardcoded prompt",
+                        notes="Auto-seeded from Foundry",
                         activate=True,
                     )
                     seeded += 1

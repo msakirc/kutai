@@ -12,40 +12,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.infra.logging_config import get_logger
+from prompt_foundry import build_messages
 
 logger = get_logger("coulson.posthooks.grading")
-
-GRADING_SYSTEM = (
-    "You are a strict SEMANTIC evaluator. Required fields and sections are "
-    "ALREADY verified deterministically by a schema gate before you run — "
-    "structural completeness is NOT your job. Judge ONLY semantic quality: "
-    "relevance, content adequacy, coherence, structural soundness. NEVER FAIL "
-    "an output for a missing, extra, or renamed field or section — that is "
-    "checked elsewhere. Reply ONLY with the requested fields, one per line. "
-    "Do not add explanation or commentary."
-)
-
-GRADING_PROMPT = """Evaluate this task result.
-
-Task: {title}
-Description: {description}
-Result: {response}
-
-Field presence is verified deterministically upstream. Judge ONLY whether the
-content semantically solves the task. DO NOT JUDGE field/section presence, and
-do not penalise fields named in the Description but absent from the output.
-
-Reply with EXACTLY these fields, one per line:
-RELEVANT: YES or NO (does the content address THIS task, not a different one)
-COMPLETE: YES or NO (does the CONTENT substantively solve the task — adequate depth, no stubs or hand-waving; this is semantic adequacy, NOT field presence)
-VERDICT: PASS or FAIL
-WELL_FORMED: PASS or FAIL (no repeated sections, no garbage, structurally sound)
-COHERENT: PASS or FAIL (output makes logical sense end-to-end)
-SITUATION: one line, what type of problem was solved
-STRATEGY: one line, what approach worked
-TOOLS: comma-separated list of tools used effectively
-PREFERENCE: one-line user preference signal observed in this task, or NONE
-INSIGHT: one-line reusable learning from this task, or NONE"""
 
 
 @dataclass
@@ -300,23 +269,20 @@ def build_grading_spec(source: dict, exclusions: list):
     if _cq.is_degenerate:
         return GradeResult(passed=False, raw=f"auto-fail: {_cq.summary}")
 
-    messages = [
-        {"role": "system", "content": GRADING_SYSTEM},
-        # NO TRUNCATION of any grader input, ever. The description IS the
-        # grading contract and the result IS the artifact under judgment;
-        # lopping either makes the grader judge a partial spec against a
-        # partial artifact and emit false verdicts. #289700 (2026-06-04): a
-        # 1329-char 5-section charter instruction cut at 500 chars dropped
-        # sections 4-5, and the grader reported the artifact "added a sixth
-        # section" — 36% of i2p steps (94/259) have instructions past the old
-        # cap. An oversized input is a model-selection/capacity concern, never
-        # solved by silent truncation here.
-        {"role": "user", "content": GRADING_PROMPT.format(
-            title=str(source.get("title", "")),
-            description=str(source.get("description", "")),
-            response=str(result_text),
-        )},
-    ]
+    # NO TRUNCATION of any grader input, ever. The description IS the
+    # grading contract and the result IS the artifact under judgment;
+    # lopping either makes the grader judge a partial spec against a
+    # partial artifact and emit false verdicts. #289700 (2026-06-04): a
+    # 1329-char 5-section charter instruction cut at 500 chars dropped
+    # sections 4-5, and the grader reported the artifact "added a sixth
+    # section" — 36% of i2p steps (94/259) have instructions past the old
+    # cap. An oversized input is a model-selection/capacity concern, never
+    # solved by silent truncation here.
+    messages = build_messages("grading", {
+        "title": str(source.get("title", "")),
+        "description": str(source.get("description", "")),
+        "response": str(result_text),
+    })
     _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
     # Derive the input estimate from the ACTUAL prompt size (~4 chars/token).
     # Now that nothing is truncated, a large artifact must steer selection to a

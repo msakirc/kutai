@@ -15,7 +15,6 @@ Verifies:
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, patch
 
 
 async def _setup(tmp_path, monkeypatch):
@@ -29,9 +28,14 @@ async def _setup(tmp_path, monkeypatch):
     return db_mod
 
 
+async def _close_db(db_mod):
+    if db_mod._db_connection is not None:
+        await db_mod._db_connection.close()
+        db_mod._db_connection = None
+
+
 def _get_handler_and_model():
     """Extract the create_mission handler and MissionCreate model from the app."""
-    from src.app import api as api_mod
     from src.app.api import create_app
     app = create_app()
     # find the POST /missions route
@@ -60,90 +64,98 @@ async def test_create_mission_routes_through_add_mission(tmp_path, monkeypatch):
         return await original_add_mission(*args, **kwargs)
 
     monkeypatch.setattr(db_mod, "add_mission", spy_add_mission)
-    monkeypatch.setattr("src.infra.db.add_mission", spy_add_mission)
 
-    handler = _get_handler_and_model()
+    try:
+        handler = _get_handler_and_model()
 
-    # Build a minimal stand-in for MissionCreate using a SimpleNamespace
-    # (the handler only accesses .title, .description, .priority, .workflow, .repo_path)
-    from types import SimpleNamespace
-    body = SimpleNamespace(
-        title="Test Mission",
-        description="desc",
-        priority=3,
-        workflow="i2p",
-        repo_path="/tmp/repo",
-    )
+        # Build a minimal stand-in for MissionCreate using a SimpleNamespace
+        # (the handler only accesses .title, .description, .priority, .workflow, .repo_path)
+        from types import SimpleNamespace
+        body = SimpleNamespace(
+            title="Test Mission",
+            description="desc",
+            priority=3,
+            workflow="i2p",
+            repo_path="/tmp/repo",
+        )
 
-    result = await handler(body=body)
+        result = await handler(body=body)
 
-    assert result["title"] == "Test Mission"
-    assert result["status"] == "active"
-    assert isinstance(result["id"], int)
+        assert result["title"] == "Test Mission"
+        assert result["status"] == "active"
+        assert isinstance(result["id"], int)
 
-    # add_mission must have been called exactly once
-    assert len(calls) == 1, f"Expected add_mission called once, got {len(calls)}"
+        # add_mission must have been called exactly once
+        assert len(calls) == 1, f"Expected add_mission called once, got {len(calls)}"
+    finally:
+        await _close_db(db_mod)
 
 
 @pytest.mark.asyncio
 async def test_create_mission_lifecycle_state_set(tmp_path, monkeypatch):
     """Created mission must have lifecycle_state='active' (add_mission backfill)."""
     db_mod = await _setup(tmp_path, monkeypatch)
-    handler = _get_handler_and_model()
+    try:
+        handler = _get_handler_and_model()
 
-    from types import SimpleNamespace
-    body = SimpleNamespace(
-        title="Lifecycle Test",
-        description="",
-        priority=5,
-        workflow=None,
-        repo_path=None,
-    )
+        from types import SimpleNamespace
+        body = SimpleNamespace(
+            title="Lifecycle Test",
+            description="",
+            priority=5,
+            workflow=None,
+            repo_path=None,
+        )
 
-    result = await handler(body=body)
-    mission_id = result["id"]
+        result = await handler(body=body)
+        mission_id = result["id"]
 
-    db = await db_mod.get_db()
-    cur = await db.execute(
-        "SELECT lifecycle_state, product_id FROM missions WHERE id = ?",
-        (mission_id,),
-    )
-    row = await cur.fetchone()
-    assert row is not None
-    assert row[0] == "active", f"lifecycle_state should be 'active', got {row[0]!r}"
-    assert row[1] == str(mission_id), (
-        f"product_id should equal mission id '{mission_id}', got {row[1]!r}"
-    )
+        db = await db_mod.get_db()
+        cur = await db.execute(
+            "SELECT lifecycle_state, product_id FROM missions WHERE id = ?",
+            (mission_id,),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == "active", f"lifecycle_state should be 'active', got {row[0]!r}"
+        assert row[1] == str(mission_id), (
+            f"product_id should equal mission id '{mission_id}', got {row[1]!r}"
+        )
+    finally:
+        await _close_db(db_mod)
 
 
 @pytest.mark.asyncio
 async def test_create_mission_fields_persisted(tmp_path, monkeypatch):
     """All MissionCreate fields must be stored correctly."""
     db_mod = await _setup(tmp_path, monkeypatch)
-    handler = _get_handler_and_model()
+    try:
+        handler = _get_handler_and_model()
 
-    from types import SimpleNamespace
-    body = SimpleNamespace(
-        title="Field Check",
-        description="my description",
-        priority=7,
-        workflow="i2p",
-        repo_path="/tmp/myrepo",
-    )
+        from types import SimpleNamespace
+        body = SimpleNamespace(
+            title="Field Check",
+            description="my description",
+            priority=7,
+            workflow="i2p",
+            repo_path="/tmp/myrepo",
+        )
 
-    result = await handler(body=body)
-    assert result["status"] == "active"
-    mission_id = result["id"]
+        result = await handler(body=body)
+        assert result["status"] == "active"
+        mission_id = result["id"]
 
-    db = await db_mod.get_db()
-    cur = await db.execute(
-        "SELECT title, description, priority, workflow, repo_path FROM missions WHERE id = ?",
-        (mission_id,),
-    )
-    row = await cur.fetchone()
-    assert row is not None
-    assert row[0] == "Field Check"
-    assert row[1] == "my description"
-    assert row[2] == 7
-    assert row[3] == "i2p"
-    assert row[4] == "/tmp/myrepo"
+        db = await db_mod.get_db()
+        cur = await db.execute(
+            "SELECT title, description, priority, workflow, repo_path FROM missions WHERE id = ?",
+            (mission_id,),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == "Field Check"
+        assert row[1] == "my description"
+        assert row[2] == 7
+        assert row[3] == "i2p"
+        assert row[4] == "/tmp/myrepo"
+    finally:
+        await _close_db(db_mod)

@@ -35,28 +35,6 @@ PICK_CASES = [
 ]
 
 
-def _make_fake_enqueue(agent_type: str):
-    """Return a fake beckman.enqueue that returns the given agent_type classification."""
-    async def fake_enqueue(spec, **kwargs):
-        from general_beckman import TaskResult
-        payload = {
-            "agent_type": agent_type,
-            "difficulty": 5,
-            "needs_tools": False,
-            "needs_vision": False,
-            "needs_thinking": False,
-            "local_only": False,
-            "priority": "normal",
-            "search_depth": "none",
-        }
-        return TaskResult(
-            status="completed",
-            result={"content": json.dumps(payload)},
-            error=None,
-        )
-    return fake_enqueue
-
-
 @pytest.mark.parametrize("desc,expected", PICK_CASES)
 @pytest.mark.asyncio
 async def test_classifier_picks_prompt_driven(desc: str, expected: str):
@@ -110,22 +88,10 @@ async def test_classifier_keyword_fallback_picks(desc: str, expected: str):
         )
 
 
-@pytest.mark.llm
-@pytest.mark.parametrize("desc,expected", PICK_CASES)
-@pytest.mark.asyncio
-async def test_classifier_live_llm_picks(desc: str, expected: str, tmp_path, monkeypatch):
-    """
-    Live LLM test — requires a model to be loaded.
-    Run with: pytest tests/core/test_task_classifier_picks.py -m llm -v
-
-    Uses the real classify_task() function with a real LLM call via Beckman.
-    """
-    import src.infra.db as _db_mod
-    monkeypatch.setattr(_db_mod, "DB_PATH", str(tmp_path / "test.db"))
-    from src.infra.db import init_db
-    await init_db()
-
-    from src.core.task_classifier import classify_task
-    result = await classify_task(desc, desc)
-    actual = result.agent_type
-    assert actual == expected, f"live LLM: got '{actual}' for: {desc!r}"
+# SP5 (2026-06-11): test_classifier_live_llm_picks was deleted — it asserted
+# classify_task's old synchronous TaskClassification return. SP5 made
+# classify_task a CPS kickoff (returns a child task id; the classification is
+# delivered via the task_classifier.classify.resume continuation). Pick quality
+# is covered by test_classifier_picks_prompt_driven (prompt rules) +
+# test_classifier_keyword_fallback_picks (keyword path) above, and the result
+# field-mapping by tests/core/test_parse_classification.py.

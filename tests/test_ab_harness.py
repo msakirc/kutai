@@ -609,7 +609,7 @@ def test_pricing_confirm_param_mismatch_rejected():
 # ---------------------------------------------------------------------------
 
 def test_ab_pipeline_makes_no_llm_call():
-    """assign_variant + retire_variant never call LLMDispatcher.request."""
+    """assign_variant + retire_variant never call LLMDispatcher.execute."""
     async def _t():
         db_mod, _ = await _fresh_db()
         try:
@@ -618,7 +618,7 @@ def test_ab_pipeline_makes_no_llm_call():
             from mr_roboto.executors import retire_variant as rt
 
             with patch(
-                "src.core.llm_dispatcher.LLMDispatcher.request"
+                "src.core.llm_dispatcher.LLMDispatcher.execute"
             ) as mock_req:
                 with patch.object(av, "_daily_active_users",
                                   AsyncMock(return_value=(True, 200))), \

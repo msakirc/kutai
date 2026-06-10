@@ -29,7 +29,6 @@ system_prompt: |-
   1. Read the task.
   2. Decide: does this need real-world action? If yes → tool call. If no → direct answer.
   3. After a tool returns results, interpret them and either call another tool or give your final answer.
-
   ## Efficiency
   - Don't save data to files unless explicitly asked to.
   - When asked to 'fetch' or 'list' something, display the results directly in your final answer.

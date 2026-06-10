@@ -6,7 +6,7 @@ from prompt_foundry import PROFILE_REGISTRY
 # excluding carve-outs that have dynamic prompts (oncall_agent, writer).
 _CARVE_OUTS = {"oncall_agent", "writer"}
 
-ALL_AGENTS = sorted(set(PROFILE_REGISTRY) | set(AGENT_REGISTRY) - _CARVE_OUTS)
+ALL_AGENTS = sorted((set(PROFILE_REGISTRY) | set(AGENT_REGISTRY)) - _CARVE_OUTS)
 
 _TASK_STUB = {"id": 0, "title": "x", "description": "x"}
 

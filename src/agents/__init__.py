@@ -10,7 +10,6 @@ from .shopping_grouper import ShoppingGrouperAgent
 from .shopping_labeler import ShoppingLabelerAgent
 from .shopping_synthesizer import ShoppingSynthesizerAgent
 from .oncall_agent import OncallAgent
-from .growth_digest_synthesizer import GrowthDigestSynthesizerAgent
 from .signal_classifier import SignalClassifierAgent
 from .query_planner import QueryPlannerAgent
 from .prior_art_synthesizer import PriorArtSynthesizerAgent
@@ -25,7 +24,6 @@ AGENT_REGISTRY = {
     "shopping_labeler": ShoppingLabelerAgent(),
     "shopping_synthesizer": ShoppingSynthesizerAgent(),
     "oncall_agent": OncallAgent(),
-    "growth_digest_synthesizer": GrowthDigestSynthesizerAgent(),
     "signal_classifier": SignalClassifierAgent(),
     "query_planner": QueryPlannerAgent(),
     "prior_art_synthesizer": PriorArtSynthesizerAgent(),

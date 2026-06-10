@@ -3,8 +3,10 @@ from src.agents import get_agent, AGENT_REGISTRY
 from prompt_foundry import PROFILE_REGISTRY
 
 # Build the union of Foundry-data profiles and class-backed agents,
-# excluding carve-outs that have dynamic prompts (oncall_agent, writer).
-_CARVE_OUTS = {"oncall_agent", "writer"}
+# excluding carve-outs that have dynamic prompts.
+# oncall_agent: excluded (prompt varies by domain/whitelist — dynamic).
+# writer: included — base branch satisfies all 3 invariants (Task 9).
+_CARVE_OUTS = {"oncall_agent"}
 
 ALL_AGENTS = sorted((set(PROFILE_REGISTRY) | set(AGENT_REGISTRY)) - _CARVE_OUTS)
 

@@ -1,29 +1,18 @@
 # agents/__init__.py
-from prompt_foundry import get_profile as _get_profile
+from prompt_foundry import PROFILE_REGISTRY, get_profile as _get_profile
 from .base import BaseAgent
-from .writer import WriterAgent
 from .oncall_agent import OncallAgent
 
-AGENT_REGISTRY = {
-    "writer": WriterAgent(),
-    "oncall_agent": OncallAgent(),
-}
+AGENT_REGISTRY = {**PROFILE_REGISTRY, "oncall_agent": OncallAgent()}
 
 
 def get_agent(agent_type: str):
     """Get agent/profile by type. Foundry data profiles take precedence;
-    legacy class instances are the fallback; executor is the final default.
+    oncall_agent carve-out instance is in AGENT_REGISTRY; executor is the
+    final default.
 
-    Returns a stable per-type singleton: Foundry's get_profile returns the
-    registry singleton (built once at Foundry import), and the class
-    instances here are constructed once at module import — identity holds
-    across calls for both paths.
+    Returns a stable per-type singleton: Foundry's PROFILE_REGISTRY is built
+    once at Foundry import, and the OncallAgent instance is constructed once
+    at module import — identity holds across calls for both paths.
     """
-    p = _get_profile(agent_type)
-    if p is not None:
-        return p
-    result = AGENT_REGISTRY.get(agent_type)
-    if result is not None:
-        return result
-    # executor is now a Foundry profile; fall back to it as the default.
-    return _get_profile("executor")
+    return AGENT_REGISTRY.get(agent_type) or AGENT_REGISTRY["executor"]

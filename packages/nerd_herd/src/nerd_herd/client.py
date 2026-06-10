@@ -16,6 +16,7 @@ from nerd_herd.types import (
     CloudProviderState,
     InFlightCall,
     LocalModelState,
+    QueueProfile,
     RateLimitMatrix,
     SystemSnapshot,
 )
@@ -294,6 +295,10 @@ class NerdHerdClient:
             vram_available_mb=vram_mb,
             local=self._cached_snapshot.local,   # preserve last known local state
             cloud=self._cached_snapshot.cloud,    # preserve last known cloud state
+            # preserve last known image-server residency (only /api/snapshot
+            # carries it; mirrors local/cloud preservation above)
+            image_server_resident=self._cached_snapshot.image_server_resident,
+            image_server_vram_mb=self._cached_snapshot.image_server_vram_mb,
             # /api/state exposes load_mode; the other 5 desktop signals are
             # only on /api/snapshot (this fallback only fires against an old
             # sidecar that predates them), so they take dataclass defaults.
@@ -376,12 +381,38 @@ class NerdHerdClient:
             except Exception:
                 continue
 
+        # queue_profile — None or asdict(QueueProfile) on the wire. JSON
+        # stringifies the int keys of by_difficulty; coerce them back.
+        qp_data = data.get("queue_profile")
+        queue_profile = None
+        if isinstance(qp_data, dict):
+            queue_profile = QueueProfile(
+                hard_tasks_count=int(qp_data.get("hard_tasks_count", 0) or 0),
+                total_ready_count=int(qp_data.get("total_ready_count", 0) or 0),
+                by_difficulty={
+                    int(k): int(v)
+                    for k, v in (qp_data.get("by_difficulty") or {}).items()
+                },
+                by_capability={
+                    str(k): int(v)
+                    for k, v in (qp_data.get("by_capability") or {}).items()
+                },
+                projected_tokens=int(qp_data.get("projected_tokens", 0) or 0),
+                projected_calls=int(qp_data.get("projected_calls", 0) or 0),
+            )
+
         return SystemSnapshot(
             vram_available_mb=int(data.get("vram_available_mb", 0)),
             local=local,
             cloud=cloud,
+            queue_profile=queue_profile,
             in_flight_calls=in_flight_calls,
             recent_swap_count=int(data.get("recent_swap_count", 0) or 0),
+            # Image-server residency (clair_obscur). Same dropped-field bug
+            # class as the desktop signals below — without these, prod always
+            # saw the image server as non-resident through the HTTP client.
+            image_server_resident=bool(data.get("image_server_resident", False)),
+            image_server_vram_mb=int(data.get("image_server_vram_mb", 0) or 0),
             # Desktop resource signals. Pre-fix these were dropped on the
             # client side: the sidecar emits them via dataclasses.asdict,
             # but _parse_snapshot never read them back, so they silently

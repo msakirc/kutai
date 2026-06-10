@@ -79,25 +79,20 @@ def build_self_critique_message(
 
     paths_block = "\n".join(f"  - {p}" for p in produces) or "  (none declared)"
 
-    return (
-        f"You are acting as your own critic ({agent_type} self-review).\n\n"
-        "Review the work you just completed for the following declared output "
-        "paths:\n"
-        f"{paths_block}\n\n"
-        f"Work summary:\n{diff_summary or '(no summary provided)'}\n\n"
-        "Check for:\n"
-        "  1. Missing or empty files that were declared in the path list above\n"
-        "  2. Obvious correctness errors visible from the summary alone\n"
-        "  3. Incomplete implementations (stubs, TODOs, placeholder content)\n\n"
-        "Respond with ONLY a JSON block in this exact schema:\n"
-        "```json\n"
-        '{"verdict": "clean"|"issues", "findings": ['
-        '{"severity": "error"|"warning", "file": "<path>", "why": "<reason>"}]}\n'
-        "```\n\n"
-        'Use "clean" when all declared paths look correct. Use "issues" and '
-        "populate findings when there are real problems that need fixing. "
-        "Return ONLY the JSON — no prose before or after it."
+    # Prompt TEXT lives in the Foundry rubric (rubrics/self_critique.yaml); this
+    # builder owns only the dynamic field resolution (paths_block formatting +
+    # diff_summary fallback). The rubric has an empty system, so the one-shot
+    # critic string is the user message content. (Phase 3 Task 12 Batch H.)
+    from prompt_foundry import build_messages
+    msgs = build_messages(
+        "self_critique",
+        {
+            "agent_type": agent_type,
+            "paths_block": paths_block,
+            "diff_summary": diff_summary or "(no summary provided)",
+        },
     )
+    return msgs[1]["content"]
 
 
 # ────────────────────────────────────────────────────────────────────────────

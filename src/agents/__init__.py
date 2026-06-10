@@ -1,7 +1,6 @@
 # agents/__init__.py
 from prompt_foundry import get_profile as _get_profile
 from .base import BaseAgent
-from .analyst import AnalystAgent
 from .writer import WriterAgent
 from .assistant import AssistantAgent
 from .shopping_advisor import ShoppingAdvisorAgent
@@ -21,7 +20,6 @@ from .query_planner import QueryPlannerAgent
 from .prior_art_synthesizer import PriorArtSynthesizerAgent
 
 AGENT_REGISTRY = {
-    "analyst": AnalystAgent(),
     "writer": WriterAgent(),
     "assistant": AssistantAgent(),
     "shopping_advisor": ShoppingAdvisorAgent(),

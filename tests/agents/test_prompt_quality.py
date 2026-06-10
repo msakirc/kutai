@@ -1,45 +1,35 @@
 import pytest
-from src.agents import get_agent
+from src.agents import get_agent, AGENT_REGISTRY
+from prompt_foundry import PROFILE_REGISTRY
 
-ACTIVE_AGENTS = [
-    "implementer", "test_generator", "executor", "planner",  # Task 2 (already polished)
-    "reviewer", "coder", "fixer", "researcher",
-    "analyst", "writer", "summarizer", "architect",
-]
+# Build the union of Foundry-data profiles and class-backed agents,
+# excluding carve-outs that have dynamic prompts (oncall_agent, writer).
+_CARVE_OUTS = {"oncall_agent", "writer"}
 
-LOW_TRAFFIC_AGENTS = [
-    # SP3: the grader / code_reviewer / artifact_summarizer wrapper agents are
-    # DELETED. Grading / code-review / summarization now run as the
-    # raw_dispatch reviewer (in ACTIVE_AGENTS) / summarizer (in ACTIVE_AGENTS)
-    # agent configs + posthook.*.resume continuations — there is no standalone
-    # grader/code_reviewer/artifact_summarizer prompt to vet anymore.
-    "assistant", "visual_reviewer",
-    "shopping_advisor", "shopping_clarifier", "deal_analyst",
-    "product_researcher", "integration_reviewer",
-    "growth_digest_synthesizer",  # Z9 T2C — weekly growth digest synthesis
-    "signal_classifier",  # Z9 T3B — growth signal classifier
-    "shopping_grouper",  # shopping v3 — grouping producer
-    "shopping_labeler",  # shopping v3 — labeling producer
-    "shopping_synthesizer",  # shopping v3 — review-synthesis producer
-]
+ALL_AGENTS = sorted(set(PROFILE_REGISTRY) | set(AGENT_REGISTRY) - _CARVE_OUTS)
 
-ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 20 total
+_TASK_STUB = {"id": 0, "title": "x", "description": "x"}
+
+
+def _get_prompt(name: str) -> str:
+    return get_agent(name).get_system_prompt(_TASK_STUB)
+
 
 @pytest.mark.parametrize("name", ALL_AGENTS)
 def test_prompt_has_role_primer(name):
     """Prompt should start with explicit role identity."""
-    p = get_agent(name).get_system_prompt({"description": "x"})
+    p = _get_prompt(name)
     first_line = p.strip().split("\n")[0].lower()
     assert "you are" in first_line, f"{name} prompt missing role primer"
 
 @pytest.mark.parametrize("name", ALL_AGENTS)
 def test_prompt_has_dos_and_donts(name):
-    p = get_agent(name).get_system_prompt({"description": "x"}).lower()
+    p = _get_prompt(name).lower()
     assert ("don't" in p or "never" in p or "do not" in p), f"{name} missing negative guardrails"
     assert ("must" in p or "always" in p), f"{name} missing positive directives"
 
 @pytest.mark.parametrize("name", ALL_AGENTS)
 def test_prompt_has_final_answer_schema(name):
-    p = get_agent(name).get_system_prompt({"description": "x"})
+    p = _get_prompt(name)
     assert "final_answer" in p
     assert "```json" in p, f"{name} missing JSON schema example"

@@ -10,7 +10,6 @@ from .shopping_grouper import ShoppingGrouperAgent
 from .shopping_labeler import ShoppingLabelerAgent
 from .shopping_synthesizer import ShoppingSynthesizerAgent
 from .oncall_agent import OncallAgent
-from .prior_art_synthesizer import PriorArtSynthesizerAgent
 
 AGENT_REGISTRY = {
     "writer": WriterAgent(),
@@ -22,7 +21,6 @@ AGENT_REGISTRY = {
     "shopping_labeler": ShoppingLabelerAgent(),
     "shopping_synthesizer": ShoppingSynthesizerAgent(),
     "oncall_agent": OncallAgent(),
-    "prior_art_synthesizer": PriorArtSynthesizerAgent(),
 }
 
 

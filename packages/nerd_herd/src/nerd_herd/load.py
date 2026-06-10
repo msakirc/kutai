@@ -23,11 +23,15 @@ VRAM_BUDGETS: dict[str, float] = {
     "minimal": 0.0,
 }
 
+# User-facing mode descriptions. Since 2026-06-09 (resource-signals) load mode
+# is placement, not a VRAM cap: it weights the desktop presence/contention
+# signals (S13/S14) that bias work cloud↔local. VRAM_BUDGETS fractions above are
+# advisory only (get_vram_budget_mb returns raw free).
 DESCRIPTIONS: dict[str, str] = {
-    "full": "Full GPU — all local capacity available",
-    "heavy": "Heavy GPU — 90% VRAM cap, slight headroom for OS/desktop",
-    "shared": "Shared GPU — 50% VRAM cap, prefer cloud for heavy tasks",
-    "minimal": "Minimal GPU — local inference disabled, cloud only",
+    "full": "Full — ignore desktop signals; send to local freely",
+    "heavy": "Heavy — bias to cloud when you're active (1.5×)",
+    "shared": "Shared — stronger cloud bias when you're active (2×)",
+    "minimal": "Minimal — local inference disabled, cloud only",
 }
 
 _g_mode = Gauge("nerd_herd_load_mode", "Current GPU load mode (0=minimal,1=shared,2=heavy,3=full)")
@@ -64,6 +68,7 @@ class LoadManager:
         self._upgrade_delay = upgrade_delay
         self._callbacks: list[Callable[[str, str, str], None]] = []
         self._detect_task: asyncio.Task | None = None
+        self._last_external_fraction: float = 0.0
 
     def get_load_mode(self) -> str:
         return self._mode
@@ -101,8 +106,25 @@ class LoadManager:
         return VRAM_BUDGETS.get(self._mode, 1.0)
 
     def get_vram_budget_mb(self) -> int:
+        # Placement, not capping (resource-signals 2026-06-09): the
+        # desktop signals + --fit own contention now. snapshot.vram_available_mb
+        # reflects the true free VRAM, never a mode-scaled fraction.
         gpu = self._gpu.gpu_state()
-        return int(gpu.vram_free_mb * self.get_vram_budget_fraction())
+        return int(gpu.vram_free_mb)
+
+    def _record_external(self, ext) -> None:
+        """Cache the latest external-GPU fraction from the auto-detect loop."""
+        try:
+            self._last_external_fraction = float(ext.external_vram_fraction)
+        except Exception:
+            self._last_external_fraction = 0.0
+
+    def get_external_gpu_fraction(self) -> float:
+        """Last external-GPU fraction seen by the 30s auto-detect loop.
+
+        Read by snapshot() / S14 — cheap, no pynvml probe on the hot path.
+        """
+        return self._last_external_fraction
 
     def is_local_inference_allowed(self) -> bool:
         return self._mode != "minimal"
@@ -148,6 +170,7 @@ class LoadManager:
                     continue
 
                 ext = self._gpu.detect_external_gpu_usage()
+                self._record_external(ext)
                 suggested = self.suggest_mode_for_external_usage(ext.external_vram_fraction)
                 current = self._mode
                 now = time.time()

@@ -15,6 +15,11 @@ from pathlib import Path
 
 WORKTREE = Path(__file__).resolve().parents[3]
 SRC_PATH = WORKTREE / "packages" / "fatih_hoca" / "src"
+# counterfactual imports requirements.py which pulls in nerd_herd; the child
+# subprocess needs both package src dirs on PYTHONPATH when nerd_herd is not
+# pip-installed editable (otherwise `import nerd_herd` fails).
+NERD_HERD_SRC = WORKTREE / "packages" / "nerd_herd" / "src"
+_CHILD_PYTHONPATH = os.pathsep.join([str(SRC_PATH), str(NERD_HERD_SRC)])
 
 
 def test_cli_runs_on_empty_db(tmp_path):
@@ -36,7 +41,7 @@ def test_cli_runs_on_empty_db(tmp_path):
     conn.commit()
     conn.close()
 
-    env = {**os.environ, "DB_PATH": str(db), "PYTHONPATH": str(SRC_PATH)}
+    env = {**os.environ, "DB_PATH": str(db), "PYTHONPATH": _CHILD_PYTHONPATH}
     result = subprocess.run(
         [sys.executable, "-m", "fatih_hoca.counterfactual", "--k", "1.0"],
         capture_output=True, text=True, env=env,
@@ -85,7 +90,7 @@ def test_cli_reports_agreement_rate(tmp_path):
     conn.commit()
     conn.close()
 
-    env = {**os.environ, "DB_PATH": str(db), "PYTHONPATH": str(SRC_PATH)}
+    env = {**os.environ, "DB_PATH": str(db), "PYTHONPATH": _CHILD_PYTHONPATH}
     result = subprocess.run(
         [sys.executable, "-m", "fatih_hoca.counterfactual", "--k", "1.0"],
         capture_output=True, text=True, env=env, timeout=30,

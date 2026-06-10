@@ -12,6 +12,9 @@ from .router import ModelCallFailed
 from .task_context import parse_context
 from .context_injection import inject_chain_context
 from .startup_recovery import startup_recovery
+from .periodic_checks import PeriodicChecks
+from .dispatch_prep import bridge_self_reflection
+from ..workflows.engine.task_refresh import refresh_workflow_agent_type
 import mr_roboto
 from ..agents import get_agent
 from ..tools.workspace import get_mission_workspace, get_mission_workspace_relative
@@ -85,23 +88,6 @@ def _mech_action_to_result(action) -> dict:
     }
 
 
-async def _check_mcp_idle_sweep() -> None:
-    """Periodically shut down idle MCP servers (lazy-start companion).
-
-    Runs on the same cadence as the other orchestrator _check_* jobs. Never
-    starts a server — only kills servers idle past their idle_timeout_s.
-    """
-    try:
-        from yalayut.mcp_manager import get_manager
-        killed = await get_manager().sweep_idle()
-        if killed:
-            from src.infra.logging_config import get_logger as _get_logger
-            _get_logger("orchestrator.mcp").info("mcp idle sweep", killed=killed)
-    except Exception:
-        # Sweep failures must never disturb the pump.
-        pass
-
-
 class Orchestrator:
     def __init__(self, shutdown_event=None):
         self.telegram = TelegramInterface(self)
@@ -111,10 +97,10 @@ class Orchestrator:
         self.requested_exit_code: int | None = None
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
-        # Yalayut Phase 4 — periodic-check gates. 0.0 → first pump tick after
-        # boot fires both checks immediately, then they self-gate to 24h.
-        self._last_yalayut_discovery: float = 0.0
-        self._last_source_scout: float = 0.0
+        # Timestamp-gated background jobs (mcp idle sweep, yalayut discovery /
+        # source scout, founder unblock sweep). The pump calls
+        # ``self.periodic.run_due()`` once per tick; each check self-gates.
+        self.periodic = PeriodicChecks()
 
     def _drop_running_future(self, f: asyncio.Task) -> None:
         """done_callback: remove a completed dispatch task from the tracker.
@@ -124,69 +110,6 @@ class Orchestrator:
         except ValueError:
             pass
 
-    # ─── Yalayut Phase 4 periodic checks ─────────────────────────────────
-    #
-    # Mirror the _check_todo_reminders pattern: timestamp-gated, enqueue a
-    # plain dict via beckman.enqueue. The orchestrator imports ZERO from
-    # yalayut — the mechanical executor (action "yalayut_discovery" /
-    # "source_scout") owns the yalayut import. The cron_seed cadence rows
-    # are the restart-survivable backstop; these in-process checks give a
-    # finer cadence and fire promptly after boot.
-
-    _YALAYUT_DISCOVERY_INTERVAL_S: float = 86400.0   # 24h
-    _SOURCE_SCOUT_INTERVAL_S: float = 86400.0        # 24h
-
-    async def _check_yalayut_discovery(self) -> None:
-        """Enqueue a yalayut daily-discovery mechanical task when due."""
-        import time as _time
-        last = getattr(self, "_last_yalayut_discovery", 0.0)
-        now = _time.time()
-        if now - last < self._YALAYUT_DISCOVERY_INTERVAL_S:
-            return
-        self._last_yalayut_discovery = now
-        try:
-            import general_beckman
-            await general_beckman.enqueue(
-                {
-                    "agent_type": "mechanical",
-                    "title": "Yalayut daily discovery",
-                    "context": {
-                        "executor": "mechanical",
-                        "payload": {"action": "yalayut_discovery",
-                                    "mode": "daily"},
-                    },
-                },
-                lane="oneshot",
-            )
-            logger.info("enqueued yalayut daily discovery task")
-        except Exception as e:
-            logger.warning("yalayut discovery enqueue failed: %s", e)
-
-    async def _check_source_scout(self) -> None:
-        """Enqueue a yalayut source-scout mechanical task when due."""
-        import time as _time
-        last = getattr(self, "_last_source_scout", 0.0)
-        now = _time.time()
-        if now - last < self._SOURCE_SCOUT_INTERVAL_S:
-            return
-        self._last_source_scout = now
-        try:
-            import general_beckman
-            await general_beckman.enqueue(
-                {
-                    "agent_type": "mechanical",
-                    "title": "Yalayut source scout",
-                    "context": {
-                        "executor": "mechanical",
-                        "payload": {"action": "source_scout"},
-                    },
-                },
-                lane="oneshot",
-            )
-            logger.info("enqueued yalayut source-scout task")
-        except Exception as e:
-            logger.warning("source-scout enqueue failed: %s", e)
-
     # ─── Dispatch ────────────────────────────────────────────────────────
 
     async def _dispatch(self, task: dict) -> None:
@@ -195,105 +118,14 @@ class Orchestrator:
         task_id = task["id"]
         agent_type = task.get("agent_type", "executor")
 
-        # ── Refresh workflow-step agent_type from live JSON ──
-        # Task rows freeze agent_type at expansion time. When a workflow
-        # JSON edit changes a step's agent (e.g. the 2026-04-25 sweep
-        # moved 24 planner→array/object steps to analyst), existing rows
-        # keep dispatching the old agent. Mission 46 tasks 2939, 2942
-        # burned 4+ retries each as planner emitting subtask plans for
-        # array/object schemas — the schema validator kept failing the
-        # same shape it could never produce. The base.py per-task field
-        # refresh deliberately excluded agent_type because the agent
-        # CLASS is selected here in the orchestrator BEFORE execute()
-        # runs; refreshing it inside the agent would be too late. So
-        # do it here, at the dispatch entry, before get_agent() picks
-        # the class.
-        try:
-            ctx_raw_for_agent = task.get("context") or "{}"
-            _tctx = json.loads(ctx_raw_for_agent) if isinstance(ctx_raw_for_agent, str) else ctx_raw_for_agent
-            if isinstance(_tctx, str):
-                _tctx = json.loads(_tctx)
-            if isinstance(_tctx, dict) and _tctx.get("is_workflow_step"):
-                _step_id = _tctx.get("workflow_step_id")
-                _mid = task.get("mission_id")
-                if _step_id and _mid:
-                    from src.infra.db import get_db
-                    _mdb = await get_db()
-                    _mcur = await _mdb.execute(
-                        "SELECT context FROM missions WHERE id = ?", (_mid,),
-                    )
-                    _mrow = await _mcur.fetchone()
-                    await _mcur.close()
-                    _mctx = {}
-                    if _mrow and _mrow[0]:
-                        try:
-                            _mctx = json.loads(_mrow[0])
-                            if isinstance(_mctx, str):
-                                _mctx = json.loads(_mctx)
-                        except (json.JSONDecodeError, TypeError):
-                            _mctx = {}
-                    _wf_name = (
-                        _mctx.get("workflow_name") if isinstance(_mctx, dict) else None
-                    ) or "i2p_v3"
-                    from src.workflows.engine.loader import load_workflow
-                    _wf = load_workflow(_wf_name)
-                    _step = _wf.get_step(_step_id)
-                    if _step:
-                        _live_agent = _step.get("agent")
-                        if (_live_agent
-                                and _live_agent != agent_type
-                                and _live_agent != "mechanical"
-                                and agent_type != "mechanical"):
-                            from src.infra.db import update_task
-                            await update_task(task_id, agent_type=_live_agent)
-                            logger.info(
-                                f"[Task #{task_id}] agent_type refresh: "
-                                f"{agent_type} → {_live_agent} "
-                                f"(step={_step_id}, wf={_wf_name})"
-                            )
-                            agent_type = _live_agent
-                            task["agent_type"] = _live_agent
-        except Exception as _e:
-            logger.debug(f"agent_type refresh failed #{task_id}: {_e}")
-
-        # ── Bridge profile.enable_self_reflection → task context ──
-        # SP3b Task 7 moved per-agent self-reflection from coulson's inline
-        # path (which fired on the agent CLASS attr profile.enable_self_reflection)
-        # to a Beckman post-hook gated by determine_posthooks(). But that gate
-        # reads the DB task row + parsed context — it has no access to the agent
-        # profile object. The flag lives ONLY on the class (e.g.
-        # CoderAgent.enable_self_reflection = True), so it was never visible to
-        # the completion path → self_reflect NEVER spawned (reflection silently
-        # dead for every code-emitting agent). Bridge it here: get_agent() has
-        # the resolved profile, and on_task_finished re-reads the row via
-        # get_task() AFTER dispatch — so PERSIST it to the context column now.
-        # Only stamp True; never clutter context with False. Skip mechanical
-        # tasks entirely — they go through mr_roboto (no agent profile, never
-        # self-reflect), so touching get_agent for them is pointless work.
-        try:
-            _refl_ctx = parse_context(task)
-            _is_mech_dispatch = (
-                task.get("runner") == "mechanical"
-                or task.get("executor") == "mechanical"
-                or _refl_ctx.get("executor") == "mechanical"
-                or agent_type == "mechanical"
-            )
-            if not _is_mech_dispatch:
-                _profile = get_agent(agent_type)
-                if getattr(_profile, "enable_self_reflection", False):
-                    if _refl_ctx.get("enable_self_reflection") is not True:
-                        _refl_ctx["enable_self_reflection"] = True
-                        from src.infra.db import update_task as _ut_refl
-                        await _ut_refl(task_id, context=json.dumps(_refl_ctx))
-                        # Keep the in-memory task dict consistent so the agent
-                        # execution path below reads the same context.
-                        task["context"] = json.dumps(_refl_ctx)
-        except Exception as _e:
-            logger.warning(
-                "self_reflect bridge failed task #%s (agent_type=%s) — "
-                "self-reflection will be skipped for this task: %s",
-                task_id, agent_type, _e,
-            )
+        # Refresh workflow-step agent_type from live JSON (rows freeze it at
+        # expansion; a JSON edit must reach existing rows) and bridge the
+        # agent CLASS attr enable_self_reflection into task context so the
+        # Beckman post-hook gate can see it. Both run BEFORE get_agent() picks
+        # the class; both never raise. get_agent is passed into the bridge so
+        # tests patching src.core.orchestrator.get_agent keep covering it.
+        agent_type = await refresh_workflow_agent_type(task, agent_type)
+        await bridge_self_reflection(task, agent_type, get_agent)
 
         try:
             task = await inject_chain_context(task)
@@ -524,11 +356,6 @@ class Orchestrator:
         shutdown_signal = Path("logs") / "shutdown.signal"
         import general_beckman
 
-        # Z6 T1E: throttle counter for the founder_actions unblock sweep.
-        # 20 ticks * 3s base sleep ≈ 60s between sweeps. Keep it cheap —
-        # the sweep is one indexed SELECT + zero-to-N UPDATEs.
-        _z6_sweep_counter = 0
-
         while self.running and not self.shutdown_event.is_set():
             try:
                 if shutdown_signal.exists():
@@ -563,38 +390,10 @@ class Orchestrator:
                     self._running_futures.append(t)
                     t.add_done_callback(self._drop_running_future)
 
-                # Z6 T1E: periodic mission-unblock sweep. Founder may resolve
-                # actions via the Yaşar Usta bot or external tooling without
-                # the per-resolve hook firing in this process — sweep is the
-                # backstop. Throttle to ~once per minute (20 ticks * 3s).
-                _z6_sweep_counter += 1
-                if _z6_sweep_counter >= 20:
-                    _z6_sweep_counter = 0
-                    try:
-                        import src.founder_actions as _fa
-                        n = await _fa.sweep_unblock_all()
-                        if n > 0:
-                            logger.info(
-                                "z6 lifecycle sweep: unblocked %d mission(s)",
-                                n,
-                            )
-                    except Exception as _e:
-                        logger.debug(f"z6 sweep skipped: {_e}")
-
-                # Yalayut Phase 3 — MCP idle sweep: kill servers idle past
-                # their idle_timeout_s. Runs every loop tick (cheap select);
-                # never starts a server; failures are silenced so the pump
-                # is never disturbed.
-                await _check_mcp_idle_sweep()
-
-                # Yalayut Phase 4 — periodic discovery + source-scout checks.
-                # Both are timestamp-gated internally; calling every tick is
-                # cheap (a getattr + time comparison).
-                try:
-                    await self._check_yalayut_discovery()
-                    await self._check_source_scout()
-                except Exception as e:
-                    logger.debug("yalayut periodic check skipped: %s", e)
+                # Timestamp-gated background jobs: founder unblock sweep, MCP
+                # idle sweep, yalayut discovery + source scout. Each self-gates
+                # and swallows its own failures so the pump is never disturbed.
+                await self.periodic.run_due()
 
                 await asyncio.sleep(3)
             except asyncio.CancelledError:

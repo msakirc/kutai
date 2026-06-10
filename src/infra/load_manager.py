@@ -40,11 +40,6 @@ async def enable_auto_management():
         await nh.enable_auto_management()
 
 
-def is_local_inference_allowed() -> bool:
-    """Sync — returns True as safe default. Use is_local_inference_allowed_async() in async code."""
-    return True
-
-
 async def is_local_inference_allowed_async() -> bool:
     nh = _nh()
     if nh is None:
@@ -62,11 +57,6 @@ async def is_auto_managed_async() -> bool:
     if nh is None:
         return True
     return await nh.is_auto_managed()
-
-
-def get_vram_budget_fraction() -> float:
-    """Sync — returns 1.0 as safe default. Use get_vram_budget_fraction_async() in async code."""
-    return 1.0
 
 
 async def get_vram_budget_fraction_async() -> float:

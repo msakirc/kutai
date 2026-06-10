@@ -75,25 +75,14 @@ async def test_detect_and_bail_no_llm_call(tmp_path, monkeypatch):
     task = dict(await row.fetchone())
 
     react_mock = AsyncMock(return_value={"status": "completed"})
-    single_mock = AsyncMock(return_value={"status": "completed"})
-    # Belt-and-suspenders: also patch the LLM dispatcher in case react/single
-    # were not the bottleneck (older code paths might call it directly).
-    dispatcher_request = AsyncMock(return_value={"status": "completed"})
 
     from coulson import execute
-    with patch("coulson._react_run", react_mock), \
-            patch("coulson._single_shot_run", single_mock), \
-            patch("src.core.llm_dispatcher.LLMDispatcher.request",
-                  dispatcher_request, create=True):
+    with patch("coulson._react_run", react_mock):
         profile = _make_profile()
         result = await execute(profile, task)
 
     assert result["status"] == "blocked_on_founder_action"
     react_mock.assert_not_called()
-    single_mock.assert_not_called()
-    assert dispatcher_request.await_count == 0, (
-        "dispatcher.request must NOT be invoked on detect-and-bail short-circuit"
-    )
 
     # DB row reflects the parked status (defense-in-depth — beckman should
     # have parked it first, but coulson does it too).

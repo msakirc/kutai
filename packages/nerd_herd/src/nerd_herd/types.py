@@ -259,6 +259,16 @@ class SystemSnapshot:
     # start()/stop() (Plan 2).
     image_server_resident: bool = False
     image_server_vram_mb: int = 0
+    # ── Desktop-awareness fields (2026-06-09 resource-signals) ──────
+    # Populated by NerdHerd.snapshot(). Defaults describe an absent user
+    # on an idle machine in "full" mode, so a manually-built snapshot
+    # (tests, sims) reads as "no desktop pressure" — identical to today.
+    load_mode: str = "full"
+    user_idle_s: float = 1e9          # seconds since last user input; large = away
+    foreground_fullscreen: bool = False
+    ram_available_mb: int = 0
+    ram_total_mb: int = 0
+    external_gpu_fraction: float = 0.0  # cached from the 30s auto-detect loop
 
     def pressure_for(
         self,
@@ -302,6 +312,9 @@ class SystemSnapshot:
         from nerd_herd.signals.s10_failure import s10_failure
         from nerd_herd.signals.s11_cost import s11_cost
         from nerd_herd.signals.s12_pool_balance import s12_pool_balance
+        from nerd_herd.signals.s13_presence import s13_presence
+        from nerd_herd.signals.s14_contention import s14_contention
+        from nerd_herd.modifiers import M4_load_mode_weights
 
         # Resolve matrix for this model (model-specific cell wins; provider is fallback)
         provider = getattr(model, "provider", "")
@@ -393,6 +406,17 @@ class SystemSnapshot:
             "S11": s11_cost(est_call_cost=est_call_cost,
                             daily_cost_remaining=(matrix.cpd.remaining or 0.0)),
             "S12": s12_pool_balance(model, fleet_consumed=fleet_consumed),
+            "S13": s13_presence(
+                model,
+                user_idle_s=self.user_idle_s,
+                foreground_fullscreen=self.foreground_fullscreen,
+            ),
+            "S14": s14_contention(
+                model,
+                ram_available_mb=self.ram_available_mb,
+                ram_total_mb=self.ram_total_mb,
+                external_gpu_fraction=self.external_gpu_fraction,
+            ),
         }
 
         # Modifiers
@@ -400,6 +424,10 @@ class SystemSnapshot:
             difficulty=task_difficulty,
             model_is_paid=not getattr(model, "is_free", False) and not getattr(model, "is_local", False),
         )
+
+        # M4: load-mode weights on the desktop signals only. Merge over M3
+        # (which never defines S13/S14), so the multiply is a clean overlay.
+        weights.update(M4_load_mode_weights(mode=self.load_mode))
 
         # Apply M1 to negative-arm signals: amplify by limit-aware factor
         # Use the smallest-limit populated cell as the amplifier basis (worst-axis-wins)

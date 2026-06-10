@@ -250,6 +250,28 @@ def test_parse_snapshot_handles_empty_cloud():
     assert snap.cloud == {}
 
 
+def test_parse_snapshot_preserves_desktop_fields():
+    """Regression: _parse_snapshot dropped the 6 desktop-signal fields,
+    so they silently defaulted to away/full (load_mode='full',
+    user_idle_s=1e9, etc.). Prod reads snapshots via this HTTP client,
+    so the entire desktop-signals feature was dead in production even
+    though the sidecar emits the fields via dataclasses.asdict."""
+    from nerd_herd.client import NerdHerdClient
+    client = NerdHerdClient.__new__(NerdHerdClient)  # no network
+    data = {
+        "vram_available_mb": 8000, "local": {}, "cloud": {},
+        "load_mode": "shared", "user_idle_s": 5.0, "foreground_fullscreen": True,
+        "ram_available_mb": 4000, "ram_total_mb": 32000, "external_gpu_fraction": 0.7,
+    }
+    snap = client._parse_snapshot(data)
+    assert snap.load_mode == "shared"
+    assert snap.user_idle_s == 5.0
+    assert snap.foreground_fullscreen is True
+    assert snap.ram_available_mb == 4000
+    assert snap.ram_total_mb == 32000
+    assert snap.external_gpu_fraction == 0.7
+
+
 def test_parse_snapshot_skips_non_dict_model_entries():
     from nerd_herd.client import NerdHerdClient
     client = NerdHerdClient.__new__(NerdHerdClient)

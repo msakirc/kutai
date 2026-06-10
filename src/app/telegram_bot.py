@@ -2325,6 +2325,10 @@ class TelegramInterface:
         self.app.add_handler(CallbackQueryHandler(
             self._handle_surface_choice, pattern=r"^sc:"
         ))
+        # Founder-halt — escalated reviewer: Regenerate producer / Accept anyway.
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_review_halt, pattern=r"^rr:"
+        ))
         # Z10 T2B: typed event + confirmation reactions
         self.app.add_handler(CallbackQueryHandler(
             self._handle_mission_event_callback,
@@ -6787,11 +6791,11 @@ class TelegramInterface:
             await self._reply(update,
                 f"Current load mode: *{current}*{auto_str}\n\n"
                 "Usage: `/load full|heavy|shared|minimal|auto`\n"
-                "• *full* — all GPU available\n"
-                "• *heavy* — 90% VRAM cap\n"
-                "• *shared* — 50% VRAM cap\n"
-                "• *minimal* — cloud only\n"
-                "• *auto* — enable auto-detection based on external GPU usage",
+                "• *full* — ignore desktop signals; send to local freely\n"
+                "• *heavy* — bias to cloud when you're active (1.5×)\n"
+                "• *shared* — stronger cloud bias when you're active (2×)\n"
+                "• *minimal* — cloud only; pause local\n"
+                "• *auto* (Otomatik) — auto-pick mode from external GPU + presence",
                 parse_mode="Markdown",
             )
             return
@@ -10631,6 +10635,155 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             )
         except Exception:
             pass
+
+    async def send_review_halt_keyboard(
+        self,
+        chat_id: int,
+        mission_id: int,
+        reviewer_task_id: int,
+        reviewer_name: str,
+        issues: list,
+        producers: list,
+    ) -> None:
+        """Founder-halt card: a reviewer escalated, the reviewer is PARKED
+        (waiting_human), the mission will NOT advance until the founder acts.
+
+        Shows the reviewer name + each issue (one line: severity + problem) and
+        an inline keyboard with one "🔁 Regenerate <producer>" button per
+        producer (``rr:regen:{mid}:{rtid}:{step}``) plus an "✅ Accept anyway"
+        override button (``rr:accept:{mid}:{rtid}``). Mirrors the
+        ``send_surface_keyboard`` (sc:) pattern — callback_data carries the ids
+        so a tap survives a bot restart.
+        """
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        lines = [f"⛔ *Review halted* — `{reviewer_name}`"]
+        for it in (issues or []):
+            if not isinstance(it, dict):
+                continue
+            sev = str(it.get("severity") or "issue")
+            prob = str(it.get("problem") or "").strip()
+            lines.append(f"• [{sev}] {prob}")
+        if len(lines) == 1:
+            lines.append("• (no issue detail provided)")
+        text = "\n".join(lines)
+
+        buttons = []
+        for step in (producers or []):
+            step = str(step)
+            buttons.append([InlineKeyboardButton(
+                f"🔁 Regenerate {step}",
+                callback_data=f"rr:regen:{mission_id}:{reviewer_task_id}:{step}",
+            )])
+        buttons.append([InlineKeyboardButton(
+            "✅ Accept anyway",
+            callback_data=f"rr:accept:{mission_id}:{reviewer_task_id}",
+        )])
+        markup = InlineKeyboardMarkup(buttons)
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=markup,
+            parse_mode="Markdown",
+        )
+
+    async def _handle_review_halt(self, update, context):
+        """Founder acted on a parked (escalated) reviewer.
+
+        ``rr:regen:{mid}:{rtid}:{producer}`` → re-pend the producer (via
+        review_routing._repend_producer) AND re-pend the reviewer task back to
+        ``pending`` so the loop closes like the autonomous path.
+        ``rr:accept:{mid}:{rtid}`` → complete the reviewer (override → mission
+        advances) and record a ``review_override`` audit event.
+        Malformed callback_data is a no-op.
+        """
+        await update.callback_query.answer()
+        data = update.callback_query.data or ""
+        parts = data.split(":")
+        # rr:regen:mid:rtid:step  (5)  |  rr:accept:mid:rtid  (4)
+        if len(parts) < 4:
+            return
+        verb = parts[1]
+        try:
+            mission_id = int(parts[2])
+            reviewer_task_id = int(parts[3])
+        except ValueError:
+            return
+
+        from src.infra.db import update_task
+
+        if verb == "regen":
+            if len(parts) < 5:
+                return
+            producer_step = parts[4]
+            if not producer_step:
+                return
+            from general_beckman.review_routing import _repend_producer
+            await _repend_producer(
+                mission_id=mission_id,
+                step_id=producer_step,
+                feedback="founder requested regenerate",
+            )
+            # Re-pend the reviewer so it re-reviews after the producer re-runs
+            # (closes the loop like the autonomous routed-non-empty path).
+            await update_task(reviewer_task_id, status="pending")
+            try:
+                await update.callback_query.edit_message_text(
+                    f"🔁 Regenerating `{producer_step}` — the reviewer will "
+                    "re-review the fix.",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+            return
+
+        if verb == "accept":
+            # Override: complete the parked reviewer so the mission proceeds.
+            await update_task(reviewer_task_id, status="completed")
+            # Completing the reviewer is not enough: advance.py never re-runs a
+            # COMPLETED step, and a reviewer with no downstream dependents would
+            # leave the mission stalled (no get_ready_tasks trigger). Spawn a
+            # mechanical workflow_advance so the engine re-evaluates and the
+            # mission flows past the now-satisfied review — mirrors the apply
+            # path's _spawn_workflow_advance_if_mission.
+            try:
+                import general_beckman
+                from general_beckman.apply import _mechanical_context
+                await general_beckman.enqueue({
+                    "title": f"Workflow advance: mission #{mission_id}",
+                    "description": "",
+                    "agent_type": "mechanical",
+                    "mission_id": mission_id,
+                    "depends_on": [],
+                    "context": _mechanical_context(
+                        "workflow_advance",
+                        mission_id=mission_id,
+                        completed_task_id=reviewer_task_id,
+                    ),
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("review accept: workflow_advance spawn failed: %s", exc)
+            try:
+                from src.infra.db import record_action_event
+                await record_action_event(
+                    verb="review_override",
+                    reversibility="reversible",
+                    mission_id=mission_id,
+                    task_id=reviewer_task_id,
+                    payload={"action": "accept_anyway"},
+                    status="ok",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("review_override audit failed: %s", exc)
+            try:
+                await update.callback_query.edit_message_text(
+                    "✅ Review accepted (override) — mission will proceed."
+                )
+            except Exception:
+                pass
+            return
+
+        # Unknown verb -> no-op.
+        return
 
     async def send_artifact_confirm_keyboard(
         self,

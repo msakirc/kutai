@@ -1915,6 +1915,36 @@ def _find_check_payload(source_ctx: dict, kind: str) -> dict | None:
 def _posthook_agent_and_payload(
     a: RequestPostHook, source: dict, source_ctx: dict,
 ) -> tuple[str, dict]:
+    if a.kind == "verify_review_verdict":
+        # Reviewer-failure routing check. Unlike the file-bounds checks below,
+        # this verifier reads the SOURCE step's produced verdict (the reviewer's
+        # own {status, issues[]} artifact), which the declared checks[].payload
+        # does NOT carry. Build the base payload as usual, then inject the
+        # reviewer's result as `review_result` by parsing source.result with the
+        # SAME unwrap+json.loads the materializer / verify_falsification_present
+        # path uses. On any parse failure leave review_result=None so mr_roboto
+        # classifies it `malformed` (→ retry the reviewer, not route to a
+        # producer). A dict result is used directly.
+        payload = _find_check_payload(source_ctx, a.kind) or {}
+        source_result = source.get("result")
+        parsed: object | None = None
+        if isinstance(source_result, (dict, list)):
+            parsed = source_result
+        elif isinstance(source_result, str) and source_result.strip():
+            from coulson.grounding import unwrap_fenced_artifact
+            candidate = unwrap_fenced_artifact(source_result) or source_result
+            try:
+                parsed = json.loads(candidate)
+            except (ValueError, TypeError):
+                parsed = None
+        payload = {**payload, "action": a.kind, "review_result": parsed}
+        return ("mechanical", {
+            "source_task_id": a.source_task_id,
+            "posthook_kind": a.kind,
+            "executor": "mechanical",
+            "payload": payload,
+        })
+
     if a.kind in _CHECK_KINDS:
         # Parameterized check: use the producer's declared `checks[].payload`
         # VERBATIM (it already names the exact file + bounds — no derivation
@@ -4134,6 +4164,229 @@ def _adapt_shape_findings(verdict: PostHookVerdict) -> None:
     object.__setattr__(verdict, "raw", raw)
 
 
+async def _load_mission_workflow(mission_id: int) -> dict | None:
+    """Return a plain workflow dict ({"steps": [...]}) for a mission, or None.
+
+    Resolves the workflow name from the mission's checkpoint, then loads +
+    parses the JSON via the engine loader. Used by the reviewer-failure router
+    (build_producer_index needs the steps' input/output_artifacts)."""
+    try:
+        from src.infra.db import get_workflow_checkpoint
+        from src.workflows.engine.loader import load_workflow
+        checkpoint = await get_workflow_checkpoint(int(mission_id))
+        if not checkpoint or not checkpoint.get("workflow_name"):
+            return None
+        wf = load_workflow(str(checkpoint["workflow_name"]))
+        return {"steps": list(wf.steps)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("review verdict: could not load mission workflow",
+                       mission_id=mission_id, error=str(exc))
+        return None
+
+
+async def _apply_review_verdict(
+    *, source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
+) -> None:
+    """Apply a verify_review_verdict outcome from a reviewer step.
+
+    PASS    -> the reviewer accepted the artifact. Drain the
+               verify_review_verdict kind and (when nothing else is pending)
+               COMPLETE the reviewer + spawn a workflow_advance so the mission
+               flows past the satisfied review. Without this branch a clean
+               PASS fell through to the malformed handler and got re-pended /
+               DLQ'd — breaking the happy path of every wired reviewer.
+    FAIL    -> route to the at-fault producer(s) via review_routing.
+               * producer(s) re-pended (routed, not escalated) -> RE-PEND the
+                 reviewer itself back to `pending` too, so it re-reviews the
+                 fixed artifacts after the producers re-complete (the reviewer
+                 depends_on its producers; advance.py never re-runs a COMPLETED
+                 reviewer, so completing it here would let the mission flow past
+                 an unsatisfied review). Loop is bounded by the producers'
+                 worker_attempts cap (primary) + the reviewer's own bump
+                 (backstop). Mission is NOT advanced.
+               * escalated / nothing localisable -> route_review_failure has
+                 PARKED the reviewer in waiting_human (safety park — an
+                 escalated review must NOT advance unreviewed) and sent the
+                 founder-halt card. Do NOT complete/advance; the card
+                 (Regenerate producer / Accept anyway) owns resumption.
+    MALFORMED (and any non-fail that reached here) -> the reviewer task itself
+               failed to produce a parseable verdict: normal retry/DLQ on the
+               reviewer task (drain the pending kind first).
+    """
+    import json as _json
+    from src.infra.db import update_task
+
+    raw = verdict.raw or {}
+    verdict_class = str(raw.get("verdict_class") or "").lower()
+    # The reviewer's OWN step id (not a phase fallback) — the router resolves
+    # the producer set from this step's input_artifacts.
+    reviewer_id = str(ctx.get("workflow_step_id") or ctx.get("step_id") or "")
+    mission_id = source.get("mission_id")
+
+    if verdict_class == "fail":
+        wf = await _load_mission_workflow(mission_id) if mission_id is not None else None
+        if wf is None:
+            # Can't localise without the workflow graph — escalate via the
+            # router's own founder-halt path by falling back to a reviewer DLQ
+            # so the mission doesn't silently swallow the rejection.
+            logger.warning(
+                "review verdict FAIL but no workflow — DLQ reviewer",
+                source_id=verdict.source_task_id, mission_id=mission_id,
+            )
+            new_pending = [k for k in pending if k != "verify_review_verdict"]
+            ctx["_pending_posthooks"] = new_pending
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+            await _retry_or_dlq(
+                source, category="quality",
+                error="reviewer rejected artifact but workflow graph unavailable",
+            )
+            return
+
+        review_result = {
+            "status": "fail",
+            "issues": raw.get("issues") or [],
+        }
+        try:
+            from general_beckman.review_routing import route_review_failure
+            outcome = await route_review_failure(
+                mission_id=int(mission_id),
+                reviewer_id=str(reviewer_id),
+                review_result=review_result,
+                workflow=wf,
+                reviewer_task_id=source["id"],
+            )
+            logger.info(
+                "review verdict FAIL routed to producers",
+                source_id=verdict.source_task_id, mission_id=mission_id,
+                reviewer_id=reviewer_id, outcome=outcome,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("review routing raised — DLQ reviewer",
+                           source_id=verdict.source_task_id, error=str(exc))
+            new_pending = [k for k in pending if k != "verify_review_verdict"]
+            ctx["_pending_posthooks"] = new_pending
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+            await _retry_or_dlq(
+                source, category="quality",
+                error=f"review routing failed: {str(exc)[:200]}",
+            )
+            return
+
+        # Drain the reviewer's verify_review_verdict kind regardless of outcome.
+        new_pending = [k for k in pending if k != "verify_review_verdict"]
+        ctx["_pending_posthooks"] = new_pending
+
+        routed = list(outcome.get("routed") or [])
+        escalated = bool(outcome.get("escalated"))
+
+        # Close the review loop. advance.py pre-expands every task and only
+        # unblocks a step once its depends_on rows are completed; a COMPLETED
+        # reviewer never re-runs when its producer re-completes. So completing
+        # the reviewer here would let the mission flow PAST an unsatisfied
+        # review (producers fixed, but the artifact never re-reviewed).
+        #
+        # Instead: when at least one producer was actually re-pended (routed
+        # non-empty AND nothing escalated), RE-PEND THE REVIEWER ITSELF back to
+        # `pending`. The reviewer `depends_on` its producers, so get_ready_tasks
+        # runs the producers first (their deps are satisfied) then re-runs the
+        # reviewer once they re-complete → it re-reviews the FIXED artifacts.
+        # The loop's primary bound is the producers' existing worker_attempts
+        # cap (when they exhaust, route_review_failure escalates — handled by
+        # the `escalated` branch below). The reviewer also takes its own
+        # worker_attempts bump as a backstop bound against a producer that can
+        # never satisfy it.
+        if routed and not escalated:
+            attempts = int(source.get("worker_attempts") or 0) + 1
+            max_attempts = int(source.get("max_worker_attempts") or 15)
+            # Reset the reviewer's prior verdict so it re-reviews fresh: stash
+            # the rejected verdict as prev-output context, mirror the producer
+            # re-pend feedback mechanics (_stamp_retry_feedback), and flip back
+            # to pending. The mission is NOT advanced — the re-run gates on the
+            # producers via depends_on.
+            prev_output = source.get("result") or ""
+            if isinstance(prev_output, str) and prev_output.strip():
+                ctx["_prev_output"] = prev_output[:6000]
+            ctx["_schema_error"] = (
+                "Previous review REJECTED upstream artifact(s); the "
+                f"producer(s) {routed} were re-pended to fix it. Re-review the "
+                "corrected artifacts fresh."
+            )
+            _stamp_retry_feedback(ctx, attempts)
+            await update_task(
+                verdict.source_task_id, status="pending",
+                worker_attempts=attempts, max_worker_attempts=max_attempts,
+                context=_json.dumps(ctx),
+                result=None,
+                error="reviewer rejected artifact — re-pended to re-review after producer fix",
+                error_category="quality", next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            logger.info(
+                "review verdict FAIL — re-pended reviewer to re-review after producer fix",
+                source_id=verdict.source_task_id, mission_id=mission_id,
+                reviewer_id=reviewer_id, routed=routed,
+                worker_attempts=attempts,
+            )
+            return
+
+        # Escalated / nothing localisable: the producers can't carry the fix
+        # (no target, or a producer hit its cap), so route_review_failure has
+        # escalated to the founder-halt AND already PARKED the reviewer in
+        # ``waiting_human`` (the safety park — an escalated review must NOT
+        # advance unreviewed). Do NOT re-pend (it would spin on an
+        # unsatisfiable rejection) and do NOT complete/advance the mission —
+        # that would flow past the unreviewed artifact. The founder-halt card
+        # (Regenerate producer / Accept anyway) owns resumption from here:
+        # Accept completes the reviewer (override → advance), Regenerate
+        # re-pends the producer + reviewer to close the loop. We only persist
+        # the drained ``_pending_posthooks`` context so the kind doesn't
+        # re-fire; the reviewer keeps its parked status.
+        await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        return
+
+    if verdict_class == "pass":
+        # Happy path: the reviewer accepted the artifact. Drain the
+        # verify_review_verdict kind; when nothing else is pending on the
+        # reviewer, COMPLETE it and advance the mission so the workflow flows
+        # past the satisfied review. Mirrors _apply_simple_blocker_verdict's
+        # pass path (drain → complete-if-empty → _spawn_workflow_advance).
+        new_pending = [k for k in pending if k != "verify_review_verdict"]
+        ctx["_pending_posthooks"] = new_pending
+        if not new_pending:
+            await update_task(
+                verdict.source_task_id, status="completed",
+                context=_json.dumps(ctx),
+                error=None, error_category=None, next_retry_at=None,
+                retry_reason=None, failed_in_phase=None,
+            )
+            await _spawn_workflow_advance_if_mission(source, raw)
+            try:
+                from general_beckman import _send_step_progress
+                from src.infra.db import get_task
+                fresh = await get_task(verdict.source_task_id)
+                if fresh:
+                    await _send_step_progress(fresh, "completed", raw)
+            except Exception:
+                pass
+        else:
+            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+        logger.info(
+            "review verdict PASS — reviewer completed",
+            source_id=verdict.source_task_id, mission_id=mission_id,
+            reviewer_id=reviewer_id,
+        )
+        return
+
+    # Malformed (or any non-fail/non-pass verdict that reached here): the
+    # reviewer task itself failed to emit a parseable verdict. Drain the kind
+    # and route the REVIEWER task through normal retry/DLQ.
+    new_pending = [k for k in pending if k != "verify_review_verdict"]
+    ctx["_pending_posthooks"] = new_pending
+    await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+    error_str = str(raw.get("error") or "reviewer produced no parseable verdict")[:300]
+    await _retry_or_dlq(source, category="quality", error=error_str)
+
+
 async def _apply_simple_blocker_verdict(
     kind: str,
     source: dict,
@@ -4861,6 +5114,20 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
         await _apply_type_sync_verdict(
             kind=a.kind, source=source, ctx=ctx, pending=pending, verdict=a,
         )
+        return
+
+    if a.kind == "verify_review_verdict":
+        # Reviewer-failure routing. The reviewer step ran a mr_roboto
+        # verify_review_verdict check over its own *_review_result. A FAIL
+        # verdict means the reviewer correctly REJECTED an upstream artifact:
+        # route the failure to the at-fault PRODUCER(s) (re-pend their existing
+        # rows with feedback), NOT back to the reviewer itself — falling
+        # through to the default blocker rail would wrongly re-pend the
+        # reviewer. A MALFORMED verdict means the reviewer task itself produced
+        # no parseable verdict → it is a genuine reviewer failure → normal
+        # retry/DLQ on the reviewer task. (Verdict payload rides verdict.raw;
+        # see rewrite.py Rule 0c which carries verdict_class/issues there.)
+        await _apply_review_verdict(source=source, ctx=ctx, pending=pending, verdict=a)
         return
 
     if a.kind in _CHECK_KINDS:

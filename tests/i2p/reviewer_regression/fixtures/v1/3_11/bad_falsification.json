@@ -40,9 +40,9 @@
     "_schema_version": "1",
     "status": "fail",
     "issues": [
-      "FR-007 missing risk_if_wrong (Z1 P4)",
-      "FR-011 missing validation_method and falsification_signal (Z1 P4)",
-      "FR-003 risk_if_wrong=critical but validation_method is vague: 'users will tell us'"
+      {"target_artifact": "functional_requirements_falsification_result", "severity": "blocker", "problem": "FR-007 missing risk_if_wrong (Z1 P4)"},
+      {"target_artifact": "functional_requirements_falsification_result", "severity": "blocker", "problem": "FR-011 missing validation_method and falsification_signal (Z1 P4)"},
+      {"target_artifact": "functional_requirements_falsification_result", "severity": "major", "problem": "FR-003 risk_if_wrong=critical but validation_method is vague: 'users will tell us'"}
     ]
   }
 }

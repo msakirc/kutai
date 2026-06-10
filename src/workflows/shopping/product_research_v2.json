@@ -1,15 +1,15 @@
 {
   "plan_id": "product_research_v2",
-  "version": "2.0",
+  "version": "3.0",
   "metadata": {
-    "description": "v2 specific-product research. Trusts site ordering (top-4 per site), LLM grouping, review synthesis, reviews-first Telegram output.",
-    "agents_required": ["shopping_pipeline_v2"],
+    "description": "Specific-product research. Trusts site ordering (top-4 per site), groups/labels/synthesises via admitted producer-agent steps (no inline request()) — same producer triads as shopping_v3. Reviews-first Telegram output.",
+    "agents_required": ["shopping_pipeline_v2", "shopping_grouper", "shopping_labeler", "shopping_synthesizer", "mechanical"],
     "performance_target": {"max_duration_seconds": 120, "escalation_trigger": "no_products_found"},
     "timeout_hours": 1
   },
   "phases": [
     {"id": "phase_0", "name": "Resolve candidates", "goal": "Fetch top-N per site.", "depends_on_phases": []},
-    {"id": "phase_1", "name": "Gate & branch", "goal": "Variant gate decision + parallel synth/clarify paths.", "depends_on_phases": ["phase_0"]},
+    {"id": "phase_1", "name": "Gate & branch", "goal": "Group/label/gate + producer-agent synth paths.", "depends_on_phases": ["phase_0"]},
     {"id": "phase_2", "name": "Format & deliver", "goal": "Render Telegram cards.", "depends_on_phases": ["phase_1"]}
   ],
   "steps": [
@@ -24,26 +24,93 @@
       "context": {"per_site_n": 4, "requires_grading": false}
     },
     {
-      "id": "1.1", "phase": "phase_1", "name": "group_label_filter_gate",
-      "title": "Group Label Filter Gate", "agent": "shopping_pipeline_v2",
-      "difficulty": "medium", "tools_hint": [], "depends_on": ["1.0"],
+      "id": "1.1a", "phase": "phase_1", "name": "group_prep",
+      "title": "Group Prep (SKU bucket + residual view)", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["1.0"],
       "input_artifacts": ["search_results"],
-      "output_artifacts": ["gate_result"],
-      "instruction": "Step name: group_label_filter_gate.",
-      "done_when": "gate_result.gate.kind is chosen|clarify|escalation."
+      "output_artifacts": ["group_input", "groups_state"],
+      "instruction": "Step name: group_prep.",
+      "done_when": "group_input.has_residuals set; groups_state carries bucketed groups.",
+      "context": {"requires_grading": false}
     },
     {
-      "id": "2.0", "phase": "phase_1", "name": "synth_one",
-      "title": "Synthesise (chosen path)", "agent": "shopping_pipeline_v2",
-      "difficulty": "medium", "tools_hint": [], "depends_on": ["1.1"],
+      "id": "1.1b", "phase": "phase_1", "name": "group_dispatch",
+      "title": "Group Residuals (LLM)", "agent": "shopping_grouper",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["1.1a"],
+      "input_artifacts": ["group_input"],
+      "output_artifacts": ["group_raw"],
+      "instruction": "Cluster the residual candidate listings in the input artifact into same-product groups. Return ONLY the JSON described by your schema.",
+      "done_when": "group_raw is a JSON object with a groups array.",
+      "skip_when": "group_input.has_residuals == 'false'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "1.1c", "phase": "phase_1", "name": "group_apply_label_prep",
+      "title": "Apply Grouping + Label Prep", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["1.1b"],
+      "input_artifacts": ["group_raw", "groups_state"],
+      "output_artifacts": ["label_input", "groups_state"],
+      "instruction": "Step name: group_apply_label_prep.",
+      "done_when": "label_input.view populated; groups_state merged.",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "1.1d", "phase": "phase_1", "name": "label_dispatch",
+      "title": "Label Groups (LLM)", "agent": "shopping_labeler",
+      "difficulty": "medium", "tools_hint": [], "depends_on": ["1.1c"],
+      "input_artifacts": ["label_input"],
+      "output_artifacts": ["label_raw"],
+      "instruction": "Tag every product group in the input artifact with line_id/base_model/variant/product_type taxonomy. Return ONLY the JSON described by your schema.",
+      "done_when": "label_raw is a JSON object with a groups array.",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "1.1e", "phase": "phase_1", "name": "label_apply_filter_gate",
+      "title": "Apply Labels + Filter + Gate", "agent": "shopping_pipeline_v2",
+      "difficulty": "medium", "tools_hint": [], "depends_on": ["1.1d"],
+      "input_artifacts": ["label_raw", "groups_state"],
+      "output_artifacts": ["gate_result", "clarify_choice"],
+      "instruction": "Step name: label_apply_filter_gate.",
+      "done_when": "gate_result.gate.kind is chosen|clarify|escalation.",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.0a", "phase": "phase_1", "name": "synth_prep",
+      "title": "Synth Prep (chosen path)", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["1.1e"],
       "input_artifacts": ["gate_result"],
+      "output_artifacts": ["synth_input", "synth_meta"],
+      "instruction": "Step name: synth_prep.",
+      "done_when": "synth_input + synth_meta emitted.",
+      "skip_when": "clarify_choice.kind != 'chosen'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.0b", "phase": "phase_1", "name": "synth_dispatch",
+      "title": "Synthesise Reviews (chosen, LLM)", "agent": "shopping_synthesizer",
+      "difficulty": "hard", "tools_hint": [], "depends_on": ["2.0a"],
+      "input_artifacts": ["synth_input"],
+      "output_artifacts": ["synth_raw"],
+      "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
+      "done_when": "synth_raw is a JSON object.",
+      "skip_when": "clarify_choice.kind != 'chosen'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.0c", "phase": "phase_1", "name": "synth_apply",
+      "title": "Render Card (chosen)", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.0b"],
+      "input_artifacts": ["synth_raw", "synth_meta"],
       "output_artifacts": ["synth_result"],
-      "skip_when": "gate_result.gate.kind != 'chosen'"
+      "instruction": "Step name: synth_apply.",
+      "done_when": "synth_result.cards populated.",
+      "skip_when": "clarify_choice.kind != 'chosen'",
+      "context": {"requires_grading": false}
     },
     {
       "id": "2.1", "phase": "phase_1", "name": "clarify_variant",
       "title": "Clarify Variant Choice", "agent": "mechanical", "executor": "mechanical",
-      "difficulty": "easy", "tools_hint": [], "depends_on": ["1.1"],
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["1.1e"],
       "input_artifacts": ["gate_result"],
       "output_artifacts": ["clarify_choice"],
       "payload": {"action": "clarify", "kind": "variant_choice", "payload_from": "gate_result"},
@@ -53,31 +120,170 @@
       "context": {"requires_grading": false}
     },
     {
-      "id": "2.2", "phase": "phase_1", "name": "synth_one",
-      "title": "Synthesise After Variant Choice", "agent": "shopping_pipeline_v2",
-      "difficulty": "medium", "tools_hint": [], "depends_on": ["2.1"],
-      "input_artifacts": ["clarify_choice", "gate_result"],
-      "output_artifacts": ["synth_result"],
-      "skip_when": "clarify_choice.kind != 'variant'"
-    },
-    {
-      "id": "2.3", "phase": "phase_1", "name": "format_compare",
-      "title": "Format Compare-All", "agent": "shopping_pipeline_v2",
+      "id": "2.2a", "phase": "phase_1", "name": "synth_prep",
+      "title": "Synth Prep (after variant pick)", "agent": "shopping_pipeline_v2",
       "difficulty": "easy", "tools_hint": [], "depends_on": ["2.1"],
       "input_artifacts": ["clarify_choice", "gate_result"],
-      "output_artifacts": ["shopping_response"],
+      "output_artifacts": ["synth_input", "synth_meta"],
+      "instruction": "Step name: synth_prep.",
+      "done_when": "synth_input + synth_meta emitted.",
+      "skip_when": "clarify_choice.kind != 'variant'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.2b", "phase": "phase_1", "name": "synth_dispatch",
+      "title": "Synthesise Reviews (variant, LLM)", "agent": "shopping_synthesizer",
+      "difficulty": "hard", "tools_hint": [], "depends_on": ["2.2a"],
+      "input_artifacts": ["synth_input"],
+      "output_artifacts": ["synth_raw"],
+      "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
+      "done_when": "synth_raw is a JSON object.",
+      "skip_when": "clarify_choice.kind != 'variant'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.2c", "phase": "phase_1", "name": "synth_apply",
+      "title": "Render Card (variant)", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.2b"],
+      "input_artifacts": ["synth_raw", "synth_meta"],
+      "output_artifacts": ["synth_result"],
+      "instruction": "Step name: synth_apply.",
+      "done_when": "synth_result.cards populated.",
+      "skip_when": "clarify_choice.kind != 'variant'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.3a", "phase": "phase_1", "name": "compare_prep",
+      "title": "Compare Prep (fan-out ≤5 lines)", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.1"],
+      "input_artifacts": ["gate_result", "clarify_choice"],
+      "output_artifacts": ["compare_flags", "cmp_input_0", "cmp_input_1", "cmp_input_2", "cmp_input_3", "cmp_input_4", "cmp_meta_0", "cmp_meta_1", "cmp_meta_2", "cmp_meta_3", "cmp_meta_4"],
+      "instruction": "Step name: compare_prep.",
+      "done_when": "compare_flags + per-line cmp_input/cmp_meta emitted.",
       "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false}
     },
     {
+      "id": "2.3_0_d", "phase": "phase_1", "name": "compare_synth_dispatch",
+      "title": "Compare Line 0 (LLM)", "agent": "shopping_synthesizer",
+      "difficulty": "hard", "tools_hint": [], "depends_on": ["2.3a"],
+      "input_artifacts": ["cmp_input_0"], "output_artifacts": ["cmp_raw_0"],
+      "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
+      "done_when": "cmp_raw_0 is a JSON object.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.3_0_a", "phase": "phase_1", "name": "compare_line_apply",
+      "title": "Render Compare Card 0", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.3_0_d"],
+      "input_artifacts": ["cmp_raw_0", "cmp_meta_0"], "output_artifacts": ["cmp_card_0"],
+      "instruction": "Step name: compare_line_apply.",
+      "done_when": "cmp_card_0 populated.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false, "line_index": 0}
+    },
+    {
+      "id": "2.3_1_d", "phase": "phase_1", "name": "compare_synth_dispatch",
+      "title": "Compare Line 1 (LLM)", "agent": "shopping_synthesizer",
+      "difficulty": "hard", "tools_hint": [], "depends_on": ["2.3a"],
+      "input_artifacts": ["cmp_input_1"], "output_artifacts": ["cmp_raw_1"],
+      "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
+      "done_when": "cmp_raw_1 is a JSON object.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.3_1_a", "phase": "phase_1", "name": "compare_line_apply",
+      "title": "Render Compare Card 1", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.3_1_d"],
+      "input_artifacts": ["cmp_raw_1", "cmp_meta_1"], "output_artifacts": ["cmp_card_1"],
+      "instruction": "Step name: compare_line_apply.",
+      "done_when": "cmp_card_1 populated.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false, "line_index": 1}
+    },
+    {
+      "id": "2.3_2_d", "phase": "phase_1", "name": "compare_synth_dispatch",
+      "title": "Compare Line 2 (LLM)", "agent": "shopping_synthesizer",
+      "difficulty": "hard", "tools_hint": [], "depends_on": ["2.3a"],
+      "input_artifacts": ["cmp_input_2"], "output_artifacts": ["cmp_raw_2"],
+      "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
+      "done_when": "cmp_raw_2 is a JSON object.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.3_2_a", "phase": "phase_1", "name": "compare_line_apply",
+      "title": "Render Compare Card 2", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.3_2_d"],
+      "input_artifacts": ["cmp_raw_2", "cmp_meta_2"], "output_artifacts": ["cmp_card_2"],
+      "instruction": "Step name: compare_line_apply.",
+      "done_when": "cmp_card_2 populated.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false, "line_index": 2}
+    },
+    {
+      "id": "2.3_3_d", "phase": "phase_1", "name": "compare_synth_dispatch",
+      "title": "Compare Line 3 (LLM)", "agent": "shopping_synthesizer",
+      "difficulty": "hard", "tools_hint": [], "depends_on": ["2.3a"],
+      "input_artifacts": ["cmp_input_3"], "output_artifacts": ["cmp_raw_3"],
+      "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
+      "done_when": "cmp_raw_3 is a JSON object.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.3_3_a", "phase": "phase_1", "name": "compare_line_apply",
+      "title": "Render Compare Card 3", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.3_3_d"],
+      "input_artifacts": ["cmp_raw_3", "cmp_meta_3"], "output_artifacts": ["cmp_card_3"],
+      "instruction": "Step name: compare_line_apply.",
+      "done_when": "cmp_card_3 populated.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false, "line_index": 3}
+    },
+    {
+      "id": "2.3_4_d", "phase": "phase_1", "name": "compare_synth_dispatch",
+      "title": "Compare Line 4 (LLM)", "agent": "shopping_synthesizer",
+      "difficulty": "hard", "tools_hint": [], "depends_on": ["2.3a"],
+      "input_artifacts": ["cmp_input_4"], "output_artifacts": ["cmp_raw_4"],
+      "instruction": "Synthesise the review snippets in the input artifact into aspect-level insights for the product. Return ONLY the JSON described by your schema.",
+      "done_when": "cmp_raw_4 is a JSON object.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.3_4_a", "phase": "phase_1", "name": "compare_line_apply",
+      "title": "Render Compare Card 4", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.3_4_d"],
+      "input_artifacts": ["cmp_raw_4", "cmp_meta_4"], "output_artifacts": ["cmp_card_4"],
+      "instruction": "Step name: compare_line_apply.",
+      "done_when": "cmp_card_4 populated.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
+      "context": {"requires_grading": false, "line_index": 4}
+    },
+    {
       "id": "3.0", "phase": "phase_2", "name": "format_response",
       "title": "Format & Deliver Response", "agent": "shopping_pipeline_v2",
-      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.0", "2.2", "2.3"],
+      "difficulty": "easy", "tools_hint": [], "depends_on": ["2.0c", "2.2c"],
       "input_artifacts": ["synth_result"],
       "output_artifacts": ["shopping_response"],
       "instruction": "Step name: format_response.",
       "done_when": "shopping_response.formatted_text populated.",
-      "skip_when": "synth_result.cards is empty",
+      "skip_when": "clarify_choice.kind == 'compare_all'",
+      "context": {"requires_grading": false}
+    },
+    {
+      "id": "2.3z", "phase": "phase_2", "name": "compare_assemble",
+      "title": "Assemble Comparison & Deliver", "agent": "shopping_pipeline_v2",
+      "difficulty": "easy", "tools_hint": [],
+      "depends_on": ["2.3_0_a", "2.3_1_a", "2.3_2_a", "2.3_3_a", "2.3_4_a"],
+      "input_artifacts": ["compare_flags", "cmp_card_0", "cmp_card_1", "cmp_card_2", "cmp_card_3", "cmp_card_4"],
+      "output_artifacts": ["shopping_response"],
+      "instruction": "Step name: compare_assemble.",
+      "done_when": "shopping_response.formatted_text populated.",
+      "skip_when": "clarify_choice.kind != 'compare_all'",
       "context": {"requires_grading": false}
     }
   ]

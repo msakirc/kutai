@@ -353,45 +353,6 @@ def _per_site_top1_fallback(candidates: list[Candidate]) -> list[ProductGroup]:
     return groups
 
 
-async def _grouping_llm_call(prompt: str) -> dict:
-    """Dispatch the grouping prompt. Returns the dispatcher response dict.
-
-    Split out so tests can patch this one function instead of the dispatcher.
-    """
-    from src.core.llm_dispatcher import get_dispatcher, CallCategory
-    dispatcher = get_dispatcher()
-    return await dispatcher.request(
-        category=CallCategory.MAIN_WORK,
-        task="shopping_grouper",
-        agent_type="shopping_pipeline_v2",
-        difficulty=3,
-        # Grouping is structured-JSON transformation, not a reasoning task.
-        # Thinking-on wastes thousands of invisible reasoning tokens per call
-        # and bursts past the dispatch timeout on small local models.
-        needs_thinking=False,
-        messages=[
-            {"role": "system", "content": "You output valid JSON only."},
-            {"role": "user", "content": prompt},
-        ],
-    )
-
-
-async def _llm_group_residuals(candidates: list[Candidate], query: str) -> list[ProductGroup]:
-    """LLM-based grouping for sku-less residual candidates.
-
-    Falls back to one group per site's rank-1 candidate on any LLM or parse error.
-    """
-    prompt = GROUPING_PROMPT_FORMAT(build_group_view(candidates))
-
-    try:
-        resp = await _grouping_llm_call(prompt)
-    except Exception as exc:
-        logger.warning("grouping LLM failed, using per-site fallback: %s", exc)
-        return _per_site_top1_fallback(candidates)
-
-    return _parse_grouping_raw(resp.get("content", ""), candidates)
-
-
 def build_group_view(candidates: list[Candidate]) -> list[dict]:
     """Compact JSON view for the grouping prompt (index/title/site/price/sku/
     category_path). Shared by legacy ``_llm_group_residuals`` and v3
@@ -401,11 +362,6 @@ def build_group_view(candidates: list[Candidate]) -> list[dict]:
          "sku": c.sku, "category_path": c.category_path}
         for i, c in enumerate(candidates)
     ]
-
-
-def GROUPING_PROMPT_FORMAT(view: list[dict]) -> str:
-    from src.workflows.shopping.prompts_v2 import GROUPING_PROMPT
-    return GROUPING_PROMPT.format(candidates_json=json.dumps(view, ensure_ascii=False))
 
 
 def _parse_grouping_raw(raw_text: str, candidates: list[Candidate]) -> list[ProductGroup]:
@@ -445,73 +401,6 @@ def _parse_grouping_raw(raw_text: str, candidates: list[Candidate]) -> list[Prod
         logger.warning("grouping returned no valid groups, using fallback")
         return _per_site_top1_fallback(candidates)
     return groups
-
-
-async def step_group(candidates: list[Candidate], query: str = "") -> list[ProductGroup]:
-    """SKU-first deterministic bucket, then LLM-group the residuals."""
-    if not candidates:
-        return []
-
-    sku_buckets: dict[str, list[int]] = {}
-    unbucketed: list[int] = []
-    for i, c in enumerate(candidates):
-        if c.sku:
-            sku_buckets.setdefault(c.sku, []).append(i)
-        else:
-            unbucketed.append(i)
-
-    groups: list[ProductGroup] = []
-    for _sku, indices in sku_buckets.items():
-        first = candidates[indices[0]]
-        prominence = sum(1.0 / candidates[i].site_rank for i in indices)
-        groups.append(ProductGroup(
-            representative_title=first.title,
-            member_indices=indices,
-            is_accessory_or_part=False,
-            prominence=prominence,
-        ))
-
-    if unbucketed:
-        residual_cands = [candidates[i] for i in unbucketed]
-        residual_groups = await _llm_group_residuals(residual_cands, query)
-        for g in residual_groups:
-            g.member_indices = [unbucketed[j] for j in g.member_indices]
-            groups.append(g)
-
-    logger.info(
-        "step_group done",
-        group_count=len(groups),
-        sku_bucket_count=len(sku_buckets),
-        residual_count=len(unbucketed),
-    )
-    return groups
-
-
-async def _synthesis_llm_call(prompt: str) -> dict:
-    """Dispatch the synthesis prompt. Returns the dispatcher response dict."""
-    from src.core.llm_dispatcher import get_dispatcher, CallCategory
-    dispatcher = get_dispatcher()
-    # Estimate input size — review prompts can balloon to ~25K tokens at
-    # 80-snippet cap × 5 listings. Floor the load to avoid getting routed
-    # onto an 8K-ctx model that would truncate the snippet pile.
-    char_count = len(prompt)
-    est_tokens = char_count // 3
-    return await dispatcher.request(
-        category=CallCategory.MAIN_WORK,
-        task="shopping_review_synthesizer",
-        agent_type="shopping_pipeline_v2",
-        difficulty=6,
-        # Synthesis is structured JSON extraction over review snippets —
-        # no chain-of-thought needed. Suppress reasoning to stay under the
-        # dispatch timeout when a thinking model happens to be resident.
-        needs_thinking=False,
-        estimated_output_tokens=1200,
-        min_context=max(8192, est_tokens + 2048),
-        messages=[
-            {"role": "system", "content": "You output valid JSON only."},
-            {"role": "user", "content": prompt},
-        ],
-    )
 
 
 def _insufficient() -> ReviewSynthesis:
@@ -554,47 +443,6 @@ def _sentiment_label(s: float) -> str:
     if s >= -0.6:
         return "negatif"
     return "çok negatif"
-
-
-async def step_synthesize_reviews(
-    group: ProductGroup,
-    candidates: list[Candidate],
-    *,
-    deep_scrape: bool = False,
-    community_query: str | None = None,
-) -> ReviewSynthesis:
-    """LLM-based review synthesis for one group.
-
-    *deep_scrape=True* always taps community sources (eksisozluk / sikayetvar /
-    forums) for the line — used after user picks a variant. When False, taps
-    community only as fallback when commerce snippets are thin.
-
-    *community_query* defaults to group.representative_title; pass a cleaner
-    query (e.g. base_model only) for better forum search hits.
-    """
-    from src.workflows.shopping.prompts_v2 import SYNTHESIS_PROMPT
-
-    snippets = await gather_review_snippets(
-        group, candidates, deep_scrape=deep_scrape, community_query=community_query)
-    if not snippets:
-        logger.info(
-            "synthesize short-circuit (no snippets)",
-            representative_title=group.representative_title,
-        )
-        return _insufficient()
-
-    prompt = SYNTHESIS_PROMPT.format(
-        representative_title=group.representative_title,
-        review_snippets_json=json.dumps(snippets, ensure_ascii=False),
-    )
-
-    try:
-        resp = await _synthesis_llm_call(prompt)
-    except Exception as exc:
-        logger.warning("synthesis LLM failed: %s", exc)
-        return _insufficient()
-
-    return _parse_synthesis_raw(resp.get("content", ""), len(snippets))
 
 
 async def gather_review_snippets(
@@ -1077,24 +925,6 @@ async def _handler_resolve_candidates(task: dict, artifacts: dict, ctx: dict) ->
     }
 
 
-async def _handler_group_and_synthesize(task: dict, artifacts: dict, ctx: dict) -> dict:
-    payload_raw = artifacts.get("search_results", "{}")
-    payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
-    cands = _candidates_from_json(payload.get("candidates", []))
-    if not cands:
-        return {"cards": [], "escalation_needed": True}
-    query = payload.get("query", "")
-    groups = await step_group(cands)
-    max_groups = int(ctx.get("max_groups", 2))
-    kept = select_groups(groups, max_groups=max_groups, query=query)
-    community_counts = payload.get("community_counts") or {}
-    cards: list[str] = []
-    for g in kept:
-        syn = await step_synthesize_reviews(g, cands)
-        cards.append(format_group_card(g, syn, cands, community_counts=community_counts))
-    return {"cards": cards, "escalation_needed": False}
-
-
 async def _handler_format_response(task: dict, artifacts: dict, ctx: dict) -> dict:
     # Workflow emits the synth output as `synth_result`; legacy code looked for
     # `grouped_synth` and silently produced "Sonuç bulunamadı". Read both.
@@ -1134,121 +964,6 @@ def _group_from_dict(d: dict) -> ProductGroup:
         matches_user_intent=bool(d.get("matches_user_intent", True)),
         line_id=str(d.get("line_id", "")),
     )
-
-
-async def _handler_group_label_filter_gate(
-    task: dict, artifacts: dict, ctx: dict,
-) -> dict:
-    from src.workflows.shopping.labels import step_label
-    from src.workflows.shopping.variant_gate import step_filter, step_variant_gate
-
-    raw = artifacts.get("search_results", "{}")
-    payload = json.loads(raw) if isinstance(raw, str) else raw
-    cands = _candidates_from_json(payload.get("candidates", []))
-    query = payload.get("query", "")
-    if not cands:
-        return {"gate": {"kind": "escalation", "reason": "no_candidates"},
-                "candidates": [], "query": query}
-
-    groups = await step_group(cands, query=query)
-    groups = await step_label(groups, cands, query=query)
-    survivors = step_filter(groups)
-    gate = step_variant_gate(survivors, groups, query=query)
-
-    out: dict = {
-        "gate": {"kind": gate["kind"]},
-        "candidates": _candidates_to_json(cands),
-        "query": query,
-    }
-    if gate["kind"] == "chosen":
-        out["chosen_group"] = _group_to_dict(gate["group"])
-    elif gate["kind"] == "clarify":
-        out["clarify_options"] = gate["options"]
-        out["clarify_payloads"] = {
-            str(gid): _group_to_dict(g) for gid, g in gate["payloads"].items()
-        }
-        bases = {s.base_model for s in survivors if s.base_model}
-        if len(bases) == 1:
-            out["base_label"] = next(iter(bases))
-        else:
-            out["base_label"] = query.strip().title() or (survivors[0].base_model if survivors else "")
-    elif gate["kind"] == "escalation":
-        out["gate"]["reason"] = gate.get("reason", "unknown")
-    return out
-
-
-async def _handler_synth_one(task: dict, artifacts: dict, ctx: dict) -> dict:
-    raw = artifacts.get("gate_result", "{}")
-    payload = json.loads(raw) if isinstance(raw, str) else raw
-    cands = _candidates_from_json(payload.get("candidates", []))
-
-    gate_kind = payload.get("gate", {}).get("kind")
-    group: ProductGroup | None = None
-    deep = False  # default: only synth pre-fetched commerce reviews
-
-    if gate_kind == "chosen":
-        group = _group_from_dict(payload["chosen_group"])
-    else:
-        # Post-clarify path: user picked a variant, look up that group in payloads.
-        # Trigger deep_scrape — pick = user committed, worth the extra latency to
-        # tap eksisozluk/sikayetvar/forums for richer review pile.
-        choice_raw = artifacts.get("clarify_choice", "{}")
-        choice = json.loads(choice_raw) if isinstance(choice_raw, str) else (choice_raw or {})
-        if choice.get("kind") == "variant":
-            gid = choice.get("group_id")
-            payloads = payload.get("clarify_payloads", {}) or {}
-            picked = payloads.get(str(gid)) if gid is not None else None
-            if picked:
-                group = _group_from_dict(picked)
-                deep = True
-
-    if group is None:
-        logger.warning(
-            "synth_one: no group resolved | gate_kind=%s clarify=%s",
-            gate_kind, artifacts.get("clarify_choice", "")[:120],
-        )
-        return {"cards": [], "escalation_needed": True}
-
-    syn = await step_synthesize_reviews(group, cands, deep_scrape=deep)
-    cards = [format_group_card(group, syn, cands)]
-    return {"cards": cards, "escalation_needed": False}
-
-
-async def _handler_format_compare(task: dict, artifacts: dict, ctx: dict) -> dict:
-    """Category-style compare: review-synth every line, stack full cards + price summary header.
-
-    Treats the clarified lines as a small category and presents each with full
-    pros/cons/red-flags/prices so the user can compare across products, not just
-    read a terse price table.
-    """
-    raw = artifacts.get("gate_result", "{}")
-    payload = json.loads(raw) if isinstance(raw, str) else raw
-    payloads = payload.get("clarify_payloads", {}) or {}
-    base_label = payload.get("base_label") or "Ürün"
-    cands = _candidates_from_json(payload.get("candidates", []))
-    groups = [_group_from_dict(v) for v in payloads.values()]
-
-    if not groups:
-        return {"formatted_text": f"*{base_label} — Karşılaştırma*\n\nVeri yok.\n", "escalation": True}
-
-    header = step_compare_all(groups, cands, base_label=base_label)
-
-    # Synthesize per line concurrently — one LLM call per group
-    synths = await asyncio.gather(
-        *[step_synthesize_reviews(g, cands) for g in groups],
-        return_exceptions=True,
-    )
-    cards: list[str] = []
-    for g, syn in zip(groups, synths):
-        if isinstance(syn, BaseException):
-            logger.warning("synth failed for %s: %s", g.representative_title, syn)
-            syn = _insufficient()
-        cards.append(format_group_card(g, syn, cands))
-
-    separator = "\n" + ("─" * 20) + "\n"
-    body = separator.join(cards)
-    text = f"{header}\n{body}"
-    return {"formatted_text": text, "escalation": False}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1582,8 +1297,6 @@ async def handler_compare_assemble(task: dict, artifacts: dict, ctx: dict) -> di
 _STEP_HANDLERS_V2 = {
     "understand_query_check_clarity": handler_understand_query,
     "resolve_candidates": _handler_resolve_candidates,
-    "group_label_filter_gate": _handler_group_label_filter_gate,
-    "group_and_synthesize": _handler_group_and_synthesize,
     "format_response": _handler_format_response,
     # shopping_v3 triad handlers
     "group_prep": handler_group_prep,
@@ -1596,11 +1309,6 @@ _STEP_HANDLERS_V2 = {
     "compare_line_apply": handler_compare_line_apply,
     "compare_assemble": handler_compare_assemble,
 }
-
-_STEP_HANDLERS_V2.update({
-    "synth_one": _handler_synth_one,
-    "format_compare": _handler_format_compare,
-})
 
 
 class ShoppingPipelineV2:

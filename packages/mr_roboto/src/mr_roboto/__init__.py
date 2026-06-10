@@ -1447,6 +1447,17 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "verify_review_verdict":
+        from mr_roboto.verify_review_verdict import verify_review_verdict
+        res = verify_review_verdict(review_result=payload.get("review_result"))
+        if res["verdict_class"] == "pass":
+            return Action(status="completed", result=res)
+        # fail or malformed: surface so general_beckman routes it
+        # (fail -> route to producers, malformed -> normal DLQ).
+        return Action(status="failed",
+                      error=str(res.get("error") or "review verdict not pass"),
+                      result=res)
+
     if action == "verify_user_flow_shape":
         from mr_roboto.verify_user_flow_shape import verify_user_flow_shape
         try:
@@ -4282,28 +4293,29 @@ async def _run_dispatch(task: dict) -> Action:
     # ── Z7 T3C — press kit verbs (A4 + A4.r1) ────────────────────────────────
 
     if action == "press_kit/assemble":
-        # Assemble a versioned press kit with 4 audience variants.
-        from mr_roboto.press_kit_assemble import run as _pk_assemble
+        from mr_roboto.press_kit_assemble import _get_latest_version
+        from src.comms.producers import enqueue_press_kit
         try:
-            res = await _pk_assemble(
+            product_id = payload.get("product_id") or ""
+            version = (await _get_latest_version(product_id)) + 1
+            source = {
+                "logo_path": payload.get("logo_path") or "",
+                "screenshot_paths": payload.get("screenshot_paths") or [],
+                "founder_bio": payload.get("founder_bio") or "",
+                "fact_sheet_md": payload.get("fact_sheet_md") or "",
+                "quotes": payload.get("quotes") or [],
+                "past_mentions": payload.get("past_mentions") or [],
+            }
+            tid = await enqueue_press_kit(
+                product_id=product_id,
                 mission_id=payload.get("mission_id") or task.get("mission_id") or 0,
-                product_id=payload.get("product_id") or "",
-                spec_text=payload.get("spec_text") or "",
+                version=version,
                 workspace_path=payload.get("workspace_path") or "",
-                logo_path=payload.get("logo_path") or "",
-                screenshot_paths=payload.get("screenshot_paths") or [],
-                founder_bio=payload.get("founder_bio") or "",
-                fact_sheet_md=payload.get("fact_sheet_md") or "",
-                quotes=payload.get("quotes") or [],
-                past_mentions=payload.get("past_mentions") or [],
+                spec_text=payload.get("spec_text") or "",
+                source=source,
             )
-            if not res.get("ok"):
-                return Action(
-                    status="failed",
-                    error=res.get("error") or "press_kit/assemble failed",
-                    result=res,
-                )
-            return Action(status="completed", result=res)
+            return Action(status="completed",
+                          result={"producer_task_id": tid, "version": version, "deferred": True})
         except Exception as e:
             return Action(status="failed", error=str(e))
 
@@ -4545,14 +4557,18 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "crisis/draft_holding":
-        # LLM-bound: reads tier playbook + event context, outputs holding-statement variants.
-        # Returns variants for founder selection — never publishes automatically.
+        from mr_roboto.crisis_draft_holding import _read_playbook
+        from src.comms.producers import enqueue_crisis_holding
         try:
-            from mr_roboto.crisis_draft_holding import run as _draft_holding
-            res = await _draft_holding(payload)
-            if res.get("status") == "error":
-                return Action(status="failed", error=res.get("error") or "draft_holding failed", result=res)
-            return Action(status="completed", result=res)
+            tier = int(payload.get("tier") or 1)
+            tid = await enqueue_crisis_holding(
+                event_id=payload.get("event_id"),
+                product_id=payload.get("product_id") or "",
+                tier=tier,
+                summary=payload.get("summary") or "",
+                playbook_excerpt=_read_playbook(tier),
+            )
+            return Action(status="completed", result={"producer_task_id": tid, "deferred": True})
         except Exception as e:
             return Action(status="failed", error=str(e))
 
@@ -4652,25 +4668,33 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "reviews/classify":
-        # LLM-bound: classify sentiment + theme_tag; side-effects for 1-2-star + bug.
+        # SP4b: LLM extracted -> admitted producer task on the pump; the
+        # reviews.classify.resume continuation does the mechanical persist
+        # + side-effects. mr_roboto makes NO LLM call here.
         try:
-            from mr_roboto.reviews_classify import run as _reviews_classify_run
-            res = await _reviews_classify_run(payload)
-            if res.get("status") == "error":
-                return Action(status="failed", error=res.get("error") or "reviews/classify failed", result=res)
-            return Action(status="completed", result=res)
+            from src.reviews.producers import enqueue_classify
+            tid = await enqueue_classify(
+                review_id=int(payload.get("review_id")),
+                product_id=str(payload.get("product_id") or ""),
+            )
+            if tid is None:
+                return Action(status="failed", error="reviews/classify: review not found")
+            return Action(status="completed", result={"enqueued": tid})
         except Exception as e:
             return Action(status="failed", error=str(e))
 
     if action == "reviews/draft_reply":
-        # LLM-bound: draft a reply per brand voice + platform conventions.
-        # NEVER auto-posts — founder approves before any reply is sent.
+        # SP4b: LLM extracted -> producer task; reviews.draft_reply.resume
+        # surfaces the draft via founder_action. NEVER auto-posts.
         try:
-            from mr_roboto.reviews_draft_reply import run as _reviews_draft_reply_run
-            res = await _reviews_draft_reply_run(payload)
-            if res.get("status") == "error":
-                return Action(status="failed", error=res.get("error") or "reviews/draft_reply failed", result=res)
-            return Action(status="completed", result=res)
+            from src.reviews.producers import enqueue_draft_reply
+            tid = await enqueue_draft_reply(
+                review_id=int(payload.get("review_id")),
+                product_id=str(payload.get("product_id") or ""),
+            )
+            if tid is None:
+                return Action(status="failed", error="reviews/draft_reply: review not found")
+            return Action(status="completed", result={"enqueued": tid, "auto_posted": False})
         except Exception as e:
             return Action(status="failed", error=str(e))
 

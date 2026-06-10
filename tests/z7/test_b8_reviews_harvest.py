@@ -308,17 +308,14 @@ class TestClassify:
         row = await cur.fetchone()
         review_id = row[0]
 
-        from mr_roboto.reviews_classify import run as classify_run
+        # SP4b CPS: classification persists in the sink (reviews.classify.resume),
+        # fed the LLM child's output. Drive the sink directly against the real DB.
+        from mr_roboto.executors import reviews_continuations as rc
 
-        mock_llm_result = {"sentiment": "positive", "theme_tag": "generic-positive"}
-
-        with patch(
-            "mr_roboto.reviews_classify._call_llm_classify",
-            new=AsyncMock(return_value=mock_llm_result),
-        ):
-            result = await classify_run({"review_id": review_id, "product_id": "p1"})
-
-        assert result["status"] == "ok"
+        state = {"review_id": review_id, "product_id": "p1", "platform": "g2",
+                 "author": "Alice", "rating": 5, "body_md": "Amazing!"}
+        result = {"result": {"content": '{"sentiment": "positive", "theme_tag": "generic-positive"}'}}
+        await rc._classify_resume(1, result, state)
 
         # Verify DB was updated
         cur = await db.execute(
@@ -342,15 +339,15 @@ class TestClassify:
         cur = await db.execute("SELECT review_id FROM external_reviews WHERE external_id='cls-bug'")
         review_id = (await cur.fetchone())[0]
 
-        from mr_roboto.reviews_classify import run as classify_run
+        from mr_roboto.executors import reviews_continuations as rc
 
-        with patch(
-            "mr_roboto.reviews_classify._call_llm_classify",
-            new=AsyncMock(return_value={"sentiment": "negative", "theme_tag": "bug"}),
-        ):
-            result = await classify_run({"review_id": review_id, "product_id": "p1"})
-
-        assert result["status"] == "ok"
+        state = {"review_id": review_id, "product_id": "p1", "platform": "g2",
+                 "author": "Bug User", "rating": 2, "body_md": "Crashes on login!"}
+        result = {"result": {"content": '{"sentiment": "negative", "theme_tag": "bug"}'}}
+        # rating 2 + bug theme fire side-effects — mock them; we assert persistence.
+        with patch.object(rc, "_emit_low_star_founder_action", new=AsyncMock()), \
+             patch.object(rc, "_enqueue_bug_investigation", new=AsyncMock()):
+            await rc._classify_resume(1, result, state)
 
         cur = await db.execute(
             "SELECT theme_tag FROM external_reviews WHERE review_id=?", (review_id,)
@@ -383,19 +380,24 @@ class TestDraftReply:
         cur = await db.execute("SELECT review_id FROM external_reviews WHERE external_id='dr-001'")
         review_id = (await cur.fetchone())[0]
 
-        from mr_roboto.reviews_draft_reply import run as draft_run
+        # SP4b CPS: the draft is surfaced by the sink (reviews.draft_reply.resume)
+        # via a founder_action. Drive the sink directly; assert never-auto-post.
+        from mr_roboto.executors import reviews_continuations as rc
 
-        mock_draft = "Thank you for your kind words, Alice! We're thrilled you love the product."
+        surfaced: dict = {}
 
-        with patch(
-            "mr_roboto.reviews_draft_reply._call_llm_draft_reply",
-            new=AsyncMock(return_value=mock_draft),
-        ):
-            result = await draft_run({"review_id": review_id, "product_id": "p1"})
+        async def _mock_fa(**kw):
+            surfaced.update(kw)
+            m = MagicMock(); m.id = 1
+            return m
 
-        assert result["status"] == "ok"
-        assert "reply_draft" in result
-        assert len(result["reply_draft"]) > 10
+        state = {"review_id": review_id, "product_id": "p1", "platform": "g2",
+                 "author": "Alice", "rating": 5}
+        result = {"result": {"content": "Thank you for your kind words, Alice! We're thrilled."}}
+        with patch("src.founder_actions.create", new=AsyncMock(side_effect=_mock_fa)):
+            await rc._draft_reply_resume(1, result, state)
+
+        assert "Alice" in str(surfaced)  # draft surfaced to the founder
 
         # Verify reply is NOT written to replied_at (it's a draft only)
         cur = await db.execute(
@@ -423,7 +425,6 @@ class TestReviewsPollDaily:
     async def test_daily_job_polls_and_classifies(self, db, monkeypatch):
         """reviews_poll_daily polls all configured platforms and classifies new reviews."""
         import mr_roboto.reviews_poll as rp
-        import mr_roboto.reviews_classify as rc
 
         fake_reviews = [
             {
@@ -435,17 +436,20 @@ class TestReviewsPollDaily:
             }
         ]
 
-        mock_classify_result = {"sentiment": "positive", "theme_tag": "UX"}
+        # SP4b CPS: the daily cron now ENQUEUES a classify producer per
+        # unclassified review (classification runs async on the pump).
+        enqueued: list = []
+
+        async def _enq(*, review_id, product_id):
+            enqueued.append(review_id)
+            return 1
 
         with (
             patch.object(rp, "_fetch_g2", new=AsyncMock(return_value=fake_reviews)),
             patch.object(rp, "_fetch_appstore", new=AsyncMock(return_value=[])),
             patch.object(rp, "_fetch_playstore", new=AsyncMock(return_value=[])),
             patch.object(rp, "_fetch_producthunt", new=AsyncMock(return_value=[])),
-            patch(
-                "mr_roboto.reviews_classify._call_llm_classify",
-                new=AsyncMock(return_value=mock_classify_result),
-            ),
+            patch("src.reviews.producers.enqueue_classify", new=_enq),
         ):
             from src.app.jobs.reviews_poll_daily import run_reviews_poll_daily
             result = await run_reviews_poll_daily(
@@ -466,7 +470,7 @@ class TestReviewsPollDaily:
 
         assert result["ok"] is True
         assert result["total_ingested"] >= 1
-        assert result["total_classified"] >= 1
+        assert result["total_enqueued"] >= 1
 
     @pytest.mark.asyncio
     async def test_daily_job_ok_true_on_no_reviews(self, db, monkeypatch):
@@ -501,7 +505,7 @@ class TestLowStarFounderAction:
         cur = await db.execute("SELECT review_id FROM external_reviews WHERE external_id='low-001'")
         review_id = (await cur.fetchone())[0]
 
-        from mr_roboto.reviews_classify import run as classify_run
+        from mr_roboto.executors import reviews_continuations as rc
 
         fa_created: list[dict] = []
 
@@ -511,16 +515,12 @@ class TestLowStarFounderAction:
             mock.id = 999
             return mock
 
-        with (
-            patch(
-                "mr_roboto.reviews_classify._call_llm_classify",
-                new=AsyncMock(return_value={"sentiment": "negative", "theme_tag": "generic-negative"}),
-            ),
-            patch("mr_roboto.reviews_classify._emit_low_star_founder_action", new=AsyncMock(side_effect=_mock_fa)),
-        ):
-            result = await classify_run({"review_id": review_id, "product_id": "p1"})
+        state = {"review_id": review_id, "product_id": "p1", "platform": "g2",
+                 "author": "Angry", "rating": 1, "body_md": "Worst app ever!"}
+        result = {"result": {"content": '{"sentiment": "negative", "theme_tag": "generic-negative"}'}}
+        with patch.object(rc, "_emit_low_star_founder_action", new=AsyncMock(side_effect=_mock_fa)):
+            await rc._classify_resume(1, result, state)
 
-        assert result["status"] == "ok"
         assert len(fa_created) == 1, "Should emit exactly one founder_action for a 1-star review"
 
     @pytest.mark.asyncio
@@ -536,21 +536,18 @@ class TestLowStarFounderAction:
         cur = await db.execute("SELECT review_id FROM external_reviews WHERE external_id='high-001'")
         review_id = (await cur.fetchone())[0]
 
-        from mr_roboto.reviews_classify import run as classify_run
+        from mr_roboto.executors import reviews_continuations as rc
 
         fa_created: list[dict] = []
 
         async def _mock_fa(**kwargs):
             fa_created.append(kwargs)
 
-        with (
-            patch(
-                "mr_roboto.reviews_classify._call_llm_classify",
-                new=AsyncMock(return_value={"sentiment": "positive", "theme_tag": "generic-positive"}),
-            ),
-            patch("mr_roboto.reviews_classify._emit_low_star_founder_action", new=AsyncMock(side_effect=_mock_fa)),
-        ):
-            await classify_run({"review_id": review_id, "product_id": "p1"})
+        state = {"review_id": review_id, "product_id": "p1", "platform": "g2",
+                 "author": "Happy", "rating": 5, "body_md": "Love it!"}
+        result = {"result": {"content": '{"sentiment": "positive", "theme_tag": "generic-positive"}'}}
+        with patch.object(rc, "_emit_low_star_founder_action", new=AsyncMock(side_effect=_mock_fa)):
+            await rc._classify_resume(1, result, state)
 
         assert len(fa_created) == 0
 
@@ -573,7 +570,7 @@ class TestBugTaggedEnqueue:
         cur = await db.execute("SELECT review_id FROM external_reviews WHERE external_id='bug-001'")
         review_id = (await cur.fetchone())[0]
 
-        from mr_roboto.reviews_classify import run as classify_run
+        from mr_roboto.executors import reviews_continuations as rc
 
         enqueued: list[dict] = []
 
@@ -581,17 +578,13 @@ class TestBugTaggedEnqueue:
             enqueued.append(spec)
             return 42
 
-        with (
-            patch(
-                "mr_roboto.reviews_classify._call_llm_classify",
-                new=AsyncMock(return_value={"sentiment": "negative", "theme_tag": "bug"}),
-            ),
-            patch("mr_roboto.reviews_classify._emit_low_star_founder_action", new=AsyncMock()),
-            patch("mr_roboto.reviews_classify._enqueue_bug_investigation", new=AsyncMock(side_effect=_mock_enqueue)),
-        ):
-            result = await classify_run({"review_id": review_id, "product_id": "p1"})
+        state = {"review_id": review_id, "product_id": "p1", "platform": "g2",
+                 "author": "Reporter", "rating": 2, "body_md": "App crashes on login."}
+        result = {"result": {"content": '{"sentiment": "negative", "theme_tag": "bug"}'}}
+        with patch.object(rc, "_emit_low_star_founder_action", new=AsyncMock()), \
+             patch.object(rc, "_enqueue_bug_investigation", new=AsyncMock(side_effect=_mock_enqueue)):
+            await rc._classify_resume(1, result, state)
 
-        assert result["status"] == "ok"
         assert len(enqueued) == 1
         assert "bug" in str(enqueued[0]).lower() or "investigation" in str(enqueued[0]).lower()
 
@@ -608,19 +601,16 @@ class TestBugTaggedEnqueue:
         cur = await db.execute("SELECT review_id FROM external_reviews WHERE external_id='ux-001'")
         review_id = (await cur.fetchone())[0]
 
-        from mr_roboto.reviews_classify import run as classify_run
+        from mr_roboto.executors import reviews_continuations as rc
 
         enqueued: list[dict] = []
 
-        with (
-            patch(
-                "mr_roboto.reviews_classify._call_llm_classify",
-                new=AsyncMock(return_value={"sentiment": "neutral", "theme_tag": "UX"}),
-            ),
-            patch("mr_roboto.reviews_classify._emit_low_star_founder_action", new=AsyncMock()),
-            patch("mr_roboto.reviews_classify._enqueue_bug_investigation", new=AsyncMock(side_effect=lambda *a, **k: enqueued.append(1))),
-        ):
-            await classify_run({"review_id": review_id, "product_id": "p1"})
+        state = {"review_id": review_id, "product_id": "p1", "platform": "g2",
+                 "author": "UX User", "rating": 3, "body_md": "UI could be cleaner."}
+        result = {"result": {"content": '{"sentiment": "neutral", "theme_tag": "UX"}'}}
+        with patch.object(rc, "_emit_low_star_founder_action", new=AsyncMock()), \
+             patch.object(rc, "_enqueue_bug_investigation", new=AsyncMock(side_effect=lambda *a, **k: enqueued.append(1))):
+            await rc._classify_resume(1, result, state)
 
         assert len(enqueued) == 0
 
@@ -713,13 +703,11 @@ class TestMrRobotoDispatch:
 
     @pytest.mark.asyncio
     async def test_reviews_classify_dispatches(self, db, monkeypatch):
-        """mr_roboto.run() routes reviews/classify to reviews_classify.run."""
+        """mr_roboto.run() routes reviews/classify to the CPS producer (enqueue)."""
         import mr_roboto
 
-        mock_result = {"status": "ok", "sentiment": "positive", "theme_tag": "generic-positive"}
-        mock_run = AsyncMock(return_value=mock_result)
-
-        with patch("mr_roboto.reviews_classify.run", new=mock_run):
+        with patch("src.reviews.producers.enqueue_classify",
+                   new=AsyncMock(return_value=4321)):
             task = {
                 "id": 2,
                 "mission_id": 1,
@@ -732,16 +720,15 @@ class TestMrRobotoDispatch:
             action = await mr_roboto.run(task)
 
         assert action.status == "completed"
+        assert action.result.get("enqueued") == 4321
 
     @pytest.mark.asyncio
     async def test_reviews_draft_reply_dispatches(self, db, monkeypatch):
-        """mr_roboto.run() routes reviews/draft_reply to reviews_draft_reply.run."""
+        """mr_roboto.run() routes reviews/draft_reply to the CPS producer (enqueue)."""
         import mr_roboto
 
-        mock_result = {"status": "ok", "reply_draft": "Thank you for your feedback!"}
-        mock_run = AsyncMock(return_value=mock_result)
-
-        with patch("mr_roboto.reviews_draft_reply.run", new=mock_run):
+        with patch("src.reviews.producers.enqueue_draft_reply",
+                   new=AsyncMock(return_value=999)):
             task = {
                 "id": 3,
                 "mission_id": 1,
@@ -754,6 +741,7 @@ class TestMrRobotoDispatch:
             action = await mr_roboto.run(task)
 
         assert action.status == "completed"
+        assert action.result.get("auto_posted") is False
 
     @pytest.mark.asyncio
     async def test_reviews_poll_daily_dispatches(self, db, monkeypatch):

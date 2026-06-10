@@ -63,7 +63,7 @@ async def test_classify_signals_enqueues_agent_not_dispatcher(
 
     monkeypatch.setattr(general_beckman, "enqueue", _fake_enqueue)
 
-    # Guard: LLMDispatcher.request must never be called.
+    # Guard: LLMDispatcher.execute must never be called.
     from src.core import llm_dispatcher as _disp_mod
     dispatcher_calls = []
 
@@ -73,7 +73,7 @@ async def test_classify_signals_enqueues_agent_not_dispatcher(
 
     if hasattr(_disp_mod, "LLMDispatcher"):
         monkeypatch.setattr(
-            _disp_mod.LLMDispatcher, "request", _boom, raising=False
+            _disp_mod.LLMDispatcher, "execute", _boom, raising=False
         )
 
     from mr_roboto.executors.classify_signals import run as classify_run

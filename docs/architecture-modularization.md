@@ -121,9 +121,9 @@ DaLLaMa's `swap.py` is designed for future migration — swap strategy changes f
 
 ## What Was Removed
 
-**GPU Scheduler** (`gpu_scheduler.py`): Priority queue for GPU inference slots. Dead code — scheduled for deletion.
+**GPU Scheduler** (`gpu_scheduler.py`): Priority queue for GPU inference slots. **KILLED 2026-06-07** (P2) — was dead (zero slot-API callers). See `docs/2026-06-07-gpu-scheduler-kill-decision.md`.
 
-**local_model_manager.py** (1,193 → 449 lines): Shim wrapping DaLLaMa. Scheduled for deletion when Fatih Hoca extraction removes all callers.
+**local_model_manager.py** (~540 lines as of P6): DaLLaMa-facing wrapper. NOT a pure shim — `ensure_model` holds real load/swap orchestration. Context-sizing policy split out to `context_sizing.py` (P6); dead `_floored_baseline_ctx` deleted.
 
 **Router dead code** (removed 2026-04-14): `RateLimiter` class (replaced by KDV), `refresh_perf_cache()` (never called), perf cache globals (never populated). Dispatcher unified `_route_main_work` / `_route_overhead` into single candidate loop, removed dead `partial_buf`/`on_chunk` params.
 
@@ -186,15 +186,17 @@ Future registry extraction should align with LiteLLM's field vocabulary.
 | `packages/kuleden_donen_var/` | Kuleden Dönen Var package (6 modules + tests) |
 | `packages/hallederiz_kadir/` | Talking Layer package (4 modules + tests) |
 | `packages/fatih_hoca/` | Fatih Hoca model manager (7 modules, 152 tests) |
-| `src/models/local_model_manager.py` | Shim wrapping DaLLaMa — pushes state to Nerd Herd |
-| `src/models/gpu_scheduler.py` | Deprecated — still imported by local_model_manager |
-| `src/models/gpu_monitor.py` | Shim wrapping Nerd Herd — still imported by local_model_manager |
+| `src/models/local_model_manager.py` | DaLLaMa-facing wrapper (~540 LOC; real load/swap orchestration — NOT a thin shim) |
+| `src/models/context_sizing.py` | `MIN_CTX` + `need_ctx()` — KutAI-side local-load ctx policy (P6) |
+| `src/models/introspection.py` | Loaded-model introspection helpers (P4) |
+| `src/models/gpu_monitor.py` | Shim wrapping Nerd Herd |
 | `src/models/model_registry.py` | Shim re-exporting from `fatih_hoca.registry` |
-| `src/models/capabilities.py` | Shim re-exporting from `fatih_hoca.capabilities` |
-| `src/models/quota_planner.py` | Shim re-exporting from `fatih_hoca.requirements` |
-| `src/models/model_profiles.py` | Shim re-exporting from `fatih_hoca.profiles` |
-| `src/core/llm_dispatcher.py` | Ask-load-call-retry loop (dispatcher simplification pending) |
-| `src/core/router.py` | Shim — `ModelRequirements`/`ScoredModel` from fatih_hoca, keeps `select_model()`/`call_model()` |
+| `src/core/periodic_checks.py` | `PeriodicChecks.run_due()` — pump's timestamp-gated jobs (P5) |
+| `src/core/dispatch_prep.py` | `bridge_self_reflection()` — agent-class flag → task context (P5) |
+| `src/workflows/engine/task_refresh.py` | `refresh_workflow_agent_type()` — re-resolve step agent from live JSON (P5) |
+| `src/core/llm_dispatcher.py` | Ask-load-call loop (no retry); delegates to fatih_hoca + hallederiz_kadir |
+| `src/core/router.py` | 22-LOC shim — re-exports `ModelRequirements`/`ScoredModel` from fatih_hoca. `select_model()`/`call_model()` DELETED (P1) |
+| ~~`gpu_scheduler.py` / `capabilities.py` / `quota_planner.py` / `model_profiles.py`~~ | Removed — gpu_scheduler killed (P2); the rest deleted, import from `fatih_hoca` directly |
 | `docs/superpowers/specs/2026-04-12-dallama-design.md` | DaLLaMa design spec |
 | `docs/superpowers/specs/2026-04-14-fatih-hoca-design.md` | Fatih Hoca design spec |
 | `docs/extraction/extraction_report_v2.md` | Extraction decisions and status |
@@ -431,3 +433,65 @@ python packages/fatih_hoca/tests/sim/run_swap_storm_check.py
   paid over-qualified picks count.
 - Free-quota-utilization metric read final-state remaining (under-counts
   when buckets reset mid-run); now counts picks per pool / limit.
+
+---
+
+## Phase 1–7 Root De-accretion (2026-06-05 → 2026-06-07) — CURRENT STATE
+
+The earlier phase sections above are accurate *historical* records; several of
+their forward-looking notes (and parts of the Files table / "What Was Removed")
+are now superseded. This section is the authoritative description of the root
+layout as of 2026-06-07. When in doubt, trust this section + `git grep`, not the
+older prose.
+
+**What changed (P1–P6):**
+
+- **P1 — router dead code purged.** `router.py` is a **22-LOC** re-export shim:
+  live `get_kdv()` moved to `src/infra/rate_limiter.py`, `ModelCallFailed` moved
+  to `src/core/exceptions.py`, and `select_model()` / `select_for_task()` /
+  `check_cost_budget()` / `grading.apply_grade_result()` were **deleted** (zero
+  prod callers — live selection is `fatih_hoca/ranking.py::rank_candidates`).
+  `call_model()` no longer exists either. Do NOT trust any "router scores models"
+  prose; it does not.
+- **P2 — misplaced modules relocated.** `models.py` → `coulson/actions.py`
+  (agent-action validation); `auto_tuner.py` → `fatih_hoca/`; `fast_resolver.py`
+  → `src/tools/`. **`gpu_scheduler.py` was KILLED** (dead — zero slot-API
+  callers; `acquire/release_inference_slot` + `inference_busy` removed from
+  LocalModelManager). Decision: `docs/2026-06-07-gpu-scheduler-kill-decision.md`.
+- **P3 — LLM-child prompt builders moved into Coulson.** `grading.py`,
+  `code_review.py`, `reflection_posthook.py` → `packages/coulson/src/coulson/
+  posthooks/`; the `src/core/*` files are now thin `from coulson.posthooks.X
+  import *` shims. They are invoked via `general_beckman/apply.py`.
+- **P4 — dispatcher de-accretion.** Pick telemetry delegates to
+  `src/telemetry/pick_recorder.py`; model introspection lives in
+  `src/models/introspection.py`. Remaining dispatcher bulk = the deprecated
+  shopping-only `request()` shim (SP5-gated; deletes when shopping migrates to
+  workflow steps).
+- **P5 — thin orchestrator (820 → 619 LOC).** Periodic background jobs →
+  `src/core/periodic_checks.py` (`PeriodicChecks.run_due()`: mcp idle sweep,
+  yalayut discovery, source scout, founder unblock sweep). Workflow-step
+  agent_type re-resolution → `src/workflows/engine/task_refresh.py`. The
+  `enable_self_reflection` class-attr → task-context bridge →
+  `src/core/dispatch_prep.py` (`get_agent` injected so prod-DB-touching tests
+  stay covered). `run_loop` is a pure pump: `next_task()` + `periodic.run_due()`.
+- **P6 — local_model_manager split (583 → 540 LOC).** Context-sizing policy
+  (`MIN_CTX` + `need_ctx()`) → `src/models/context_sizing.py` — kept APP-SIDE
+  (the 8192 floor is KutAI-task-derived) so DaLLaMa stays a generic, separately-
+  published loader. Dead `BASELINE_LOCAL_CTX` / `_floored_baseline_ctx` deleted.
+  LocalModelManager remains the DaLLaMa-facing wrapper (real load/swap
+  orchestration in `ensure_model`); it is NOT a thin shim.
+
+**P7 — guardrail.** `tests/test_root_stays_thin.py` locks this in: thin shims
+stay < 80 LOC, no new fat file in `src/models`, no `litellm` in `src/core`,
+`hallederiz_kadir` imported only by the dispatcher, `src/` uses
+`src.workflows.engine` (never the `workflow_engine` stub), and ratchet ceilings
+on orchestrator / llm_dispatcher / local_model_manager ("raise only with a
+refactor PR"). The live bot re-adds feature logic over time; this test makes
+that re-accretion fail loudly.
+
+**Current shim inventory (`src/models`, `src/core` re-exports):** `model_registry`
+(54), `gpu_monitor` (20), `rate_limiter` (59), `introspection` (27),
+`context_sizing` (38), `router` (22 → re-exports `ModelRequirements`/`ScoredModel`
+from fatih_hoca only), `result_router` (10), `task_context` (4). The shims
+`capabilities.py` / `quota_planner.py` / `model_profiles.py` referenced in older
+tables **no longer exist** (callers import from `fatih_hoca` directly).

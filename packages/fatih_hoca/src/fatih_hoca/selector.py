@@ -14,6 +14,7 @@ import asyncio
 import logging
 from typing import Any
 
+from fatih_hoca.need_ctx import compute_need_ctx
 from fatih_hoca.ranking import rank_candidates
 from fatih_hoca.registry import ModelInfo, ModelRegistry
 from fatih_hoca.requirements import ModelRequirements
@@ -423,12 +424,25 @@ class Selector:
             logger.debug("pick telemetry log failed: %s", e)
 
         _emit_diag(None, picked=best.model.name)
+        need_ctx = 0
+        if getattr(best.model, "is_local", False):
+            try:
+                _model_ctx = int(getattr(best.model, "context_length", 0) or 0)
+            except (TypeError, ValueError):
+                _model_ctx = 0
+            need_ctx = compute_need_ctx(
+                min_context=reqs.effective_context_needed or min_context_length,
+                est_in=estimated_input_tokens,
+                est_out=estimated_output_tokens,
+                model_ctx=_model_ctx,
+            )
         return Pick(
             model=best.model,
             min_time_seconds=min_time,
             estimated_load_seconds=load_time,
             score=float(best.score),
             top_summary=top_summary,
+            need_ctx=need_ctx,
         )
 
     # ─── Eligibility Check (Layer 1) ─────────────────────────────────────────
@@ -479,12 +493,11 @@ class Selector:
             if model.provider not in self._available_providers:
                 return f"no_api_key({model.provider})"
 
-        # Context length check — static trained ceiling only. The dynamic
-        # `effective_context_at_current_vram` method exists on ModelInfo
-        # for future scoring use, but MUST NOT be used as a hard filter:
-        # snapshot VRAM is transient (a prior swap holds VRAM that gets
-        # freed the moment DaLLaMa unloads to make room), and the
-        # calculated effective value collapses to 4096 during tight
+        # Context length check — static trained ceiling only. We filter on
+        # model.context_length (the model's documented trained ceiling), NOT
+        # a dynamic VRAM-derived value: snapshot VRAM is transient (a prior
+        # swap holds VRAM that gets freed the moment DaLLaMa unloads to make
+        # room), and a VRAM-derived estimate collapses to 4096 during tight
         # windows — filtering there rejected the entire local fleet for
         # analyst tasks (2026-04-24 incident). llama-server's --fit plus
         # the circuit-breaker OOM retry path are the real load-time gates;
@@ -626,6 +639,11 @@ class Selector:
 
         # Local inference allowed check — use snapshot.vram_available_mb > 0
         if model.is_local:
+            # Minimal load mode = cloud-only. Local is structurally
+            # ineligible — clearer than a pressure veto and gives a
+            # named diag reason. (resource-signals 2026-06-09)
+            if getattr(snapshot, "load_mode", "full") == "minimal":
+                return "load_mode_minimal"
             vram_available = getattr(snapshot, "vram_available_mb", 0)
             if vram_available == 0:
                 # Only block if there are alternatives; track this as soft hint
@@ -661,6 +679,14 @@ class Selector:
         if (reason == "no_vram_available"
                 and getattr(model, "is_local", False)
                 and getattr(model, "is_loaded", False)):
+            return True
+        if (reason == "load_mode_minimal"
+                and getattr(model, "is_local", False)
+                and getattr(model, "is_loaded", False)):
+            # A held, already-loaded local model may CONTINUE under minimal —
+            # minimal blocks starting new local load, not finishing in-flight
+            # work (residency already paid). Mirrors the no_vram_available
+            # continuation carve-out. (resource-signals 2026-06-09)
             return True
         return False
 

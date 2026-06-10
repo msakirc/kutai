@@ -137,8 +137,7 @@ def test_all_shopping_workflows_mechanical_shape():
     # The clarify_variant DLQ ("unknown mechanical action: None") existed in ALL
     # FOUR shopping workflows — mechanical steps need top-level executor +
     # payload.action, not a context.executor nesting. Guard every shopping wf.
-    for name in ("shopping_v2", "shopping_v3", "quick_search_v2",
-                 "product_research_v2"):
+    for name in ("shopping_v3", "quick_search_v2", "product_research_v2"):
         wf = load_workflow(name)
         for s in wf.steps:
             ctx = s.get("context") or {}

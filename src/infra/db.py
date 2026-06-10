@@ -4837,6 +4837,36 @@ async def update_task_by_context_field(
     )
 
 
+async def get_task_by_workflow_step(
+    mission_id: int, step_id: str, statuses: tuple[str, ...] | None = None
+) -> dict | None:
+    """Return the most-recent task row for a mission's workflow step.
+
+    Matches ``context->>'$.workflow_step_id' = step_id`` within ``mission_id``.
+    When ``statuses`` is given, only rows in those statuses are considered.
+    Returns the highest-``id`` match (the live attempt's row) or ``None``.
+
+    Used by the reviewer-failure router to re-pend an at-fault producer's
+    EXISTING task row rather than spawning a fresh one (worker_attempts must
+    carry forward so the per-producer retry cap still bounds the loop).
+    """
+    db = await get_db()
+    sql = (
+        "SELECT * FROM tasks "
+        "WHERE mission_id = ? "
+        "AND json_extract(context, '$.workflow_step_id') = ?"
+    )
+    params: list = [mission_id, step_id]
+    if statuses:
+        placeholders = ", ".join("?" for _ in statuses)
+        sql += f" AND status IN ({placeholders})"
+        params.extend(statuses)
+    sql += " ORDER BY id DESC LIMIT 1"
+    cursor = await db.execute(sql, params)
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def accelerate_retries(reason: str) -> int:
     """Pull next_retry_at to now for tasks waiting on availability.
 

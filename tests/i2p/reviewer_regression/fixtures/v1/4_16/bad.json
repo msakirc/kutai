@@ -39,10 +39,10 @@
     "_schema_version": "1",
     "status": "fail",
     "issues": [
-      "60% of requirements have no design coverage",
-      "interfaces undefined",
-      "missing component_library ADR (4.2a)",
-      "ADR cost_curve absent on tech_stack ADR"
+      {"target_artifact": "requirements_spec_summary", "severity": "blocker", "problem": "60% of requirements have no design coverage"},
+      {"target_artifact": "technical_design_document_summary", "severity": "major", "problem": "interfaces undefined"},
+      {"target_artifact": "technical_design_document_summary", "severity": "blocker", "problem": "missing component_library ADR (4.2a)"},
+      {"target_artifact": "technical_design_document_summary", "severity": "major", "problem": "ADR cost_curve absent on tech_stack ADR"}
     ],
     "security_findings": [
       "no auth model declared",

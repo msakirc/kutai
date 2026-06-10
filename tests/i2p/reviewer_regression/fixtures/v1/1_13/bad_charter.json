@@ -31,10 +31,10 @@
     "_schema_version": "1",
     "verdict": "fail",
     "issues": [
-      "Charter coherence (8): positioning paragraph contradicts solutions section.",
-      "Solutions completeness (9): solution 'Reputation' lacks boundaries and guiding_principles fields.",
-      "Solutions completeness (9): solution 'Onboarding' uses placeholder text (TODO, <fill in>).",
-      "Reverse-pitch alignment (10): headline references TODO; charter cannot support placeholder claim."
+      {"target_artifact": "product_charter", "severity": "blocker", "problem": "Charter coherence (8): positioning paragraph contradicts solutions section."},
+      {"target_artifact": "product_charter", "severity": "blocker", "problem": "Solutions completeness (9): solution 'Reputation' lacks boundaries and guiding_principles fields."},
+      {"target_artifact": "product_charter", "severity": "major", "problem": "Solutions completeness (9): solution 'Onboarding' uses placeholder text (TODO, <fill in>)."},
+      {"target_artifact": "reverse_pitch", "severity": "major", "problem": "Reverse-pitch alignment (10): headline references TODO; charter cannot support placeholder claim."}
     ]
   }
 }

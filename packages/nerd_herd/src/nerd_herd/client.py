@@ -294,6 +294,10 @@ class NerdHerdClient:
             vram_available_mb=vram_mb,
             local=self._cached_snapshot.local,   # preserve last known local state
             cloud=self._cached_snapshot.cloud,    # preserve last known cloud state
+            # /api/state exposes load_mode; the other 5 desktop signals are
+            # only on /api/snapshot (this fallback only fires against an old
+            # sidecar that predates them), so they take dataclass defaults.
+            load_mode=str(state.get("load_mode", "full")),
         )
         return self._cached_snapshot
 
@@ -378,6 +382,18 @@ class NerdHerdClient:
             cloud=cloud,
             in_flight_calls=in_flight_calls,
             recent_swap_count=int(data.get("recent_swap_count", 0) or 0),
+            # Desktop resource signals. Pre-fix these were dropped on the
+            # client side: the sidecar emits them via dataclasses.asdict,
+            # but _parse_snapshot never read them back, so they silently
+            # defaulted to away/full (load_mode="full", user_idle_s=1e9,
+            # ...) and the entire desktop-signals feature was dead in
+            # production (prod reads snapshots through this HTTP client).
+            load_mode=str(data.get("load_mode", "full")),
+            user_idle_s=float(data.get("user_idle_s", 1e9)),
+            foreground_fullscreen=bool(data.get("foreground_fullscreen", False)),
+            ram_available_mb=int(data.get("ram_available_mb", 0)),
+            ram_total_mb=int(data.get("ram_total_mb", 0)),
+            external_gpu_fraction=float(data.get("external_gpu_fraction", 0.0)),
         )
 
     async def mark_degraded(self, capability: str) -> None:

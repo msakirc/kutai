@@ -1,30 +1,21 @@
-"""Z7 T5 B8 — reviews/classify mechanical executor.
+"""Z7 T5 B8 — reviews/classify mechanical helpers.
 
-LLM-bound classifier for external reviews.
+SP4b: the LLM classifier was extracted out of mr_roboto. The classify LLM
+hop is now an admitted Beckman producer task (``src.reviews.producers.
+enqueue_classify``) whose ``reviews.classify.resume`` continuation
+(``mr_roboto.executors.reviews_continuations``) does the mechanical work
+below. This module retains ONLY the mechanical pieces the sink reuses:
+parsing, heuristic fallback, enum constants, and the two side-effect
+emitters. NO LLM call lives here.
 
 Assigns:
   sentiment : 'positive' | 'negative' | 'neutral'
   theme_tag : 'UX' | 'pricing' | 'bug' | 'feature-request' |
               'support' | 'generic-positive' | 'generic-negative'
 
-Side-effects after classification:
+Side-effects (routed by the sink after classification):
   1-2-star  → _emit_low_star_founder_action (review + decide reply)
-  5-star    → (no automatic action; daily job may surface for A4 quotes)
   bug-tagged → _enqueue_bug_investigation (investigation task in backlog)
-
-Public API
-----------
-  run(payload) -> dict
-      payload keys: review_id (int), product_id (str)
-
-  _call_llm_classify(body_md, rating) -> {"sentiment": str, "theme_tag": str}
-      Internal LLM call via beckman.enqueue OVERHEAD lane — mocked in tests.
-
-  _emit_low_star_founder_action(**kwargs) -> Any
-      Internal founder_action emitter — mocked in tests.
-
-  _enqueue_bug_investigation(spec, **kwargs) -> int
-      Internal beckman.enqueue call — mocked in tests.
 """
 from __future__ import annotations
 
@@ -45,85 +36,14 @@ LOW_STAR_THRESHOLD = 2
 
 
 # ---------------------------------------------------------------------------
-# LLM call (OVERHEAD lane via beckman.enqueue)
+# LLM response parsing + heuristic fallback (consumed by the CPS sink)
 # ---------------------------------------------------------------------------
 
-async def _call_llm_classify(body_md: str, rating: int) -> dict:
-    """Call LLM (ONESHOT lane, await_inline=True) to classify the review.
-
-    Returns {"sentiment": str, "theme_tag": str}.
-    Falls back to heuristic on error.
-    """
-    import time
-    import uuid
-    from general_beckman import enqueue, TaskResult
-    from general_beckman.lanes import LANE_ONESHOT
-
-    prompt = (
-        "You are classifying a product review. Return JSON only.\n\n"
-        f"Rating: {rating}/5\n"
-        f"Review: {body_md[:800]}\n\n"
-        'Respond ONLY with: {"sentiment": "<positive|negative|neutral>", '
-        '"theme_tag": "<UX|pricing|bug|feature-request|support|generic-positive|generic-negative>"}\n'
-        "Pick the single most relevant theme_tag."
-    )
-
-    messages = [{"role": "user", "content": prompt}]
-    _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
-
-    try:
-        task_result: TaskResult = await enqueue(
-            {
-                "title": f"reviews_classify:llm:{_suffix}",
-                "description": "Classify review sentiment + theme.",
-                "agent_type": "reviewer",
-                "kind": "overhead",
-                "priority": 2,
-                "context": {
-                    "llm_call": {
-                        "raw_dispatch": True,
-                        "call_category": "overhead",
-                        "task": "reviewer",
-                        "agent_type": "reviewer",
-                        "difficulty": 3,
-                        "messages": messages,
-                        "failures": [],
-                        "estimated_input_tokens": 250,
-                        "estimated_output_tokens": 50,
-                    },
-                },
-            },
-            lane=LANE_ONESHOT,
-            await_inline=True,
-        )
-    except Exception as exc:
-        logger.warning("reviews_classify: LLM enqueue failed: %s", exc)
-        return _heuristic_classify(body_md, rating)
-
-    if task_result.status != "completed":
-        logger.warning(
-            "reviews_classify: LLM task did not complete (status=%s); using heuristic fallback",
-            task_result.status,
-        )
-        return _heuristic_classify(body_md, rating)
-
-    result_data = getattr(task_result, "result", None) or {}
-    content = result_data.get("content", "")
-    if isinstance(content, list):
-        content = "\n".join(
-            p.get("text", "") if isinstance(p, dict) else str(p)
-            for p in content
-        )
-    raw = str(content or "").strip()
-    return _parse_llm_response(raw, body_md, rating)
-
-
 def _parse_llm_response(raw: str, body_md: str, rating: int) -> dict:
-    """Parse LLM JSON response with fallback."""
+    """Parse LLM JSON response with heuristic fallback."""
     import json as _json
     import re
 
-    # Try to extract JSON from the raw output
     try:
         match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
         if match:
@@ -138,9 +58,8 @@ def _parse_llm_response(raw: str, body_md: str, rating: int) -> dict:
 
 
 def _heuristic_classify(body_md: str, rating: int) -> dict:
-    """Simple heuristic fallback when LLM is unavailable."""
+    """Simple heuristic fallback when the LLM is unavailable."""
     body_lower = body_md.lower()
-    # Theme detection
     if any(w in body_lower for w in ("crash", "bug", "error", "broken", "doesn't work", "not working")):
         theme_tag = "bug"
     elif any(w in body_lower for w in ("price", "pricing", "expensive", "cost", "cheap")):
@@ -156,7 +75,6 @@ def _heuristic_classify(body_md: str, rating: int) -> dict:
     else:
         theme_tag = "generic-negative"
 
-    # Sentiment
     if rating >= 4:
         sentiment = "positive"
     elif rating <= 2:
@@ -168,7 +86,7 @@ def _heuristic_classify(body_md: str, rating: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Side-effect helpers (mocked in tests)
+# Side-effect helpers (mocked in tests; called by the CPS sink)
 # ---------------------------------------------------------------------------
 
 async def _emit_low_star_founder_action(
@@ -218,8 +136,8 @@ async def _emit_low_star_founder_action(
 async def _enqueue_bug_investigation(spec: dict, **kwargs) -> int:
     """Enqueue a bug investigation task in the mission backlog via beckman.
 
-    Intentionally NOT called with await_inline=True — this is a fire-and-forget
-    backlog task that should run asynchronously, not block the classify response.
+    Intentionally NOT await_inline — this is a fire-and-forget backlog task
+    that should run asynchronously, not block anything.
     """
     try:
         from general_beckman import enqueue
@@ -231,125 +149,30 @@ async def _enqueue_bug_investigation(spec: dict, **kwargs) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Main executor
+# Deprecated direct entry — delegates to the CPS producer
 # ---------------------------------------------------------------------------
 
 async def run(payload: dict) -> dict:
-    """mr_roboto executor: reviews/classify.
-
-    Classifies the review at ``review_id`` and updates external_reviews
-    with sentiment + theme_tag. Triggers side-effects based on rating/theme.
-
-    payload keys:
-        review_id  (int) — required
-        product_id (str) — required
-    """
+    """DEPRECATED direct entry. Enqueues the CPS classify producer and returns
+    its task id. Kept for legacy callers; new callers use the router action
+    (reviews/classify) or the daily cron, both of which drive the producer."""
     review_id_raw = payload.get("review_id")
     product_id = str(payload.get("product_id") or "")
-
     if review_id_raw is None:
         return {"status": "error", "error": "review_id is required"}
     if not product_id:
         return {"status": "error", "error": "product_id is required"}
-
-    review_id = int(review_id_raw)
-
-    # Load the review
-    try:
-        from src.infra.db import get_db
-        db = await get_db()
-        cur = await db.execute(
-            "SELECT review_id, platform, external_id, author, rating, body_md "
-            "FROM external_reviews WHERE review_id=?",
-            (review_id,),
-        )
-        row = await cur.fetchone()
-    except Exception as exc:
-        return {"status": "error", "error": f"DB read failed: {exc}"}
-
-    if row is None:
-        return {"status": "error", "error": f"review_id={review_id} not found"}
-
-    _, platform, external_id, author, rating, body_md = row
-    rating = int(rating or 0)
-    body_md = body_md or ""
-
-    # Call LLM classifier
-    try:
-        classification = await _call_llm_classify(body_md, rating)
-    except Exception as exc:
-        logger.warning("reviews_classify: LLM call failed; using heuristic: %s", exc)
-        classification = _heuristic_classify(body_md, rating)
-
-    sentiment = classification.get("sentiment", "neutral")
-    theme_tag = classification.get("theme_tag", "generic-negative")
-
-    # Validate
-    if sentiment not in VALID_SENTIMENTS:
-        sentiment = "neutral"
-    if theme_tag not in VALID_THEMES:
-        theme_tag = "generic-negative"
-
-    # Persist classification
-    try:
-        await db.execute(
-            "UPDATE external_reviews SET sentiment=?, theme_tag=? WHERE review_id=?",
-            (sentiment, theme_tag, review_id),
-        )
-        await db.commit()
-    except Exception as exc:
-        return {"status": "error", "error": f"DB update failed: {exc}"}
-
-    # Side-effect: 1-2-star → founder_action
-    if rating <= LOW_STAR_THRESHOLD:
-        await _emit_low_star_founder_action(
-            review_id=review_id,
-            platform=platform,
-            author=author or "Unknown",
-            rating=rating,
-            body_md=body_md,
-            product_id=product_id,
-            theme_tag=theme_tag,
-        )
-
-    # Side-effect: bug-tagged → enqueue investigation
-    if theme_tag == "bug":
-        bug_spec = {
-            "title": f"[BUG] Investigate report from {platform} review",
-            "description": (
-                f"Review on {platform} (id={external_id}) by {author!r} "
-                f"classified as bug. Body: {body_md[:200]}..."
-            ),
-            "agent_type": "mechanical",
-            "kind": "overhead",
-            "context": {
-                "review_id": review_id,
-                "platform": platform,
-                "product_id": product_id,
-                "body_md": body_md[:500],
-            },
-        }
-        await _enqueue_bug_investigation(bug_spec)
-
-    logger.info(
-        "reviews_classify: review_id=%d platform=%s sentiment=%s theme=%s",
-        review_id, platform, sentiment, theme_tag,
-    )
-
-    return {
-        "status": "ok",
-        "review_id": review_id,
-        "sentiment": sentiment,
-        "theme_tag": theme_tag,
-        "low_star_action": rating <= LOW_STAR_THRESHOLD,
-        "bug_investigation_queued": theme_tag == "bug",
-    }
+    from src.reviews.producers import enqueue_classify
+    tid = await enqueue_classify(review_id=int(review_id_raw), product_id=product_id)
+    if tid is None:
+        return {"status": "error", "error": f"review_id={review_id_raw} not found"}
+    return {"status": "ok", "enqueued": tid}
 
 
 __all__ = [
     "run",
-    "_call_llm_classify",
     "_heuristic_classify",
+    "_parse_llm_response",
     "_emit_low_star_founder_action",
     "_enqueue_bug_investigation",
     "VALID_SENTIMENTS",

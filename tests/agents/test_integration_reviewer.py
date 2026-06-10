@@ -110,17 +110,19 @@ def test_get_agent_returns_correct_type():
 # ─── Classifier coverage ─────────────────────────────────────────────────
 
 def test_classifier_contains_integration_reviewer_entry():
-    from src.core.task_classifier import CLASSIFIER_PROMPT
-    assert "integration_reviewer" in CLASSIFIER_PROMPT, (
+    from prompt_foundry import build_messages
+    classifier_prompt = build_messages("classifier", {"task_description": "check cross-module signatures"})[1]["content"]
+    assert "integration_reviewer" in classifier_prompt, (
         "task_classifier CLASSIFIER_PROMPT must mention integration_reviewer"
     )
 
 
 def test_classifier_keywords_present():
-    from src.core.task_classifier import CLASSIFIER_PROMPT
+    from prompt_foundry import build_messages
+    classifier_prompt = build_messages("classifier", {"task_description": "check cross-module signatures"})[1]["content"]
     keywords = ["cross-file", "cross-module", "signatures match", "boundary"]
     for kw in keywords:
-        assert kw in CLASSIFIER_PROMPT, (
+        assert kw in classifier_prompt, (
             f"Expected keyword '{kw}' in CLASSIFIER_PROMPT for integration_reviewer"
         )
 

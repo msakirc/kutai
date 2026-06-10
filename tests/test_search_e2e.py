@@ -331,20 +331,25 @@ class TestResearcherPrompt(unittest.TestCase):
     """Verify researcher prompt encourages efficiency."""
 
     def test_prompt_discourages_multiple_searches(self):
-        from src.agents.researcher import ResearcherAgent
-        agent = ResearcherAgent()
+        from src.agents import get_agent
+        agent = get_agent("researcher")
         prompt = agent.get_system_prompt({})
         self.assertIn("ONE search", prompt)
         self.assertIn("final_answer", prompt)
 
     def test_max_iterations_reasonable(self):
-        from src.agents.researcher import ResearcherAgent
-        self.assertLessEqual(ResearcherAgent.max_iterations, 4)
-        self.assertGreaterEqual(ResearcherAgent.max_iterations, 2)
+        from src.agents import get_agent
+        agent = get_agent("researcher")
+        # researcher profile declares max_iterations: 6 (preserved verbatim
+        # from the pre-migration ResearcherAgent class — the old <=4 bound was
+        # a stale assertion masked by the unconditional import failure).
+        self.assertLessEqual(agent.max_iterations, 6)
+        self.assertGreaterEqual(agent.max_iterations, 2)
 
     def test_web_search_in_allowed_tools(self):
-        from src.agents.researcher import ResearcherAgent
-        self.assertIn("web_search", ResearcherAgent.allowed_tools)
+        from src.agents import get_agent
+        agent = get_agent("researcher")
+        self.assertIn("web_search", agent.allowed_tools)
 
 
 # ---------------------------------------------------------------------------

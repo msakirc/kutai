@@ -801,14 +801,16 @@ class TestFullPipelineLLM:
     def test_llm_returns_parseable_json_for_classifier(self, temp_db, fastest_local_model):
         """The classifier prompt produces JSON parseable by _extract_json."""
         from src.core.llm_dispatcher import get_dispatcher, CallCategory
-        from src.core.task_classifier import CLASSIFIER_PROMPT, _extract_json
+        from src.core.task_classifier import _extract_json
+        from finch import build_messages
 
         async def _run():
             messages = [{
                 "role": "user",
-                "content": CLASSIFIER_PROMPT.format(
-                    task_description="Write a Python hello world script: simple coding task"
-                )
+                "content": build_messages(
+                    "classifier",
+                    {"task_description": "Write a Python hello world script: simple coding task"},
+                )[1]["content"],
             }]
             kwargs = dict(
                 category=CallCategory.MAIN_WORK,

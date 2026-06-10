@@ -85,9 +85,9 @@ class TestZ3P2AstSignaturesTool(unittest.TestCase):
         self.assertIn("integration", spec["description"].lower() + " hint integration")
 
     def test_integration_reviewer_allowed_tools_all_resolve(self):
-        from src.agents.integration_reviewer import IntegrationReviewerAgent
+        from src.agents import get_agent
         from src.tools import TOOL_REGISTRY
-        for t in IntegrationReviewerAgent.allowed_tools:
+        for t in get_agent("integration_reviewer").allowed_tools:
             self.assertIn(
                 t, TOOL_REGISTRY,
                 f"integration_reviewer's allowed tool {t!r} not registered",

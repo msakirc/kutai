@@ -2,12 +2,10 @@
 from prompt_foundry import get_profile as _get_profile
 from .base import BaseAgent
 from .writer import WriterAgent
-from .shopping_synthesizer import ShoppingSynthesizerAgent
 from .oncall_agent import OncallAgent
 
 AGENT_REGISTRY = {
     "writer": WriterAgent(),
-    "shopping_synthesizer": ShoppingSynthesizerAgent(),
     "oncall_agent": OncallAgent(),
 }
 

@@ -100,6 +100,13 @@ def select_image(
             continue
         if not _provider_available(m, hf_available):
             continue
+        # Minimal load-mode = cloud-only (mirrors selector.py's
+        # load_mode_minimal eligibility veto, which never fires for images
+        # because select() short-circuits to select_image() first). Under
+        # Minimal a local image pick would shut down the loaded llama and
+        # grab ~4.5GB VRAM.
+        if m.is_local and getattr(snap, "load_mode", "full") == "minimal":
+            continue
         # VRAM-fit eligibility (mirrors selector.py's needs_vision gate).
         # Local: refuse if free VRAM (after a hypothetical llama unload — we
         # add a conservative 4GB local-recoverable allowance) can't fit.

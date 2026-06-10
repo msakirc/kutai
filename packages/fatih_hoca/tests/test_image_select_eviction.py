@@ -1,11 +1,11 @@
 import pytest
 
 from fatih_hoca.image_select import select_image
-from fatih_hoca.types import Pick
+from fatih_hoca.types import Pick, SelectionFailure
 
 
 def _snap(*, llm_in_flight=0, llm_loaded=False, llm_queue=0,
-          image_resident=False, vram_mb=6000):
+          image_resident=False, vram_mb=6000, mode="full"):
     class _Local:
         model_name = "qwen2.5" if llm_loaded else None
         requests_processing = llm_in_flight
@@ -18,6 +18,7 @@ def _snap(*, llm_in_flight=0, llm_loaded=False, llm_queue=0,
         image_server_resident = image_resident
         image_server_vram_mb = 4500 if image_resident else 0
         vram_available_mb = vram_mb
+        load_mode = mode
     return _S()
 
 
@@ -75,6 +76,46 @@ def test_vram_too_low_filters_local(monkeypatch, real_exe):
     monkeypatch.setenv("HF_TOKEN", "x")
     pick = select_image(quality_tier="quality", failures=[], hf_available=True)
     assert pick.model.is_local is False
+
+
+def test_minimal_load_mode_vetoes_local(monkeypatch, real_exe):
+    """Minimal = cloud-only (mirrors selector's load_mode_minimal veto).
+
+    Warm-resident local would normally win (8.5 > 8.0), but under Minimal a
+    local image pick would shut down the loaded llama and grab ~4.5GB VRAM —
+    so local must be skipped even with plenty of VRAM."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, vram_mb=8000,
+                                      mode="minimal"))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert isinstance(pick, Pick)
+    assert pick.model.is_local is False
+
+
+def test_minimal_load_mode_only_local_left_fails(monkeypatch, real_exe):
+    """If every cloud provider has failed, Minimal yields SelectionFailure
+    rather than falling back to a local image model."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, vram_mb=8000,
+                                      mode="minimal"))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality",
+                        failures=["huggingface/flux-schnell",
+                                  "pollinations/flux"],
+                        hf_available=True)
+    assert isinstance(pick, SelectionFailure)
+    assert pick.reason == "availability"
+
+
+def test_full_load_mode_keeps_local_pickable(monkeypatch, real_exe):
+    """Explicit load_mode='full' on the snapshot leaves local eligible
+    (warm-resident local wins as before)."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, mode="full"))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.provider == "clair_obscur"
 
 
 def test_local_unavailable_filters_local(monkeypatch):

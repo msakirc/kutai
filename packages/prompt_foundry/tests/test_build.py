@@ -15,3 +15,16 @@ def test_build_messages_appends_dynamic_blocks():
     register_rubric("r2", system="S", user_template="U")
     msgs = build_messages("r2", {}, extra_blocks=["BLOCK1", "BLOCK2"])
     assert msgs[0]["content"] == "S\n\nBLOCK1\n\nBLOCK2"
+
+
+def test_literal_braces_survive():
+    """Literal JSON braces must pass through untouched; only named placeholders are replaced."""
+    register_rubric(
+        "grade_json",
+        system="You are a grader.",
+        user_template='Grade this. Output {"verdict": "PASS"} format.\nResult: {response}',
+    )
+    msgs = build_messages("grade_json", {"response": "R"})
+    user_content = msgs[1]["content"]
+    assert '{"verdict": "PASS"}' in user_content, "Literal JSON braces were mangled"
+    assert "Result: R" in user_content, "Placeholder {response} was not substituted"

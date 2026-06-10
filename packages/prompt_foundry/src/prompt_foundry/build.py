@@ -24,18 +24,21 @@ def register_rubric(key: str, system: str, user_template: str) -> None:
     _RUBRICS[key] = {"key": key, "system": system, "user_template": user_template}
 
 
+def _render(template: str, fields: dict) -> str:
+    """Replace explicit {key} tokens with their values; all other braces are untouched."""
+    out = template
+    for k, v in fields.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
+
+
 def build_messages(key: str, fields: dict, extra_blocks: list[str] | None = None) -> list[dict]:
     r = _RUBRICS[key]
     system = r["system"]
     if extra_blocks:
         system = "\n\n".join([system, *extra_blocks])
-    user = r["user_template"].format(**{k: fields.get(k, "") for k in _format_keys(r["user_template"])})
+    user = _render(r["user_template"], fields)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def _format_keys(template: str) -> set[str]:
-    import string
-    return {fn for _, fn, _, _ in string.Formatter().parse(template) if fn}
 
 
 if _RUBRICS_DIR.exists():

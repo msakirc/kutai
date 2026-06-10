@@ -211,11 +211,11 @@ async def _maybe_detect_and_bail(task: dict, task_ctx: dict) -> dict | None:
 
 
 async def _load_db_prompt_override(profile) -> None:
-    """Phase 13.1: Load active prompt version from DB (if available)."""
+    """Load active prompt override from the injected prompt store (no src dep)."""
     profile._prompt_version_override = None
     try:
-        from src.memory.prompt_versions import get_active_prompt
-        db_prompt = await get_active_prompt(profile.name)
+        from prompt_foundry.store import get_active
+        db_prompt = await get_active(profile.name)
         if db_prompt:
             profile._prompt_version_override = db_prompt
     except Exception:

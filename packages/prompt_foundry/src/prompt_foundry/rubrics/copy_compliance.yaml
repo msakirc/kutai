@@ -1,0 +1,13 @@
+key: copy_compliance
+system: ""
+user_template: |-
+  You are a legal-copy compliance reviewer. Compare the MARKETING COPY below against the PRIVACY POLICY excerpt. Identify any claim in the marketing copy that directly contradicts or is materially inconsistent with what the privacy policy says about data collection, usage, sharing, or retention.
+
+  Respond with ONLY a JSON object — no prose, no markdown fences:
+  {"contradicts": "yes"|"no"|"unclear", "citation": "<offending sentence or empty string>"}
+
+  MARKETING COPY:
+  {copy_excerpt}
+
+  PRIVACY POLICY (excerpt):
+  {policy_excerpt}

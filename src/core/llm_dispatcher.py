@@ -71,114 +71,6 @@ class CallCategory(Enum):
 
 # ─── LLM Dispatcher ─────────────────────────────────────────────────────────
 
-def _request_kwargs_to_spec(category: "CallCategory", **kwargs) -> dict:
-    """Map dispatcher.request() kwargs into a Beckman task spec dict.
-
-    The call payload (messages, tools, flags, etc.) is stuffed into
-    ``spec["context"]["llm_call"]``.  The sentinel ``raw_dispatch=True``
-    tells the orchestrator pump to route this task directly to
-    ``husam.run()`` instead of an agent class.
-    """
-    import uuid as _uuid
-    import time as _time
-
-    task_name: str = kwargs.get("task", "") or ""
-    agent_type: str = kwargs.get("agent_type", "") or ""
-    difficulty: int = int(kwargs.get("difficulty", 5) or 5)
-    priority: int = int(kwargs.get("priority", 5) or 5)
-    mission_id = kwargs.get("mission_id")
-    parent_task_id = kwargs.get("parent_task_id")
-
-    # Map CallCategory → kind string (matches the tasks.kind column).
-    kind = category.value  # "main_work" or "overhead"
-
-    # Unique suffix prevents add_task dedup from silently dropping concurrent
-    # calls that have identical (title, description, agent_type, mission_id,
-    # parent_task_id).  Uses a short random token + epoch ms.
-    _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
-    title = f"llm_call:{task_name or kind}:{_suffix}"
-    description = f"LLM {category.value} call"
-
-    # Build the llm_call payload that dispatch() will read back.
-    llm_call: dict = {
-        "raw_dispatch": True,          # sentinel for orchestrator pump
-        "call_category": category.value,
-        "task": task_name,
-        "agent_type": agent_type,
-        "difficulty": difficulty,
-        "messages": kwargs.get("messages") or [],
-        "tools": kwargs.get("tools"),
-        "failures": kwargs.get("failures") or [],
-        "preselected_pick": None,      # not serialisable; re-selected in dispatch
-        "prefer_speed": kwargs.get("prefer_speed"),
-        "prefer_local": kwargs.get("prefer_local"),
-        "needs_json_mode": kwargs.get("needs_json_mode"),
-        "needs_thinking": kwargs.get("needs_thinking"),
-        "needs_function_calling": kwargs.get("needs_function_calling"),
-        "min_context": kwargs.get("min_context"),
-        "response_format": kwargs.get("response_format"),
-        "estimated_input_tokens": kwargs.get("estimated_input_tokens"),
-        "estimated_output_tokens": kwargs.get("estimated_output_tokens"),
-        "urgency": kwargs.get("urgency"),
-        # task_obj / iteration_n are runtime objects; don't attempt to serialise
-    }
-    # Strip None values to keep context compact.
-    llm_call = {k: v for k, v in llm_call.items() if v is not None or k in (
-        "raw_dispatch", "task", "agent_type", "difficulty", "messages",
-        "failures", "call_category",
-    )}
-    # raw_dispatch must always be present.
-    llm_call["raw_dispatch"] = True
-
-    spec: dict = {
-        "title": title,
-        "description": description,
-        "agent_type": agent_type or kind,
-        "kind": kind,
-        # Phase D — single-call dispatcher.request → Beckman.enqueue path
-        # is always a direct lane (no ReAct loop, no tools). Orchestrator
-        # pump dispatches by task.runner.
-        "runner": "direct",
-        "priority": priority,
-        "context": {"llm_call": llm_call},
-    }
-    if mission_id is not None:
-        spec["mission_id"] = mission_id
-    if parent_task_id is not None:
-        spec["parent_task_id"] = parent_task_id
-
-    return spec
-
-
-def _task_result_to_request_response(result: "TaskResult") -> dict:
-    """Map a TaskResult back to the legacy response dict expected by all callers.
-
-    Callers expect at minimum ``{"content": str, ...}``.  husam.run stores
-    its full husam.mapping.result_to_dict() output under TaskResult.result.  On_task_finished
-    serialises that into a JSON string before passing it to TaskResult, so we
-    handle both dict and JSON-string shapes.
-    """
-    import json as _json
-
-    raw = result.result
-    if isinstance(raw, str):
-        try:
-            payload = _json.loads(raw)
-            if not isinstance(payload, dict):
-                payload = {}
-        except Exception:
-            payload = {}
-    elif isinstance(raw, dict):
-        payload = raw
-    else:
-        payload = {}
-    # Ensure the mandatory "content" key is always present.
-    if "content" not in payload:
-        payload = dict(payload)
-        payload["content"] = ""
-    return payload
-
-
 # ─── ModelCallFailed re-export for convenience ───────────────────────────────
 # Some callers imported ModelCallFailed from here historically.  Keep the
 # re-export so those imports continue to work.
@@ -199,108 +91,18 @@ class LLMDispatcher:
 
     Usage:
         dispatcher = get_dispatcher()
-        result = await dispatcher.request(
-            category=CallCategory.MAIN_WORK,
-            task="coder",
-            agent_type="coder",
-            difficulty=6,
-            messages=messages,
-            tools=tools,
-        )
+        result = await dispatcher.execute(pick=pick, messages=messages, ...)
+
+    Note: the legacy ``request()`` shim (the blocking
+    ``beckman.enqueue(await_inline=True)`` bridge) was deleted in SP5 once
+    its last callers — shopping, ``single_shot.run``,
+    ``reflection.self_reflect``, ``constrained_emit.maybe_apply`` — were
+    retired. All LLM work now flows through ``beckman.enqueue()``.
     """
 
     def __init__(self):
         self._total_calls = 0
         self._overhead_calls = 0
-
-    # ─── Public alias ─────────────────────────────────────────────────────
-
-    async def request(
-        self,
-        category: CallCategory,
-        task: str = "",
-        agent_type: str = "",
-        difficulty: int = 5,
-        messages: list[dict] | None = None,
-        tools: list[dict] | None = None,
-        failures: list | None = None,
-        preselected_pick: Any = None,
-        **kwargs,
-    ) -> dict:
-        """DEPRECATED SHOPPING-ONLY SHIM — do NOT add new callers.
-
-        This method is a temporary bridge that still routes through
-        ``beckman.enqueue(await_inline=True)`` (the blocking inline primitive
-        that SP5 will delete).  It exists ONLY because the shopping subsystem
-        has not yet been migrated to workflow-step definitions:
-
-          Permitted callers (exhaustive — no new callers permitted):
-          - ``coulson.single_shot.run``        (shopping_clarifier profile)
-          - ``src.workflows.shopping.pipeline_v2`` (×2 calls)
-          - ``src.workflows.shopping.labels``
-          - ``src.shopping.intelligence._llm``
-
-        Note: ``coulson.reflection.self_reflect`` and
-        ``src.workflows.engine.constrained_emit.maybe_apply`` also call this
-        method, but both functions are DEAD LEGACY CODE — they have no
-        production callers (reflection and constrained-emit are now CPS
-        post-hook child tasks in Beckman, spawned by
-        ``_enqueue_posthook_llm_child``).
-
-        Lifecycle: this method dies when shopping migrates to workflow-step
-        definitions, BEFORE SP5 deletes ``await_inline``.  Until then it
-        preserves the legacy API by:
-          1. Converting kwargs → Beckman task spec
-          2. Calling beckman.enqueue(spec, await_inline=True)
-          3. Mapping TaskResult back to the legacy response dict
-
-        Raises ModelCallFailed / RuntimeError on failure, identical to the
-        previous direct-dispatch behaviour.
-        """
-        import general_beckman
-
-        spec = _request_kwargs_to_spec(
-            category,
-            task=task,
-            agent_type=agent_type,
-            difficulty=difficulty,
-            messages=messages,
-            tools=tools,
-            failures=failures,
-            preselected_pick=preselected_pick,
-            **kwargs,
-        )
-
-        # Keep the PARENT task's heartbeat fresh while we wait on the child
-        # raw_dispatch task. dispatcher.request now blocks awaiting an
-        # inline-waiter future for an entire Beckman admission + dispatch
-        # cycle (queue → reserve → select → call → grade) — easily 60+s
-        # under cloud cooldowns or local swaps. The parent's no-progress
-        # watchdog only sees the dispatched task's heartbeat, and that
-        # task's contextvar id is the PARENT's, not the child's. Without
-        # this wrapper the parent goes 300s without a bump while the child
-        # is making real progress, the watchdog kills the runner, and the
-        # mission step lands as "task wedged" even though work was happening.
-        # Production 2026-05-04: 11+ wedged ❌ pings within 5 minutes after
-        # the dispatcher.request → enqueue alias landed.
-        from src.core import heartbeat as _hb
-        async with _hb.keepalive():
-            result = await general_beckman.enqueue(spec, await_inline=True)
-
-        if result.status == "failed":
-            err = result.error or "LLM call failed"
-            is_overhead = category == CallCategory.OVERHEAD
-            if is_overhead:
-                raise RuntimeError(
-                    f"OVERHEAD call failed: {err}. Task: {task or category.value}"
-                )
-            raise ModelCallFailed(
-                call_id=task or category.value,
-                last_error=err,
-                error_category="dispatch",
-            )
-
-        return _task_result_to_request_response(result)
 
     async def execute(
         self,

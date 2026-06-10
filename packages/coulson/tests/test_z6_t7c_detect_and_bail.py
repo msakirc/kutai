@@ -68,15 +68,12 @@ async def test_needs_real_tools_missing_creds_short_circuits(
     # Stub registry so it has no adapter — forces vendor_enroll path
     from coulson import execute
     react_mock = AsyncMock(return_value={"status": "completed"})
-    single_mock = AsyncMock(return_value={"status": "completed"})
-    with patch("coulson._react_run", react_mock), \
-            patch("coulson._single_shot_run", single_mock):
+    with patch("coulson._react_run", react_mock):
         profile = _make_profile()
         result = await execute(profile, task)
 
     assert result["status"] == "blocked_on_founder_action"
     react_mock.assert_not_called()
-    single_mock.assert_not_called()
 
     # A founder_action must have been emitted.
     actions = await fa.list_pending()
@@ -121,8 +118,7 @@ async def test_needs_real_tools_with_creds_proceeds_with_injection(
     from coulson import execute
     with patch(
         "general_beckman.z6_admission.check_z6_admission", admit_ok,
-    ), patch("coulson._react_run", react_mock), \
-            patch("coulson._single_shot_run", AsyncMock()):
+    ), patch("coulson._react_run", react_mock):
         profile = _make_profile()
         result = await execute(profile, task)
 
@@ -149,8 +145,7 @@ async def test_task_without_flag_proceeds_normally(tmp_path, monkeypatch):
     }
     react_mock = AsyncMock(return_value={"status": "completed"})
     from coulson import execute
-    with patch("coulson._react_run", react_mock), \
-            patch("coulson._single_shot_run", AsyncMock()):
+    with patch("coulson._react_run", react_mock):
         profile = _make_profile()
         await execute(profile, task)
     react_mock.assert_awaited_once()
@@ -195,8 +190,7 @@ async def test_injection_is_idempotent(tmp_path, monkeypatch):
     from coulson import execute
     with patch(
         "general_beckman.z6_admission.check_z6_admission", admit_ok,
-    ), patch("coulson._react_run", react_mock), \
-            patch("coulson._single_shot_run", AsyncMock()):
+    ), patch("coulson._react_run", react_mock):
         profile = _make_profile()
         await execute(profile, task)
         # Second invocation on the (mutated) task.

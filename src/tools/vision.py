@@ -42,9 +42,13 @@ async def analyze_image(filepaths: "list[str] | str", question: str = "Describe 
         logger.info("analyzing image(s)", count=len(path_list), first=path_list[0])
 
         import husam
+        from prompt_foundry import build_messages as _build_vision_messages
 
-        # Build content: one text block then one image block per file
-        content: list[dict] = [{"type": "text", "text": question}]
+        # Build content: one text block (from Foundry rubric) then one image block per file.
+        # build_messages returns [system_msg, user_msg]; we extract the text and keep
+        # image-block assembly here (vision-specific multimodal structure).
+        _vision_text = _build_vision_messages("vision", {"question": question})[1]["content"]
+        content: list[dict] = [{"type": "text", "text": _vision_text}]
         for filepath in path_list:
             media_type, data = _encode_image(filepath)
             content.append({

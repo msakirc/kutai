@@ -7,12 +7,13 @@ sys_prompt + tools, zero methods beyond get_system_prompt. Single-call.
 Shape is enforced by:
   (a) sys_prompt (this file) — instructs the LLM to emit the
       ``result.prompts[]`` envelope described in ``get_system_prompt``.
-  (b) constrained_emit.maybe_apply — fires ONLY when the enqueuing caller
-      sets ``is_workflow_step=True`` AND ``artifact_schema=
-      PROMPT_WRITER_ARTIFACT_SCHEMA`` on the task context (i2p step 5.35
-      and the mr_roboto P3-B enqueue do this). Without those flags the
-      agent degrades gracefully: malformed JSON triggers normal retry
-      rather than a constrained re-emit.
+  (b) the constrained_emit POSTHOOK child — armed by beckman's
+      ``determine_posthooks`` (general_beckman) when it finds a
+      constrainable ``artifact_schema`` in the task context (i2p step 5.35
+      and the mr_roboto P3-B enqueue both set
+      ``artifact_schema=PROMPT_WRITER_ARTIFACT_SCHEMA``). Without that
+      schema the agent degrades gracefully: malformed JSON triggers normal
+      retry rather than a constrained re-emit.
 
 ``PROMPT_WRITER_ARTIFACT_SCHEMA`` is the single source of truth for the
 artifact shape; import and reuse it in both i2p step 5.35 and the mr_roboto

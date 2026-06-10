@@ -227,13 +227,13 @@ async def _call_prompt_writer(
     - ``is_workflow_step`` triggers ``post_execute_workflow_step`` on the
       beckman apply path.
 
-    IMPORTANT: the constrained_emit posthook runs as a CHILD task AFTER
-    ``await_inline`` returns. This executor therefore consumes the RAW LLM
-    emit — the posthook has NOT yet run when the result is read here.
-    Malformed output degrades gracefully: _parse_task_result returns {} →
-    no prompts list → the function returns None → all placeholders are
-    skipped with their original placehold.co URLs intact. The executor's own
-    graceful-degrade (not the posthook) is the real safety net for bad JSON."""
+    Timing: ``await_inline`` resolves only when the task reaches a TRUE
+    terminal status — AFTER the constrained_emit/grade posthook chain has
+    run — so this executor receives the POST-REPAIR result, not the raw
+    emit. Output that is still malformed after repair degrades gracefully:
+    _parse_task_result returns {} → no prompts list → the function returns
+    None → all placeholders are skipped with their original placehold.co
+    URLs intact."""
     from src.agents.prompt_writer import (
         PROMPT_WRITER_ARTIFACT_SCHEMA,
         load_diffusion_prompt_template,
@@ -261,9 +261,11 @@ async def _call_prompt_writer(
             "brand_voice": brand_voice or "",
             "placeholders": visible,
             "diffusion_template": template_text or "",
-            # Arm the constrained-emit safety net (constrained_emit.maybe_apply
-            # reads both of these off the task context). Without them the
-            # post-emit structured pass is a no-op.
+            # Arm the constrained-emit safety net: artifact_schema arms the
+            # constrained_emit POSTHOOK child (beckman's determine_posthooks
+            # reads it off the task context); is_workflow_step routes the
+            # apply path through post_execute_workflow_step. Without the
+            # schema the constrained re-emit never fires.
             "is_workflow_step": True,
             "artifact_schema": PROMPT_WRITER_ARTIFACT_SCHEMA,
         },

@@ -1598,6 +1598,14 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             )
             try:
                 from src.agents import get_agent as _get_agent
+                # Prompt Foundry: get_agent() returns a data Profile (no
+                # execute()) for every type except the oncall_agent carve-out.
+                # Drive it through the worker entrypoint instead of the old
+                # target_agent.execute() (which AttributeError'd on a Profile,
+                # was swallowed by the except below, and silently degraded
+                # every inter-agent ask_agent to an error string). Lazy import
+                # avoids the coulson/__init__ ← react circular import.
+                from coulson import execute as _coulson_execute
                 target_agent = _get_agent(target_type)
                 inline_task = {
                     "id": f"{task_id}_inline_{iteration}",
@@ -1607,7 +1615,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     "context": json.dumps({"tool_depth": 1}),
                 }
                 inline_result = await asyncio.wait_for(
-                    target_agent.execute(inline_task), timeout=300
+                    _coulson_execute(target_agent, inline_task), timeout=300
                 )
                 agent_answer = inline_result.get("result", "(no answer)")
                 agent_cost = inline_result.get("cost", 0)

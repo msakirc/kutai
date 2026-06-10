@@ -142,29 +142,29 @@ def _detect_anomaly(
 # ---------------------------------------------------------------------------
 
 
-async def _enqueue_overhead(spec: dict, *, lane: str, await_inline: bool = False) -> Any:
+async def _enqueue_overhead(spec: dict, *, lane: str, **kwargs) -> Any:
     """Thin wrapper around ``general_beckman.enqueue`` (monkeypatchable)."""
     from general_beckman import enqueue
-    return await enqueue(spec, lane=lane, await_inline=await_inline)
+    return await enqueue(spec, lane=lane, **kwargs)
 
 
-async def _call_llm_anomaly_hypothesis(
-    metric_name: str,
-    current: float,
-    history: list[float],
-) -> str:
-    """Enqueue a one-sentence anomaly hypothesis via ONESHOT lane (await_inline=True).
+# ---------------------------------------------------------------------------
+# Anomaly-hypothesis CPS chain (SP5: migrated off await_inline 2026-06-11)
+#
+# Each anomaly's one-sentence hypothesis is a cheap OVERHEAD LLM call. They run
+# as a *sequential CPS chain*: the kickoff (run_investor_bullets) enqueues the
+# first hypothesis child with an on_complete continuation; _hypothesis_resume
+# stores the result, threads accumulated hypotheses through cont_state, and
+# enqueues the next anomaly's child — or, on the last, finalizes (render +
+# variants + founder_action). State is small (<=5 capped anomalies) so it fits
+# a continuation row; no new table.
+# ---------------------------------------------------------------------------
 
-    Returns the hypothesis string, or an empty string on failure.
-    """
-    import time
-    import uuid
-    from general_beckman.lanes import LANE_ONESHOT
 
+def _hypothesis_prompt(metric_name: str, current: float, history: list[float]) -> str:
     median_val = statistics.median(history) if len(history) >= 2 else 0.0
     direction = "above" if current > median_val else "below"
-
-    prompt = (
+    return (
         f"You are surfacing a data anomaly for a founder's investor update.\n"
         f"Metric: {metric_name}\n"
         f"This month: {current}\n"
@@ -175,65 +175,82 @@ async def _call_llm_anomaly_hypothesis(
         f"No prose, no preamble. Just the hypothesis sentence."
     )
 
-    messages = [{"role": "user", "content": prompt}]
+
+async def _enqueue_hypothesis_child(state: dict) -> Any:
+    """Enqueue the LLM hypothesis child for anomaly ``state['idx']`` with a CPS
+    continuation back into ``_hypothesis_resume`` (and ``_resume_err`` on fail)."""
+    import time
+    import uuid
+    from general_beckman.lanes import LANE_ONESHOT
+
+    name, current, history = state["anomalies"][state["idx"]]
     _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
-
-    try:
-        task_result = await _enqueue_overhead(
-            {
-                "title": f"investor_bullets:hypothesis:{metric_name}:{_suffix}",
-                "description": f"One-sentence anomaly hypothesis for {metric_name}.",
+    spec = {
+        "title": f"investor_bullets:hypothesis:{name}:{_suffix}",
+        "description": f"One-sentence anomaly hypothesis for {name}.",
+        "agent_type": "reviewer",
+        "kind": "overhead",
+        "priority": 2,
+        "context": {
+            "llm_call": {
+                "raw_dispatch": True,
+                "call_category": "overhead",
+                "task": "reviewer",
                 "agent_type": "reviewer",
-                "kind": "overhead",
-                "priority": 2,
-                "context": {
-                    "llm_call": {
-                        "raw_dispatch": True,
-                        "call_category": "overhead",
-                        "task": "reviewer",
-                        "agent_type": "reviewer",
-                        "difficulty": 3,
-                        "messages": messages,
-                        "failures": [],
-                        "estimated_input_tokens": 300,
-                        "estimated_output_tokens": 100,
-                    },
-                },
+                "difficulty": 3,
+                "messages": [{"role": "user",
+                              "content": _hypothesis_prompt(name, current, history)}],
+                "failures": [],
+                "estimated_input_tokens": 300,
+                "estimated_output_tokens": 100,
             },
-            lane=LANE_ONESHOT,
-            # SP5-DEFERRED: investor_bullets' anomaly-hypothesis path is
-            # unreachable in production today (missions.product_id is NULL
-            # per the 2026-05-17 Z7 handoff, so fetchers return {} and this
-            # code path never fires). CPS-migrating it costs either ~80 LOC
-            # + a pending-table schema or a kickoff/finalize split — neither
-            # justified while the upstream producer is missing. See SP2
-            # spec §Site 6 deferral.
-            await_inline=True,
-        )
-    except Exception as exc:
-        logger.warning(
-            "investor_bullets: LLM hypothesis failed",
-            metric=metric_name,
-            error=str(exc),
-        )
-        return ""
+        },
+    }
+    return await _enqueue_overhead(
+        spec,
+        lane=LANE_ONESHOT,
+        on_complete="investor_bullets.hypothesis.resume",
+        on_error="investor_bullets.hypothesis.resume_err",
+        cont_state=state,
+    )
 
-    if getattr(task_result, "status", None) != "completed":
-        logger.warning(
-            "investor_bullets: LLM hypothesis task failed",
-            metric=metric_name,
-            error=getattr(task_result, "error", ""),
-        )
-        return ""
 
-    result_data = getattr(task_result, "result", None) or {}
-    content = result_data.get("content", "")
+def _extract_hypothesis(result: dict) -> str:
+    content = (result or {}).get("content", "")
     if isinstance(content, list):
         content = "\n".join(
-            p.get("text", "") if isinstance(p, dict) else str(p)
-            for p in content
+            p.get("text", "") if isinstance(p, dict) else str(p) for p in content
         )
     return str(content or "").strip()
+
+
+async def _hypothesis_resume(child_task_id: int, result: dict, state: dict) -> None:
+    """Continuation: store this anomaly's hypothesis, then advance the chain."""
+    name = state["anomalies"][state["idx"]][0]
+    hyp = _extract_hypothesis(result)
+    if hyp:
+        state.setdefault("hypotheses", {})[name] = hyp
+    await _advance_chain(state)
+
+
+async def _hypothesis_resume_err(child_task_id: int, result: dict, state: dict) -> None:
+    """on_error continuation: a failed hypothesis child must not stall the chain —
+    skip this anomaly and continue."""
+    logger.warning(
+        "investor_bullets: hypothesis child failed; skipping",
+        metric=state["anomalies"][state["idx"]][0],
+        error=(result or {}).get("error", ""),
+    )
+    await _advance_chain(state)
+
+
+async def _advance_chain(state: dict) -> None:
+    """Move to the next anomaly, or finalize when the chain is exhausted."""
+    state["idx"] = state.get("idx", 0) + 1
+    if state["idx"] < len(state["anomalies"]):
+        await _enqueue_hypothesis_child(state)
+    else:
+        await _finalize_bullets(state)
 
 
 # ---------------------------------------------------------------------------
@@ -770,10 +787,17 @@ async def run_investor_bullets(
     *,
     mission_id: int = 0,
 ) -> dict:
-    """Monthly investor bullets entry point. Called by mr_roboto for
+    """Monthly investor bullets KICKOFF. Called by mr_roboto for the
     ``investor_bullets`` executor.
 
-    Returns ``{"ok": True, "variants": N}`` on success.
+    Collects metrics + detects anomalies, then:
+      - no anomalies → finalize immediately (render + variants + founder_action);
+      - anomalies → enqueue the first anomaly's hypothesis child (CPS chain);
+        the chain's tail (_advance_chain → _finalize_bullets) surfaces the
+        founder_action asynchronously.
+
+    Returns ``{"ok": True, "variants": N}`` (synchronous finalize) or
+    ``{"ok": True, "pending": True, "anomalies": N}`` (CPS chain started).
     """
     try:
         # 1. Collect metrics
@@ -785,21 +809,50 @@ async def run_investor_bullets(
             missing_sources=missing,
         )
 
-        # 2. Anomaly detection + LLM hypotheses for outliers
-        hypotheses: dict[str, str] = {}
-        anomaly_items: list[tuple[str, float, list[float]]] = []
+        # 2. Anomaly detection (LLM hypotheses run as a CPS chain, see below)
+        anomalies: list[list] = []
         for name, data in metrics.items():
             current = data.get("current", 0.0)
             history = data.get("history", [])
-            res = _detect_anomaly(name, current, history)
-            if res["is_anomaly"]:
-                anomaly_items.append((name, current, history))
+            if _detect_anomaly(name, current, history)["is_anomaly"]:
+                anomalies.append([name, current, history])
+        anomalies = anomalies[:5]  # cap at 5 LLM calls
 
-        # Call LLM for each anomaly (OVERHEAD lane, sequential — cheap model)
-        for name, current, history in anomaly_items[:5]:  # cap at 5 LLM calls
-            hyp = await _call_llm_anomaly_hypothesis(name, current, history)
-            if hyp:
-                hypotheses[name] = hyp
+        state = {
+            "product_id": product_id,
+            "mission_id": mission_id,
+            "metrics": metrics,
+            "missing": missing,
+            "anomalies": anomalies,
+            "idx": 0,
+            "hypotheses": {},
+        }
+        if not anomalies:
+            return await _finalize_bullets(state)
+
+        # Start the sequential hypothesis CPS chain.
+        await _enqueue_hypothesis_child(state)
+        return {"ok": True, "pending": True, "anomalies": len(anomalies)}
+
+    except Exception as exc:
+        logger.error("investor_bullets: failed", product_id=product_id, error=str(exc))
+        return {"ok": False, "reason": str(exc)}
+
+
+async def _finalize_bullets(state: dict) -> dict:
+    """Render bullets + emit segmented variants + surface the founder_action.
+
+    Shared by the no-anomaly fast path (kickoff) and the tail of the hypothesis
+    CPS chain. Reads ``product_id``, ``mission_id``, ``metrics``, ``missing``,
+    ``anomalies`` and ``hypotheses`` from ``state``.
+    """
+    try:
+        product_id = state["product_id"]
+        mission_id = state.get("mission_id", 0)
+        metrics = state.get("metrics") or {}
+        missing = state.get("missing") or []
+        hypotheses = state.get("hypotheses") or {}
+        anomaly_count = len(state.get("anomalies") or [])
 
         # 3. Fetch suggested asks from mission_lessons
         gaps = await _fetch_gaps(product_id)
@@ -823,7 +876,7 @@ async def run_investor_bullets(
             "bullets_md": bullets_md,
             "variants": variants,
             "missing_sources": missing,
-            "anomaly_count": len(anomaly_items),
+            "anomaly_count": anomaly_count,
             "_investor_bullets": True,
         }
 
@@ -840,7 +893,7 @@ async def run_investor_bullets(
             title="Review monthly investor bullets",
             why=(
                 "Monthly investor-bullet digest ready. "
-                f"{len(anomaly_items)} metric anomal{'y' if len(anomaly_items) == 1 else 'ies'} "
+                f"{anomaly_count} metric anomal{'y' if anomaly_count == 1 else 'ies'} "
                 f"flagged vs 3-month baseline. "
                 f"{len(variants)} segmented template variant{'s' if len(variants) != 1 else ''} "
                 f"generated (investor / advisor). "
@@ -852,8 +905,20 @@ async def run_investor_bullets(
             expected_output_schema=context_payload,
         )
 
-        return {"ok": True, "variants": len(variants), "anomalies": len(anomaly_items)}
+        return {"ok": True, "variants": len(variants), "anomalies": anomaly_count}
 
     except Exception as exc:
-        logger.error("investor_bullets: failed", product_id=product_id, error=str(exc))
+        logger.error("investor_bullets: finalize failed",
+                     product_id=state.get("product_id"), error=str(exc))
         return {"ok": False, "reason": str(exc)}
+
+
+def register_continuations() -> None:
+    """Register the anomaly-hypothesis CPS handlers (called at import + by
+    general_beckman.continuations.register_startup_handlers)."""
+    from general_beckman.continuations import register_resume
+    register_resume("investor_bullets.hypothesis.resume", _hypothesis_resume)
+    register_resume("investor_bullets.hypothesis.resume_err", _hypothesis_resume_err)
+
+
+register_continuations()

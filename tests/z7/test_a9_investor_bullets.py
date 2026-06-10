@@ -453,36 +453,42 @@ async def test_support_metrics_reads_tickets_table(db):
 
 
 @pytest.mark.asyncio
-async def test_llm_hypothesis_call_uses_await_inline():
-    """_call_llm_anomaly_hypothesis enqueues via await_inline=True and returns str content."""
+async def test_hypothesis_child_uses_cps_raw_dispatch():
+    """SP5: the anomaly hypothesis is a CPS child (no await_inline). It enqueues
+    a raw_dispatch OVERHEAD call with on_complete/on_error continuations, and
+    _hypothesis_resume extracts the content. (Was test_llm_hypothesis_call_uses_
+    await_inline — the await_inline path was deleted.)"""
     from unittest.mock import patch, AsyncMock
-    from general_beckman import TaskResult
+    from src.app.jobs import investor_bullets as ib
 
-    # Return a TaskResult with content in the result dict (real awaitable path).
-    fake_result = TaskResult(
-        status="completed",
-        result={"content": "Hypothesis: seasonality spike from Q1 campaign."},
-        error=None,
-    )
+    captured = {}
 
-    async def _fake_enqueue(spec, *, lane, await_inline=False):
-        # Verify the spec uses raw_dispatch (real llm_call structure)
+    async def _fake_overhead(spec, *, lane, **kwargs):
         llm_call = (spec.get("context") or {}).get("llm_call") or {}
         assert llm_call.get("raw_dispatch") is True, "Must use raw_dispatch=True pattern"
         assert "_callback" not in (spec.get("context") or {}), \
             "Must NOT use deprecated _callback pattern"
-        assert await_inline is True, "Must call with await_inline=True"
-        return fake_result
+        assert "await_inline" not in kwargs, "await_inline must be gone (CPS)"
+        captured["on_complete"] = kwargs.get("on_complete")
+        return 123
 
     with patch(
         "src.app.jobs.investor_bullets._enqueue_overhead",
-        new=AsyncMock(side_effect=_fake_enqueue),
+        new=AsyncMock(side_effect=_fake_overhead),
     ):
-        from src.app.jobs.investor_bullets import _call_llm_anomaly_hypothesis
-        hyp = await _call_llm_anomaly_hypothesis("mrr", 180.0, [100.0, 102.0, 98.0])
+        state = {"anomalies": [["mrr", 180.0, [100.0, 102.0, 98.0]]], "idx": 0, "hypotheses": {}}
+        await ib._enqueue_hypothesis_child(state)
 
-    assert isinstance(hyp, str)
-    assert "seasonality" in hyp
+    assert captured["on_complete"] == "investor_bullets.hypothesis.resume"
+
+    # The resume extracts the hypothesis string from the child's result.
+    st = {"anomalies": [["mrr", 180.0, [100.0]]], "idx": 0, "hypotheses": {}}
+    with patch("src.app.jobs.investor_bullets._finalize_bullets",
+               new=AsyncMock(return_value={"ok": True})):
+        await ib._hypothesis_resume(
+            123, {"content": "Hypothesis: seasonality spike from Q1 campaign."}, st,
+        )
+    assert "seasonality" in st["hypotheses"]["mrr"]
 
 
 # ===========================================================================
@@ -506,32 +512,25 @@ async def test_suggested_asks_degrades_when_no_lessons():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_status", ["exhausted", "timeout", "needs_clarification", "needs_subtasks"])
-async def test_llm_hypothesis_non_completed_returns_empty(bad_status):
-    """_call_llm_anomaly_hypothesis returns '' for any non-completed task status,
-    not just 'failed'. Covers the canonical != 'completed' gate."""
+async def test_hypothesis_resume_err_advances_without_storing():
+    """SP5: a failed/non-completed hypothesis child fires the on_error
+    continuation (_hypothesis_resume_err), which skips that metric and advances
+    the chain — it must never stall. (Was test_llm_hypothesis_non_completed_
+    returns_empty; the old function had no continuation, it returned '' inline.)"""
     from unittest.mock import patch, AsyncMock
-    from general_beckman import TaskResult
+    from src.app.jobs import investor_bullets as ib
 
-    fake_result = TaskResult(
-        status=bad_status,
-        result={"content": "should not appear"},
-        error=None,
-    )
+    st = {
+        "product_id": "p1", "mission_id": 0, "metrics": {}, "missing": [],
+        "anomalies": [["mrr", 180.0, [100.0]]],  # single anomaly => advance -> finalize
+        "idx": 0, "hypotheses": {},
+    }
+    with patch("src.app.jobs.investor_bullets._finalize_bullets",
+               new=AsyncMock(return_value={"ok": True})) as final:
+        await ib._hypothesis_resume_err(123, {"status": "failed", "error": "exhausted"}, st)
 
-    async def _fake_enqueue(spec, *, lane, await_inline=False):
-        return fake_result
-
-    with patch(
-        "src.app.jobs.investor_bullets._enqueue_overhead",
-        new=AsyncMock(side_effect=_fake_enqueue),
-    ):
-        from src.app.jobs.investor_bullets import _call_llm_anomaly_hypothesis
-        hyp = await _call_llm_anomaly_hypothesis("mrr", 180.0, [100.0, 102.0, 98.0])
-
-    assert hyp == "", (
-        f"Expected empty string for status={bad_status!r}, got {hyp!r}"
-    )
+    assert "mrr" not in st["hypotheses"], "failed child must not store a hypothesis"
+    final.assert_awaited_once()  # chain advanced to finalize, did not stall
 
 
 # ===========================================================================

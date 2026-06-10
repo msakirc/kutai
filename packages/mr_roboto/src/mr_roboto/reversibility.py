@@ -376,6 +376,12 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "swap_placeholder_images": "full",
     # verify_swap_placeholder_images_shape: pure read-only verifier. full.
     "verify_swap_placeholder_images_shape": "full",
+    # verify_review_verdict: read-only verdict check, no state change. full.
+    "verify_review_verdict": "full",
+    # publish_preview_pages: publishes externally visible preview pages —
+    # can be torn down again, but viewers may already have seen/shared the
+    # URL (same family as kill_preview_url). partial.
+    "publish_preview_pages": "partial",
 }
 
 DEFAULT_REVERSIBILITY: Reversibility = "partial"

@@ -1,11 +1,13 @@
-"""Regressions for the schema-aware WriterAgent system prompt.
+"""Regressions for the schema-aware writer system prompt.
 
-When ``artifact_schema.type == "markdown"``, the agent must switch from
-the "write_file + summarize" pattern to "emit markdown content directly
+When ``artifact_schema.type == "markdown"``, the writer profile must switch
+from the "write_file + summarize" pattern to "emit markdown content directly
 in result". The old pattern reliably failed required-section validation
 because ``result`` carried only a summary blurb while the actual content
 lived in a file the validator never read (i2p_v3 steps 7.15, 11.4, 12.1
 before this change).
+
+Ported from src/agents/writer.py (deleted Task 9) to prompt_foundry leaf.
 """
 from __future__ import annotations
 
@@ -13,12 +15,14 @@ import json
 
 import pytest
 
-from src.agents.writer import (
-    WriterAgent,
-    _detect_markdown_schema,
-    _FILE_WRITE_PROMPT,
-    _INLINE_MARKDOWN_PROMPT,
-)
+from prompt_foundry.profile import _detect_markdown_schema, WriterProfile
+from prompt_foundry import get_profile
+
+
+def _writer() -> WriterProfile:
+    p = get_profile("writer")
+    assert isinstance(p, WriterProfile), f"expected WriterProfile, got {type(p)}"
+    return p  # type: ignore[return-value]
 
 
 class TestDetectMarkdownSchema:
@@ -82,8 +86,10 @@ class TestWriterSystemPromptSwitching:
                 {"artifact_schema": {"prd": {"type": "markdown"}}}
             )
         }
-        prompt = WriterAgent().get_system_prompt(task)
-        assert prompt is _INLINE_MARKDOWN_PROMPT
+        profile = _writer()
+        prompt = profile.get_system_prompt(task)
+        assert prompt == profile.markdown_prompt
+        assert prompt != profile.system_prompt
 
     def test_object_task_gets_file_write_prompt(self):
         task = {
@@ -91,28 +97,31 @@ class TestWriterSystemPromptSwitching:
                 {"artifact_schema": {"spec": {"type": "object"}}}
             )
         }
-        prompt = WriterAgent().get_system_prompt(task)
-        assert prompt is _FILE_WRITE_PROMPT
+        profile = _writer()
+        prompt = profile.get_system_prompt(task)
+        assert prompt == profile.system_prompt
 
     def test_no_schema_task_gets_file_write_prompt(self):
-        prompt = WriterAgent().get_system_prompt({})
-        assert prompt is _FILE_WRITE_PROMPT
+        profile = _writer()
+        prompt = profile.get_system_prompt({})
+        assert prompt == profile.system_prompt
 
     def test_inline_prompt_forbids_write_file(self):
         # The structural fix — inline mode must explicitly tell the model
         # not to call write_file, since the workflow engine persists the
         # result itself.
-        assert "DO NOT call `write_file`" in _INLINE_MARKDOWN_PROMPT
+        assert "DO NOT call `write_file`" in _writer().markdown_prompt
 
     def test_inline_prompt_demands_full_content(self):
         # The whole point: result must carry the markdown, not a summary.
-        assert "FULL markdown content" in _INLINE_MARKDOWN_PROMPT
-        assert "not a summary" in _INLINE_MARKDOWN_PROMPT
+        md = _writer().markdown_prompt
+        assert "FULL markdown content" in md
+        assert "not a summary" in md
 
     def test_file_write_prompt_keeps_summary_pattern(self):
         # Non-markdown-schema tasks (free-form documentation, code
         # comments, etc.) still use the summary-blurb result.
-        assert "Wrote [filename]" in _FILE_WRITE_PROMPT
+        assert "Wrote [filename]" in _writer().system_prompt
 
 
 if __name__ == "__main__":

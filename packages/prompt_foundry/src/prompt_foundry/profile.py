@@ -5,6 +5,7 @@ BaseAgent). Static profiles return a fixed seed string from get_system_prompt;
 carve-outs (oncall_agent, writer) subclass and override it.
 """
 from __future__ import annotations
+import json
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -50,3 +51,52 @@ class Profile:
     # (coulson) drives execution: coulson.execute(profile, task). Keeping them
     # off the Profile is what lets the leaf stay pure (they delegate to
     # src.runtime/coulson, which the leaf may not import).
+
+
+# ---------------------------------------------------------------------------
+# Writer carve-out helpers
+# ---------------------------------------------------------------------------
+
+def _detect_markdown_schema(task: dict) -> bool:
+    """Return True if the task's artifact_schema declares a markdown output.
+
+    Returns False when the step also declares a non-empty ``produces`` list.
+    In that case the grounding guard (coulson.guards.check_grounding_sub_iter)
+    requires an actual write_file call against the produces path — the inline
+    prompt would tell the agent "DO NOT call write_file" and the two paths
+    fight each other, exhausting iteration budgets (production 2026-05-14
+    mission 69 step 0.0z: 5 attempts × 3 model swaps × max_iterations_reached).
+    """
+    ctx = task.get("context") or {}
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+            if isinstance(ctx, str):
+                ctx = json.loads(ctx)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return False
+    if not isinstance(ctx, dict):
+        return False
+    produces = ctx.get("produces")
+    if isinstance(produces, list) and produces:
+        return False
+    schema = ctx.get("artifact_schema")
+    if not isinstance(schema, dict):
+        return False
+    for v in schema.values():
+        if isinstance(v, dict) and v.get("type") == "markdown":
+            return True
+    return False
+
+
+class WriterProfile(Profile):
+    """Writer carve-out: switches system prompt based on artifact_schema type.
+
+    No new fields — markdown_prompt is already declared on the base Profile
+    dataclass. Overrides get_system_prompt only.
+    """
+
+    def get_system_prompt(self, task: dict) -> str:
+        if _detect_markdown_schema(task):
+            return self.markdown_prompt or self.system_prompt
+        return self.system_prompt

@@ -2,7 +2,6 @@
 from prompt_foundry import get_profile as _get_profile
 from .base import BaseAgent
 from .writer import WriterAgent
-from .shopping_advisor import ShoppingAdvisorAgent
 from .product_researcher import ProductResearcherAgent
 from .deal_analyst import DealAnalystAgent
 from .shopping_clarifier import ShoppingClarifierAgent
@@ -13,7 +12,6 @@ from .oncall_agent import OncallAgent
 
 AGENT_REGISTRY = {
     "writer": WriterAgent(),
-    "shopping_advisor": ShoppingAdvisorAgent(),
     "product_researcher": ProductResearcherAgent(),
     "deal_analyst": DealAnalystAgent(),
     "shopping_clarifier": ShoppingClarifierAgent(),

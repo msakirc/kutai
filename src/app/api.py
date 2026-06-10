@@ -123,14 +123,14 @@ def create_app() -> Any:
 
     @app.post("/missions", status_code=201)
     async def create_mission(body: MissionCreate, _: None = Depends(_check_api_key)):
-        from src.infra.db import get_db
-        db = await get_db()
-        cursor = await db.execute(
-            "INSERT INTO missions (title, description, priority, workflow, repo_path, status) VALUES (?, ?, ?, ?, ?, 'active')",
-            (body.title, body.description, body.priority, body.workflow, body.repo_path),
+        from src.infra.db import add_mission
+        mission_id = await add_mission(
+            title=body.title,
+            description=body.description,
+            priority=body.priority,
+            workflow=body.workflow,
+            repo_path=body.repo_path,
         )
-        await db.commit()
-        mission_id = cursor.lastrowid
         logger.info(f"API: Created mission #{mission_id}: {body.title}")
         return {"id": mission_id, "title": body.title, "status": "active"}
 

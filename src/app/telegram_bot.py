@@ -6791,11 +6791,11 @@ class TelegramInterface:
             await self._reply(update,
                 f"Current load mode: *{current}*{auto_str}\n\n"
                 "Usage: `/load full|heavy|shared|minimal|auto`\n"
-                "• *full* — all GPU available\n"
-                "• *heavy* — 90% VRAM cap\n"
-                "• *shared* — 50% VRAM cap\n"
-                "• *minimal* — cloud only\n"
-                "• *auto* — enable auto-detection based on external GPU usage",
+                "• *full* — ignore desktop signals; send to local freely\n"
+                "• *heavy* — bias to cloud when you're active (1.5×)\n"
+                "• *shared* — stronger cloud bias when you're active (2×)\n"
+                "• *minimal* — cloud only; pause local\n"
+                "• *auto* (Otomatik) — auto-pick mode from external GPU + presence",
                 parse_mode="Markdown",
             )
             return

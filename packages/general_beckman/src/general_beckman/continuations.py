@@ -180,7 +180,10 @@ _HANDLER_MODULES: list[str] = [
     "src.app.interview",
     "src.app.meetings",
     "src.app.jobs.faq_regen",
-    # site #6 (investor_bullets) deferred to SP5+ — see SP2 spec §Site 6
+    # CPS SP5 — await_inline finale (both carve-outs migrated 2026-06-11):
+    #   task_classifier.classify.resume; investor_bullets.hypothesis.resume(_err)
+    "src.core.task_classifier",
+    "src.app.jobs.investor_bullets",
     # CPS SP3 - in-task deadlock set:
     "general_beckman.posthook_continuations",
     # CPS SP4b - reviews CPS mechanical sinks:

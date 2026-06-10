@@ -18,6 +18,7 @@ from coulson.posthooks.reflection_posthook import (
     REFLECT_SYSTEM_BASE,
     build_reflection_prompt,
     build_reflect_messages,
+    build_emit_messages,
 )
 import coulson.reflection as cref
 
@@ -72,3 +73,51 @@ def test_build_reflect_messages_no_checklist_char_exact():
     msgs = build_reflect_messages({}, None, checklist=None)
     assert msgs[0]["content"] == REFLECT_SYSTEM_BASE
     assert msgs[1]["content"] == "Task: \nDescription: \n\nResponse to review:\n"
+
+
+# ── constrained-emit char-exact ─────────────────────────────────────────────
+
+def test_build_emit_messages_char_exact():
+    import json
+    rf = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "step_x",
+            "schema": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+            },
+        },
+    }
+    draft = 'some draft with "quotes" and {braces}'
+    msgs = build_emit_messages(draft, rf)
+    schema_text = json.dumps(rf["json_schema"]["schema"], ensure_ascii=False, indent=2)
+    expected_system = (
+        "You are a structured-output emitter. Re-emit the artifact "
+        "below as JSON conforming exactly to the provided schema. "
+        "Do not add commentary. Do not wrap in envelopes. Output "
+        "ONLY the JSON value.\n\n"
+        "Rules:\n"
+        "- Every required field must be present with a real value.\n"
+        "- Do not invent fields not in the schema.\n"
+        "- Preserve the draft's information; restructure into the "
+        "schema, do not summarize away content."
+    )
+    expected_user = (
+        f"Schema:\n```json\n{schema_text}\n```\n\n"
+        f"Draft to fix:\n```\n{draft}\n```\n\n"
+        f"Emit the final JSON now."
+    )
+    assert msgs[0] == {"role": "system", "content": expected_system}
+    assert msgs[1] == {"role": "user", "content": expected_user}
+
+
+def test_build_emit_messages_empty_draft():
+    """None / empty draft → empty draft block (no crash, no truncation)."""
+    rf = {
+        "type": "json_schema",
+        "json_schema": {"name": "step_x", "schema": {"type": "object"}},
+    }
+    msgs = build_emit_messages(None, rf)
+    assert "Draft to fix:\n```\n\n```" in msgs[1]["content"]

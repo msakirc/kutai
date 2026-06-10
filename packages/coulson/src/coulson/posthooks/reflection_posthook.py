@@ -188,23 +188,12 @@ def build_emit_messages(draft: str, response_format: dict) -> list[dict]:
     # summarize away content". Feed the whole draft; an oversized one is a
     # model-context concern handled by the caller's size-derived estimate.
     draft_for_prompt = draft or ""
-    system = (
-        "You are a structured-output emitter. Re-emit the artifact "
-        "below as JSON conforming exactly to the provided schema. "
-        "Do not add commentary. Do not wrap in envelopes. Output "
-        "ONLY the JSON value.\n\n"
-        "Rules:\n"
-        "- Every required field must be present with a real value.\n"
-        "- Do not invent fields not in the schema.\n"
-        "- Preserve the draft's information; restructure into the "
-        "schema, do not summarize away content."
+    # Prompt TEXT lives in the Foundry rubric (rubrics/constrained_emit.yaml);
+    # this builder owns only the dynamic schema_text / draft fields. The schema
+    # response_format object + should_skip_emit stay in coulson (not prompt
+    # content). (Phase 3 Task 12 Batch H.)
+    from prompt_foundry import build_messages
+    return build_messages(
+        "constrained_emit",
+        {"schema_text": schema_text, "draft": draft_for_prompt},
     )
-    user = (
-        f"Schema:\n```json\n{schema_text}\n```\n\n"
-        f"Draft to fix:\n```\n{draft_for_prompt}\n```\n\n"
-        f"Emit the final JSON now."
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]

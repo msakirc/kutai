@@ -11,8 +11,15 @@ class TestGraderSemanticOnly:
     """
 
     def test_system_prompt_declares_structure_verified_upstream(self):
-        from src.core.grading import GRADING_SYSTEM
-        s = GRADING_SYSTEM.lower()
+        # The grading system prompt migrated from the GRADING_SYSTEM constant
+        # to the Foundry "grading" rubric (build_messages). Intent unchanged:
+        # the system message must declare structure is verified upstream and
+        # forbid failing for field/section drift.
+        from prompt_foundry import build_messages
+        msgs = build_messages("grading", {
+            "title": "t", "description": "d", "response": "r",
+        })
+        s = msgs[0]["content"].lower()
         # Structure is verified deterministically before the grader.
         assert "deterministic" in s
         # Must forbid failing for field/section drift.
@@ -20,8 +27,13 @@ class TestGraderSemanticOnly:
         assert "never fail" in s
 
     def test_complete_field_is_semantic_not_presence(self):
-        from src.core.grading import GRADING_PROMPT
-        p = GRADING_PROMPT.lower()
+        # COMPLETE-field semantics now live in the Foundry "grading" rubric
+        # user_template (was GRADING_PROMPT). Intent unchanged.
+        from prompt_foundry import build_messages
+        msgs = build_messages("grading", {
+            "title": "t", "description": "d", "response": "r",
+        })
+        p = msgs[1]["content"].lower()
         # COMPLETE is redefined to content adequacy, not field presence.
         assert "complete:" in p
         assert "content" in p

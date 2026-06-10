@@ -3,7 +3,6 @@ description: Classifies raw growth signals into label + recipe domain
 default_tier: cheap
 min_tier: cheap
 max_iterations: 2
-execution_pattern: single_shot
 enable_self_reflection: false
 allowed_tools: []
 system_prompt: |

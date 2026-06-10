@@ -794,7 +794,7 @@ def test_<name>_served_from_foundry():
 
 - [ ] **Step 6: Commit** — `git commit -m "refactor(prompt_foundry): migrate <name> agent to YAML profile"`.
 
-> **Special case — `signal_classifier`:** its prompt is also referenced by routing. Keep `execution_pattern: single_shot` in YAML. Do NOT migrate its *classification logic* — only the prompt string. The class `src/agents/signal_classifier.py` holds only `get_system_prompt` (verified pure-config); if it holds parsing helpers, leave those in a non-agent module and migrate only the prompt.
+> **Special case — `signal_classifier`:** its prompt is also referenced by routing. Do NOT migrate its *classification logic* — only the prompt string. The class `src/agents/signal_classifier.py` holds only `get_system_prompt` (verified pure-config); if it holds parsing helpers, leave those in a non-agent module and migrate only the prompt. `signal_classifier` is `react_loop` (default) — do NOT set `execution_pattern: single_shot`; the original class never set `execution_pattern`. Switching it to `single_shot` would be a deliberate behavior change, out of scope for the migration.
 
 ---
 

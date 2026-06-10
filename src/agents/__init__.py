@@ -2,7 +2,6 @@
 from prompt_foundry import get_profile as _get_profile
 from .base import BaseAgent
 from .writer import WriterAgent
-from .assistant import AssistantAgent
 from .shopping_advisor import ShoppingAdvisorAgent
 from .product_researcher import ProductResearcherAgent
 from .deal_analyst import DealAnalystAgent
@@ -21,7 +20,6 @@ from .prior_art_synthesizer import PriorArtSynthesizerAgent
 
 AGENT_REGISTRY = {
     "writer": WriterAgent(),
-    "assistant": AssistantAgent(),
     "shopping_advisor": ShoppingAdvisorAgent(),
     "product_researcher": ProductResearcherAgent(),
     "deal_analyst": DealAnalystAgent(),

@@ -26,7 +26,7 @@ Verified green: 109 packages + 105 reflection-consumer + 11 guards + 9 z6, plus 
 
 ## What remains — delete `await_inline` (the real SP5 finale)
 
-`await_inline=True` is the blocking inline-waiter on `general_beckman.enqueue`. After this session, it has **exactly two live callers** (verified — the `request()` shim that was the third is gone). Both are deliberate, documented deferrals. Deleting `await_inline` requires migrating BOTH off it first.
+`await_inline=True` is the blocking inline-waiter on `general_beckman.enqueue`. After this session, it had **exactly two live callers** (verified — the `request()` shim that was the third is gone). **Update 2026-06-11:** the image-gen Plan 3 swap mechanic added two more (carve-outs 3+4 below). All four are deliberate, documented deferrals. Deleting `await_inline` requires migrating ALL FOUR off it first.
 
 ### Carve-out 1 — `src/core/task_classifier.py:284` (`_enqueue_inline_classifier`)
 - `tr = await general_beckman.enqueue(spec, parent_id=None, await_inline=True)`.
@@ -39,11 +39,17 @@ Verified green: 109 packages + 105 reflection-consumer + 11 guards + 9 z6, plus 
 - Comment (lines 204–210): SP5-DEFERRED — *"investor_bullets' anomaly-hypothesis path is unreachable in production today (missions.product_id is NULL … fetchers return {} and this code path never fires). CPS-migrating it costs either ~80 LOC + a pending-table schema or a kickoff/finalize split — neither justified while the upstream producer is missing."*
 - **Dormant.** Cheapest resolution: when you do tackle await_inline, either (a) CPS-migrate it (kickoff enqueue + `on_complete` that resumes `run_investor_bullets` from a pending row), or (b) since it never fires in prod, drop the LLM-hypothesis call entirely (render bullets with `_needs founder explanation_` placeholders, which the render layer already supports) and delete `_call_llm_anomaly_hypothesis`. Confirm with founder which.
 
+### Carve-outs 3 + 4 — image-gen Plan 3 swap mechanic (added 2026-06-11)
+- `packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py:274` — the prompt_writer enqueue (`_enqueue_prompt_writer`) blocks on `await_inline=True` for the single diffusion-prompt task.
+- `packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py:345` — the per-image enqueue (`_generate_one_image`) blocks on `await_inline=True` once per placeholder inside the swap fanout.
+- Future CPS migration = kickoff + `on_complete` continuation resuming the fanout; today both sites graceful-degrade on timeout (placeholders keep their placehold.co URLs).
+
 ### Deletion order for the await_inline finale
-1. Re-grep: `rg -n "await_inline\s*=\s*True" src packages --glob '!*/tests/*'` — confirm still exactly the two above (no new caller crept in).
+1. Re-grep: `rg -n "await_inline\s*=\s*True" src packages --glob '!*/tests/*'` — confirm still exactly the four above (no new caller crept in).
 2. Resolve carve-out 2 first (it's small / dormant).
-3. Resolve carve-out 1 (the task-admission redesign — its own spec + plan).
-4. Only when both are off `await_inline`: delete the `await_inline` parameter from `general_beckman.enqueue` (+ the inline-waiter future machinery). Re-grep tests for `await_inline=True` and update the deadlock guards (`packages/general_beckman/tests/test_no_inline_deadlock.py` asserts NObody passes it — those become stronger / trivially-true).
+3. Resolve carve-outs 3+4 (the swap-mechanic CPS continuation described above).
+4. Resolve carve-out 1 (the task-admission redesign — its own spec + plan).
+5. Only when all four are off `await_inline`: delete the `await_inline` parameter from `general_beckman.enqueue` (+ the inline-waiter future machinery). Re-grep tests for `await_inline=True` and update the deadlock guards (`packages/general_beckman/tests/test_no_inline_deadlock.py` asserts NObody passes it — those become stronger / trivially-true).
 
 ---
 

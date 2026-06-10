@@ -1,0 +1,8 @@
+key: yalayut_synth
+system: ""
+user_template: |
+  You normalize a software-artifact description into a JSON manifest. Return ONLY a JSON object with keys: intent_keywords (array of lowercase strings), mechanizable (boolean), kind (one of prompt_skill|shell_recipe|procedure|agent_config), install_cmd (string or null), auth_env (string env-var name or null).
+
+  Artifact name: {name_original}
+  Description / README:
+  {raw_text}

@@ -135,7 +135,8 @@ async def transition_task(
     passed as **extra_fields and will be included in the DB update.
     """
     # Lazy import to avoid circular dependency
-    from ..infra.db import get_task, update_task
+    from ..infra.db import get_task
+    from general_beckman import update_task
 
     task = await get_task(task_id)
     if not task:

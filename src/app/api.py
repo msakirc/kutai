@@ -157,8 +157,8 @@ def create_app() -> Any:
 
     @app.post("/tasks", status_code=201)
     async def create_task(body: TaskCreate, _: None = Depends(_check_api_key)):
-        from src.infra.db import add_task
-        task_id = await add_task(
+        from general_beckman import add_task as _add_task
+        task_id = await _add_task(
             title=body.title,
             description=body.description,
             agent_type=body.agent_type,

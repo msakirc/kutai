@@ -14,24 +14,14 @@ logger = get_logger("core.startup_recovery")
 
 async def startup_recovery() -> None:
     """Post-restart: reset stuck tasks + clear retry backoffs + clear locks."""
-    db = await get_db()
+    from general_beckman import recover_startup_tasks as _recover
     summary: list[str] = []
 
-    # 1. Reset tasks stuck in 'processing' (prior run didn't finish them).
-    c = await db.execute(
-        "SELECT id, infra_resets FROM tasks WHERE status = 'processing'"
-    )
-    interrupted = [dict(r) for r in await c.fetchall()]
-    for t in interrupted:
-        ir = (t.get("infra_resets") or 0) + 1
-        await db.execute(
-            "UPDATE tasks SET status='pending', infra_resets=?, "
-            "retry_reason='infrastructure' WHERE id=?",
-            (ir, t["id"])
-        )
-    if interrupted:
-        await db.commit()
-        summary.append(f"Reset {len(interrupted)} interrupted task(s)")
+    result = await _recover()
+    if result["interrupted"]:
+        summary.append(f"Reset {result['interrupted']} interrupted task(s)")
+    if result["backoff_cleared"]:
+        summary.append(f"Cleared backoff for {result['backoff_cleared']} task(s)")
 
     # 2. Accelerate overdue retry gates.
     try:
@@ -41,23 +31,9 @@ async def startup_recovery() -> None:
     except Exception as e:
         logger.debug(f"accelerate_retries failed: {e}")
 
-    # 3. Clear future-dated next_retry_at on ready tasks so the queue picks
-    # them up on the next cycle instead of waiting out a stale backoff.
-    c = await db.execute(
-        "SELECT id FROM tasks WHERE status IN ('pending','ungraded') "
-        "AND next_retry_at IS NOT NULL AND next_retry_at > datetime('now')"
-    )
-    delayed = [dict(r) for r in await c.fetchall()]
-    for t in delayed:
-        await db.execute(
-            "UPDATE tasks SET next_retry_at=NULL WHERE id=?", (t["id"],)
-        )
-    if delayed:
-        await db.commit()
-        summary.append(f"Cleared backoff for {len(delayed)} task(s)")
-
-    # 4. Stale file locks from a prior crash.
+    # 3. Stale file locks from a prior crash.
     try:
+        db = await get_db()
         await db.execute("DELETE FROM file_locks")
         await db.commit()
     except Exception:

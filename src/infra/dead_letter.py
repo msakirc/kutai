@@ -245,7 +245,8 @@ async def retry_dlq_task(task_id: int) -> bool:
     Resets exclusions and backoff, preserves attempt counters.
     """
     import json
-    from src.infra.db import get_task, update_task
+    from src.infra.db import get_task
+    from general_beckman import update_task
 
     await resolve_dlq_task(task_id, resolution="retry")
 
@@ -291,7 +292,7 @@ async def _in_dlq(task_id: int) -> bool:
 async def _plain_retry(task: dict) -> bool:
     """Normal pending-reset retry for a single task row."""
     import json
-    from src.infra.db import update_task
+    from general_beckman import update_task
     task_id = task["id"]
 
     # Phase-aware status
@@ -321,7 +322,8 @@ async def _plain_retry(task: dict) -> bool:
     # exhaust on resume, but keep the checkpoint data (tool results, messages)
     # so previous work isn't lost.
     try:
-        from src.infra.db import load_task_checkpoint, save_task_checkpoint
+        from src.infra.db import load_task_checkpoint
+        from general_beckman import save_task_checkpoint
         cp = await load_task_checkpoint(task_id)
         if cp:
             cp["iteration"] = 0
@@ -343,19 +345,9 @@ async def _plain_retry(task: dict) -> bool:
     # Reset downstream tasks that were cascade-failed due to this task's DLQ.
     # Without this, dependents stay permanently failed even after DLQ retry.
     try:
-        from src.infra.db import get_db
-        db = await get_db()
-        cascade_cursor = await db.execute(
-            """UPDATE tasks SET status = 'pending', error = NULL,
-                   started_at = NULL, completed_at = NULL, worker_attempts = 0
-               WHERE status = 'failed'
-                 AND error = 'All dependencies failed'
-                 AND depends_on LIKE ?""",
-            (f"%{task_id}%",),
-        )
-        cascade_count = cascade_cursor.rowcount
+        from general_beckman import reset_cascade_failed_dependents as _reset_cascade
+        cascade_count = await _reset_cascade(task_id)
         if cascade_count > 0:
-            await db.commit()
             logger.info(f"[DLQ] Reset {cascade_count} cascade-failed dependents of task #{task_id}")
     except Exception as e:
         logger.debug(f"[DLQ] Cascade reset failed: {e}")

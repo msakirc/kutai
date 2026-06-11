@@ -398,6 +398,28 @@ async def resolve(
     return await update_status(action_id, "done", response_payload)
 
 
+async def defer(action_id: int, until: str) -> None:
+    """Set ``defer_until`` on an action, hiding the card until that time.
+
+    ``until`` must be a space-separated datetime string in the format
+    ``"%Y-%m-%d %H:%M:%S"`` (SQLite-compatible, matching the project
+    convention — never ISO-8601 with a ``T`` separator).
+
+    Only updates ``defer_until`` and ``updated_at``; does not change
+    ``status`` or any other field.
+    """
+    from datetime import datetime as _dt
+    from src.infra.db import get_db
+    now = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    db = await get_db()
+    await db.execute(
+        "UPDATE founder_actions SET defer_until = ?, updated_at = ? WHERE id = ?",
+        (until, now, action_id),
+    )
+    await db.commit()
+    logger.info("founder_action deferred", action_id=action_id, until=until)
+
+
 # ─── T1E: mission lifecycle coordination ───────────────────────────────────
 # Schema-aware: if missions.lifecycle_state (Z0) exists at runtime we use
 # that; otherwise we set missions.status to 'blocked_on_founder_action'.
@@ -537,6 +559,7 @@ __all__ = [
     "list_pending",
     "update_status",
     "resolve",
+    "defer",
     "block_mission_if_needed",
     "unblock_mission_if_clear",
     "sweep_unblock_all",

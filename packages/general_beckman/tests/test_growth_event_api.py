@@ -1,9 +1,11 @@
-"""Tests for beckman.record_growth_event and beckman.supersede_growth_event.
+"""Tests for beckman.record_growth_event, beckman.supersede_growth_event, and
+beckman.update_growth_event_properties.
 
 Verifies:
   1. record_growth_event inserts a row and returns its id.
   2. supersede_growth_event marks open rows superseded, skips consumed/already-superseded.
-  3. Guard: no module outside src/infra/db.py and general_beckman references
+  3. update_growth_event_properties overwrites stored properties_json.
+  4. Guard: no module outside src/infra/db.py and general_beckman references
      insert_growth_event (all callers must use the beckman API).
 """
 from __future__ import annotations
@@ -24,6 +26,13 @@ def _reset_db(tmp_path, monkeypatch):
     db_module.DB_PATH = db_path
     db_module._db_connection = None
     return db_path
+
+
+async def _close_db(db_mod) -> None:
+    """Close and reset the shared DB connection to avoid cross-test leaks."""
+    if db_mod._db_connection is not None:
+        await db_mod._db_connection.close()
+        db_mod._db_connection = None
 
 
 async def _fetch_events(db_path: str, kind: str) -> list[dict]:
@@ -61,21 +70,24 @@ async def test_record_growth_event_inserts_row(tmp_path, monkeypatch):
     import src.infra.db as db_module
     db_module._db_connection = None
 
-    from general_beckman import record_growth_event
-    event_id = await record_growth_event(
-        mission_id=None,
-        kind="test_kind",
-        properties={"foo": "bar"},
-    )
+    try:
+        from general_beckman import record_growth_event
+        event_id = await record_growth_event(
+            mission_id=None,
+            kind="test_kind",
+            properties={"foo": "bar"},
+        )
 
-    assert isinstance(event_id, int)
-    assert event_id > 0
+        assert isinstance(event_id, int)
+        assert event_id > 0
 
-    # Verify the row landed in the DB.
-    rows = await _fetch_events(db_path, "test_kind")
-    assert len(rows) == 1
-    assert rows[0]["properties"]["foo"] == "bar"
-    assert rows[0]["id"] == event_id
+        # Verify the row landed in the DB.
+        rows = await _fetch_events(db_path, "test_kind")
+        assert len(rows) == 1
+        assert rows[0]["properties"]["foo"] == "bar"
+        assert rows[0]["id"] == event_id
+    finally:
+        await _close_db(db_module)
 
 
 @pytest.mark.asyncio
@@ -88,14 +100,17 @@ async def test_record_growth_event_with_segment(tmp_path, monkeypatch):
     import src.infra.db as db_module
     db_module._db_connection = None
 
-    from general_beckman import record_growth_event
-    await record_growth_event(None, "seg_test", {"x": 1}, segment="cohort_a")
+    try:
+        from general_beckman import record_growth_event
+        await record_growth_event(None, "seg_test", {"x": 1}, segment="cohort_a")
 
-    async with aiosqlite.connect(db_path) as db:
-        cur = await db.execute("SELECT segment FROM growth_events WHERE kind='seg_test'")
-        row = await cur.fetchone()
-    assert row is not None
-    assert row[0] == "cohort_a"
+        async with aiosqlite.connect(db_path) as db:
+            cur = await db.execute("SELECT segment FROM growth_events WHERE kind='seg_test'")
+            row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == "cohort_a"
+    finally:
+        await _close_db(db_module)
 
 
 @pytest.mark.asyncio
@@ -108,21 +123,24 @@ async def test_supersede_growth_event_marks_open_rows(tmp_path, monkeypatch):
     import src.infra.db as db_module
     db_module._db_connection = None
 
-    from general_beckman import record_growth_event, supersede_growth_event
+    try:
+        from general_beckman import record_growth_event, supersede_growth_event
 
-    # Insert two open rows.
-    id1 = await record_growth_event(1, "backlog_candidate", {"score": 0.9})
-    id2 = await record_growth_event(1, "backlog_candidate", {"score": 0.7})
+        # Insert two open rows.
+        await record_growth_event(1, "backlog_candidate", {"score": 0.9})
+        await record_growth_event(1, "backlog_candidate", {"score": 0.7})
 
-    db_module._db_connection = None
+        db_module._db_connection = None
 
-    count = await supersede_growth_event(mission_id=1, kind="backlog_candidate")
-    assert count == 2
+        count = await supersede_growth_event(mission_id=1, kind="backlog_candidate")
+        assert count == 2
 
-    rows = await _fetch_events(db_path, "backlog_candidate")
-    assert len(rows) == 2
-    for r in rows:
-        assert r["properties"].get("superseded") is True
+        rows = await _fetch_events(db_path, "backlog_candidate")
+        assert len(rows) == 2
+        for r in rows:
+            assert r["properties"].get("superseded") is True
+    finally:
+        await _close_db(db_module)
 
 
 @pytest.mark.asyncio
@@ -135,27 +153,30 @@ async def test_supersede_skips_consumed_and_already_superseded(tmp_path, monkeyp
     import src.infra.db as db_module
     db_module._db_connection = None
 
-    from general_beckman import record_growth_event, supersede_growth_event
+    try:
+        from general_beckman import record_growth_event, supersede_growth_event
 
-    # consumed row
-    await record_growth_event(1, "northstar_review", {"consumed": True, "score": 1})
-    # already-superseded row
-    await record_growth_event(1, "northstar_review", {"superseded": True, "score": 2})
-    # open row — should be superseded
-    open_id = await record_growth_event(1, "northstar_review", {"score": 3})
+        # consumed row
+        await record_growth_event(1, "northstar_review", {"consumed": True, "score": 1})
+        # already-superseded row
+        await record_growth_event(1, "northstar_review", {"superseded": True, "score": 2})
+        # open row — should be superseded
+        open_id = await record_growth_event(1, "northstar_review", {"score": 3})
 
-    db_module._db_connection = None
+        db_module._db_connection = None
 
-    count = await supersede_growth_event(mission_id=1, kind="northstar_review")
-    assert count == 1  # only the one open row
+        count = await supersede_growth_event(mission_id=1, kind="northstar_review")
+        assert count == 1  # only the one open row
 
-    rows = await _fetch_events(db_path, "northstar_review")
-    for r in rows:
-        if r["id"] == open_id:
-            assert r["properties"].get("superseded") is True
-        elif r["properties"].get("consumed"):
-            # consumed row must not have been mutated to also carry superseded
-            assert not r["properties"].get("superseded")
+        rows = await _fetch_events(db_path, "northstar_review")
+        for r in rows:
+            if r["id"] == open_id:
+                assert r["properties"].get("superseded") is True
+            elif r["properties"].get("consumed"):
+                # consumed row must not have been mutated to also carry superseded
+                assert not r["properties"].get("superseded")
+    finally:
+        await _close_db(db_module)
 
 
 @pytest.mark.asyncio
@@ -168,13 +189,48 @@ async def test_supersede_returns_zero_when_all_already_closed(tmp_path, monkeypa
     import src.infra.db as db_module
     db_module._db_connection = None
 
-    from general_beckman import record_growth_event, supersede_growth_event
+    try:
+        from general_beckman import record_growth_event, supersede_growth_event
 
-    await record_growth_event(1, "sunset_candidate", {"superseded": True})
+        await record_growth_event(1, "sunset_candidate", {"superseded": True})
+        db_module._db_connection = None
+
+        count = await supersede_growth_event(mission_id=1, kind="sunset_candidate")
+        assert count == 0
+    finally:
+        await _close_db(db_module)
+
+
+@pytest.mark.asyncio
+async def test_update_growth_event_properties_overwrites(tmp_path, monkeypatch):
+    """update_growth_event_properties replaces stored properties_json in the DB."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
     db_module._db_connection = None
 
-    count = await supersede_growth_event(mission_id=1, kind="sunset_candidate")
-    assert count == 0
+    try:
+        from general_beckman import record_growth_event, update_growth_event_properties
+
+        event_id = await record_growth_event(
+            mission_id=None,
+            kind="prop_update_test",
+            properties={"original": True, "value": 1},
+        )
+
+        await update_growth_event_properties(event_id, {"replaced": True, "value": 99})
+
+        rows = await _fetch_events(db_path, "prop_update_test")
+        assert len(rows) == 1
+        props = rows[0]["properties"]
+        assert props.get("replaced") is True
+        assert props.get("value") == 99
+        # old key must not survive the overwrite
+        assert "original" not in props
+    finally:
+        await _close_db(db_module)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

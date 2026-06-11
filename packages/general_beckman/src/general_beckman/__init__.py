@@ -5,6 +5,9 @@ Public API (everything else is internal):
   - on_task_finished(task_id, result) -> None
   - enqueue(spec, *, parent_id, await_inline, on_complete, on_error, next_task_spec, cont_state) -> int | TaskResult
   - resolve_inline(task_id, result) -> None
+  - record_growth_event(mission_id, kind, properties, segment) -> int
+  - supersede_growth_event(mission_id, kind) -> int
+  - update_growth_event_properties(event_id, properties) -> None
 """
 from __future__ import annotations
 
@@ -96,9 +99,15 @@ async def supersede_growth_event(
     this before inserting the fresh batch so stale candidates are tombstoned.
     Append-only invariant is preserved — rows are flagged, never deleted.
 
+    WARNING: passing ``mission_id=None`` sweeps ALL missions' open events of
+    that kind — use only when a global reset is intentional.
+
     Returns the count of rows updated.
     """
-    from src.infra.db import get_growth_events, update_growth_event_properties
+    from src.infra.db import (
+        get_growth_events,
+        update_growth_event_properties as _db_update_properties,
+    )
 
     prior = await get_growth_events(mission_id=mission_id, kind=kind)
     updated = 0
@@ -107,7 +116,7 @@ async def supersede_growth_event(
         if props.get("consumed") or props.get("superseded"):
             continue
         props["superseded"] = True
-        await update_growth_event_properties(int(row["id"]), props)
+        await _db_update_properties(int(row["id"]), props)
         updated += 1
     return updated
 

@@ -48,6 +48,12 @@ def _resolve_preview_root(workspace_path: str) -> str | None:
     1. ``<ws>/.prototype/index.html`` exists → return ``<ws>/.prototype``
     2. ``<ws>/.web`` is a non-empty directory → return ``<ws>/.web``
     3. None
+
+    Plan 3 note: ``<ws>/.web/assets/`` (image-gen output from
+    swap_placeholder_images) is served automatically — the static server
+    serves the resolved root recursively and ``.web/`` is that root, so the
+    rewritten ``<img src="assets/<id>.png">`` references resolve with no
+    resolver change required (see test_emit_preview_url_assets.py).
     """
     proto = os.path.join(workspace_path, ".prototype")
     if os.path.isfile(os.path.join(proto, "index.html")):

@@ -111,6 +111,15 @@ from mr_roboto.eas_submit import eas_submit  # Z5 T3
 # Z5 T3b — free-first GitHub Actions CI + Fastlane mobile build path
 from mr_roboto.gen_mobile_ci import gen_mobile_ci  # Z5 T3b
 from mr_roboto.fastlane_run import fastlane  # Z5 T3b
+# Plan 3 — i2p image-gen integration.
+# Submodule-import pattern (NOT `from ... import <fn>`): binding the function
+# name at package level would shadow the submodule on the mr_roboto namespace
+# and break `monkeypatch.setattr("mr_roboto.swap_placeholder_images.<fn>", ...)`
+# style mocks (same reason as critic_gate / mark_green above). The dispatch
+# branches re-import the function locally at call time, so the patched
+# submodule attribute is honoured.
+import mr_roboto.swap_placeholder_images as swap_placeholder_images  # noqa: F401
+import mr_roboto.verify_swap_placeholder_images_shape as verify_swap_placeholder_images_shape  # noqa: F401
 
 __all__ = [
     "Action",
@@ -175,6 +184,8 @@ __all__ = [
     "eas_submit",
     "gen_mobile_ci",
     "fastlane",
+    "swap_placeholder_images",
+    "verify_swap_placeholder_images_shape",
 ]
 
 # Actions that involve running arbitrary shell commands — these go through
@@ -5118,5 +5129,66 @@ async def _run_dispatch(task: dict) -> Action:
         from mr_roboto.executors.yalayut_demand import run as _yal_demand_run
         res = await _yal_demand_run(task)
         return Action(status="completed", result=res)
+
+    if action == "swap_placeholder_images":
+        # Plan 3 — i2p image-gen KICKOFF (CPS chain; SP5 deleted await_inline).
+        # Enqueues ONE prompt_writer child with on_complete/on_error
+        # continuations and returns immediately; the chain enqueues image
+        # children sequentially and finalizes (HTML rewrite) on its tail.
+        # Never calls dispatcher / HK / paintress directly
+        # (feedback_singular_dispatcher_caller). Best-effort: an unexpected
+        # error degrades to a completed/skipped result so a phase-5 swap
+        # never blocks the mission.
+        from mr_roboto.swap_placeholder_images import (
+            swap_placeholder_images as _swap,
+        )
+        try:
+            res = await _swap(
+                mission_id=task.get("mission_id"),
+                workspace_path=payload.get("workspace_path"),
+                design_tokens=payload.get("design_tokens"),
+                brand_voice=payload.get("brand_voice"),
+                task_id=task.get("id"),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="completed", result={
+                "ok": True, "replaced_count": 0, "skipped_count": 0,
+                "html_files_seen": 0, "html_files_changed": 0,
+                "errors": [f"unexpected: {e}"], "chain": "none",
+            })
+
+    if action == "verify_swap_placeholder_images_shape":
+        # Plan 3 — verify posthook. Pure function; mirrors verify_charter_shape.
+        # Gates 5.40 emit_preview_url: a failed verdict blocks the preview.
+        from mr_roboto.verify_swap_placeholder_images_shape import (
+            verify_swap_placeholder_images_shape as _verify_swap,
+        )
+        try:
+            # Live i2p mechanical steps carry NO workspace_path in the payload
+            # (and there is no cross-step swap_result injection), so derive the
+            # workspace from the task's mission_id the same way the swap
+            # executor does. Without this the verifier walks nothing and the
+            # gate is vacuous.
+            ws = payload.get("workspace_path")
+            if not ws and task.get("mission_id") is not None:
+                from src.tools.workspace import get_mission_workspace
+                ws = get_mission_workspace(int(task["mission_id"]))
+            res = _verify_swap(
+                workspace_path=ws or "",
+                swap_result=payload.get("swap_result") or {},
+            )
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        "verify_swap_placeholder_images_shape: "
+                        f"{res.get('error')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
 
     return Action(status="failed", error=f"unknown mechanical action: {action!r}")

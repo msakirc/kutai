@@ -272,6 +272,111 @@ def test_parse_snapshot_preserves_desktop_fields():
     assert snap.external_gpu_fraction == 0.7
 
 
+def test_parse_snapshot_preserves_image_server_fields():
+    """Regression (2nd recurrence of the dropped-field bug class):
+    _parse_snapshot dropped image_server_resident/image_server_vram_mb, so
+    prod (which reads snapshots through this HTTP client) always saw the
+    image server as non-resident — eviction cost/warm bonus dead."""
+    from nerd_herd.client import NerdHerdClient
+    client = NerdHerdClient.__new__(NerdHerdClient)  # no network
+    data = {
+        "vram_available_mb": 8000, "local": {}, "cloud": {},
+        "image_server_resident": True, "image_server_vram_mb": 4500,
+    }
+    snap = client._parse_snapshot(data)
+    assert snap.image_server_resident is True
+    assert snap.image_server_vram_mb == 4500
+
+
+def test_parse_snapshot_field_completeness_guard():
+    """Field-completeness guard: every top-level SystemSnapshot field must
+    survive sidecar asdict → JSON wire → _parse_snapshot.
+
+    This bug class (client silently dropping fields newly added to
+    SystemSnapshot) recurred twice: desktop signals (2026-06-09) and
+    image_server_* (2026-06-11). Adding a field to SystemSnapshot without
+    teaching _parse_snapshot — or without giving it a non-default value
+    here — now fails this test.
+
+    Nested `limits` matrices stay dataclass-default on purpose: the client
+    intentionally rebuilds them (selector consumes the plumbed booleans
+    daily_exhausted / rpm_cooldown / circuit_breaker_open instead).
+    """
+    import dataclasses
+    import json
+
+    from nerd_herd.client import NerdHerdClient
+    from nerd_herd.types import (
+        CloudModelState, CloudProviderState, InFlightCall, LocalModelState,
+        QueueProfile, SystemSnapshot,
+    )
+
+    snap_in = SystemSnapshot(
+        vram_available_mb=1234,
+        local=LocalModelState(
+            model_name="qwen2.5", thinking_enabled=True, vision_enabled=True,
+            measured_tps=12.5, pp_tps=300.0, context_length=8192,
+            is_swapping=True, kv_cache_ratio=0.5, idle_seconds=3.5,
+            requests_processing=2,
+        ),
+        cloud={
+            "gemini": CloudProviderState(
+                provider="gemini", utilization_pct=75.0,
+                consecutive_failures=2, last_failure_at=1700000000,
+                circuit_breaker_open=True,
+                models={
+                    "gemini/gemini-2.5-flash": CloudModelState(
+                        model_id="gemini/gemini-2.5-flash",
+                        utilization_pct=90.0, recent_success_rate=0.45,
+                        recent_samples_n=12, provider_prior_rate=0.5,
+                        daily_exhausted=True, rpm_cooldown=True,
+                    ),
+                },
+            ),
+        },
+        queue_profile=QueueProfile(
+            hard_tasks_count=3, total_ready_count=7,
+            by_difficulty={7: 2, 5: 1}, by_capability={"code": 4},
+            projected_tokens=120000, projected_calls=9,
+        ),
+        in_flight_calls=[InFlightCall(
+            call_id="c1", task_id=42, category="main_work", model="m1",
+            provider="p1", is_local=True, started_at=123.0, est_tokens=500,
+        )],
+        recent_swap_count=2,
+        image_server_resident=True,
+        image_server_vram_mb=4500,
+        load_mode="shared",
+        user_idle_s=5.0,
+        foreground_fullscreen=True,
+        ram_available_mb=4000,
+        ram_total_mb=32000,
+        external_gpu_fraction=0.7,
+    )
+
+    # Every top-level field must hold a non-default value, otherwise the
+    # guard cannot detect that field being dropped. A future field added
+    # to SystemSnapshot but not set above fails HERE first.
+    defaults = SystemSnapshot()
+    for f in dataclasses.fields(SystemSnapshot):
+        assert getattr(snap_in, f.name) != getattr(defaults, f.name), (
+            f"guard input must set a non-default value for {f.name!r} "
+            "(new SystemSnapshot field? populate it above)"
+        )
+
+    # Simulate the actual wire: asdict (exposition._handle_snapshot) → JSON.
+    wire = json.loads(json.dumps(dataclasses.asdict(snap_in)))
+    client = NerdHerdClient.__new__(NerdHerdClient)  # no network
+    snap_out = client._parse_snapshot(wire)
+
+    in_d = dataclasses.asdict(snap_in)
+    out_d = dataclasses.asdict(snap_out)
+    for f in dataclasses.fields(SystemSnapshot):
+        assert out_d[f.name] == in_d[f.name], (
+            f"SystemSnapshot.{f.name} dropped/mutated by _parse_snapshot"
+        )
+
+
 def test_parse_snapshot_skips_non_dict_model_entries():
     from nerd_herd.client import NerdHerdClient
     client = NerdHerdClient.__new__(NerdHerdClient)

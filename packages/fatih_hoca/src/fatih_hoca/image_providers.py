@@ -22,4 +22,10 @@ def image_catalog() -> list[ImageModelInfo]:
             quality_rank=8.0, cost_per_image=0.0, vram_mb=0,
             supports_seed=True, tier="free",
         ),
+        ImageModelInfo(
+            name="clair_obscur/sdxl-turbo", provider="clair_obscur",
+            location="local", endpoint="",  # set at dispatch from base_url()
+            quality_rank=7.5, cost_per_image=0.0, vram_mb=4500,
+            supports_seed=True, tier="local",
+        ),
     ]

@@ -2,17 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fill in the local half of the image-generation lane on top of Plan 1 v2's cloud spine. Adds a local image-server wrapper (`clair_obscur`) parallel to dallama, wires it through paintress as the `local_server` provider, registers a local SDXL entry in hoca's image catalog, replaces Plan 1's eviction-cost stub with the real formula reading nerd_herd, performs the dispatcher GPU handover (`dallama.unload()` → poll free VRAM → `clair_obscur.start()` → record-swap) **wrapped in `heartbeat.keepalive()` so the 30-60s+ handover never trips the 300s no-progress watchdog**, and adds beckman warm-batch awareness that drives clair_obscur's idle backstop (not a direct hard-stop — the backstop **is the stop** under normal lane switches).
+**Goal:** Fill in the local half of the image-generation lane on top of Plan 1 v3's cloud spine. Adds a local image-server wrapper (`clair_obscur`) parallel to dallama, wires it through paintress as the `local_server` provider, registers a local SDXL entry in hoca's image catalog, replaces Plan 1's eviction-cost stub with the real formula reading nerd_herd, performs the GPU handover (`get_local_manager().shutdown()` → poll free VRAM → `clair_obscur.start()` → record-swap) **inside `husam._run_image`, wrapped in `heartbeat.keepalive()` so the 30-60s+ handover never trips the 300s no-progress watchdog**, and adds beckman warm-batch awareness that drives clair_obscur's idle backstop (not a direct hard-stop — the backstop **is the stop** under normal lane switches).
 
-**Architecture:** `clair_obscur` is the image-world `dallama` — a thin async process wrapper around ComfyUI (default) or AUTOMATIC1111 (env flag), holding a PID-lock at `image_server.lock`, reconciling its own orphan on boot using `psutil.Process(pid).children(recursive=True)` against the **PID written to its own lock** (NEVER process-name kills, NEVER llama-server, per CLAUDE.md). The local handover is mechanical follow-through inside Plan 1 v2's full-telemetry envelope: hoca picks `clair_obscur/sdxl-turbo`, the dispatcher unloads dallama → polls free VRAM → starts clair_obscur → records ONE swap, all inside `heartbeat.keepalive()` so the watchdog stays satisfied through the cold-start window. After each image task, beckman calls `clair_obscur.record_release_hint()` on lane switch; the backstop times the actual `stop()` after `idle_release_seconds` so a back-to-back image batch reuses the warm server without a restart.
+**Architecture:** `clair_obscur` is the image-world `dallama` — a thin async process wrapper around ComfyUI (default) or AUTOMATIC1111 (env flag), holding a PID-lock at `image_server.lock`, reconciling its own orphan on boot using `psutil.Process(pid).children(recursive=True)` against the **PID written to its own lock** (NEVER process-name kills, NEVER llama-server, per CLAUDE.md). The local handover is mechanical follow-through inside Plan 1 v3's full-telemetry envelope **in `husam._run_image`** (there is no `dispatcher.dispatch()`; image execution lives in husam): hoca picks `clair_obscur/sdxl-turbo`, husam unloads dallama → polls free VRAM → starts clair_obscur → records ONE swap, all inside `heartbeat.keepalive()` so the watchdog stays satisfied through the cold-start window. After each image task, beckman calls `clair_obscur.record_release_hint()` on lane switch; the backstop times the actual `stop()` after `idle_release_seconds` so a back-to-back image batch reuses the warm server without a restart.
 
 **Tech Stack:** Python 3.10, async/await, httpx (HTTP to ComfyUI/A1111), aiosqlite, psutil (transitive via nerd_herd; declared explicitly in clair_obscur's pyproject). Package layout mirrors `packages/dallama/` src-layout.
 
-**Scope boundary (in this plan):** `clair_obscur` package · paintress `local_server` provider · hoca local SDXL catalog entry · real eviction-cost in `image_select.py` (reads nerd_herd via `refresh_snapshot()`) · VRAM-fit eligibility gate · nerd_herd `image_server_resident` + `image_server_vram_mb` fields + `record_image_server_state` · dispatcher local-image handover wrapped in `keepalive()` · beckman warm-batch hook that drives `record_release_hint()` (NOT direct stop) · e2e host-path test with mocked ComfyUI/A1111.
+**Scope boundary (in this plan):** `clair_obscur` package · paintress `local_server` provider · hoca local SDXL catalog entry · real eviction-cost in `image_select.py` (reads nerd_herd via `refresh_snapshot()`) · VRAM-fit eligibility gate · nerd_herd `image_server_resident` + `image_server_vram_mb` fields + `record_image_server_state` · husam `_run_image` local-image handover wrapped in `keepalive()` · beckman warm-batch hook that drives `record_release_hint()` (NOT direct stop) · e2e host-path test with mocked ComfyUI/A1111.
 
 **NOT in this plan (Plan 3):** i2p prototype `swap_placeholder_images` mechanical · prompt-writing coulson task + templates · asset serving wired into the web-preview host · ComfyUI/A1111 actually installed on the dev box · live GPU process in CI.
 
-**Dependency: Plan 1 v2 MUST be merged first.** Plan 2 extends `image_select.py`, `paintress/__init__.py`, `llm_dispatcher._dispatch_image`, `image_providers.py`, and beckman's admission shape — all of which Plan 1 v2 introduces. Recon confirmed `_select_for_admission` doesn't exist on `main` today; Plan 1 v2 must land before Plan 2 starts.
+**Dependency: Plan 1 v3 MUST be merged first.** Plan 2 extends `image_select.py`, `paintress/__init__.py`, **`husam.worker._run_image`** (NOT a dispatcher method — `dispatcher.dispatch()`/`_dispatch_image` do not exist), `image_providers.py`, and beckman's admission shape — all of which Plan 1 v3 introduces. Recon confirmed `_select_for_admission` and `husam._run_image` don't exist on `main` today; Plan 1 v3 must land before Plan 2 starts.
 
 **Inviolable rules (CLAUDE.md):**
 - `clair_obscur.start()` / `.stop()` / boot-orphan-reconcile MUST target **only** the image-server backend's PID via the PID written to its own `image_server.lock`. Verified by `psutil.Process(pid).cmdline()` matching the expected backend launcher (ComfyUI's `main.py` / A1111's `webui.py` / `launch.py`). MUST NEVER call `taskkill /F /IM llama-server.exe`, `psutil.process_iter(["name"])` style sweeps, or anything that could hit a co-tenant.
@@ -27,7 +27,7 @@ Prior Plan 2 had: (1) **no `heartbeat.keepalive()` around the long unload+poll+s
 Recon confirmed (verbatim file:line):
 - `nerd_herd.snapshot()` is NOT a module-level function. `NerdHerd.snapshot()` is the instance method at `packages/nerd_herd/src/nerd_herd/nerd_herd.py:140`; module-level access is `nerd_herd.refresh_snapshot()` (used by `general_beckman/__init__.py:330`).
 - `record_swap(model_name: str = "")` is positional-optional at `nerd_herd.py:114`.
-- `keepalive(interval: float = 30.0)` at `src/core/heartbeat.py:75-111` is reentrant + contextvar-safe — safe to wrap an outer span containing both `dallama.unload()` and `clair_obscur.start()`.
+- `keepalive(interval: float = 30.0)` at `src/core/heartbeat.py:75-111` is reentrant + contextvar-safe — safe to wrap an outer span containing both `get_local_manager().shutdown()` and `clair_obscur.start()`.
 - `next_task()` admission at `general_beckman/__init__.py:262-459` has NO extracted peek helper; `_queue.pick_ready_top_k(k, lane)` returns top-K candidates, and `_claim_task(id)` does the claim.
 - Safe psutil PID-kill template at `packages/nerd_herd/src/nerd_herd/platform.py:1-21`: `psutil.Process(pid).children(recursive=True)` with try/except.
 - i2p step convention for mechanicals (confirmed in JSON): `"agent": "mechanical"`, `"executor": "mechanical"`, verb name in `payload.action`. (Affects Plan 3, not Plan 2 — but worth noting since Plan 2's e2e test forces a local pick.)
@@ -53,7 +53,7 @@ Recon confirmed (verbatim file:line):
 - `packages/nerd_herd/src/nerd_herd/types.py` — add `image_server_resident: bool = False` + `image_server_vram_mb: int = 0` to `SystemSnapshot`.
 - `packages/nerd_herd/src/nerd_herd/__init__.py` — add module-level `record_image_server_state(resident, vram_mb)`.
 - `packages/nerd_herd/src/nerd_herd/nerd_herd.py` — add `push_image_server_state` method; init two new attrs; extend `snapshot()` builder.
-- `src/core/llm_dispatcher.py` — extend `_dispatch_image` with `if pick.model.is_local:` branch **wrapped in `heartbeat.keepalive()`**.
+- `packages/husam/src/husam/worker.py` — extend `_run_image` with `if pick.model.is_local:` handover branch **inside the existing `heartbeat.keepalive()`**.
 - `packages/paintress/src/paintress/__init__.py` — APPEND `"clair_obscur": LocalServerProvider()` to existing `_PROVIDERS`.
 - `packages/general_beckman/src/general_beckman/__init__.py` — add post-completion hook that calls `clair_obscur.record_release_hint()` (NOT direct stop) when image lane is finishing; stamp `preselected_pick_provider` at admission.
 - root `conftest.py` `_PACKAGE_SRCS` — append `clair_obscur`.
@@ -1055,7 +1055,7 @@ git commit -m "test(image): clair_obscur ↔ nerd_herd start/stop wiring"
 - Modify: `packages/paintress/src/paintress/__init__.py` — APPEND `"clair_obscur": LocalServerProvider()` to `_PROVIDERS`
 - Test: `packages/paintress/tests/test_local_server.py`
 
-(Identical to Plan 2 v1 Task 7 — the provider doesn't depend on the audit findings. Body kept verbatim for completeness; the dispatcher's local handover in Task 10 is where the v2 fix lives.)
+(Identical to Plan 2 v1 Task 7 — the provider doesn't depend on the audit findings. Body kept verbatim for completeness; husam's local handover in `_run_image` (Task 10) is where the v2 fix lives.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1392,13 +1392,13 @@ git commit -m "feat(image): catalog adds clair_obscur/sdxl-turbo"
 
 ---
 
-## Task 9: Real eviction-cost + VRAM-fit gate — reads `refresh_snapshot()`
+## Task 9: Real eviction-cost + VRAM-fit gate — reads live singleton snapshot
 
 **Files:**
 - Modify: `packages/fatih_hoca/src/fatih_hoca/image_select.py`
 - Test: `packages/fatih_hoca/tests/test_image_select_eviction.py`
 
-Recon: there is **no module-level `nerd_herd.snapshot()`**. Plan 2 v2 reads `refresh_snapshot()` (the same function beckman uses). The `_snapshot()` helper in `image_select.py` is the test-mockable seam.
+Recon (corrected 2026-06-08): the image scorer reads the **live in-process singleton** via `nerd_herd._get_singleton().snapshot()` — the same singleton `record_image_server_state()` and `record_swap()` write to, with a live GPU `vram_available_mb`. Do NOT use module-level `nerd_herd.snapshot()` (returns the client's CACHED value — stale w.r.t. residency) or `refresh_snapshot()` (async — a coroutine in this sync path). The `_snapshot()` helper in `image_select.py` is the test-mockable seam; eviction tests monkeypatch `fatih_hoca.image_select._snapshot` directly.
 
 Eviction formula (calibrated against quality_rank spread 6.0/7.5/8.0):
 - `image_server_resident` → 0 (warm batch)
@@ -1512,11 +1512,20 @@ _WARM_BATCH_BONUS = 1.0
 
 
 def _snapshot():
-    """Read nerd_herd state. Module-level `refresh_snapshot()` exists
-    (recon-verified); there is NO `nerd_herd.snapshot()` symbol."""
+    """Read LIVE in-process nerd_herd state via the singleton.
+
+    Must read `nerd_herd._get_singleton().snapshot()` — NOT module-level
+    `nerd_herd.snapshot()` (which returns the NerdHerdClient's CACHED value,
+    stale w.r.t. residency) and NOT `refresh_snapshot()` (async — calling it
+    from this sync helper returns a coroutine, so every `getattr` reads
+    False/0 and local would never be selected). The singleton is exactly
+    where `record_image_server_state()` (clair_obscur) and `record_swap()`
+    (husam) write, and its `snapshot()` builds `vram_available_mb` from a live
+    GPU read — so residency and freed VRAM are reflected synchronously. Tests
+    monkeypatch this helper directly."""
     try:
         import nerd_herd
-        return nerd_herd.refresh_snapshot()
+        return nerd_herd._get_singleton().snapshot()
     except Exception:
         from nerd_herd.types import SystemSnapshot
         return SystemSnapshot()
@@ -1616,36 +1625,37 @@ git commit -m "feat(image): real eviction-cost + VRAM-fit (reads refresh_snapsho
 
 ---
 
-## Task 10: Dispatcher local handover **wrapped in `heartbeat.keepalive()`**
+## Task 10: Husam local handover **wrapped in `heartbeat.keepalive()`**
 
 **Files:**
-- Modify: `src/core/llm_dispatcher.py` — extend `_dispatch_image` with `if pick.model.is_local:` branch INSIDE the `keepalive()` context
-- Test: `tests/core/test_dispatcher_image_local.py`
+- Modify: `packages/husam/src/husam/worker.py` — extend `_run_image` with `if pick.model.is_local:` handover branch INSIDE the `keepalive()` context
+- Test: `packages/husam/tests/test_husam_image_local.py`
 
-The v2 fix: dallama unload + VRAM poll + clair_obscur cold start can take 30-60s+. The orchestrator's 300s no-progress watchdog reads heartbeats. Plan 1 v2's `_dispatch_image` wraps `paintress.generate` in `keepalive()`. v2 expands the wrap to cover unload + poll + start so the watchdog stays satisfied through the cold-start window. Recon confirmed `keepalive()` is reentrant + contextvar-safe.
+The fix: `get_local_manager().shutdown()` + VRAM poll + clair_obscur cold start can take 30-60s+. The orchestrator's 300s no-progress watchdog reads heartbeats. Plan 1 v3's `husam._run_image` wraps `paintress.generate` in `keepalive()` (the existing block at `worker.py:113-114`). Plan 2 expands the wrap to cover unload + poll + start so the watchdog stays satisfied through the cold-start window. `shutdown()` is internally guarded (`if self._started: await self._dallama.stop()`) so it's a safe no-op when no local LLM is loaded; DaLLaMa lazy-reloads on the next LLM task's `ensure_model`. Recon confirmed `keepalive()` is reentrant + contextvar-safe.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/core/test_dispatcher_image_local.py
+# packages/husam/tests/test_husam_image_local.py
 import pytest
+
+from husam import run as husam_run
 
 
 @pytest.mark.asyncio
 async def test_local_image_handover_ordering(monkeypatch, tmp_path):
-    """Order must be: unload → poll → clair_obscur.start → paintress.generate
-    → record_swap. All wrapped in keepalive() so the watchdog sees bumps."""
+    """Order must be: unload → poll → clair_obscur.start → record_swap →
+    paintress.generate. All inside the existing keepalive() span (worker.py)
+    so the watchdog sees bumps through the cold-start window."""
     from fatih_hoca.registry import ImageModelInfo
     from fatih_hoca.types import Pick
-    from src.core.llm_dispatcher import get_dispatcher
 
     order = []
 
     class _Mgr:
-        current_model = "qwen2.5-7b"
-        async def unload(self):
+        async def shutdown(self):
             order.append("unload")
-            _Mgr.current_model = None
+    # _run_image imports get_local_manager from src.models.local_model_manager.
     monkeypatch.setattr("src.models.local_model_manager.get_local_manager",
                         lambda: _Mgr())
 
@@ -1653,14 +1663,8 @@ async def test_local_image_handover_ordering(monkeypatch, tmp_path):
     def _snap():
         poll_calls["n"] += 1
         # First snapshot: VRAM still low; second: high enough.
-        class _Local: model_name = None
         class _S:
-            local = _Local()
             vram_available_mb = 1000 if poll_calls["n"] == 1 else 7000
-            in_flight_calls = []
-            image_server_resident = False
-            image_server_vram_mb = 0
-            class queue_profile: total_ready_count = 0
         return _S()
     monkeypatch.setattr("nerd_herd.refresh_snapshot", _snap)
 
@@ -1688,16 +1692,17 @@ async def test_local_image_handover_ordering(monkeypatch, tmp_path):
         cost_per_image=0.0, vram_mb=4500, supports_seed=True,
     )
     pick = Pick(model=model, min_time_seconds=0.0, score=8.5, top_summary="t")
-    spec = {
+    task = {
         "context": {"image_call": {
             "raw_dispatch": True, "prompt": "a fox", "out_dir": str(tmp_path),
-            "width": 512, "height": 512,
+            "width": 512, "height": 512, "quality_tier": "fast",
         }},
         "kind": "image",
         "preselected_pick": pick,
     }
-    res = await get_dispatcher().dispatch(spec)
+    res = await husam_run(task)
     assert res["path"].endswith(".png")
+    # unload → start → swap come before generate (handover precedes the call).
     assert order == ["unload", "clair_obscur.start", "paintress.generate"]
     assert swaps == ["clair_obscur/sdxl-turbo"]
     assert poll_calls["n"] >= 2  # polled until VRAM fit
@@ -1705,33 +1710,26 @@ async def test_local_image_handover_ordering(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_keepalive_wraps_long_handover(monkeypatch, tmp_path):
-    """During the unload+poll+start sequence, heartbeat.bump() must be
-    callable / the contextvar must be set / keepalive() must be reentrant.
-    We assert by patching heartbeat.bump and recording calls."""
+    """The handover (shutdown + poll + start) must run INSIDE the keepalive()
+    span so heartbeat bumps remain reachable. We assert the context does not
+    raise and the local branch executes."""
     from fatih_hoca.registry import ImageModelInfo
     from fatih_hoca.types import Pick
-    from src.core.llm_dispatcher import get_dispatcher
 
     bumps = {"n": 0}
     monkeypatch.setattr("src.core.heartbeat.bump",
                         lambda task_id=None: bumps.__setitem__("n", bumps["n"] + 1))
 
     class _Mgr:
-        current_model = "qwen"
-        async def unload(self):
+        async def shutdown(self):
             # Simulate a slow unload (>30s would normally trip watchdog;
-            # we only assert keepalive's bump is reachable).
+            # we only assert the keepalive span stays reachable).
             import asyncio
             await asyncio.sleep(0)
     monkeypatch.setattr("src.models.local_model_manager.get_local_manager",
                         lambda: _Mgr())
     class _S:
-        class local: model_name = None
         vram_available_mb = 7000
-        in_flight_calls = []
-        image_server_resident = False
-        image_server_vram_mb = 0
-        class queue_profile: total_ready_count = 0
     monkeypatch.setattr("nerd_herd.refresh_snapshot", lambda: _S())
     monkeypatch.setattr("nerd_herd.record_swap", lambda name="": None)
     async def _co_start(): return "http://127.0.0.1:8188"
@@ -1747,10 +1745,10 @@ async def test_keepalive_wraps_long_handover(monkeypatch, tmp_path):
     model = ImageModelInfo(name="clair_obscur/sdxl-turbo", provider="clair_obscur",
                            location="local", endpoint="", vram_mb=4500)
     pick = Pick(model=model, min_time_seconds=0.0)
-    spec = {"context": {"image_call": {"raw_dispatch": True, "prompt": "x",
+    task = {"context": {"image_call": {"raw_dispatch": True, "prompt": "x",
                                        "out_dir": str(tmp_path)}},
             "kind": "image", "preselected_pick": pick}
-    res = await get_dispatcher().dispatch(spec)
+    res = await husam_run(task)
     assert res["path"].endswith(".png")
     # bump may not fire in this fast-mock path, but the keepalive context
     # must not raise — that's the contract this test enforces.
@@ -1758,15 +1756,14 @@ async def test_keepalive_wraps_long_handover(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_cloud_image_path_skips_handover(monkeypatch, tmp_path):
-    """Sanity: cloud pick must NOT touch dallama, clair_obscur, or record_swap."""
+    """Sanity: cloud pick must NOT touch shutdown, clair_obscur, or record_swap."""
     from fatih_hoca.registry import ImageModelInfo
     from fatih_hoca.types import Pick
-    from src.core.llm_dispatcher import get_dispatcher
 
     touched = {"unload": False, "start": False, "swap": False}
 
     class _Mgr:
-        async def unload(self): touched["unload"] = True
+        async def shutdown(self): touched["unload"] = True
     monkeypatch.setattr("src.models.local_model_manager.get_local_manager",
                         lambda: _Mgr())
     async def _co_start():
@@ -1785,90 +1782,98 @@ async def test_cloud_image_path_skips_handover(monkeypatch, tmp_path):
     model = ImageModelInfo(name="pollinations/flux", provider="pollinations",
                            location="cloud", endpoint="https://x/", vram_mb=0)
     pick = Pick(model=model, min_time_seconds=0.0)
-    spec = {"context": {"image_call": {"raw_dispatch": True, "prompt": "x",
+    task = {"context": {"image_call": {"raw_dispatch": True, "prompt": "x",
                                        "out_dir": str(tmp_path)}},
             "kind": "image", "preselected_pick": pick}
-    await get_dispatcher().dispatch(spec)
+    await husam_run(task)
     assert touched == {"unload": False, "start": False, "swap": False}
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/core/test_dispatcher_image_local.py -q`
-Expected: FAIL — handover branch absent.
+Run: `.venv/Scripts/python -m pytest packages/husam/tests/test_husam_image_local.py -q`
+Expected: FAIL — handover branch absent (cloud test already passes; the local-ordering test fails because the unload/poll/start/swap sequence doesn't exist yet).
 
-- [ ] **Step 3: Extend `_dispatch_image` — handover INSIDE `keepalive()`**
+- [ ] **Step 3: Extend `_run_image` — handover INSIDE the existing `keepalive()`**
 
-In `src/core/llm_dispatcher.py`, in `_dispatch_image`, restructure so the local handover and `paintress.generate` are both inside one `async with _hb.keepalive():` block:
-
-Find Plan 1 v2's existing structure (paraphrased):
+In `packages/husam/src/husam/worker.py`, in `_run_image`, the existing block at lines 113-114 is:
 ```python
-async with _hb.keepalive():
-    result = await paintress.generate(pick, s)
+            async with _hb.keepalive():
+                result = await paintress.generate(pick, s)
 ```
 
-REPLACE that block with:
+REPLACE that block so the local handover runs INSIDE the same `keepalive()` span, BEFORE `paintress.generate`. `_run_image` already imports `time as _time` and `ModelCallFailed` (`from src.core.router import ModelCallFailed`); add `import asyncio` lazily inside the branch if not already present:
 ```python
-        # Local handover (Plan 2) + paintress.generate — both inside keepalive()
-        # so the watchdog stays satisfied through the cold-start window.
-        async with _hb.keepalive():
-            if getattr(pick.model, "is_local", False):
-                # 1. Free VRAM by unloading any current local LLM.
-                try:
-                    from src.models.local_model_manager import get_local_manager
-                    manager = get_local_manager()
-                    if getattr(manager, "current_model", None):
-                        await manager.unload()
-                except Exception as _e:
-                    logger.warning("local_image: dallama unload failed: %s", _e)
-                # 2. Poll free VRAM until image model fits (or timeout).
-                try:
-                    import nerd_herd
-                    deadline = time.time() + 30.0
-                    needed = int(getattr(pick.model, "vram_mb", 0) or 0)
-                    while time.time() < deadline:
-                        snap = nerd_herd.refresh_snapshot()
-                        if int(getattr(snap, "vram_available_mb", 0) or 0) >= needed:
-                            break
-                        await asyncio.sleep(0.5)
-                except Exception as _e:
-                    logger.warning("local_image: vram poll failed: %s", _e)
-                # 3. Start clair_obscur (returns base_url; idempotent).
-                try:
-                    import clair_obscur
-                    co_base = await clair_obscur.start()
+            async with _hb.keepalive():
+                if getattr(pick.model, "is_local", False):
+                    import asyncio
+                    # 1. Free VRAM by unloading any current local LLM. shutdown()
+                    #    is internally guarded (no-op if nothing loaded); DaLLaMa
+                    #    lazy-reloads on the next LLM task's ensure_model.
                     try:
-                        pick.model.endpoint = co_base
+                        from src.models.local_model_manager import get_local_manager
+                        await get_local_manager().shutdown()
+                    except Exception as _e:
+                        from src.infra.logging_config import get_logger
+                        get_logger("husam.image").warning(
+                            "local_image: dallama shutdown failed: %s", _e)
+                    # 2. Poll free VRAM until the image model fits (or ~30s).
+                    try:
+                        import nerd_herd
+                        deadline = _time.time() + 30.0
+                        needed = int(getattr(pick.model, "vram_mb", 0) or 0)
+                        while _time.time() < deadline:
+                            # Live in-process singleton snapshot: vram_available_mb
+                            # is a live GPU read, so it reflects VRAM freed by the
+                            # shutdown() above. NOT module-level refresh_snapshot()
+                            # (async coroutine in this context) nor snapshot()
+                            # (client cache).
+                            snap = nerd_herd._get_singleton().snapshot()
+                            if int(getattr(snap, "vram_available_mb", 0) or 0) >= needed:
+                                break
+                            await asyncio.sleep(0.5)
+                    except Exception as _e:
+                        from src.infra.logging_config import get_logger
+                        get_logger("husam.image").warning(
+                            "local_image: vram poll failed: %s", _e)
+                    # 3. Start clair_obscur (idempotent; returns base_url).
+                    try:
+                        import clair_obscur
+                        co_base = await clair_obscur.start()
+                        try:
+                            pick.model.endpoint = co_base
+                        except Exception:
+                            pass  # paintress local_server falls back to clair_obscur.base_url()
+                    except Exception as _e:
+                        raise ModelCallFailed(
+                            call_id=getattr(pick.model, "name", "image"),
+                            last_error=f"clair_obscur_start_failed:{_e}",
+                            error_category="availability",
+                        )
+                    # 4. Record exactly one swap (charge against hoca's budget).
+                    try:
+                        import nerd_herd
+                        nerd_herd.record_swap(getattr(pick.model, "name", ""))
                     except Exception:
-                        pass  # paintress local_server falls back to clair_obscur.base_url()
-                except Exception as _e:
-                    from src.core.router import ModelCallFailed
-                    raise ModelCallFailed(
-                        call_id=getattr(pick.model, "name", "image"),
-                        last_error=f"clair_obscur_start_failed:{_e}",
-                        error_category="availability",
-                    )
-                # 4. Record-swap (one charge against hoca's swap budget).
-                try:
-                    import nerd_herd
-                    nerd_herd.record_swap(getattr(pick.model, "name", ""))
-                except Exception:
-                    pass
-            result = await paintress.generate(pick, s)
+                        pass
+                result = await paintress.generate(pick, s)
 ```
 
-(Confirm the unload method name on `LocalModelManager` via `grep -n "async def unload\|def unload" src/models/local_model_manager.py`. If it's named `unload_current` or similar, adjust the call.)
+Notes:
+- There is NO `manager.unload()` and NO `manager.current_model` — `get_local_manager().shutdown()` is the real API and is a safe no-op when nothing is loaded, so no `current_model` guard is needed.
+- `ModelCallFailed` is already imported at the top of `_run_image`; do not re-import it.
+- The handover is gated on `if getattr(pick.model, "is_local", False):` so a cloud pick falls straight through to `paintress.generate`.
 
 - [ ] **Step 4: Run + regression**
 
-Run: `.venv/Scripts/python -m pytest tests/core/test_dispatcher_image_local.py tests/core/test_dispatcher_image.py -q`
-Expected: PASS (Plan 1 v2's cloud tests + Plan 2's local tests).
+Run: `.venv/Scripts/python -m pytest packages/husam/tests/test_husam_image_local.py packages/husam/tests/ -q -x`
+Expected: PASS (Plan 1 v3's cloud-path tests + Plan 2's local tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/core/llm_dispatcher.py tests/core/test_dispatcher_image_local.py
-git commit -m "feat(image): dispatcher local handover inside keepalive() envelope"
+git add packages/husam/src/husam/worker.py packages/husam/tests/test_husam_image_local.py
+git commit -m "feat(image): husam local handover inside keepalive() envelope"
 ```
 
 ---
@@ -1879,7 +1884,7 @@ git commit -m "feat(image): dispatcher local handover inside keepalive() envelop
 - Modify: `packages/general_beckman/src/general_beckman/__init__.py`
 - Test: `packages/general_beckman/tests/test_image_warm_batch.py`
 
-v2 change: the hook calls `clair_obscur.record_release_hint()` on lane switch instead of `await clair_obscur.stop()` directly. The backstop in clair_obscur (Task 4) then times the actual stop after `idle_release_seconds`. This wires the backstop and gives a back-to-back image batch a window to reuse the warm server (the dispatcher's idempotent `start()` clears the hint if a new image task lands within the window).
+v2 change: the hook calls `clair_obscur.record_release_hint()` on lane switch instead of `await clair_obscur.stop()` directly. The backstop in clair_obscur (Task 4) then times the actual stop after `idle_release_seconds`. This wires the backstop and gives a back-to-back image batch a window to reuse the warm server (husam `_run_image`'s idempotent `clair_obscur.start()` clears the hint if a new image task lands within the window).
 
 For the **warm-batch case** (next admittable task is another local image), the hook does nothing — clair_obscur stays warm because no hint was recorded.
 
@@ -1900,7 +1905,7 @@ import pytest
 async def test_local_image_followed_by_image_no_hint(monkeypatch):
     """Two local image tasks back-to-back → NO release hint → clair_obscur
     stays warm. The next image dispatch will idempotently clear any pending
-    hint (in dispatcher Task 10)."""
+    hint (in husam `_run_image`, Task 10)."""
     import general_beckman as gb
 
     hints = {"n": 0}
@@ -2067,7 +2072,7 @@ git commit -m "feat(image): beckman warm-batch hook drives clair_obscur backstop
 **Files:**
 - Test: `tests/integration/test_image_local_e2e.py`
 
-Drives the full local lane in one test: a mock A1111 HTTP server (or ComfyUI — Plan 2 uses A1111 because the mock is simpler) → forced local pick via snapshot override → dispatcher unloads llama (mock) → clair_obscur starts (mock subprocess via monkeypatch) → paintress.local_server hits mock → PNG written → record_swap fires once → telemetry round-trip rows land.
+Drives the full local lane in one test via the Plan 1 v3 manual-pump pattern — `next_task()` → `await husam.run(task)` → `on_task_finished(tid, result)`: a mock A1111 HTTP server (or ComfyUI — Plan 2 uses A1111 because the mock is simpler) → forced local pick via snapshot override → `husam._run_image` unloads the local LLM via `get_local_manager().shutdown()` (mock) → clair_obscur starts (mock via monkeypatch) → paintress.local_server hits mock → PNG written → record_swap fires once → telemetry round-trip rows land. The handover is driven inside `husam._run_image` (Task 10), not the dispatcher.
 
 - [ ] **Step 1: Write the test**
 
@@ -2110,9 +2115,8 @@ async def test_local_image_lane_e2e(monkeypatch, tmp_path):
     monkeypatch.setattr("nerd_herd.refresh_snapshot", lambda: _Snap())
 
     class _Mgr:
-        current_model = "qwen2.5-7b"
-        async def unload(self):
-            _Mgr.current_model = None
+        async def shutdown(self):
+            pass  # no-op; handover proceeds to start()
     monkeypatch.setattr("src.models.local_model_manager.get_local_manager",
                         lambda: _Mgr())
     async def _co_start(): return "http://127.0.0.1:7860"
@@ -2135,26 +2139,31 @@ async def test_local_image_lane_e2e(monkeypatch, tmp_path):
     monkeypatch.setattr("paintress.providers.local_server.httpx.AsyncClient", _Client)
 
     import fatih_hoca
-    from src.core.llm_dispatcher import get_dispatcher
+    import husam
 
+    # Force the local pick (snapshot override above makes clair_obscur eligible).
     pick = fatih_hoca.select(needs_image=True, quality_tier="fast")
     assert pick.model.provider == "clair_obscur"
-    spec = {
+    task = {
         "context": {"image_call": {
             "raw_dispatch": True, "prompt": "a fox in snow",
             "out_dir": str(tmp_path), "width": 512, "height": 512, "seed": 33,
-            "filename_hint": "fox",
+            "filename_hint": "fox", "quality_tier": "fast",
         }},
         "kind": "image",
         "preselected_pick": pick,
     }
-    res = await get_dispatcher().dispatch(spec)
+    # Manual pump (Plan 1 v3 pattern): husam.run drives the handover inside
+    # husam._run_image (Task 10). on_task_finished closes the telemetry round-trip.
+    res = await husam.run(task)
     assert os.path.isfile(res["path"])
     assert os.path.getsize(res["path"]) > 0
     assert res["provider"] == "clair_obscur"
     assert res["seed_used"] == 33
-    assert swaps == ["clair_obscur/sdxl-turbo"]
+    assert swaps == ["clair_obscur/sdxl-turbo"]  # exactly one swap recorded
 ```
+
+> If the test wants the full beckman round-trip rather than a bare `husam.run`, use the canonical manual pump: seed the task via `add_task`/`enqueue` (no `await_inline`) → `tid = await next_task()` → `result = await husam.run(task)` → `await on_task_finished(tid, result)`, mirroring `tests/test_beckman_next_task.py`. The handover is still driven inside `husam._run_image`; beckman only pumps.
 
 - [ ] **Step 2: Run + smoke**
 
@@ -2163,10 +2172,10 @@ Expected: PASS.
 
 Full Plan 2 suite green-check (split per Plan 1 v2 §13 conftest-collision rule):
 ```
-.venv/Scripts/python -m pytest packages/clair_obscur/tests packages/paintress/tests/test_local_server.py packages/fatih_hoca/tests/test_image_providers_local.py packages/fatih_hoca/tests/test_image_select_eviction.py packages/nerd_herd/tests/test_image_server_state.py packages/general_beckman/tests/test_image_warm_batch.py -q
-.venv/Scripts/python -m pytest tests/core/test_dispatcher_image_local.py tests/integration/test_image_local_e2e.py -q
+.venv/Scripts/python -m pytest packages/clair_obscur/tests packages/paintress/tests/test_local_server.py packages/fatih_hoca/tests/test_image_providers_local.py packages/fatih_hoca/tests/test_image_select_eviction.py packages/nerd_herd/tests/test_image_server_state.py packages/general_beckman/tests/test_image_warm_batch.py packages/husam/tests/test_husam_image_local.py -q
+.venv/Scripts/python -m pytest tests/integration/test_image_local_e2e.py -q
 ```
-Expected: all green. Plan 1 v2's `tests/integration/test_image_e2e.py` also still green.
+Expected: all green. Plan 1 v3's `tests/integration/test_image_e2e.py` also still green.
 
 - [ ] **Step 3: Commit**
 
@@ -2183,7 +2192,7 @@ git commit -m "test(image): end-to-end local lane host-path (mock A1111)"
 - paintress `local_server` provider speaks ComfyUI (`/prompt` + history poll + `/view`) and A1111 (`/sdapi/v1/txt2img`).
 - hoca image catalog has `clair_obscur/sdxl-turbo` at quality_rank 7.5, vram_mb 4500; cloud entries untouched.
 - `image_select._eviction_cost` reads `nerd_herd.refresh_snapshot()` (NOT a non-existent `nerd_herd.snapshot()`) and implements the four-arm formula with `_WARM_BATCH_BONUS=1.0`; VRAM-fit gate refuses local when free + recoverable < `model.vram_mb`.
-- Dispatcher's `_dispatch_image` handovers GPU on `is_local` picks **wrapped in `heartbeat.keepalive()`** so the 300s watchdog stays satisfied through the cold-start window. Plan 1 v2's telemetry envelope (begin/end_call, pick_log, tokens, cost) still surrounds.
+- Husam's `_run_image` handovers GPU on `is_local` picks (`get_local_manager().shutdown()` → poll free VRAM → `clair_obscur.start()` → `record_swap`) **inside the existing `heartbeat.keepalive()`** so the 300s watchdog stays satisfied through the cold-start window. Plan 1 v3's telemetry envelope (begin/end_call, pick_log, tokens, cost) still surrounds.
 - Beckman's `on_task_finished` peeks the queue via `_queue.pick_ready_top_k(k=1)`: holds clair_obscur warm when next is another image, calls `clair_obscur.record_release_hint()` on lane switch; clair_obscur's backstop fires the actual stop after `idle_release_seconds`. **No dead code** — the backstop is the normal-path stop trigger.
 - E2E host-path test drives the full local lane against mocks; PNG written; one swap recorded; no real GPU.
 - All new tests green; no regressions.

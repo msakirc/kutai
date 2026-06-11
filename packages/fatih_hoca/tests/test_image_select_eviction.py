@@ -1,0 +1,169 @@
+import pytest
+
+from fatih_hoca.image_select import select_image
+from fatih_hoca.types import Pick, SelectionFailure
+
+
+def _snap(*, llm_in_flight=0, llm_loaded=False, llm_queue=0,
+          image_resident=False, vram_mb=6000, mode="full"):
+    class _Local:
+        model_name = "qwen2.5" if llm_loaded else None
+        requests_processing = llm_in_flight
+    class _QP:
+        total_ready_count = llm_queue
+    class _S:
+        local = _Local()
+        queue_profile = _QP()
+        in_flight_calls = []
+        image_server_resident = image_resident
+        image_server_vram_mb = 4500 if image_resident else 0
+        vram_available_mb = vram_mb
+        load_mode = mode
+    return _S()
+
+
+@pytest.fixture
+def real_exe(tmp_path, monkeypatch):
+    """A real, existing file path for CLAIR_OBSCUR_EXE. Selection eligibility
+    now requires the exe to exist on disk (design §10: filter absent backend
+    at selection time), so tests that expect local ELIGIBLE must point at a
+    file that actually exists."""
+    p = tmp_path / "clair_obscur_server.exe"
+    p.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("CLAIR_OBSCUR_EXE", str(p))
+    return str(p)
+
+
+def test_huge_when_llm_in_flight(monkeypatch, real_exe):
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(llm_in_flight=1))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert isinstance(pick, Pick)
+    assert pick.model.is_local is False
+
+
+def test_high_when_llm_loaded(monkeypatch, real_exe):
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(llm_loaded=True))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.is_local is False
+
+
+def test_low_when_idle_first_call_still_cloud(monkeypatch, real_exe):
+    """8.0 (HF) > 7.5 − 2.0 = 5.5 (local LOW) → HF wins cold start."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot", lambda: _snap())
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.name == "huggingface/flux-schnell"
+
+
+def test_resident_with_warm_bonus_picks_local(monkeypatch, real_exe):
+    """Image-server warm → local score = 7.5 + 1.0 = 8.5 > HF 8.0."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.provider == "clair_obscur"
+
+
+def test_vram_too_low_filters_local(monkeypatch, real_exe):
+    # Exe EXISTS (real_exe) so provider-availability passes; local must still
+    # be filtered on the VRAM-fit gate alone.
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(vram_mb=2000))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.is_local is False
+
+
+def test_minimal_load_mode_vetoes_local(monkeypatch, real_exe):
+    """Minimal = cloud-only (mirrors selector's load_mode_minimal veto).
+
+    Warm-resident local would normally win (8.5 > 8.0), but under Minimal a
+    local image pick would shut down the loaded llama and grab ~4.5GB VRAM —
+    so local must be skipped even with plenty of VRAM. load_mode is read off
+    the CLIENT seam (_client_load_mode), not the singleton snapshot."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, vram_mb=8000))
+    monkeypatch.setattr("fatih_hoca.image_select._client_load_mode",
+                        lambda: "minimal")
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert isinstance(pick, Pick)
+    assert pick.model.is_local is False
+
+
+def test_minimal_load_mode_only_local_left_fails(monkeypatch, real_exe):
+    """If every cloud provider has failed, Minimal yields SelectionFailure
+    rather than falling back to a local image model."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, vram_mb=8000))
+    monkeypatch.setattr("fatih_hoca.image_select._client_load_mode",
+                        lambda: "minimal")
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality",
+                        failures=["huggingface/flux-schnell",
+                                  "pollinations/flux"],
+                        hf_available=True)
+    assert isinstance(pick, SelectionFailure)
+    assert pick.reason == "availability"
+
+
+def test_full_load_mode_keeps_local_pickable(monkeypatch, real_exe):
+    """Explicit client load_mode='full' leaves local eligible (warm-resident
+    local wins as before)."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True))
+    monkeypatch.setattr("fatih_hoca.image_select._client_load_mode",
+                        lambda: "full")
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.provider == "clair_obscur"
+
+
+def test_minimal_veto_reads_client_seam_not_singleton(monkeypatch, real_exe):
+    """Process-split regression (sidecar): in prod ``/mode minimal`` lands on
+    the SIDECAR NerdHerd via NerdHerdClient — the orchestrator-process
+    singleton's LoadManager stays "full" forever. The veto must read the
+    client-backed module-level ``nerd_herd.snapshot()`` surface, NOT the
+    singleton seam.
+
+    Here the singleton seam (``_snapshot``) explicitly says load_mode="full"
+    with warm-resident local (which would win), while the client cache —
+    reached through the REAL ``nerd_herd.snapshot()`` → ``get_default()`` →
+    ``client.snapshot()`` round-trip — says "minimal". Only the outermost
+    client fetch is faked (the cached snapshot, normally refreshed over HTTP);
+    the veto comparison itself is NOT mocked. If the veto still read the
+    singleton, local would be picked and this test would fail."""
+    from nerd_herd import client as nh_client
+    from nerd_herd.types import SystemSnapshot
+
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, vram_mb=8000,
+                                      mode="full"))
+    monkeypatch.setenv("HF_TOKEN", "x")
+
+    c = nh_client.NerdHerdClient()
+    c._cached_snapshot = SystemSnapshot(load_mode="minimal")
+    monkeypatch.setattr(nh_client, "_default", c)
+
+    # Sanity: the two surfaces genuinely disagree (the process split).
+    import fatih_hoca.image_select as image_select_mod
+    assert image_select_mod._snapshot().load_mode == "full"
+    import nerd_herd
+    assert nerd_herd.snapshot().load_mode == "minimal"
+
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert isinstance(pick, Pick)
+    assert pick.model.is_local is False
+
+
+def test_local_unavailable_filters_local(monkeypatch):
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(vram_mb=8000))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.delenv("CLAIR_OBSCUR_EXE", raising=False)
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.is_local is False

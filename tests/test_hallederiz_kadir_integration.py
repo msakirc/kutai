@@ -1,4 +1,10 @@
-"""Integration test: dispatcher → HaLLederiz Kadir → mocked litellm."""
+"""Integration test: dispatcher -> HaLLederiz Kadir -> mocked litellm.
+
+Targets ``LLMDispatcher.execute()`` — one attempt against a pick, no
+selection, no retry (the legacy ``request()`` shim and its candidate-
+fallback loop were deleted in SP5; fallback/retry now lives in the
+selector feedback + HaLLederiz Kadir).
+"""
 import asyncio, sys, os
 from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -52,117 +58,107 @@ def _make_model_info(name="test-model", is_local=False):
     return m
 
 
-def _make_scored(model):
-    scored = MagicMock()
-    scored.model = model
-    scored.score = 8.5
-    scored.capability_score = 7.2
-    scored.reasons = ["test"]
-    return scored
-
-
-def _make_reqs():
-    from dataclasses import dataclass, field
-    @dataclass
-    class FakeReqs:
-        task: str = "executor"
-        primary_capability: str = "general"
-        difficulty: int = 5
-        estimated_output_tokens: int = 500
-        estimated_input_tokens: int = 1000
-        needs_thinking: bool = False
-        needs_vision: bool = False
-        needs_function_calling: bool = False
-        local_only: bool = False
-        prefer_speed: bool = False
-        min_score: float = 0.0
-        agent_type: str = "executor"
-        effective_task: str = "executor"
-        model_override: str | None = None
-        priority: int = 5
-        exclude_models: list = field(default_factory=list)
-        effective_context_needed: int = 4096
-    return FakeReqs()
+def _make_pick(model):
+    pick = MagicMock()
+    pick.model = model
+    pick.score = 8.5
+    pick.need_ctx = 0
+    pick.estimated_load_seconds = 0.0
+    return pick
 
 
 @patch("hallederiz_kadir.caller.litellm")
-@patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False))
+@patch("hallederiz_kadir.caller._kdv_pre_call",
+       return_value=(True, 0.0, False, "", None))
 @patch("hallederiz_kadir.caller._kdv_post_call")
 @patch("hallederiz_kadir.caller._record_metrics")
 @patch("hallederiz_kadir.caller._record_audit", new_callable=AsyncMock)
 def test_full_pipeline_cloud(mock_audit, mock_metrics, mock_kdv_post,
                               mock_kdv_pre, mock_litellm):
-    """Full pipeline: dispatcher → HaLLederiz Kadir → cloud model."""
+    """Full pipeline: dispatcher.execute(pick) -> HaLLederiz Kadir -> cloud model."""
+    import hallederiz_kadir
+
+    # Cloud calls stream since 2026-05-01; mock the stream accumulator with a
+    # canned final response (same pattern as packages/hallederiz_kadir tests).
     mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
     mock_litellm.completion_cost = MagicMock(return_value=0.001)
 
     model = _make_model_info(is_local=False)
-    scored = _make_scored(model)
+    pick = _make_pick(model)
 
     from src.core.llm_dispatcher import LLMDispatcher, CallCategory
 
     dispatcher = LLMDispatcher()
-    reqs = _make_reqs()
 
-    with patch.object(dispatcher, "_select_candidates", return_value=[scored]), \
-         patch.object(dispatcher, "_prepare_messages", return_value=[{"role": "user", "content": "test"}]):
-        result = run_async(dispatcher.request(
-            category=CallCategory.MAIN_WORK,
-            reqs=reqs,
+    with patch.object(dispatcher, "_record_pick", new_callable=AsyncMock) as mock_pick_log, \
+         patch("hallederiz_kadir.caller._stream_with_accumulator",
+               new_callable=AsyncMock, return_value=_make_litellm_response()):
+        result = run_async(dispatcher.execute(
+            pick=pick,
             messages=[{"role": "user", "content": "What is 6*7?"}],
+            category=CallCategory.MAIN_WORK,
+            task="executor",
+            agent_type="executor",
+            difficulty=5,
+            tools=None,
+            needs_thinking=False,
+            min_context=4096,
+            response_format=None,
+            task_obj=None,
+            iteration_n=0,
+            estimated_input_tokens=1000,
+            estimated_output_tokens=500,
         ))
 
-    assert result["content"] == "The answer is 42"
-    assert result["capability_score"] == 7.2
+    assert isinstance(result, hallederiz_kadir.CallResult)
+    assert result.content == "The answer is 42"
+    # Success path records the pick exactly once.
+    assert mock_pick_log.await_count == 1
+    assert mock_pick_log.await_args.kwargs["success"] is True
 
 
 @patch("hallederiz_kadir.caller.litellm")
-@patch("hallederiz_kadir.caller._kdv_pre_call", return_value=(True, 0.0, False))
+@patch("hallederiz_kadir.caller._kdv_pre_call",
+       return_value=(True, 0.0, False, "", None))
 @patch("hallederiz_kadir.caller._kdv_post_call")
 @patch("hallederiz_kadir.caller._record_metrics")
 @patch("hallederiz_kadir.caller._record_audit", new_callable=AsyncMock)
-def test_full_pipeline_fallback_on_error(mock_audit, mock_metrics, mock_kdv_post,
-                                          mock_kdv_pre, mock_litellm):
-    """First candidate fails, second succeeds."""
+def test_call_error_surfaces_to_caller(mock_audit, mock_metrics, mock_kdv_post,
+                                        mock_kdv_pre, mock_litellm):
+    """execute() does NOT retry: a HaLLederiz CallError is returned as-is
+    (re-selection is the caller's job — selector feedback, not dispatcher)."""
     from hallederiz_kadir.types import CallError
 
-    mock_litellm.acompletion = AsyncMock(return_value=_make_litellm_response())
-    mock_litellm.completion_cost = MagicMock(return_value=0.001)
-
-    model1 = _make_model_info(name="model-a", is_local=False)
-    model2 = _make_model_info(name="model-b", is_local=False)
-    scored1 = _make_scored(model1)
-    scored2 = _make_scored(model2)
+    model = _make_model_info(name="model-a", is_local=False)
+    pick = _make_pick(model)
 
     from src.core.llm_dispatcher import LLMDispatcher, CallCategory
 
     dispatcher = LLMDispatcher()
-    reqs = _make_reqs()
+    err = CallError(category="timeout", message="Timeout on model-a", retryable=True)
 
-    # First call fails (timeout), second succeeds
-    call_count = [0]
-    original_call = None
-
-    # Grab the real call before patching so we can delegate to it on success
-    from hallederiz_kadir.caller import call as _real_call
-
-    async def mock_talker_call(model, messages, tools, timeout, task, needs_thinking, estimated_output_tokens=1000):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return CallError(category="timeout", message="Timeout on model-a", retryable=True)
-        # Delegate to the real caller (litellm already mocked via decorators above)
-        return await _real_call(model=model, messages=messages, tools=tools,
-                                timeout=timeout, task=task, needs_thinking=needs_thinking,
-                                estimated_output_tokens=estimated_output_tokens)
-
-    with patch.object(dispatcher, "_select_candidates", return_value=[scored1, scored2]), \
-         patch.object(dispatcher, "_prepare_messages", return_value=[{"role": "user", "content": "test"}]), \
-         patch("hallederiz_kadir.call", side_effect=mock_talker_call):
-        result = run_async(dispatcher.request(
-            category=CallCategory.MAIN_WORK,
-            reqs=reqs,
+    with patch.object(dispatcher, "_record_pick", new_callable=AsyncMock) as mock_pick_log, \
+         patch("hallederiz_kadir.call", new=AsyncMock(return_value=err)):
+        result = run_async(dispatcher.execute(
+            pick=pick,
             messages=[{"role": "user", "content": "test"}],
+            category=CallCategory.MAIN_WORK,
+            task="executor",
+            agent_type="executor",
+            difficulty=5,
+            tools=None,
+            needs_thinking=False,
+            min_context=4096,
+            response_format=None,
+            task_obj=None,
+            iteration_n=0,
+            estimated_input_tokens=1000,
+            estimated_output_tokens=500,
         ))
 
-    assert result["content"] == "The answer is 42"
-    assert call_count[0] == 2  # first failed, second succeeded
+    assert isinstance(result, CallError)
+    assert result.category == "timeout"
+    # Failure path records the pick with the error category.
+    assert mock_pick_log.await_count == 1
+    assert mock_pick_log.await_args.kwargs["success"] is False
+    assert mock_pick_log.await_args.kwargs["error_category"] == "timeout"

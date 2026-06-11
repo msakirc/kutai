@@ -21,9 +21,10 @@ LOW_TRAFFIC_AGENTS = [
     "shopping_grouper",  # shopping v3 — grouping producer
     "shopping_labeler",  # shopping v3 — labeling producer
     "shopping_synthesizer",  # shopping v3 — review-synthesis producer
+    "prompt_writer",  # image-gen Plan 3 — diffusion prompt writer
 ]
 
-ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 20 total
+ALL_AGENTS = ACTIVE_AGENTS + LOW_TRAFFIC_AGENTS  # 25 total (12 active + 13 low-traffic)
 
 @pytest.mark.parametrize("name", ALL_AGENTS)
 def test_prompt_has_role_primer(name):

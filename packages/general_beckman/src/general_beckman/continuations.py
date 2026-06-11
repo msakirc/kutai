@@ -190,6 +190,9 @@ _HANDLER_MODULES: list[str] = [
     "mr_roboto.executors.reviews_continuations",
     # CPS SP4b Plan 3 — crisis/incident/press_kit comms sinks:
     "mr_roboto.executors.comms_continuations",
+    # Image-gen Plan 3 — placeholder-swap chain (prompts_done/err,
+    # image_done/err); migrated off await_inline 2026-06-11:
+    "mr_roboto.swap_placeholder_images",
 ]
 
 

@@ -840,6 +840,35 @@ async def next_task(lane: str | None = None):
         task["preselected_pick"] = pick
         task["status"] = "processing"
 
+        # Plan 2 Task 11: stamp the picked provider so on_task_finished's
+        # image-lane warm-batch hook can tell the finished task was a LOCAL
+        # image (provider == 'clair_obscur') without re-loading the pick. Set
+        # the in-memory top-level key AND persist into context — on_task_finished
+        # reloads the DB row, where only the persisted context survives.
+        try:
+            _provider = getattr(getattr(pick, "model", None), "provider", "") or ""
+            task["preselected_pick_provider"] = _provider
+            if (task.get("kind") or "").lower() == "image":
+                import json as _json_p
+                _ctx_raw_p = task.get("context") or "{}"
+                _ctx_p = (
+                    _json_p.loads(_ctx_raw_p)
+                    if isinstance(_ctx_raw_p, str) else dict(_ctx_raw_p or {})
+                )
+                if isinstance(_ctx_p, dict):
+                    _ctx_p["preselected_pick_provider"] = _provider
+                    task["context"] = _json_p.dumps(_ctx_p)
+                    try:
+                        from src.infra.db import update_task as _ut_p
+                        await _ut_p(int(task["id"]), context=task["context"])
+                    except Exception as _e:
+                        _log.debug(
+                            f"admission: provider-stamp persist skipped "
+                            f"#{task['id']}: {_e}"
+                        )
+        except Exception as _e:
+            _log.debug(f"admission: provider stamp failed #{task.get('id')}: {_e}")
+
         # Z10 T2A: stamp estimated_cost_usd on the task. Pulls historical
         # avg cost for (model, agent_type) or falls back to per-kind
         # defaults. Best-effort — never blocks admission.
@@ -874,6 +903,83 @@ async def next_task(lane: str | None = None):
     _last_admission_fp = fp
     _last_admission_admitted = False
     return None
+
+
+async def _peek_next_admittable() -> dict | None:
+    """Read-only peek at the highest-priority ready candidate. Mirrors
+    next_task()'s candidate fetch — uses the same queue.pick_ready_top_k so the
+    prediction matches what beckman will admit next. Does NOT claim anything."""
+    try:
+        from general_beckman import queue as _queue
+        candidates = await _queue.pick_ready_top_k(k=1, lane=None)
+        if not candidates:
+            return None
+        return candidates[0]
+    except Exception:
+        return None
+
+
+def _is_local_image_task(task: dict) -> bool:
+    """A just-finished task is a LOCAL image only when it was an image-kind task
+    AND admission stamped its provider as clair_obscur. Cloud-image tasks never
+    started a local server, so there is nothing to release.
+
+    ``preselected_pick_provider`` is stamped at admission (top-level on the
+    in-memory dict + persisted into context so it survives the DB round-trip in
+    on_task_finished). Read both surfaces."""
+    if (task.get("kind") or "").lower() != "image":
+        return False
+    prov = task.get("preselected_pick_provider")
+    if prov is None:
+        # Fall back to the persisted context copy (on_task_finished reloads the
+        # DB row, where the top-level key is absent).
+        try:
+            import json as _json
+            ctx_raw = task.get("context") or "{}"
+            ctx = _json.loads(ctx_raw) if isinstance(ctx_raw, str) else dict(ctx_raw or {})
+            prov = (ctx or {}).get("preselected_pick_provider")
+        except Exception:
+            prov = None
+    return prov == "clair_obscur"
+
+
+async def _post_completion_image_lane(task: dict, result: dict) -> None:
+    """After an image task finishes, decide whether to keep clair_obscur warm
+    or hint release. Only acts when the just-finished task was a LOCAL image
+    (preselected_pick_provider == 'clair_obscur'). Cloud-image tasks left
+    clair_obscur untouched — nothing to release.
+
+    v2: on lane switch, calls clair_obscur.record_release_hint() — NOT a
+    direct stop. The backstop in clair_obscur.server.ImageServer fires the
+    actual stop() after idle_release_seconds. This wires the backstop and
+    gives a back-to-back image batch a window to reuse the warm server."""
+    if not _is_local_image_task(task):
+        return
+
+    nxt = await _peek_next_admittable()
+    is_image_next = (
+        nxt is not None
+        and ((nxt.get("kind") or "").lower() == "image"
+             or "image_call" in (nxt.get("context") or ""))
+    )
+    if is_image_next:
+        # Warm-batch: NO hint. The next dispatch's idempotent clair_obscur.start()
+        # also clears any stale hint (husam _run_image, Task 10).
+        return
+
+    # Lane switch (or idle queue) — hint release; the clair_obscur backstop
+    # times the actual stop after idle_release_seconds.
+    try:
+        import clair_obscur
+        clair_obscur.record_release_hint()
+    except Exception as _e:
+        try:
+            from src.infra.logging_config import get_logger
+            get_logger("beckman.image_lane").warning(
+                "clair_obscur.record_release_hint failed", error=str(_e),
+            )
+        except Exception:
+            pass
 
 
 async def on_task_finished(task_id, result: dict = None) -> None:
@@ -1079,6 +1185,15 @@ async def on_task_finished(task_id, result: dict = None) -> None:
         actions = [actions]
     actions = rewrite_actions(task, task_ctx, actions)
     await apply_actions(task, actions)
+
+    # Plan 2 Task 11: image-lane warm-batch decision. After a LOCAL image task
+    # finishes, hold clair_obscur warm when the next admittable is another image,
+    # else record_release_hint() and let clair_obscur's backstop time the stop.
+    # Best-effort — never let a clair_obscur hiccup break the completion path.
+    try:
+        await _post_completion_image_lane(task, result or {})
+    except Exception as _e:
+        log.debug("image_lane hook failed", task_id=task_id, error=str(_e))
 
     # ── Continuation hooks (CPS SP1.1: relocated post-apply) ──────────────
     # The continuation FIRE trigger is the DB tasks.status AFTER apply_actions,

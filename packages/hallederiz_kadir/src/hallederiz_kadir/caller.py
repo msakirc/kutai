@@ -60,6 +60,43 @@ def _http_timeout(timeout: float) -> float | None:
     return max(10.0, float(timeout) - 5.0)
 
 
+def _resolve_max_tokens(
+    *,
+    is_local: bool,
+    is_thinking: bool,
+    model_max_tokens: int | None,
+    estimated_output_tokens: int,
+) -> int | None:
+    """Resolve the ``max_tokens`` ceiling for one completion request.
+
+    - Local models: ``None`` — don't cap. llama-server enforces ctx-size
+      naturally and the post-execute hook summarizes long artifacts.
+    - Cloud THINKING models: the provider's own ``max_output_tokens`` cap.
+      Reasoning tokens count against ``max_output_tokens`` on Gemini/OpenAI,
+      so the ``est*2`` visible-output heuristic gets entirely consumed by
+      reasoning and the structured artifact truncates mid-stream — the
+      function-call ``arguments`` JSON then fails to parse and silently
+      becomes ``{}``, so ``write_file`` runs arg-less and the step DLQs
+      (mission 81 ADR step 4.1: 3179 reasoning tokens > 3158 est*2 cap →
+      empty-arg write_file → "tool unavailable" loop → DLQ). Capping at the
+      provider max mirrors the local "let the server govern" path.
+    - Cloud non-thinking models: ``est*2`` cost guard, floored at 256 (Gemini
+      rejects ``max_output_tokens=0``) and bounded by the provider cap.
+    """
+    if is_local:
+        return None
+    # model.max_tokens can be None when detect_cloud_model picked up a
+    # litellm.get_model_info entry whose `max_output_tokens` key was
+    # explicitly None (some openrouter meta-routes do this). Default 4096.
+    model_cap = model_max_tokens if model_max_tokens is not None else 4096
+    if is_thinking:
+        return model_cap
+    # Floor at 256: callers that forget to set estimated_output_tokens would
+    # otherwise send max_tokens=0, which Gemini rejects with
+    # "max_output_tokens must be positive". Cap is still respected.
+    return max(256, min(estimated_output_tokens * 2, model_cap))
+
+
 def _gemini_sanitize_schema(schema):
     """Recursively rewrite a JSON Schema dict for Gemini compatibility.
 
@@ -568,27 +605,15 @@ async def call(
             task, sampling_overrides=getattr(model, "sampling_overrides", None))
 
     # ── Max tokens ──
-    # Local models: don't cap — llama-server enforces ctx-size naturally,
-    # and the post-execute hook summarizes long artifacts for downstream.
-    # Cloud models: cap to avoid runaway cost.
-    if is_local:
-        _max_tokens = None  # omit from request → server uses full context
-    else:
-        # model.max_tokens can be None when detect_cloud_model picked up a
-        # litellm.get_model_info entry whose `max_output_tokens` key was
-        # explicitly None (some openrouter meta-routes do this — e.g.
-        # openrouter/openrouter/free returns max_output_tokens=null).
-        # `dict.get(key, default)` returns the explicit None over the
-        # default, so the registry's later `setdefault("max_tokens", 4096)`
-        # is a no-op. Production triage 2026-05-01: TypeError "<' not
-        # supported between instances of 'NoneType' and 'int'" killed
-        # 3 backend_tests / frontend_tests in succession.
-        _model_cap = model.max_tokens if model.max_tokens is not None else 4096
-        # Floor at 256: callers that forget to set estimated_output_tokens
-        # would otherwise send max_tokens=0, which Gemini rejects with
-        # "max_output_tokens must be positive" (production 2026-05-14
-        # critic_gate:notify_user). Cap is still respected.
-        _max_tokens = max(256, min(estimated_output_tokens * 2, _model_cap))
+    # See _resolve_max_tokens: local uncapped, cloud-thinking uses the
+    # provider cap (reasoning tokens must not starve the artifact), cloud
+    # non-thinking keeps the est*2 cost guard.
+    _max_tokens = _resolve_max_tokens(
+        is_local=is_local,
+        is_thinking=is_thinking,
+        model_max_tokens=model.max_tokens,
+        estimated_output_tokens=estimated_output_tokens,
+    )
 
     # ── Per-request reasoning override ──
     # If a thinking-capable model is loaded with --reasoning on but this

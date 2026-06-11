@@ -26,6 +26,29 @@ __all__ = [
 THRESHOLDS_PCT = (50, 75, 90)
 
 
+def _estimate_task_tokens(agent_type: str, ctx_d, btable: dict) -> tuple[int, int]:
+    """Per-task ``(in_tokens, out_tokens)`` estimate for admission/gating.
+
+    Forwards the task's ``needs_thinking`` flag as ``model_is_thinking`` so the
+    B-table output estimate is scaled (THINKING_OUT_SCALE) for thinking tasks.
+    Without it, thinking steps (e.g. architect ADR 4.1) under-count output:
+    reasoning tokens go untracked, the KDV TPM gate over-admits, and the
+    max_tokens budget the estimate feeds starves the artifact -> truncation
+    -> empty-arg write_file -> DLQ (mission 81).
+    """
+    from fatih_hoca.estimates import estimate_for
+
+    class _EstShim:
+        __slots__ = ("agent_type", "context")
+
+    shim = _EstShim()
+    shim.agent_type = agent_type
+    shim.context = ctx_d if isinstance(ctx_d, dict) else {}
+    needs_thinking = bool(isinstance(ctx_d, dict) and ctx_d.get("needs_thinking"))
+    est = estimate_for(shim, btable=btable, model_is_thinking=needs_thinking)
+    return est.in_tokens, est.out_tokens
+
+
 async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: float):
     """Post threshold notify to mission thread."""
     import json as _json
@@ -699,7 +722,6 @@ async def next_task(lane: str | None = None):
         # calls and admitted all five. Mid-task: quota wall, retry
         # recursion's select() sees exhausted pool, returns None.
         try:
-            from fatih_hoca.estimates import estimate_for
             from general_beckman.btable_cache import get_btable
             import json as _json
 
@@ -709,15 +731,7 @@ async def next_task(lane: str | None = None):
             except Exception:
                 ctx_d = {}
 
-            class _EstShim:
-                __slots__ = ("agent_type", "context")
-
-            shim = _EstShim()
-            shim.agent_type = agent_type
-            shim.context = ctx_d if isinstance(ctx_d, dict) else {}
-            est = estimate_for(shim, btable=get_btable())
-            est_in = est.in_tokens
-            est_out = est.out_tokens
+            est_in, est_out = _estimate_task_tokens(agent_type, ctx_d, get_btable())
         except Exception:
             est_in = 0
             est_out = 0

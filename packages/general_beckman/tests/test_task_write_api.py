@@ -15,24 +15,9 @@ import aiosqlite
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Helpers (same pattern as test_mission_write_api.py)
+# File-local helpers (direct DB reads for verification; NOT shared DB setup)
+# DB setup is handled by the fresh_db fixture in conftest.py.
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-def _reset_db(tmp_path, monkeypatch):
-    import src.infra.db as db_module
-    db_path = str(tmp_path / "kutai.db")
-    monkeypatch.setenv("DB_PATH", db_path)
-    db_module.DB_PATH = db_path
-    db_module._db_connection = None
-    return db_path
-
-
-async def _close_db(db_mod) -> None:
-    """Close and reset the shared DB connection to avoid cross-test leaks."""
-    if db_mod._db_connection is not None:
-        await db_mod._db_connection.close()
-        db_mod._db_connection = None
 
 
 async def _fetch_task(db_path: str, task_id: int) -> dict | None:
@@ -79,33 +64,24 @@ async def _add_mission(db_module, title: str = "Test Mission") -> int:
 
 
 @pytest.mark.asyncio
-async def test_add_task_returns_id_and_persists(tmp_path, monkeypatch):
+async def test_add_task_returns_id_and_persists(fresh_db):
     """add_task returns a positive int id and the row lands in DB."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task
+    task_id = await add_task(
+        title="My Task",
+        description="does something",
+        agent_type="executor",
+    )
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    assert isinstance(task_id, int)
+    assert task_id > 0
 
-    try:
-        from general_beckman import add_task
-        task_id = await add_task(
-            title="My Task",
-            description="does something",
-            agent_type="executor",
-        )
-
-        assert isinstance(task_id, int)
-        assert task_id > 0
-
-        row = await _fetch_task(db_path, task_id)
-        assert row is not None
-        assert row["title"] == "My Task"
-        assert row["description"] == "does something"
-        assert row["agent_type"] == "executor"
-    finally:
-        await _close_db(db_module)
+    row = await _fetch_task(db_path, task_id)
+    assert row is not None
+    assert row["title"] == "My Task"
+    assert row["description"] == "does something"
+    assert row["agent_type"] == "executor"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -114,27 +90,17 @@ async def test_add_task_returns_id_and_persists(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_task_modifies_fields(tmp_path, monkeypatch):
+async def test_update_task_modifies_fields(fresh_db):
     """update_task changes status and error fields, readable back from DB."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task, update_task
+    task_id = await add_task(title="T", description="d")
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    await update_task(task_id, status="failed", error="something went wrong")
 
-    try:
-        from general_beckman import add_task, update_task
-        task_id = await add_task(title="T", description="d")
-
-        db_module._db_connection = None
-        await update_task(task_id, status="failed", error="something went wrong")
-
-        row = await _fetch_task(db_path, task_id)
-        assert row["status"] == "failed"
-        assert row["error"] == "something went wrong"
-    finally:
-        await _close_db(db_module)
+    row = await _fetch_task(db_path, task_id)
+    assert row["status"] == "failed"
+    assert row["error"] == "something went wrong"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -143,40 +109,30 @@ async def test_update_task_modifies_fields(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_task_by_context_field_matches_json(tmp_path, monkeypatch):
+async def test_update_task_by_context_field_matches_json(fresh_db):
     """Insert task with context={workflow_step_id: '1.1'}, update by that field, verify status changed."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
-
+    db_path = fresh_db
     import src.infra.db as db_module
-    db_module._db_connection = None
+    from general_beckman import add_task, update_task_by_context_field
 
-    try:
-        from general_beckman import add_task, update_task_by_context_field
+    mid = await _add_mission(db_module)
 
-        mid = await _add_mission(db_module)
-        db_module._db_connection = None
+    task_id = await add_task(
+        title="Step 1.1",
+        description="d",
+        mission_id=mid,
+        context={"workflow_step_id": "1.1"},
+    )
 
-        task_id = await add_task(
-            title="Step 1.1",
-            description="d",
-            mission_id=mid,
-            context={"workflow_step_id": "1.1"},
-        )
+    await update_task_by_context_field(
+        mission_id=mid,
+        field="workflow_step_id",
+        value="1.1",
+        status="skipped",
+    )
 
-        db_module._db_connection = None
-        await update_task_by_context_field(
-            mission_id=mid,
-            field="workflow_step_id",
-            value="1.1",
-            status="skipped",
-        )
-
-        row = await _fetch_task(db_path, task_id)
-        assert row["status"] == "skipped"
-    finally:
-        await _close_db(db_module)
+    row = await _fetch_task(db_path, task_id)
+    assert row["status"] == "skipped"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -185,63 +141,53 @@ async def test_update_task_by_context_field_matches_json(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_add_subtasks_creates_children_and_updates_parent(tmp_path, monkeypatch):
+async def test_add_subtasks_creates_children_and_updates_parent(fresh_db):
     """add_subtasks creates children and sets parent status to waiting_subtasks."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
-
+    db_path = fresh_db
     import src.infra.db as db_module
-    db_module._db_connection = None
+    from general_beckman import add_task, add_subtasks
 
-    try:
-        from general_beckman import add_task, add_subtasks
+    mid = await _add_mission(db_module)
 
-        mid = await _add_mission(db_module)
-        db_module._db_connection = None
+    parent_id = await add_task(
+        title="Parent Task",
+        description="parent",
+        mission_id=mid,
+    )
 
-        parent_id = await add_task(
-            title="Parent Task",
-            description="parent",
-            mission_id=mid,
-        )
-        db_module._db_connection = None
+    child_ids = await add_subtasks(
+        parent_task_id=parent_id,
+        subtasks=[
+            {
+                "title": "Child 1",
+                "description": "c1",
+                "agent_type": "executor",
+                "tier": "auto",
+                "priority": 5,
+                "depends_on": [],
+            },
+            {
+                "title": "Child 2",
+                "description": "c2",
+                "agent_type": "executor",
+                "tier": "auto",
+                "priority": 5,
+                "depends_on": [],
+            },
+        ],
+        mission_id=mid,
+    )
 
-        child_ids = await add_subtasks(
-            parent_task_id=parent_id,
-            subtasks=[
-                {
-                    "title": "Child 1",
-                    "description": "c1",
-                    "agent_type": "executor",
-                    "tier": "auto",
-                    "priority": 5,
-                    "depends_on": [],
-                },
-                {
-                    "title": "Child 2",
-                    "description": "c2",
-                    "agent_type": "executor",
-                    "tier": "auto",
-                    "priority": 5,
-                    "depends_on": [],
-                },
-            ],
-            mission_id=mid,
-        )
+    assert isinstance(child_ids, list)
+    assert len(child_ids) == 2
+    assert all(isinstance(cid, int) and cid > 0 for cid in child_ids)
 
-        assert isinstance(child_ids, list)
-        assert len(child_ids) == 2
-        assert all(isinstance(cid, int) and cid > 0 for cid in child_ids)
+    parent_row = await _fetch_task(db_path, parent_id)
+    assert parent_row["status"] == "waiting_subtasks"
 
-        parent_row = await _fetch_task(db_path, parent_id)
-        assert parent_row["status"] == "waiting_subtasks"
-
-        all_tasks = await _fetch_tasks_for_mission(db_path, mid)
-        child_tasks = [t for t in all_tasks if t["parent_task_id"] == parent_id]
-        assert len(child_tasks) == 2
-    finally:
-        await _close_db(db_module)
+    all_tasks = await _fetch_tasks_for_mission(db_path, mid)
+    child_tasks = [t for t in all_tasks if t["parent_task_id"] == parent_id]
+    assert len(child_tasks) == 2
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -250,48 +196,36 @@ async def test_add_subtasks_creates_children_and_updates_parent(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_propagate_skips_cascades(tmp_path, monkeypatch):
+async def test_propagate_skips_cascades(fresh_db):
     """Insert parent task (skipped) + dependent child (pending), propagate_skips returns 1, child is now skipped."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
-
+    db_path = fresh_db
     import src.infra.db as db_module
-    db_module._db_connection = None
+    from general_beckman import add_task, update_task, propagate_skips
 
-    try:
-        from general_beckman import add_task, update_task, propagate_skips
+    mid = await _add_mission(db_module)
 
-        mid = await _add_mission(db_module)
-        db_module._db_connection = None
+    parent_id = await add_task(
+        title="Parent",
+        description="p",
+        mission_id=mid,
+    )
 
-        parent_id = await add_task(
-            title="Parent",
-            description="p",
-            mission_id=mid,
-        )
-        db_module._db_connection = None
+    # Mark parent as skipped
+    await update_task(parent_id, status="skipped", error="dependency_skipped")
 
-        # Mark parent as skipped
-        await update_task(parent_id, status="skipped", error="dependency_skipped")
-        db_module._db_connection = None
+    # Add a child that depends on the parent
+    child_id = await add_task(
+        title="Child",
+        description="c",
+        mission_id=mid,
+        depends_on=[parent_id],
+    )
 
-        # Add a child that depends on the parent
-        child_id = await add_task(
-            title="Child",
-            description="c",
-            mission_id=mid,
-            depends_on=[parent_id],
-        )
-        db_module._db_connection = None
+    count = await propagate_skips(mid)
+    assert count == 1
 
-        count = await propagate_skips(mid)
-        assert count == 1
-
-        child_row = await _fetch_task(db_path, child_id)
-        assert child_row["status"] == "skipped"
-    finally:
-        await _close_db(db_module)
+    child_row = await _fetch_task(db_path, child_id)
+    assert child_row["status"] == "skipped"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -300,29 +234,19 @@ async def test_propagate_skips_cascades(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cancel_task_sets_cancelled(tmp_path, monkeypatch):
+async def test_cancel_task_sets_cancelled(fresh_db):
     """add task, cancel_task returns True, row status=cancelled."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task, cancel_task
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    task_id = await add_task(title="To Cancel", description="d")
 
-    try:
-        from general_beckman import add_task, cancel_task
+    result = await cancel_task(task_id)
 
-        task_id = await add_task(title="To Cancel", description="d")
+    assert result is True
 
-        db_module._db_connection = None
-        result = await cancel_task(task_id)
-
-        assert result is True
-
-        row = await _fetch_task(db_path, task_id)
-        assert row["status"] == "cancelled"
-    finally:
-        await _close_db(db_module)
+    row = await _fetch_task(db_path, task_id)
+    assert row["status"] == "cancelled"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -331,29 +255,19 @@ async def test_cancel_task_sets_cancelled(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reprioritize_task_updates_priority(tmp_path, monkeypatch):
+async def test_reprioritize_task_updates_priority(fresh_db):
     """add task, reprioritize to 9, read back priority=9."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task, reprioritize_task
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    task_id = await add_task(title="Reprio Task", description="d", priority=5)
 
-    try:
-        from general_beckman import add_task, reprioritize_task
+    result = await reprioritize_task(task_id, new_priority=9)
 
-        task_id = await add_task(title="Reprio Task", description="d", priority=5)
+    assert result is True
 
-        db_module._db_connection = None
-        result = await reprioritize_task(task_id, new_priority=9)
-
-        assert result is True
-
-        row = await _fetch_task(db_path, task_id)
-        assert row["priority"] == 9
-    finally:
-        await _close_db(db_module)
+    row = await _fetch_task(db_path, task_id)
+    assert row["priority"] == 9
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -362,48 +276,37 @@ async def test_reprioritize_task_updates_priority(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_save_and_clear_task_checkpoint(tmp_path, monkeypatch):
+async def test_save_and_clear_task_checkpoint(fresh_db):
     """save_task_checkpoint stores state; clear_task_checkpoint sets task_state=NULL."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task, save_task_checkpoint, clear_task_checkpoint
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    task_id = await add_task(title="Checkpoint Task", description="d")
 
-    try:
-        from general_beckman import add_task, save_task_checkpoint, clear_task_checkpoint
+    checkpoint_state = {"step": 3, "retries": 1, "partial_result": "foo"}
+    await save_task_checkpoint(task_id, checkpoint_state)
 
-        task_id = await add_task(title="Checkpoint Task", description="d")
+    # Verify via direct aiosqlite read (bypass beckman)
+    async with aiosqlite.connect(db_path) as db:
+        cur = await db.execute(
+            "SELECT task_state FROM tasks WHERE id = ?", (task_id,)
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] is not None
+        stored = json.loads(row[0])
+        assert stored == checkpoint_state
 
-        db_module._db_connection = None
-        checkpoint_state = {"step": 3, "retries": 1, "partial_result": "foo"}
-        await save_task_checkpoint(task_id, checkpoint_state)
+    await clear_task_checkpoint(task_id)
 
-        # Verify via direct aiosqlite read (bypass beckman)
-        async with aiosqlite.connect(db_path) as db:
-            cur = await db.execute(
-                "SELECT task_state FROM tasks WHERE id = ?", (task_id,)
-            )
-            row = await cur.fetchone()
-            assert row is not None
-            assert row[0] is not None
-            stored = json.loads(row[0])
-            assert stored == checkpoint_state
-
-        db_module._db_connection = None
-        await clear_task_checkpoint(task_id)
-
-        # Verify checkpoint is cleared
-        async with aiosqlite.connect(db_path) as db:
-            cur = await db.execute(
-                "SELECT task_state FROM tasks WHERE id = ?", (task_id,)
-            )
-            row = await cur.fetchone()
-            assert row is not None
-            assert row[0] is None
-    finally:
-        await _close_db(db_module)
+    # Verify checkpoint is cleared
+    async with aiosqlite.connect(db_path) as db:
+        cur = await db.execute(
+            "SELECT task_state FROM tasks WHERE id = ?", (task_id,)
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] is None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -412,42 +315,28 @@ async def test_save_and_clear_task_checkpoint(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reset_failed_tasks(tmp_path, monkeypatch):
+async def test_reset_failed_tasks(fresh_db):
     """reset_failed_tasks resets all failed tasks to pending."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task, update_task, reset_failed_tasks
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    t1 = await add_task(title="F1", description="d")
+    t2 = await add_task(title="F2", description="d")
+    t3 = await add_task(title="P1", description="d")
 
-    try:
-        from general_beckman import add_task, update_task, reset_failed_tasks
+    await update_task(t1, status="failed", error="err")
+    await update_task(t2, status="failed", error="err")
+    # t3 stays pending
 
-        t1 = await add_task(title="F1", description="d")
-        db_module._db_connection = None
-        t2 = await add_task(title="F2", description="d")
-        db_module._db_connection = None
-        t3 = await add_task(title="P1", description="d")
+    count = await reset_failed_tasks()
+    assert count == 2
 
-        db_module._db_connection = None
-        await update_task(t1, status="failed", error="err")
-        db_module._db_connection = None
-        await update_task(t2, status="failed", error="err")
-        # t3 stays pending
-
-        db_module._db_connection = None
-        count = await reset_failed_tasks()
-        assert count == 2
-
-        r1 = await _fetch_task(db_path, t1)
-        r2 = await _fetch_task(db_path, t2)
-        r3 = await _fetch_task(db_path, t3)
-        assert r1["status"] == "pending"
-        assert r2["status"] == "pending"
-        assert r3["status"] == "pending"  # unaffected
-    finally:
-        await _close_db(db_module)
+    r1 = await _fetch_task(db_path, t1)
+    r2 = await _fetch_task(db_path, t2)
+    r3 = await _fetch_task(db_path, t3)
+    assert r1["status"] == "pending"
+    assert r2["status"] == "pending"
+    assert r3["status"] == "pending"  # unaffected
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -456,35 +345,23 @@ async def test_reset_failed_tasks(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reset_stuck_tasks(tmp_path, monkeypatch):
+async def test_reset_stuck_tasks(fresh_db):
     """reset_stuck_tasks resets processing tasks to pending."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task, update_task, reset_stuck_tasks
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    t1 = await add_task(title="S1", description="d")
+    t2 = await add_task(title="P1", description="d")
 
-    try:
-        from general_beckman import add_task, update_task, reset_stuck_tasks
+    await update_task(t1, status="processing")
 
-        t1 = await add_task(title="S1", description="d")
-        db_module._db_connection = None
-        t2 = await add_task(title="P1", description="d")
+    count = await reset_stuck_tasks()
+    assert count == 1
 
-        db_module._db_connection = None
-        await update_task(t1, status="processing")
-
-        db_module._db_connection = None
-        count = await reset_stuck_tasks()
-        assert count == 1
-
-        r1 = await _fetch_task(db_path, t1)
-        r2 = await _fetch_task(db_path, t2)
-        assert r1["status"] == "pending"
-        assert r2["status"] == "pending"  # unaffected
-    finally:
-        await _close_db(db_module)
+    r1 = await _fetch_task(db_path, t1)
+    r2 = await _fetch_task(db_path, t2)
+    assert r1["status"] == "pending"
+    assert r2["status"] == "pending"  # unaffected
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -493,30 +370,19 @@ async def test_reset_stuck_tasks(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reset_blocked_tasks(tmp_path, monkeypatch):
+async def test_reset_blocked_tasks(fresh_db):
     """reset_blocked_tasks clears depends_on on pending tasks."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task, reset_blocked_tasks
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    t1 = await add_task(title="B1", description="d", depends_on=[99])
+    t2 = await add_task(title="P1", description="d")  # no deps
 
-    try:
-        from general_beckman import add_task, reset_blocked_tasks
+    count = await reset_blocked_tasks()
+    assert count == 1
 
-        t1 = await add_task(title="B1", description="d", depends_on=[99])
-        db_module._db_connection = None
-        t2 = await add_task(title="P1", description="d")  # no deps
-
-        db_module._db_connection = None
-        count = await reset_blocked_tasks()
-        assert count == 1
-
-        r1 = await _fetch_task(db_path, t1)
-        assert r1["depends_on"] == "[]"
-    finally:
-        await _close_db(db_module)
+    r1 = await _fetch_task(db_path, t1)
+    assert r1["depends_on"] == "[]"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -525,49 +391,34 @@ async def test_reset_blocked_tasks(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cancel_pending_tasks(tmp_path, monkeypatch):
+async def test_cancel_pending_tasks(fresh_db):
     """cancel_pending_tasks cancels only pending tasks for the given mission."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
-
+    db_path = fresh_db
     import src.infra.db as db_module
-    db_module._db_connection = None
+    from general_beckman import add_task, update_task, cancel_pending_tasks
 
-    try:
-        from general_beckman import add_task, update_task, cancel_pending_tasks
+    mid = await _add_mission(db_module)
+    mid2 = await _add_mission(db_module, title="Other")
 
-        mid = await _add_mission(db_module)
-        db_module._db_connection = None
-        mid2 = await _add_mission(db_module, title="Other")
-        db_module._db_connection = None
+    t1 = await add_task(title="T1", description="d", mission_id=mid)
+    t2 = await add_task(title="T2", description="d", mission_id=mid)
+    t3 = await add_task(title="T3", description="d", mission_id=mid)
+    t_other = await add_task(title="Other", description="d", mission_id=mid2)
 
-        t1 = await add_task(title="T1", description="d", mission_id=mid)
-        db_module._db_connection = None
-        t2 = await add_task(title="T2", description="d", mission_id=mid)
-        db_module._db_connection = None
-        t3 = await add_task(title="T3", description="d", mission_id=mid)
-        db_module._db_connection = None
-        t_other = await add_task(title="Other", description="d", mission_id=mid2)
+    # t3 is already processing — should not be cancelled
+    await update_task(t3, status="processing")
 
-        # t3 is already processing — should not be cancelled
-        db_module._db_connection = None
-        await update_task(t3, status="processing")
+    count = await cancel_pending_tasks(mid)
+    assert count == 2  # t1 and t2 only
 
-        db_module._db_connection = None
-        count = await cancel_pending_tasks(mid)
-        assert count == 2  # t1 and t2 only
-
-        r1 = await _fetch_task(db_path, t1)
-        r2 = await _fetch_task(db_path, t2)
-        r3 = await _fetch_task(db_path, t3)
-        r_other = await _fetch_task(db_path, t_other)
-        assert r1["status"] == "cancelled"
-        assert r2["status"] == "cancelled"
-        assert r3["status"] == "processing"  # unaffected
-        assert r_other["status"] == "pending"  # different mission
-    finally:
-        await _close_db(db_module)
+    r1 = await _fetch_task(db_path, t1)
+    r2 = await _fetch_task(db_path, t2)
+    r3 = await _fetch_task(db_path, t3)
+    r_other = await _fetch_task(db_path, t_other)
+    assert r1["status"] == "cancelled"
+    assert r2["status"] == "cancelled"
+    assert r3["status"] == "processing"  # unaffected
+    assert r_other["status"] == "pending"  # different mission
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -576,56 +427,41 @@ async def test_cancel_pending_tasks(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reset_workflow_step(tmp_path, monkeypatch):
+async def test_reset_workflow_step(fresh_db):
     """reset_workflow_step resets writer, verify sibling, and confirm task."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
-
+    db_path = fresh_db
     import src.infra.db as db_module
-    db_module._db_connection = None
+    from general_beckman import add_task, update_task, reset_workflow_step
 
-    try:
-        from general_beckman import add_task, update_task, reset_workflow_step
+    mid = await _add_mission(db_module)
 
-        mid = await _add_mission(db_module)
-        db_module._db_connection = None
+    # Writer step
+    writer_id = await add_task(
+        title="Writer", description="d", mission_id=mid,
+        context={"workflow_step_id": "3.draft"},
+    )
+    # Verify sibling
+    verify_id = await add_task(
+        title="Verify", description="d", mission_id=mid,
+        context={"workflow_step_id": "3.draft.verify"},
+    )
+    # Confirm task (by id)
+    confirm_id = await add_task(title="Confirm", description="d", mission_id=mid)
 
-        # Writer step
-        writer_id = await add_task(
-            title="Writer", description="d", mission_id=mid,
-            context={"workflow_step_id": "3.draft"},
-        )
-        db_module._db_connection = None
-        # Verify sibling
-        verify_id = await add_task(
-            title="Verify", description="d", mission_id=mid,
-            context={"workflow_step_id": "3.draft.verify"},
-        )
-        db_module._db_connection = None
-        # Confirm task (by id)
-        confirm_id = await add_task(title="Confirm", description="d", mission_id=mid)
+    # Mark all as completed
+    await update_task(writer_id, status="completed")
+    await update_task(verify_id, status="completed")
+    await update_task(confirm_id, status="completed")
 
-        # Mark all as completed
-        db_module._db_connection = None
-        await update_task(writer_id, status="completed")
-        db_module._db_connection = None
-        await update_task(verify_id, status="completed")
-        db_module._db_connection = None
-        await update_task(confirm_id, status="completed")
+    await reset_workflow_step(mid, "3.draft", confirm_task_id=confirm_id)
 
-        db_module._db_connection = None
-        await reset_workflow_step(mid, "3.draft", confirm_task_id=confirm_id)
-
-        r_writer = await _fetch_task(db_path, writer_id)
-        r_verify = await _fetch_task(db_path, verify_id)
-        r_confirm = await _fetch_task(db_path, confirm_id)
-        assert r_writer["status"] == "pending"
-        assert r_writer["worker_attempts"] == 0
-        assert r_verify["status"] == "pending"
-        assert r_confirm["status"] == "pending"
-    finally:
-        await _close_db(db_module)
+    r_writer = await _fetch_task(db_path, writer_id)
+    r_verify = await _fetch_task(db_path, verify_id)
+    r_confirm = await _fetch_task(db_path, confirm_id)
+    assert r_writer["status"] == "pending"
+    assert r_writer["worker_attempts"] == 0
+    assert r_verify["status"] == "pending"
+    assert r_confirm["status"] == "pending"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -634,48 +470,36 @@ async def test_reset_workflow_step(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_recover_startup_tasks(tmp_path, monkeypatch):
+async def test_recover_startup_tasks(fresh_db):
     """recover_startup_tasks resets processing→pending and clears backoff."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
-
+    db_path = fresh_db
     import src.infra.db as db_module
-    db_module._db_connection = None
+    from general_beckman import add_task, update_task, recover_startup_tasks
 
-    try:
-        from general_beckman import add_task, update_task, recover_startup_tasks
+    # One processing task
+    t1 = await add_task(title="Processing", description="d")
+    await update_task(t1, status="processing")
 
-        # One processing task
-        t1 = await add_task(title="Processing", description="d")
-        db_module._db_connection = None
-        await update_task(t1, status="processing")
+    # One pending task with a future next_retry_at
+    t2 = await add_task(title="Backoff", description="d")
+    # Set next_retry_at to a future time
+    db = await db_module.get_db()
+    await db.execute(
+        "UPDATE tasks SET next_retry_at = datetime('now', '+1 hour') WHERE id = ?",
+        (t2,)
+    )
+    await db.commit()
 
-        # One pending task with a future next_retry_at
-        db_module._db_connection = None
-        t2 = await add_task(title="Backoff", description="d")
-        db_module._db_connection = None
-        # Set next_retry_at to a future time
-        db = await db_module.get_db()
-        await db.execute(
-            "UPDATE tasks SET next_retry_at = datetime('now', '+1 hour') WHERE id = ?",
-            (t2,)
-        )
-        await db.commit()
+    result = await recover_startup_tasks()
 
-        db_module._db_connection = None
-        result = await recover_startup_tasks()
+    assert result["interrupted"] == 1
+    assert result["backoff_cleared"] == 1
 
-        assert result["interrupted"] == 1
-        assert result["backoff_cleared"] == 1
-
-        r1 = await _fetch_task(db_path, t1)
-        r2 = await _fetch_task(db_path, t2)
-        assert r1["status"] == "pending"
-        assert r1["retry_reason"] == "infrastructure"
-        assert r2["next_retry_at"] is None
-    finally:
-        await _close_db(db_module)
+    r1 = await _fetch_task(db_path, t1)
+    r2 = await _fetch_task(db_path, t2)
+    assert r1["status"] == "pending"
+    assert r1["retry_reason"] == "infrastructure"
+    assert r2["next_retry_at"] is None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -684,47 +508,34 @@ async def test_recover_startup_tasks(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reset_cascade_failed_dependents(tmp_path, monkeypatch):
+async def test_reset_cascade_failed_dependents(fresh_db):
     """reset_cascade_failed_dependents resets cascade-failed tasks."""
-    db_path = _reset_db(tmp_path, monkeypatch)
-    from src.infra.db import init_db
-    await init_db()
+    db_path = fresh_db
+    from general_beckman import add_task, update_task, reset_cascade_failed_dependents
 
-    import src.infra.db as db_module
-    db_module._db_connection = None
+    # Primary task that was in DLQ
+    primary_id = await add_task(title="Primary", description="d")
 
-    try:
-        from general_beckman import add_task, update_task, reset_cascade_failed_dependents
+    # Dependent that was cascade-failed because primary failed
+    dep_id = await add_task(
+        title="Dependent", description="d", depends_on=[primary_id]
+    )
+    await update_task(
+        dep_id, status="failed", error="All dependencies failed"
+    )
 
-        # Primary task that was in DLQ
-        primary_id = await add_task(title="Primary", description="d")
-        db_module._db_connection = None
+    # Another failed task with a different error — should NOT be reset
+    other_id = await add_task(title="Other", description="d")
+    await update_task(other_id, status="failed", error="different error")
 
-        # Dependent that was cascade-failed because primary failed
-        dep_id = await add_task(
-            title="Dependent", description="d", depends_on=[primary_id]
-        )
-        db_module._db_connection = None
-        await update_task(
-            dep_id, status="failed", error="All dependencies failed"
-        )
+    count = await reset_cascade_failed_dependents(primary_id)
+    assert count == 1
 
-        # Another failed task with a different error — should NOT be reset
-        other_id = await add_task(title="Other", description="d")
-        db_module._db_connection = None
-        await update_task(other_id, status="failed", error="different error")
-
-        db_module._db_connection = None
-        count = await reset_cascade_failed_dependents(primary_id)
-        assert count == 1
-
-        r_dep = await _fetch_task(db_path, dep_id)
-        r_other = await _fetch_task(db_path, other_id)
-        assert r_dep["status"] == "pending"
-        assert r_dep["error"] is None
-        assert r_other["status"] == "failed"  # unaffected
-    finally:
-        await _close_db(db_module)
+    r_dep = await _fetch_task(db_path, dep_id)
+    r_other = await _fetch_task(db_path, other_id)
+    assert r_dep["status"] == "pending"
+    assert r_dep["error"] is None
+    assert r_other["status"] == "failed"  # unaffected
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -732,7 +543,7 @@ async def test_reset_cascade_failed_dependents(tmp_path, monkeypatch):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def test_no_raw_tasks_sql_outside_db():
+def test_no_raw_tasks_sql_outside_db(repo_source_texts):
     """No source file outside src/infra/db.py may contain raw
     INSERT INTO tasks, UPDATE tasks, or DELETE FROM tasks SQL.
 
@@ -740,10 +551,9 @@ def test_no_raw_tasks_sql_outside_db():
     src/infra/db.py is the sole SQL owner.
     """
     import re
-    import os
     from pathlib import Path
 
-    root = Path(__file__).parents[3]  # repo root (worktree)
+    root = Path(__file__).parents[3].resolve()
 
     sql_re = re.compile(
         r'(INSERT\s+INTO\s+tasks|UPDATE\s+tasks\s+SET|DELETE\s+FROM\s+tasks)',
@@ -767,34 +577,20 @@ def test_no_raw_tasks_sql_outside_db():
     }
 
     violations: list[str] = []
-    skip_dirs = {".venv", "__pycache__", ".git", ".benchmark_cache", "node_modules", "worktrees"}
 
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
-        for fname in filenames:
-            if not fname.endswith(".py"):
-                continue
-            if fname.startswith("test_") or fname.endswith("_test.py"):
-                continue
-            if "tests" in Path(dirpath).parts:
-                continue
-            filepath = (Path(dirpath) / fname).resolve()
-            if filepath in allowed:
-                continue
-            # Allow all of general_beckman/src/general_beckman/ — beckman is the write-owner.
-            if any(str(filepath).startswith(str(d)) for d in allowed_dirs):
-                continue
-            # Skip migration scripts (one-time DB tools, not prod callers).
-            if any(str(filepath).startswith(str(p)) for p in skip_prefixes):
-                continue
-            try:
-                text = filepath.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for lineno, line in enumerate(text.splitlines(), 1):
-                if sql_re.search(line):
-                    rel = filepath.relative_to(root.resolve())
-                    violations.append(f"{rel}:{lineno}: {line.strip()}")
+    for filepath, text in repo_source_texts.items():
+        if filepath in allowed:
+            continue
+        # Allow all of general_beckman/src/general_beckman/ — beckman is the write-owner.
+        if any(str(filepath).startswith(str(d)) for d in allowed_dirs):
+            continue
+        # Skip migration scripts (one-time DB tools, not prod callers).
+        if any(str(filepath).startswith(str(p)) for p in skip_prefixes):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if sql_re.search(line):
+                rel = filepath.relative_to(root)
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
 
     assert violations == [], (
         "Raw tasks SQL found outside src/infra/db.py and general_beckman — "
@@ -803,39 +599,7 @@ def test_no_raw_tasks_sql_outside_db():
     )
 
 
-def _ast_task_write_imports(filepath, text, guarded_names):
-    """Return list of (lineno, name) pairs where a guarded task-write name is
-    imported from src.infra.db (absolute) or a relative ...infra.db path.
-
-    Uses ast.parse so parenthesised multi-line imports are detected correctly.
-    Falls back to an empty list if the file is not valid Python (SyntaxError).
-    """
-    import ast
-
-    try:
-        tree = ast.parse(text, filename=str(filepath))
-    except SyntaxError:
-        return []
-
-    hits = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        module = node.module or ""
-        # Absolute: from src.infra.db import ...
-        is_abs = module == "src.infra.db"
-        # Relative: from ..infra.db import ... (any level)
-        is_rel = node.level > 0 and module == "infra.db"
-        if not (is_abs or is_rel):
-            continue
-        for alias in node.names:
-            name = alias.name
-            if name in guarded_names:
-                hits.append((node.lineno, name))
-    return hits
-
-
-def test_no_raw_db_task_imports_outside_infra_beckman():
+def test_no_raw_db_task_imports_outside_infra_beckman(repo_source_texts, ast_db_write_imports_fn):
     """No source file outside src/infra/db.py itself and general_beckman may
     import task-write helpers directly from src.infra.db.
 
@@ -857,10 +621,9 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
     Falls back to line-regex on SyntaxError.
     """
     import re
-    import os
     from pathlib import Path
 
-    root = Path(__file__).parents[3]  # repo root
+    root = Path(__file__).parents[3].resolve()
 
     guarded_names = frozenset({
         "add_task", "update_task", "update_task_by_context_field",
@@ -896,42 +659,28 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
     }
 
     violations: list[str] = []
-    skip_dirs = {".venv", "__pycache__", ".git", ".benchmark_cache", "node_modules", "worktrees"}
 
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
-        for fname in filenames:
-            if not fname.endswith(".py"):
-                continue
-            if fname.startswith("test_") or fname.endswith("_test.py"):
-                continue
-            if "tests" in Path(dirpath).parts:
-                continue
-            filepath = (Path(dirpath) / fname).resolve()
-            if filepath in allowed_files:
-                continue
-            if any(str(filepath).startswith(str(d)) for d in allowed_dirs):
-                continue
-            if any(str(filepath).startswith(str(p)) for p in skip_prefixes):
-                continue
-            try:
-                text = filepath.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
+    for filepath, text in repo_source_texts.items():
+        if filepath in allowed_files:
+            continue
+        if any(str(filepath).startswith(str(d)) for d in allowed_dirs):
+            continue
+        if any(str(filepath).startswith(str(p)) for p in skip_prefixes):
+            continue
 
-            # AST-based detection (catches multi-line imports).
-            ast_hits = _ast_task_write_imports(filepath, text, guarded_names)
-            if ast_hits:
-                rel = filepath.relative_to(root.resolve())
-                for lineno, name in ast_hits:
-                    violations.append(f"{rel}:{lineno}: import of '{name}' from src.infra.db")
-                continue  # already reported; skip line-regex for this file
+        # AST-based detection (catches multi-line imports).
+        ast_hits = ast_db_write_imports_fn(filepath, text, guarded_names)
+        if ast_hits:
+            rel = filepath.relative_to(root)
+            for lineno, name in ast_hits:
+                violations.append(f"{rel}:{lineno}: import of '{name}' from src.infra.db")
+            continue  # already reported; skip line-regex for this file
 
-            # Fallback: line-regex (handles SyntaxError files).
-            for lineno, line in enumerate(text.splitlines(), 1):
-                if import_re.search(line) or rel_import_re.search(line):
-                    rel = filepath.relative_to(root.resolve())
-                    violations.append(f"{rel}:{lineno}: {line.strip()}")
+        # Fallback: line-regex (handles SyntaxError files).
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if import_re.search(line) or rel_import_re.search(line):
+                rel = filepath.relative_to(root)
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
 
     assert violations == [], (
         "Direct db task-write helper import found outside src/infra/db.py and "

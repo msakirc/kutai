@@ -166,21 +166,8 @@ async def supersede_growth_event(
 
     Returns the count of rows updated.
     """
-    from src.infra.db import (
-        get_growth_events,
-        update_growth_event_properties as _db_update_properties,
-    )
-
-    prior = await get_growth_events(mission_id=mission_id, kind=kind)
-    updated = 0
-    for row in prior or []:
-        props = row.get("properties") or {}
-        if props.get("consumed") or props.get("superseded"):
-            continue
-        props["superseded"] = True
-        await _db_update_properties(int(row["id"]), props)
-        updated += 1
-    return updated
+    from src.infra.db import supersede_growth_events as _supersede
+    return await _supersede(mission_id=mission_id, kind=kind)
 
 
 async def update_growth_event_properties(event_id: int, properties: dict) -> None:
@@ -1630,6 +1617,30 @@ async def update_mission_fields(mission_id: int, **fields) -> None:
     await _update_fields(mission_id, **fields)
 
 
+# Cache for the missions lifecycle column name.  Probed once per process on
+# first call to block_mission or unblock_mission; the schema is immutable at
+# runtime so a single probe is sufficient.
+_lifecycle_col_cache: str | None = None
+
+
+async def _missions_lifecycle_col() -> str:
+    """Return the missions column used for lifecycle state.
+
+    Returns ``'lifecycle_state'`` when the schema has that column (post-
+    migration), otherwise ``'status'`` (legacy schema).  Result is cached for
+    the process lifetime — the schema never changes at runtime.
+    """
+    global _lifecycle_col_cache
+    if _lifecycle_col_cache is not None:
+        return _lifecycle_col_cache
+    from src.infra.db import get_db
+    db = await get_db()
+    cur = await db.execute("PRAGMA table_info(missions)")
+    cols = [row[1] for row in await cur.fetchall()]
+    _lifecycle_col_cache = "lifecycle_state" if "lifecycle_state" in cols else "status"
+    return _lifecycle_col_cache
+
+
 async def block_mission(mission_id: int) -> bool:
     """Flip mission to ``blocked_on_founder_action`` if it is currently active.
 
@@ -1647,12 +1658,7 @@ async def block_mission(mission_id: int) -> bool:
     if not mission:
         return False
 
-    # Detect whether the DB schema has lifecycle_state or only status.
-    from src.infra.db import get_db
-    db = await get_db()
-    cur = await db.execute("PRAGMA table_info(missions)")
-    cols = [row[1] for row in await cur.fetchall()]
-    col = "lifecycle_state" if "lifecycle_state" in cols else "status"
+    col = await _missions_lifecycle_col()
 
     current = mission.get(col) or mission.get("status")
     if current == "blocked_on_founder_action":
@@ -1677,15 +1683,12 @@ async def unblock_mission(mission_id: int) -> bool:
     from src.infra.logging_config import get_logger as _get_logger
     _logger = _get_logger("beckman.unblock_mission")
 
-    from src.infra.db import get_mission, update_mission_fields as _update_fields, get_db
+    from src.infra.db import get_mission, update_mission_fields as _update_fields
     mission = await get_mission(mission_id)
     if not mission:
         return False
 
-    db = await get_db()
-    cur = await db.execute("PRAGMA table_info(missions)")
-    cols = [row[1] for row in await cur.fetchall()]
-    col = "lifecycle_state" if "lifecycle_state" in cols else "status"
+    col = await _missions_lifecycle_col()
 
     current = mission.get(col) or mission.get("status")
     if current != "blocked_on_founder_action":
@@ -1694,12 +1697,8 @@ async def unblock_mission(mission_id: int) -> bool:
     await _update_fields(mission_id, **{col: "active"})
     # Reset tasks that beckman parked in blocked_on_founder_action for this
     # mission back to pending so the pump re-evaluates them.
-    await db.execute(
-        "UPDATE tasks SET status = 'pending' "
-        "WHERE mission_id = ? AND status = 'blocked_on_founder_action'",
-        (mission_id,),
-    )
-    await db.commit()
+    from src.infra.db import reset_blocked_on_founder_tasks as _reset_founder_tasks
+    await _reset_founder_tasks(mission_id)
     _logger.info(
         "mission unblocked — no pending actions",
         mission_id=mission_id, column=col,
@@ -1743,48 +1742,16 @@ async def increment_mission_rework_loops(mission_id: int) -> int:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def add_task(
-    title,
-    description,
-    mission_id=None,
-    parent_task_id=None,
-    agent_type="executor",
-    tier="auto",
-    priority=5,
-    requires_approval=False,
-    depends_on=None,
-    context=None,
-    kind="main_work",
-    runner=None,
-    needs_real_tools=None,
-    reversibility=None,
-    lane=None,
-    on_complete=None,
-    on_error=None,
-    cont_state=None,
-):
-    """Thin delegate to src.infra.db.add_task; beckman is the single sanctioned write-owner of the tasks table."""
+async def add_task(title: str, description: str, **kwargs) -> int:
+    """Thin delegate to src.infra.db.add_task; beckman is the single sanctioned write-owner of the tasks table.
+
+    See src.infra.db.add_task for the full parameter list (mission_id,
+    parent_task_id, agent_type, tier, priority, requires_approval, depends_on,
+    context, kind, runner, needs_real_tools, reversibility, lane, on_complete,
+    on_error, cont_state, etc.).
+    """
     from src.infra.db import add_task as _add_task
-    return await _add_task(
-        title=title,
-        description=description,
-        mission_id=mission_id,
-        parent_task_id=parent_task_id,
-        agent_type=agent_type,
-        tier=tier,
-        priority=priority,
-        requires_approval=requires_approval,
-        depends_on=depends_on,
-        context=context,
-        kind=kind,
-        runner=runner,
-        needs_real_tools=needs_real_tools,
-        reversibility=reversibility,
-        lane=lane,
-        on_complete=on_complete,
-        on_error=on_error,
-        cont_state=cont_state,
-    )
+    return await _add_task(title=title, description=description, **kwargs)
 
 
 async def update_task(task_id, **kwargs):

@@ -202,6 +202,40 @@ async def test_supersede_returns_zero_when_all_already_closed(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_supersede_handles_null_properties_json(tmp_path, monkeypatch):
+    """supersede_growth_event handles rows with NULL properties_json (no crash, marks superseded)."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
+    db_module._db_connection = None
+
+    try:
+        from general_beckman import supersede_growth_event
+
+        # Insert a row with NULL properties_json directly (simulates legacy rows).
+        async with aiosqlite.connect(db_path) as db:
+            cur = await db.execute(
+                "INSERT INTO growth_events (mission_id, kind, properties_json) VALUES (?, ?, NULL)",
+                (42, "null_props_kind"),
+            )
+            event_id = cur.lastrowid
+            await db.commit()
+
+        db_module._db_connection = None
+        count = await supersede_growth_event(mission_id=42, kind="null_props_kind")
+        assert count == 1
+
+        # Verify the row now has superseded=True in properties_json.
+        rows = await _fetch_events(db_path, "null_props_kind")
+        assert len(rows) == 1
+        assert rows[0]["properties"].get("superseded") is True
+    finally:
+        await _close_db(db_module)
+
+
+@pytest.mark.asyncio
 async def test_update_growth_event_properties_overwrites(tmp_path, monkeypatch):
     """update_growth_event_properties replaces stored properties_json in the DB."""
     db_path = _reset_db(tmp_path, monkeypatch)

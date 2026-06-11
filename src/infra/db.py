@@ -4419,10 +4419,13 @@ async def purge_all_missions() -> None:
 
 
 async def purge_all() -> None:
-    """Wipe missions + tasks + conversations + memory (legacy resetall path).
+    """Wipe missions + tasks + conversations + memory (legacy /resetall semantics).
 
-    Extends ``purge_all_missions`` with conversations and memory tables that
-    the legacy ``/resetall`` admin command clears.
+    Ports the legacy ``/resetall`` admin command behavior: DELETEs across
+    missions, tasks, conversations, and memory in a single transaction.
+    Does NOT call ``purge_all_missions`` — it issues its own DELETE statements
+    across a wider set of tables (conversations + memory) than
+    ``purge_all_missions`` covers.
     """
     db = await get_db()
     await db.execute("DELETE FROM conversations")
@@ -6056,6 +6059,25 @@ async def reset_cascade_failed_dependents(task_id: int) -> int:
              AND error = 'All dependencies failed'
              AND depends_on LIKE ?""",
         (f"%{task_id}%",),
+    )
+    count = cursor.rowcount
+    if count > 0:
+        await db.commit()
+    return count
+
+
+async def reset_blocked_on_founder_tasks(mission_id: int) -> int:
+    """Reset tasks parked in 'blocked_on_founder_action' back to 'pending'.
+
+    Called by beckman.unblock_mission after the mission itself is unblocked,
+    so the pump re-evaluates tasks that were parked waiting for a founder action.
+    Returns the count of rows updated.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE tasks SET status = 'pending' "
+        "WHERE mission_id = ? AND status = 'blocked_on_founder_action'",
+        (mission_id,),
     )
     count = cursor.rowcount
     if count > 0:
@@ -7698,6 +7720,40 @@ async def get_growth_events(
         d["properties"] = decoded
         result.append(d)
     return result
+
+
+async def supersede_growth_events(
+    mission_id: int | None,
+    kind: str,
+) -> int:
+    """Mark all open (non-consumed, non-superseded) growth_events of ``kind``
+    as superseded, using a per-row fetch-then-update loop with a single commit.
+
+    NOTE: SQLite 3.38+ json_valid() would allow a single-UPDATE path; this
+    runtime uses SQLite 3.37.x which lacks json_valid(), so we use the
+    fetch-then-loop approach instead, batching all writes under one commit.
+
+    Returns the count of rows updated.
+    """
+    prior = await get_growth_events(mission_id=mission_id, kind=kind)
+    if not prior:
+        return 0
+
+    db = await get_db()
+    updated = 0
+    for row in prior:
+        props = row.get("properties") or {}
+        if props.get("consumed") or props.get("superseded"):
+            continue
+        props["superseded"] = True
+        await db.execute(
+            "UPDATE growth_events SET properties_json = ? WHERE id = ?",
+            (json.dumps(props), int(row["id"])),
+        )
+        updated += 1
+    if updated > 0:
+        await db.commit()
+    return updated
 
 
 # Z9 T4E — reinforce loop. A confirmed hypothesis verdict bumps the model

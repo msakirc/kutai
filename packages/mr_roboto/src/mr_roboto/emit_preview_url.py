@@ -405,8 +405,7 @@ async def _persist_to_db(
     await db.commit()
     from general_beckman import update_mission_fields as _umf
     if action == "emit" and url:
-        from datetime import datetime as _dt
-        _now = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        await _umf(int(mission_id), preview_url=url, preview_started_at=_now)
+        from src.infra.times import db_now as _db_now
+        await _umf(int(mission_id), preview_url=url, preview_started_at=_db_now())
     elif action == "kill":
         await _umf(int(mission_id), preview_url=None, preview_started_at=None)

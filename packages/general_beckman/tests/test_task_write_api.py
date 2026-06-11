@@ -846,7 +846,8 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
       save_task_checkpoint, clear_task_checkpoint,
       reset_failed_tasks, reset_stuck_tasks, reset_blocked_tasks,
       cancel_pending_tasks, reset_workflow_step,
-      recover_startup_tasks, reset_cascade_failed_dependents.
+      recover_startup_tasks, reset_cascade_failed_dependents,
+      reset_blocked_on_founder_tasks.
 
     IMPORTANT: src/infra/dead_letter.py is NOT exempt — it must route via
     beckman like everyone else. Only src/infra/db.py itself is exempt.
@@ -869,6 +870,7 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
         "reset_failed_tasks", "reset_stuck_tasks", "reset_blocked_tasks",
         "cancel_pending_tasks", "reset_workflow_step",
         "recover_startup_tasks", "reset_cascade_failed_dependents",
+        "reset_blocked_on_founder_tasks",
     })
 
     # Fallback line-regex for unparseable files (SyntaxError path).

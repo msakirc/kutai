@@ -6812,8 +6812,22 @@ class TelegramInterface:
             return
         from src.infra.load_manager import set_load_mode
         msg = await set_load_mode(choice, source="user")
+        if choice == "minimal":
+            msg += await self._free_local_for_minimal()
         await self._reply(update,msg, parse_mode="Markdown")
         logger.info("load mode changed via command", mode=choice)
+
+    async def _free_local_for_minimal(self) -> str:
+        """Unload the resident local model so minimal mode actually frees the
+        GPU (not just pauses new local inference). Returns a status suffix."""
+        try:
+            from src.models.local_model_manager import get_local_manager
+            freed = await get_local_manager().unload(reason="load_mode_minimal")
+            return "\n🧹 Freed local GPU (model unloaded)." if freed \
+                else "\n(No local model was loaded.)"
+        except Exception as exc:
+            logger.warning("minimal-mode local unload failed", error=str(exc))
+            return "\n⚠️ Could not unload local model — free VRAM manually if needed."
 
     async def cmd_tune(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/tune — force an auto-tuning cycle and report results."""
@@ -8513,8 +8527,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if any(w in lower for w in ["game", "gaming", "play"]):
             from ..infra.load_manager import set_load_mode
             msg = await set_load_mode("minimal", source="user")
+            freed = await self._free_local_for_minimal()
             await self._reply(update,
-                f"\U0001f3ae Switching to minimal mode for gaming.\n{msg}\n"
+                f"\U0001f3ae Switching to minimal mode for gaming.\n{msg}{freed}\n"
                 "Use `/load auto` when you're done.",
                 parse_mode="Markdown",
             )

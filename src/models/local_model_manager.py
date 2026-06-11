@@ -485,6 +485,36 @@ class LocalModelManager:
             return False
         return await self._dallama._server.health_check()
 
+    async def unload(self, reason: str = "load_mode_minimal") -> bool:
+        """Free the resident llama-server model from VRAM *without* tearing
+        down DaLLaMa (the watchdog + idle loops keep running, so the next
+        ``ensure_model`` reloads normally).
+
+        Used when load mode → ``minimal`` / ``/game``: minimal means pause local
+        AND free the GPU. Mirrors IdleUnloader's stop path (swap-lock +
+        intentional_unload sentinel) so a concurrent swap waits until VRAM is
+        actually released. Returns True iff a model was actually unloaded.
+        """
+        if not self._started:
+            return False
+        d = self._dallama
+        if not d._server.is_alive():
+            return False  # nothing resident — already free
+        async with d._swap._lock:
+            d._swap.intentional_unload = True
+            try:
+                await d._server.stop()
+            finally:
+                d._swap.intentional_unload = False
+        # Mirror the idle-unload clear path so state + NerdHerd stay coherent.
+        d._current_config = None
+        self.runtime_state = None
+        self._thinking_enabled = False
+        self._vision_enabled = False
+        self._push_to_nerd_herd(None)
+        logger.info("Unloaded local model to free VRAM (reason=%s)", reason)
+        return True
+
     async def shutdown(self) -> None:
         """Graceful shutdown — called from atexit or orchestrator."""
         if self._started:

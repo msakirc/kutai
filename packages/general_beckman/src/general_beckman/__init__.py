@@ -8,6 +8,14 @@ Public API (everything else is internal):
   - record_growth_event(mission_id, kind, properties, segment) -> int
   - supersede_growth_event(mission_id, kind) -> int
   - update_growth_event_properties(event_id, properties) -> None
+  - add_mission(...) -> int
+  - update_mission(mission_id, **kwargs) -> None
+  - update_mission_fields(mission_id, **fields) -> None
+  - block_mission(mission_id) -> bool
+  - unblock_mission(mission_id) -> bool
+  - purge_all_missions() -> None
+  - purge_all() -> None
+  - increment_mission_rework_loops(mission_id) -> int
 """
 from __future__ import annotations
 
@@ -23,6 +31,11 @@ __all__ = [
     "INLINE_TIMEOUT", "_inline_waiters",
     "notify_threshold", "THRESHOLDS_PCT",
     "record_growth_event", "supersede_growth_event", "update_growth_event_properties",
+    # Mission write API — single sanctioned write-owner of the missions table.
+    "add_mission", "update_mission", "update_mission_fields",
+    "block_mission", "unblock_mission",
+    "purge_all_missions", "purge_all",
+    "increment_mission_rework_loops",
 ]
 
 THRESHOLDS_PCT = (50, 75, 90)
@@ -1465,6 +1478,172 @@ async def enqueue(
     except asyncio.TimeoutError:
         _inline_waiters.pop(task_id, None)
         raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mission write API — General Beckman is the single write-owner of missions.
+# SQL stays in src/infra/db.py; beckman exposes the sanctioned external API.
+# All modules outside src/infra + general_beckman must use these helpers.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def add_mission(
+    title: str,
+    description: str,
+    priority: int = 5,
+    context: dict | None = None,
+    workflow: str | None = None,
+    repo_path: str | None = None,
+    language: str | None = None,
+    framework: str | None = None,
+    budget_ceiling_usd: float | None = None,
+) -> int:
+    """Create a new mission row and return its id.
+
+    Thin delegate to ``src.infra.db.add_mission``; beckman is the single
+    sanctioned external entry point for mission creation.
+    """
+    from src.infra.db import add_mission as _add_mission
+    return await _add_mission(
+        title=title,
+        description=description,
+        priority=priority,
+        context=context,
+        workflow=workflow,
+        repo_path=repo_path,
+        language=language,
+        framework=framework,
+        budget_ceiling_usd=budget_ceiling_usd,
+    )
+
+
+async def update_mission(mission_id: int, **kwargs) -> None:
+    """Update structured fields on a mission (whitelist enforced by db.py).
+
+    Thin delegate to ``src.infra.db.update_mission``.  Accepts only the
+    columns in ``src.infra.db._MISSION_COLUMNS``; unknown columns raise
+    ``ValueError``.
+    """
+    from src.infra.db import update_mission as _update_mission
+    await _update_mission(mission_id, **kwargs)
+
+
+async def update_mission_fields(mission_id: int, **fields) -> None:
+    """Generic, audited setter for one-off missions column patches.
+
+    Accepts only columns in ``src.infra.db._MISSION_FIELDS_WHITELIST``; any
+    unknown column name raises ``ValueError`` so callers cannot inject
+    arbitrary identifiers.  Use for fields not covered by ``update_mission``
+    (Telegram integration, preview_url, budget columns, etc.).
+    """
+    from src.infra.db import update_mission_fields as _update_fields
+    await _update_fields(mission_id, **fields)
+
+
+async def block_mission(mission_id: int) -> bool:
+    """Flip mission to ``blocked_on_founder_action`` if it is currently active.
+
+    Ported from ``src.founder_actions.block_mission_if_needed``; beckman owns
+    the write so founder_actions delegates here.  Returns ``True`` if the flip
+    happened.  Does NOT check whether pending founder-actions exist — caller is
+    responsible for that gate (founder_actions.block_mission_if_needed still
+    does the count check before calling this).
+    """
+    from src.infra.logging_config import get_logger as _get_logger
+    _logger = _get_logger("beckman.block_mission")
+
+    from src.infra.db import get_mission, update_mission_fields as _update_fields
+    mission = await get_mission(mission_id)
+    if not mission:
+        return False
+
+    # Detect whether the DB schema has lifecycle_state or only status.
+    from src.infra.db import get_db
+    db = await get_db()
+    cur = await db.execute("PRAGMA table_info(missions)")
+    cols = [row[1] for row in await cur.fetchall()]
+    col = "lifecycle_state" if "lifecycle_state" in cols else "status"
+
+    current = mission.get(col) or mission.get("status")
+    if current == "blocked_on_founder_action":
+        return False  # already blocked
+
+    await _update_fields(mission_id, **{col: "blocked_on_founder_action"})
+    _logger.info(
+        "mission blocked on founder_actions",
+        mission_id=mission_id, column=col,
+    )
+    return True
+
+
+async def unblock_mission(mission_id: int) -> bool:
+    """Flip mission from ``blocked_on_founder_action`` back to ``active``.
+
+    Also resets tasks parked in ``blocked_on_founder_action`` back to
+    ``pending`` so the next pump tick re-evaluates them.  Returns ``True``
+    if the flip happened.  Does NOT check whether pending founder-actions are
+    cleared — caller is responsible for that gate.
+    """
+    from src.infra.logging_config import get_logger as _get_logger
+    _logger = _get_logger("beckman.unblock_mission")
+
+    from src.infra.db import get_mission, update_mission_fields as _update_fields, get_db
+    mission = await get_mission(mission_id)
+    if not mission:
+        return False
+
+    db = await get_db()
+    cur = await db.execute("PRAGMA table_info(missions)")
+    cols = [row[1] for row in await cur.fetchall()]
+    col = "lifecycle_state" if "lifecycle_state" in cols else "status"
+
+    current = mission.get(col) or mission.get("status")
+    if current != "blocked_on_founder_action":
+        return False
+
+    await _update_fields(mission_id, **{col: "active"})
+    # Reset tasks that beckman parked in blocked_on_founder_action for this
+    # mission back to pending so the pump re-evaluates them.
+    await db.execute(
+        "UPDATE tasks SET status = 'pending' "
+        "WHERE mission_id = ? AND status = 'blocked_on_founder_action'",
+        (mission_id,),
+    )
+    await db.commit()
+    _logger.info(
+        "mission unblocked — no pending actions",
+        mission_id=mission_id, column=col,
+    )
+    return True
+
+
+async def purge_all_missions() -> None:
+    """Delete ALL missions + dependent rows (tasks, checkpoints, etc.).
+
+    Thin delegate to ``src.infra.db.purge_all_missions``; both admin-reset
+    callbacks use this so the exact table list is maintained in one place.
+    """
+    from src.infra.db import purge_all_missions as _purge
+    await _purge()
+
+
+async def purge_all() -> None:
+    """Wipe missions + tasks + conversations + memory (legacy /resetall path).
+
+    Thin delegate to ``src.infra.db.purge_all``.
+    """
+    from src.infra.db import purge_all as _purge_all
+    await _purge_all()
+
+
+async def increment_mission_rework_loops(mission_id: int) -> int:
+    """Atomically bump missions.phase_7_rework_loops; return the new count.
+
+    Thin delegate to ``src.infra.db.increment_mission_rework_loops``; beckman
+    is the sanctioned external entry point for rework-loop telemetry.
+    """
+    from src.infra.db import increment_mission_rework_loops as _incr
+    return await _incr(mission_id)
 
 
 async def on_model_swap(old_model: str | None, new_model: str | None) -> None:

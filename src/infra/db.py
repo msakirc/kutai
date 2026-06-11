@@ -4284,6 +4284,109 @@ async def update_mission(mission_id, **kwargs):
     await db.commit()
 
 
+# Whitelist for update_mission_fields — columns written by the raw-SQL escape
+# sites that were migrated to beckman.update_mission_fields.  All callers
+# must pass only these columns; unknown columns raise ValueError.
+_MISSION_FIELDS_WHITELIST: frozenset[str] = frozenset({
+    # lifecycle / state
+    "lifecycle_state",
+    "status",
+    # scheduling / budget
+    "founder_attention_budget_minutes",
+    "cost_ceiling_usd",
+    "ambition_tier",
+    # Telegram integration
+    "telegram_thread_id",
+    "telegram_thread_archived",
+    # relational
+    "branched_from_mission_id",
+    # product metadata
+    "review_density_json",
+    "context",
+    "cursor",
+    "github_repo_url",
+    "preview_url",
+    "preview_started_at",
+    "interview_skip_reason",
+})
+
+
+async def update_mission_fields(mission_id: int, **fields) -> None:
+    """Generic, audited setter for missions columns.
+
+    Only columns in ``_MISSION_FIELDS_WHITELIST`` are accepted; passing any
+    other column name raises ``ValueError`` so callers cannot inject arbitrary
+    column identifiers.  For bulk structured updates prefer ``update_mission``;
+    this helper exists for one-off field patches by beckman delegates.
+    """
+    if not fields:
+        return
+    bad = set(fields) - _MISSION_FIELDS_WHITELIST
+    if bad:
+        raise ValueError(
+            f"update_mission_fields: unknown column(s) {bad!r} for missions. "
+            f"Allowed: {sorted(_MISSION_FIELDS_WHITELIST)}"
+        )
+    db = await get_db()
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [mission_id]
+    await db.execute(f"UPDATE missions SET {sets} WHERE id = ?", values)
+    await db.commit()
+
+
+async def purge_all_missions() -> None:
+    """Delete ALL missions rows (and dependent rows for tasks, checkpoints,
+    dead_letter_tasks, blackboards, approval_requests, scheduled_tasks).
+
+    This is the single sanctioned bulk-delete path used by the admin reset
+    commands.  Both the modern ``reset_tasks_confirm`` callback and the legacy
+    ``resetall_confirm`` callback delegate here so the exact table list is
+    maintained in one place.  Optional tables that may not exist in every
+    deployment are wrapped in per-table try/except so a missing table never
+    aborts the whole operation.
+    """
+    db = await get_db()
+    for _attempt in range(3):
+        try:
+            # Core tables — always present.
+            await db.execute("DELETE FROM tasks")
+            await db.execute("DELETE FROM missions")
+            # Optional tables — may not exist in minimal/test schemas.
+            for _tbl in (
+                "dead_letter_tasks",
+                "workflow_checkpoints",
+                "blackboards",
+                "approval_requests",
+                "scheduled_tasks",
+            ):
+                try:
+                    await db.execute(f"DELETE FROM {_tbl}")
+                except Exception:
+                    pass
+            await db.commit()
+            return
+        except Exception as _err:
+            if _attempt < 2:
+                import asyncio as _asyncio
+                await _asyncio.sleep(1)
+            else:
+                raise
+
+
+async def purge_all() -> None:
+    """Wipe missions + tasks + conversations + memory (legacy resetall path).
+
+    Extends ``purge_all_missions`` with conversations and memory tables that
+    the legacy ``/resetall`` admin command clears.
+    """
+    db = await get_db()
+    await db.execute("DELETE FROM conversations")
+    await db.execute("DELETE FROM tasks")
+    await db.execute("DELETE FROM missions")
+    await db.execute("DELETE FROM memory")
+    await db.commit()
+
+
 async def increment_mission_rework_loops(mission_id: int) -> int:
     """Atomically bump missions.phase_7_rework_loops; return the new count.
 

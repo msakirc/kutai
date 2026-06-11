@@ -1,12 +1,34 @@
+"""Plan 3 swap mechanic — CPS chain tests (SP5: await_inline is deleted).
+
+Kickoff writes the chain ledger + enqueues ONE prompt_writer child with
+on_complete/on_error continuations; handlers advance a sequential image
+chain; finalize applies all HTML rewrites. ``_enqueue_beckman`` stays the
+patchable seam — it now captures (spec, kwargs) and returns a task id."""
 import json
 import os
+
 import pytest
+
+import mr_roboto.swap_placeholder_images as swap_mod
 from mr_roboto.swap_placeholder_images import (
     swap_placeholder_images,
     _scan_placeholders,
     _list_html_files,
     _PLACEHOLDER_HOST_RE,
-    _parse_task_result,
+    _coerce_result_dict,
+    _extract_prompts,
+    _extract_image_path,
+    _load_ledger,
+    _save_ledger,
+    _on_prompts_done,
+    _on_prompts_err,
+    _on_image_done,
+    _on_image_err,
+    _finalize,
+    ON_PROMPTS_DONE,
+    ON_PROMPTS_ERR,
+    ON_IMAGE_DONE,
+    ON_IMAGE_ERR,
 )
 
 
@@ -28,6 +50,15 @@ _HTML = """<!DOCTYPE html>
   <img src="https://placehold.co/64x64/264653/FFF?text=u"
        alt="user portrait">
 </body></html>"""
+
+_PROMPTS_3 = {
+    "_schema_version": "1",
+    "prompts": [
+        {"placeholder_id": "home__0", "prompt": "coral barista scene"},
+        {"placeholder_id": "home__1", "prompt": "slate dashboard"},
+        {"placeholder_id": "home__2", "prompt": "teal portrait"},
+    ],
+}
 
 
 def test_scan_finds_three(tmp_path):
@@ -65,153 +96,93 @@ def test_list_html_recursive(tmp_path):
     assert names == ["home.html", "onboarding.html", "settings.html"]
 
 
-def test_parse_task_result_handles_json_string():
-    """v2 fix: TaskResult.result is a JSON string in production."""
-    class _TR:
-        result = json.dumps({"path": "/x/y.png", "provider": "p"})
-    parsed = _parse_task_result(_TR())
-    assert parsed == {"path": "/x/y.png", "provider": "p"}
+# -- tolerant result parsing ---------------------------------------------
+
+def test_coerce_result_dict_shapes():
+    assert _coerce_result_dict({"a": 1}) == {"a": 1}
+    assert _coerce_result_dict(json.dumps({"a": 1})) == {"a": 1}
+    assert _coerce_result_dict(None) == {}
+    assert _coerce_result_dict("not json {") == {}
+    assert _coerce_result_dict(json.dumps([1, 2])) == {}
 
 
-def test_parse_task_result_handles_dict():
-    """Defensive: tests may pass dicts."""
-    class _TR:
-        result = {"path": "/x/y.png"}
-    parsed = _parse_task_result(_TR())
-    assert parsed == {"path": "/x/y.png"}
+def test_extract_prompts_top_level():
+    assert _extract_prompts(_PROMPTS_3) == {
+        "home__0": "coral barista scene",
+        "home__1": "slate dashboard",
+        "home__2": "teal portrait",
+    }
 
 
-def test_parse_task_result_handles_none():
-    class _TR:
-        result = None
-    assert _parse_task_result(_TR()) == {}
+def test_extract_prompts_nested_result_json_string():
+    """Restart-reconcile / posthook shape: artifact nested as a JSON string."""
+    assert _extract_prompts({"result": json.dumps(_PROMPTS_3)})["home__1"] == \
+        "slate dashboard"
+    assert _extract_prompts({"content": json.dumps(_PROMPTS_3)})["home__0"] == \
+        "coral barista scene"
+    assert _extract_prompts(json.dumps(_PROMPTS_3))["home__2"] == "teal portrait"
 
 
-def test_parse_task_result_handles_garbage_string():
-    class _TR:
-        result = "not json {"
-    assert _parse_task_result(_TR()) == {}
+def test_extract_prompts_garbage_degrades():
+    assert _extract_prompts({}) == {}
+    assert _extract_prompts({"content": "not json"}) == {}
+    assert _extract_prompts({"prompts": "not-a-list"}) == {}
+    assert _extract_prompts(None) == {}
 
 
-@pytest.mark.asyncio
-async def test_swap_no_html_files(monkeypatch, tmp_path):
-    web = tmp_path / ".web"; web.mkdir()
-    monkeypatch.setattr(
-        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
-    )
-    res = await swap_placeholder_images(mission_id=42)
-    assert res["ok"] is True
-    assert res["replaced_count"] == 0
-    assert res["html_files_seen"] == 0
+def test_extract_image_path():
+    assert _extract_image_path({"path": "/x/y.png"}) == "/x/y.png"
+    assert _extract_image_path({"content": "/x/y.png"}) == "/x/y.png"
+    assert _extract_image_path({"result": json.dumps({"path": "/x/y.png"})}) == \
+        "/x/y.png"
+    assert _extract_image_path({"status": "completed"}) is None
 
 
-# -- Task 5: prompt_writer enqueue --------------------------------------
+# -- test driver ----------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_calls_prompt_writer_once_with_json_string_result(
-    monkeypatch, tmp_path,
-):
-    """v2 fix: PRODUCTION shape — TaskResult.result is a JSON STRING."""
-    web = tmp_path / ".web"; web.mkdir()
+class _Capture:
+    """Patchable _enqueue_beckman: records (spec, kwargs), returns ids."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self._next_id = 100
+
+    async def __call__(self, spec, **kwargs):
+        assert "await_inline" not in kwargs, "CPS regression: await_inline used"
+        self._next_id += 1
+        self.calls.append({"spec": spec, "kwargs": kwargs, "id": self._next_id})
+        return self._next_id
+
+    def pop_image_calls(self):
+        out = [c for c in self.calls if c["spec"].get("agent_type") == "image"]
+        self.calls = [c for c in self.calls
+                      if c["spec"].get("agent_type") != "image"]
+        return out
+
+
+def _roundtrip(state: dict) -> dict:
+    """cont_state survives a DB JSON round-trip — simulate it."""
+    return json.loads(json.dumps(state))
+
+
+@pytest.fixture
+def cap(monkeypatch):
+    c = _Capture()
+    monkeypatch.setattr(swap_mod, "_enqueue_beckman", c)
+    return c
+
+
+@pytest.fixture
+def ws(monkeypatch, tmp_path):
+    web = tmp_path / ".web"
+    web.mkdir()
     (web / "home.html").write_text(_HTML, encoding="utf-8")
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
-
-    captured = []
-
-    class _PromptResultJSONString:
-        status = "completed"
-        # PRODUCTION SHAPE — JSON string, not dict.
-        result = json.dumps({
-            "_schema_version": "1",
-            "prompts": [
-                {"placeholder_id": "home__0", "prompt": "coral barista scene"},
-                {"placeholder_id": "home__1", "prompt": "slate dashboard"},
-                {"placeholder_id": "home__2", "prompt": "teal portrait"},
-            ],
-        })
-        error = None
-
-    async def _fake_enqueue(spec, **kwargs):
-        captured.append({"spec": spec, "kwargs": kwargs})
-        return _PromptResultJSONString()
-    monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._enqueue_beckman", _fake_enqueue,
-    )
-    async def _fake_fanout(workspace_path, placeholders, prompt_map, mission_id):
-        return {"replaced": 0, "skipped": len(placeholders),
-                "html_files_changed": 0, "errors": []}
-    monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._fanout_and_rewrite", _fake_fanout,
-    )
-
-    res = await swap_placeholder_images(
-        mission_id=42,
-        design_tokens={"primary": "#E07A5F"},
-        brand_voice="warm, neighborhood coffee shop",
-    )
-
-    assert len(captured) == 1
-    spec = captured[0]["spec"]
-    assert spec["agent_type"] == "prompt_writer"
-    assert captured[0]["kwargs"].get("await_inline") is True
-    # CRITICAL: constrained-emit safety net must be armed via the task
-    # context — constrained_emit.maybe_apply skips the structured re-emit
-    # unless ctx.is_workflow_step is truthy AND artifact_schema is a dict.
-    from src.agents.prompt_writer import PROMPT_WRITER_ARTIFACT_SCHEMA
-    ctx = spec["context"]
-    assert ctx.get("is_workflow_step") is True
-    assert ctx.get("artifact_schema") == PROMPT_WRITER_ARTIFACT_SCHEMA
-    # Result string was parsed — the fanout was called (would not be if
-    # parser had treated string as None).
-    assert res["ok"] is True
+    return tmp_path
 
 
-@pytest.mark.asyncio
-async def test_prompt_writer_failure_degrades_gracefully(monkeypatch, tmp_path):
-    web = tmp_path / ".web"; web.mkdir()
-    (web / "home.html").write_text(_HTML, encoding="utf-8")
-    monkeypatch.setattr(
-        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
-    )
-    class _Fail:
-        status = "failed"; result = None; error = "LLM down"
-    async def _fail_enqueue(spec, **kwargs):
-        return _Fail()
-    monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._enqueue_beckman", _fail_enqueue,
-    )
-
-    res = await swap_placeholder_images(mission_id=42)
-    assert res["ok"] is True
-    assert res["replaced_count"] == 0
-    assert res["skipped_count"] == 3
-    assert any("prompt_writer" in e for e in res["errors"])
-
-
-@pytest.mark.asyncio
-async def test_prompt_writer_malformed_json_degrades(monkeypatch, tmp_path):
-    """Cheap-tier LLM emits garbage — parser returns {} → no prompts → skip."""
-    web = tmp_path / ".web"; web.mkdir()
-    (web / "home.html").write_text(_HTML, encoding="utf-8")
-    monkeypatch.setattr(
-        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
-    )
-    class _Garbage:
-        status = "completed"; result = "not json"; error = None
-    async def _enq(spec, **kwargs):
-        return _Garbage()
-    monkeypatch.setattr("mr_roboto.swap_placeholder_images._enqueue_beckman", _enq)
-    res = await swap_placeholder_images(mission_id=42)
-    assert res["ok"] is True
-    assert res["replaced_count"] == 0
-    assert res["skipped_count"] == 3
-
-
-# -- Task 6: per-placeholder image fanout + HTML rewrite ----------------
-
-import io  # noqa: E402,F401
 from PIL import Image as _Image  # noqa: E402
 
 
@@ -220,86 +191,341 @@ def _write_real_png(path, w=64, h=64):
     _Image.new("RGB", (w, h), (100, 150, 200)).save(path, "PNG")
 
 
+# -- kickoff ---------------------------------------------------------------
+
 @pytest.mark.asyncio
-async def test_full_swap_writes_assets_and_rewrites_html_json_string(
-    monkeypatch, tmp_path,
-):
-    """v2 fix: production shape — image TaskResult.result is a JSON STRING."""
+async def test_swap_no_html_files(monkeypatch, tmp_path, cap):
     web = tmp_path / ".web"; web.mkdir()
-    (web / "home.html").write_text(_HTML, encoding="utf-8")
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
-
-    class _OK:
-        status = "completed"
-        result = json.dumps({
-            "_schema_version": "1",
-            "prompts": [
-                {"placeholder_id": "home__0", "prompt": "p0"},
-                {"placeholder_id": "home__1", "prompt": "p1"},
-                {"placeholder_id": "home__2", "prompt": "p2"},
-            ],
-        })
-        error = None
-
-    image_idx = {"n": 0}
-
-    async def _fake_enqueue(spec, **kwargs):
-        if spec.get("agent_type") == "prompt_writer":
-            return _OK()
-        # Image task — paintress writes the file as
-        # <out_dir>/<filename_hint>_<ms>.png. We simulate that exactly.
-        ic = spec["context"]["image_call"]
-        idx = image_idx["n"]; image_idx["n"] += 1
-        png_path = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_mock{idx}.png")
-        _write_real_png(png_path, ic["width"], ic["height"])
-
-        class _ImgResult:
-            status = "completed"
-            # PRODUCTION SHAPE — JSON string.
-            result = json.dumps({
-                "path": png_path, "provider": "pollinations",
-                "model": "pollinations/flux", "cost": 0.0,
-            })
-            error = None
-        return _ImgResult()
-
-    monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._enqueue_beckman", _fake_enqueue,
-    )
-
-    res = await swap_placeholder_images(
-        mission_id=42, design_tokens={"primary": "#E07A5F"},
-        brand_voice="warm",
-    )
-
+    res = await swap_placeholder_images(mission_id=42)
     assert res["ok"] is True
-    assert res["replaced_count"] == 3
-    assert res["skipped_count"] == 0
-    assert res["html_files_changed"] == 1
+    assert res["replaced_count"] == 0
+    assert res["html_files_seen"] == 0
+    assert res["chain"] == "none"
+    assert cap.calls == []
 
-    assets = tmp_path / ".web" / "assets"
+
+@pytest.mark.asyncio
+async def test_swap_no_placeholders(monkeypatch, tmp_path, cap):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text("<html><body>no img</body></html>",
+                                   encoding="utf-8")
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["chain"] == "none"
+    assert res["html_files_seen"] == 1
+    assert cap.calls == []
+
+
+@pytest.mark.asyncio
+async def test_kickoff_enqueues_prompt_writer_with_continuations(ws, cap):
+    res = await swap_placeholder_images(
+        mission_id=42,
+        design_tokens={"primary": "#E07A5F"},
+        brand_voice="warm, neighborhood coffee shop",
+        task_id=777,
+    )
+
+    # Queued kickoff shape.
+    assert res == {
+        "ok": True, "queued": True, "chain": "started",
+        "placeholder_count": 3, "html_files_seen": 1,
+    }
+
+    # Exactly ONE prompt_writer child, with CPS continuations.
+    assert len(cap.calls) == 1
+    call = cap.calls[0]
+    spec, kwargs = call["spec"], call["kwargs"]
+    assert spec["agent_type"] == "prompt_writer"
+    assert kwargs["on_complete"] == ON_PROMPTS_DONE
+    assert kwargs["on_error"] == ON_PROMPTS_ERR
+    assert kwargs["cont_state"] == {"mission_id": 42,
+                                    "workspace_path": str(ws)}
+    assert kwargs["parent_id"] == 777
+
+    # Constrained-emit safety net armed via task context.
+    from src.agents.prompt_writer import PROMPT_WRITER_ARTIFACT_SCHEMA
+    ctx = spec["context"]
+    assert ctx.get("is_workflow_step") is True
+    assert ctx.get("artifact_schema") == PROMPT_WRITER_ARTIFACT_SCHEMA
+
+    # Ledger written: placeholders + status.
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "prompts_pending"
+    assert ledger["mission_id"] == 42
+    pids = [p["placeholder_id"] for p in ledger["placeholders"]]
+    assert pids == ["home__0", "home__1", "home__2"]
+    assert ledger["prompt_map"] == {}
+    assert ledger["results"] == {}
+
+
+@pytest.mark.asyncio
+async def test_kickoff_without_task_id_omits_parent_id(ws, cap):
+    await swap_placeholder_images(mission_id=42)
+    assert "parent_id" not in cap.calls[0]["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_kickoff_enqueue_raises_degrades(ws, monkeypatch):
+    async def _boom(spec, **kwargs):
+        raise RuntimeError("beckman down")
+    monkeypatch.setattr(swap_mod, "_enqueue_beckman", _boom)
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["ok"] is True
+    assert res["chain"] == "none"
+    assert res["replaced_count"] == 0
+    assert res["skipped_count"] == 3
+    assert any("prompt_writer" in e for e in res["errors"])
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+    assert all(v["status"] == "skipped" for v in ledger["results"].values())
+
+
+# -- prompts_done / prompts_err handlers -----------------------------------
+
+async def _kickoff(ws, cap, mission_id=42):
+    await swap_placeholder_images(mission_id=mission_id)
+    call = cap.calls.pop(0)
+    return _roundtrip(call["kwargs"]["cont_state"])
+
+
+@pytest.mark.asyncio
+async def test_prompts_done_dict_result_enqueues_first_image(ws, cap):
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(101, dict(_PROMPTS_3), state)
+
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "images_pending"
+    assert ledger["prompt_map"]["home__0"] == "coral barista scene"
+
+    # Sequential chain: exactly ONE image child enqueued.
+    assert len(cap.calls) == 1
+    call = cap.calls[0]
+    spec, kwargs = call["spec"], call["kwargs"]
+    assert spec["agent_type"] == "image"
+    assert spec["mission_id"] == 42
+    ic = spec["context"]["image_call"]
+    assert ic["raw_dispatch"] is True
+    assert ic["filename_hint"] == "home__0"
+    assert ic["out_dir"] == os.path.join(str(ws), ".web", "assets")
+    assert kwargs["on_complete"] == ON_IMAGE_DONE
+    assert kwargs["on_error"] == ON_IMAGE_ERR
+    assert kwargs["cont_state"] == {
+        "mission_id": 42, "workspace_path": str(ws), "pid": "home__0",
+    }
+
+
+@pytest.mark.asyncio
+async def test_prompts_done_json_string_result(ws, cap):
+    """Defensive: result body arrives as a JSON string / nested envelope."""
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(101, {"result": json.dumps(_PROMPTS_3)}, state)
+    assert _load_ledger(str(ws))["status"] == "images_pending"
+    assert len(cap.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_prompts_done_garbage_degrades(ws, cap):
+    """No usable prompts after repair → finalize-with-degrade: every
+    placeholder skipped, HTML untouched (placehold.co URLs intact)."""
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(101, {"content": "total garbage"}, state)
+
+    assert cap.calls == []  # no image children
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+    assert ledger["replaced"] == 0
+    assert ledger["skipped"] == 3
+    assert all(v["status"] == "skipped" for v in ledger["results"].values())
+    html = (ws / ".web" / "home.html").read_text(encoding="utf-8")
+    assert html.count("placehold.co") == 3
+
+
+@pytest.mark.asyncio
+async def test_prompts_err_degrades(ws, cap):
+    state = await _kickoff(ws, cap)
+    await _on_prompts_err(101, {"status": "failed", "error": "LLM down"}, state)
+    assert cap.calls == []
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+    assert ledger["skipped"] == 3
+    assert any("LLM down" in (v.get("error") or "")
+               for v in ledger["results"].values())
+
+
+@pytest.mark.asyncio
+async def test_prompts_done_without_ledger_is_noop(tmp_path, cap):
+    await _on_prompts_done(
+        101, dict(_PROMPTS_3),
+        {"mission_id": 1, "workspace_path": str(tmp_path)},
+    )
+    assert cap.calls == []
+
+
+# -- image_done / image_err handlers ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_image_done_renames_records_advances(ws, cap):
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(101, dict(_PROMPTS_3), state)
+    img_call = cap.calls.pop(0)
+    ic = img_call["spec"]["context"]["image_call"]
+
+    # Simulate paintress writing the timestamp-suffixed PNG.
+    raw = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_mock0.png")
+    _write_real_png(raw, ic["width"], ic["height"])
+
+    await _on_image_done(
+        img_call["id"], {"path": raw, "content": raw},
+        _roundtrip(img_call["kwargs"]["cont_state"]),
+    )
+
+    # Renamed to stable <pid>.png.
+    assert os.path.isfile(os.path.join(ic["out_dir"], "home__0.png"))
+    assert not os.path.exists(raw)
+    ledger = _load_ledger(str(ws))
+    assert ledger["results"]["home__0"] == {"status": "done",
+                                            "asset": "home__0.png"}
+    # Advanced: next image child enqueued.
+    assert len(cap.calls) == 1
+    assert cap.calls[0]["spec"]["context"]["image_call"]["filename_hint"] == \
+        "home__1"
+
+
+@pytest.mark.asyncio
+async def test_image_done_no_path_records_error_and_advances(ws, cap):
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(101, dict(_PROMPTS_3), state)
+    img_call = cap.calls.pop(0)
+    await _on_image_done(
+        img_call["id"], {"status": "completed"},
+        _roundtrip(img_call["kwargs"]["cont_state"]),
+    )
+    ledger = _load_ledger(str(ws))
+    assert ledger["results"]["home__0"]["status"] == "error"
+    assert len(cap.calls) == 1  # chain advanced
+
+
+@pytest.mark.asyncio
+async def test_image_err_records_and_advances(ws, cap):
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(101, dict(_PROMPTS_3), state)
+    img_call = cap.calls.pop(0)
+    await _on_image_err(
+        img_call["id"], {"status": "failed", "error": "rate-limit"},
+        _roundtrip(img_call["kwargs"]["cont_state"]),
+    )
+    ledger = _load_ledger(str(ws))
+    entry = ledger["results"]["home__0"]
+    assert entry["status"] == "error"
+    assert "rate-limit" in entry["error"]
+    assert len(cap.calls) == 1  # advanced to home__1
+
+
+# -- finalize ---------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_finalize_rewrites_html(ws, cap):
+    """Finalize applies the recorded rewrites: done pids → assets/<pid>.png,
+    failed pid keeps its placehold.co URL, real src untouched."""
+    state = await _kickoff(ws, cap)
+    ledger = _load_ledger(str(ws))
+    assets = os.path.join(str(ws), ".web", "assets")
+    for pid in ("home__0", "home__2"):
+        _write_real_png(os.path.join(assets, f"{pid}.png"))
+        ledger["results"][pid] = {"status": "done", "asset": f"{pid}.png"}
+    ledger["results"]["home__1"] = {"status": "error",
+                                    "error": "image gen failed for home__1"}
+    await _finalize(str(ws), ledger)
+
+    html = (ws / ".web" / "home.html").read_text(encoding="utf-8")
+    assert html.count('src="assets/home__0.png"') == 1
+    assert html.count('src="assets/home__2.png"') == 1
+    assert html.count("placehold.co") == 1  # failed pid survives
+    assert "/assets/already_real.png" in html  # untouched real src
+
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+    assert ledger["replaced"] == 2
+    assert ledger["skipped"] == 1
+    assert ledger["html_files_changed"] == 1
+    assert ledger["shape_check"]["ok"] is True
+    assert ledger["shape_check"]["surviving_placeholders"] == 1
+    assert any("image gen failed" in e for e in ledger["errors"])
+    _ = state  # silence unused
+
+
+# -- full chain --------------------------------------------------------------
+
+async def _drive_chain(ws, cap, *, fail_pids=frozenset(), prompts=None):
+    """Drive kickoff → prompts_done → image_done/err until finalize."""
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(
+        101, prompts if prompts is not None else dict(_PROMPTS_3), state,
+    )
+    guard = 0
+    while cap.calls:
+        guard += 1
+        assert guard < 50
+        call = cap.calls.pop(0)
+        ic = call["spec"]["context"]["image_call"]
+        st = _roundtrip(call["kwargs"]["cont_state"])
+        if ic["filename_hint"] in fail_pids:
+            await _on_image_err(
+                call["id"], {"status": "failed", "error": "rate-limit"}, st,
+            )
+            continue
+        raw = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_raw.png")
+        _write_real_png(raw, ic["width"], ic["height"])
+        await _on_image_done(call["id"], {"path": raw, "content": raw}, st)
+
+
+@pytest.mark.asyncio
+async def test_full_chain_writes_assets_and_rewrites_html(ws, cap):
+    await _drive_chain(ws, cap)
+
+    assets = ws / ".web" / "assets"
     pngs = sorted(p.name for p in assets.glob("*.png"))
-    assert "home__0.png" in pngs
-    assert "home__1.png" in pngs
-    assert "home__2.png" in pngs
+    assert pngs == ["home__0.png", "home__1.png", "home__2.png"]
 
-    rewritten = (web / "home.html").read_text(encoding="utf-8")
+    rewritten = (ws / ".web" / "home.html").read_text(encoding="utf-8")
     assert "placehold.co" not in rewritten
     assert rewritten.count('src="assets/home__0.png"') == 1
     assert rewritten.count('src="assets/home__1.png"') == 1
     assert rewritten.count('src="assets/home__2.png"') == 1
-    assert "/assets/already_real.png" in rewritten  # untouched real src
+    assert "/assets/already_real.png" in rewritten
+
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+    assert ledger["replaced"] == 3
+    assert ledger["skipped"] == 0
+    assert ledger["errors"] == []
+    assert ledger["shape_check"]["ok"] is True
 
 
 @pytest.mark.asyncio
-async def test_subdir_html_gets_relative_dotdot_ref(monkeypatch, tmp_path):
-    """CRITICAL multi-screen fix: assets all live in the flat .web/assets/,
-    but each HTML's rewritten <img src> is computed as os.path.relpath from
-    THAT html file's own dir to the asset. Root HTML → "assets/<pid>.png";
-    a subdir screen → "../assets/<pid>.png". A flat "assets/<pid>.png" in a
-    subdir screen would 404 in a static file server."""
+async def test_full_chain_per_image_failure_keeps_placeholder(ws, cap):
+    await _drive_chain(ws, cap, fail_pids={"home__1"})
+    rewritten = (ws / ".web" / "home.html").read_text(encoding="utf-8")
+    assert rewritten.count("placehold.co") == 1
+    assert rewritten.count('src="assets/') == 2
+    ledger = _load_ledger(str(ws))
+    assert ledger["replaced"] == 2
+    assert ledger["skipped"] == 1
+    assert ledger["shape_check"]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_full_chain_subdir_html_gets_relative_dotdot_ref(
+    monkeypatch, tmp_path, cap,
+):
+    """Multi-screen: root HTML → "assets/<pid>.png"; subdir screen →
+    "../assets/<pid>.png" (flat ref would 404 in a static server)."""
     web = tmp_path / ".web"
     (web / "screens").mkdir(parents=True)
     (web / "home.html").write_text(
@@ -317,143 +543,51 @@ async def test_subdir_html_gets_relative_dotdot_ref(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
+    prompts = {
+        "prompts": [
+            {"placeholder_id": "home__0", "prompt": "coral barista"},
+            {"placeholder_id": "onboarding__0", "prompt": "teal portrait"},
+        ],
+    }
+    await _drive_chain(tmp_path, cap, prompts=prompts)
 
-    class _Prompts:
-        status = "completed"
-        result = json.dumps({
-            "prompts": [
-                {"placeholder_id": "home__0", "prompt": "coral barista"},
-                {"placeholder_id": "onboarding__0", "prompt": "teal portrait"},
-            ],
-        })
-        error = None
-
-    async def _enqueue(spec, **kwargs):
-        if spec.get("agent_type") == "prompt_writer":
-            return _Prompts()
-        ic = spec["context"]["image_call"]
-        path = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_raw.png")
-        _write_real_png(path, ic["width"], ic["height"])
-        class _Img:
-            status = "completed"
-            result = json.dumps({"path": path, "provider": "pollinations"})
-            error = None
-        return _Img()
-    monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._enqueue_beckman", _enqueue
-    )
-
-    res = await swap_placeholder_images(mission_id=42)
-    assert res["ok"] is True
-    assert res["replaced_count"] == 2
-
-    # Assets still written flat under a single .web/assets/.
     assets = web / "assets"
     pngs = sorted(p.name for p in assets.glob("*.png"))
     assert pngs == ["home__0.png", "onboarding__0.png"]
 
-    # Root HTML → "assets/<pid>.png".
     home = (web / "home.html").read_text(encoding="utf-8")
     assert 'src="assets/home__0.png"' in home
-
-    # Subdir screen → "../assets/<pid>.png".
     onboarding = (web / "screens" / "onboarding.html").read_text(encoding="utf-8")
     assert 'src="../assets/onboarding__0.png"' in onboarding
     assert 'src="assets/onboarding__0.png"' not in onboarding
 
 
 @pytest.mark.asyncio
-async def test_per_image_failure_keeps_placeholder(monkeypatch, tmp_path):
-    web = tmp_path / ".web"; web.mkdir()
-    (web / "home.html").write_text(_HTML, encoding="utf-8")
-    monkeypatch.setattr(
-        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
-    )
-    class _OK:
-        status = "completed"
-        result = json.dumps({
-            "_schema_version": "1",
-            "prompts": [
-                {"placeholder_id": "home__0", "prompt": "p0"},
-                {"placeholder_id": "home__1", "prompt": "p1"},
-                {"placeholder_id": "home__2", "prompt": "p2"},
-            ],
-        })
-        error = None
-    n = {"i": 0}
-    async def _flaky(spec, **kwargs):
-        if spec.get("agent_type") == "prompt_writer":
-            return _OK()
-        ic = spec["context"]["image_call"]; idx = n["i"]; n["i"] += 1
-        if idx == 1:
-            class _F:
-                status = "failed"; result = None; error = "rate-limit"
-            return _F()
-        path = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_x{idx}.png")
-        _write_real_png(path, ic["width"], ic["height"])
-        class _I:
-            status = "completed"
-            result = json.dumps({"path": path, "provider": "pollinations"})
-            error = None
-        return _I()
-    monkeypatch.setattr("mr_roboto.swap_placeholder_images._enqueue_beckman", _flaky)
-
-    res = await swap_placeholder_images(mission_id=42)
-    assert res["ok"] is True
-    assert res["replaced_count"] == 2
-    assert res["skipped_count"] == 1
-    rewritten = (web / "home.html").read_text(encoding="utf-8")
-    assert rewritten.count("placehold.co") == 1
-    assert rewritten.count('src="assets/') == 2
-
-
-@pytest.mark.asyncio
-async def test_image_task_spec_carries_mission_id(monkeypatch, tmp_path):
-    """BUG-FIX: image task spec must include mission_id.
-
-    Without it, compute_task_hash uses mission_id=None for every image task.
-    Two concurrent missions with identically-named HTML files (e.g. home.html)
-    produce the same placeholder_id (home__0) → same dedup hash → the 2nd
-    mission's enqueue(await_inline=True) hits the guard and add_task returns
-    None → the inline waiter keyed on None never resolves → 600 s timeout.
-    """
-    web = tmp_path / ".web"; web.mkdir()
-    (web / "home.html").write_text(_HTML, encoding="utf-8")
-    monkeypatch.setattr(
-        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
-    )
-
-    class _PromptOK:
-        status = "completed"
-        result = json.dumps({
-            "_schema_version": "1",
-            "prompts": [
-                {"placeholder_id": "home__0", "prompt": "p0"},
-                {"placeholder_id": "home__1", "prompt": "p1"},
-                {"placeholder_id": "home__2", "prompt": "p2"},
-            ],
-        })
-        error = None
-
-    image_specs: list[dict] = []
-
-    async def _capture_enqueue(spec, **kwargs):
-        if spec.get("agent_type") == "image":
-            image_specs.append(spec)
-            # Return a failure so the test doesn't need real PNG files.
-            class _F:
-                status = "failed"; result = None; error = "test-sentinel"
-            return _F()
-        return _PromptOK()
-
-    monkeypatch.setattr(
-        "mr_roboto.swap_placeholder_images._enqueue_beckman", _capture_enqueue,
-    )
-
-    await swap_placeholder_images(mission_id=99)
-
-    assert image_specs, "no image task specs captured — fanout did not fire"
-    for spec in image_specs:
-        assert spec.get("mission_id") == 99, (
-            f"image task spec missing mission_id=99: {spec}"
+async def test_image_task_specs_carry_mission_id(ws, cap):
+    """compute_task_hash includes mission_id — without it two concurrent
+    missions with same-named HTML files share a dedup hash and the 2nd
+    mission's child collapses onto the 1st's."""
+    state = await _kickoff(ws, cap, mission_id=99)
+    await _on_prompts_done(101, dict(_PROMPTS_3), state)
+    seen = []
+    while cap.calls:
+        call = cap.calls.pop(0)
+        seen.append(call["spec"])
+        await _on_image_err(
+            call["id"], {"status": "failed", "error": "x"},
+            _roundtrip(call["kwargs"]["cont_state"]),
         )
+    assert seen, "no image task specs captured — chain did not start"
+    for spec in seen:
+        assert spec.get("mission_id") == 99
+
+
+# -- registration -------------------------------------------------------------
+
+def test_handlers_registered_at_import():
+    from general_beckman.continuations import _HANDLERS
+    swap_mod.register_continuations()
+    assert _HANDLERS[ON_PROMPTS_DONE] is _on_prompts_done
+    assert _HANDLERS[ON_PROMPTS_ERR] is _on_prompts_err
+    assert _HANDLERS[ON_IMAGE_DONE] is _on_image_done
+    assert _HANDLERS[ON_IMAGE_ERR] is _on_image_err

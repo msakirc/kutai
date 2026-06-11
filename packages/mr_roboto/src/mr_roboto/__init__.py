@@ -5131,11 +5131,14 @@ async def _run_dispatch(task: dict) -> Action:
         return Action(status="completed", result=res)
 
     if action == "swap_placeholder_images":
-        # Plan 3 — i2p image-gen. Internally enqueues a prompt_writer LLM task
-        # and N image tasks through beckman; never calls dispatcher / HK /
-        # paintress directly (feedback_singular_dispatcher_caller).
-        # Best-effort: an unexpected error degrades to a completed/skipped
-        # result so a phase-5 swap never blocks the mission.
+        # Plan 3 — i2p image-gen KICKOFF (CPS chain; SP5 deleted await_inline).
+        # Enqueues ONE prompt_writer child with on_complete/on_error
+        # continuations and returns immediately; the chain enqueues image
+        # children sequentially and finalizes (HTML rewrite) on its tail.
+        # Never calls dispatcher / HK / paintress directly
+        # (feedback_singular_dispatcher_caller). Best-effort: an unexpected
+        # error degrades to a completed/skipped result so a phase-5 swap
+        # never blocks the mission.
         from mr_roboto.swap_placeholder_images import (
             swap_placeholder_images as _swap,
         )
@@ -5145,13 +5148,14 @@ async def _run_dispatch(task: dict) -> Action:
                 workspace_path=payload.get("workspace_path"),
                 design_tokens=payload.get("design_tokens"),
                 brand_voice=payload.get("brand_voice"),
+                task_id=task.get("id"),
             )
             return Action(status="completed", result=res)
         except Exception as e:
             return Action(status="completed", result={
                 "ok": True, "replaced_count": 0, "skipped_count": 0,
                 "html_files_seen": 0, "html_files_changed": 0,
-                "errors": [f"unexpected: {e}"],
+                "errors": [f"unexpected: {e}"], "chain": "none",
             })
 
     if action == "verify_swap_placeholder_images_shape":

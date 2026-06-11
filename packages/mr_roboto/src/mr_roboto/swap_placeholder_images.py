@@ -1,21 +1,40 @@
 """Plan 3 — swap placehold.co <img> tags for real diffusion-generated PNGs.
 
-Pipeline:
-  1. Recursively walk `mission_{id}/.web/**/*.html`.
-  2. Scan each file for <img> whose src is placehold.co.
-  3. Enqueue ONE prompt_writer task (beckman.enqueue, await_inline) with
-     the design context + placeholder list. Receive a placeholder_id ->
-     prompt map. Robust to JSON-string TaskResult.result (recon-verified
-     shape).
-  4. Per placeholder: enqueue one image task (context.image_call.raw_dispatch).
-     Beckman routes via Plan 1 v2's _select_for_admission(needs_image=True).
-  5. PNG lands directly under .web/assets/<placeholder_id>.png (paintress
-     writes the file; mechanic asks paintress to put it there).
-  6. HTML <img src> rewritten to a relative ref computed from EACH html
-     file's own dir to the flat asset (os.path.relpath): root HTML gets
-     "assets/<id>.png", a subdir screen gets "../assets/<id>.png", so the
-     ref resolves correctly from any subdir in a static file server.
-  7. Graceful degrade: per-placeholder failure keeps the placehold.co URL.
+CPS chain (SP5: migrated off the deleted ``await_inline`` 2026-06-11):
+  1. KICKOFF (the 5.35 mechanic, ``swap_placeholder_images``): recursively
+     walk ``mission_{id}/.web/**/*.html``, scan for placehold.co <img>, write
+     a durable chain ledger to ``<ws>/.web/.swap_chain.json``, enqueue ONE
+     prompt_writer child with ``on_complete``/``on_error`` continuations, and
+     return immediately (``{ok, queued, chain: "started", ...}``). When there
+     is nothing to swap it returns the old completed shape with
+     ``chain: "none"``.
+  2. ``prompts_done`` continuation: parses the placeholder_id -> prompt map
+     from the child result, stores it in the ledger, enqueues the FIRST image
+     child (sequential chain — one at a time, warm-batch friendly).
+  3. ``image_done``/``image_err`` continuations: rename the PNG to a stable
+     ``<pid>.png`` under ``.web/assets/`` (or record the per-placeholder
+     error), then advance: next pending placeholder -> next image child;
+     none left -> finalize.
+  4. ``_finalize`` (plain function, not a continuation): applies ALL HTML
+     <img src> rewrites in one pass from the recorded scan-time tag spans
+     (valid because no rewrite happens before finalize), runs the deep shape
+     check (no surviving placehold.co beyond the recorded skips; no broken
+     relative asset refs), and writes the summary into the ledger.
+
+Timing: a continuation fires when the child reaches a TRUE terminal status —
+AFTER the child's constrained_emit/grade posthook chain — so ``prompts_done``
+receives the POST-REPAIR prompt_writer result (strictly better than the old
+``await_inline`` timing, which raced the posthook child).
+
+Preview interaction: 5.40 (emit_preview_url) may surface the preview BEFORE
+all images land — the preview serves disk files live, so swapped HTML simply
+appears on refresh as the chain completes.
+
+HTML rewrite semantics (unchanged): <img src> is rewritten to a relative ref
+computed from EACH html file's own dir to the flat asset
+(``os.path.relpath``): root HTML gets "assets/<id>.png", a subdir screen gets
+"../assets/<id>.png". Graceful degrade: per-placeholder failure keeps the
+placehold.co URL.
 
 Mirrors marketing_copy.py's mechanical shape — internally enqueues LLM +
 image work through beckman, never calls dispatcher/HK/paintress directly
@@ -25,12 +44,21 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from src.infra.logging_config import get_logger
 
 logger = get_logger("mr_roboto.swap_placeholder_images")
+
+
+# ── Continuation names (durable — referenced from the continuations table) ─
+
+ON_PROMPTS_DONE = "mr_roboto.swap_images.prompts_done"
+ON_PROMPTS_ERR = "mr_roboto.swap_images.prompts_err"
+ON_IMAGE_DONE = "mr_roboto.swap_images.image_done"
+ON_IMAGE_ERR = "mr_roboto.swap_images.image_err"
 
 
 # ── Placeholder detection ──────────────────────────────────────────────
@@ -117,25 +145,97 @@ def _list_html_files(workspace_path: str) -> list[str]:
     return sorted(out)
 
 
-# ── TaskResult.result parser (the recon-confirmed v2 fix) ──────────────
+# ── Chain ledger (durable chain state on disk; cont_state stays SMALL) ─
 
-def _parse_task_result(result_obj) -> dict:
-    """TaskResult.result is a JSON STRING in production (recon: orchestrator
-    json.dumps at :63). Mirror dispatcher's _task_result_to_request_response
-    — accept both string and dict; json.loads the string FIRST before any
-    isinstance check on the decoded value."""
-    raw = getattr(result_obj, "result", None)
-    if raw is None:
+LEDGER_FILENAME = ".swap_chain.json"
+
+
+def _ledger_path(workspace_path: str) -> str:
+    return os.path.join(_web_root(workspace_path), LEDGER_FILENAME)
+
+
+def _load_ledger(workspace_path: str) -> dict | None:
+    try:
+        with open(_ledger_path(workspace_path), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _save_ledger(workspace_path: str, ledger: dict) -> None:
+    path = _ledger_path(workspace_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(ledger, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+# ── Tolerant child-result parsing (CPS handlers receive plain dicts) ───
+
+def _coerce_result_dict(result: Any) -> dict:
+    """A continuation handler's ``result`` should arrive as a dict, but be
+    defensive: a JSON-string body (restart-reconcile decodes only the TOP
+    level; tests may fabricate strings) coerces via json.loads FIRST before
+    any isinstance check on the decoded value. Adapted from the deleted
+    ``_parse_task_result`` (TaskResult is gone — SP5)."""
+    if result is None:
         return {}
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, str):
         try:
-            decoded = json.loads(raw)
+            decoded = json.loads(result)
             return decoded if isinstance(decoded, dict) else {}
         except Exception:
             return {}
     return {}
+
+
+def _extract_prompts(result: Any) -> dict[str, str]:
+    """Pull the placeholder_id -> prompt map out of a prompt_writer child
+    result. Tolerates: top-level ``prompts``; nested under ``result`` (dict or
+    JSON string); nested under ``content`` (dict or JSON string). Returns {}
+    when no usable prompts exist (callers degrade)."""
+    parsed = _coerce_result_dict(result)
+    candidates: list[dict] = [parsed]
+    for key in ("result", "content"):
+        nested = _coerce_result_dict(parsed.get(key))
+        if nested:
+            candidates.append(nested)
+    prompts = None
+    for cand in candidates:
+        if isinstance(cand.get("prompts"), list):
+            prompts = cand["prompts"]
+            break
+    if prompts is None:
+        return {}
+    out: dict[str, str] = {}
+    for entry in prompts:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("placeholder_id")
+        prompt = entry.get("prompt")
+        if isinstance(pid, str) and isinstance(prompt, str) and prompt.strip():
+            out[pid] = prompt.strip()
+    return out
+
+
+def _extract_image_path(result: Any) -> str | None:
+    """Pull the generated PNG path out of an image child result. The image
+    lane returns ``{content, path, provider, ...}``; restart-reconcile may
+    nest it under ``result``."""
+    parsed = _coerce_result_dict(result)
+    candidates: list[dict] = [parsed]
+    nested = _coerce_result_dict(parsed.get("result"))
+    if nested:
+        candidates.append(nested)
+    for cand in candidates:
+        path = cand.get("path") or cand.get("content")
+        if isinstance(path, str) and path.strip():
+            return path
+    return None
 
 
 # ── beckman wrapper (test-patchable, mirrors marketing_copy) ───────────
@@ -145,18 +245,28 @@ async def _enqueue_beckman(spec: dict, **kwargs):
     return await _enqueue(spec, **kwargs)
 
 
-# ── Main entry ─────────────────────────────────────────────────────────
+# ── Kickoff (the 5.35 mechanic) ────────────────────────────────────────
 
 async def swap_placeholder_images(
     mission_id: int,
     workspace_path: str | None = None,
     design_tokens: dict | None = None,
     brand_voice: str | None = None,
+    task_id: int | None = None,
 ) -> dict[str, Any]:
-    """Best-effort: per-placeholder failures keep the original placeholder.
-    Returns:
-      {ok: bool, replaced_count, skipped_count, html_files_seen,
-       html_files_changed, errors: list[str]}
+    """Kickoff: scan, write the chain ledger, enqueue the prompt_writer child
+    with CPS continuations, return immediately.
+
+    Returns (Action-compatible completed shapes):
+      - nothing to swap:
+        {ok: True, replaced_count: 0, skipped_count: 0, html_files_seen,
+         html_files_changed: 0, errors: [], chain: "none"}
+      - chain started:
+        {ok: True, queued: True, chain: "started", placeholder_count,
+         html_files_seen}
+      - prompt_writer enqueue raised (graceful degrade — all placeholders keep
+        their placehold.co URLs):
+        the chain:"none" shape with skipped_count=N and the error recorded.
     """
     from src.tools.workspace import get_mission_workspace
     workspace_path = workspace_path or get_mission_workspace(int(mission_id))
@@ -170,6 +280,7 @@ async def swap_placeholder_images(
         return {
             "ok": True, "replaced_count": 0, "skipped_count": 0,
             "html_files_seen": 0, "html_files_changed": 0, "errors": [],
+            "chain": "none",
         }
 
     all_placeholders: list[dict[str, Any]] = []
@@ -180,60 +291,79 @@ async def swap_placeholder_images(
         return {
             "ok": True, "replaced_count": 0, "skipped_count": 0,
             "html_files_seen": len(html_files), "html_files_changed": 0,
-            "errors": [],
+            "errors": [], "chain": "none",
         }
 
-    prompt_map = await _call_prompt_writer(
+    # The ledger ON DISK is the chain state; cont_state stays SMALL
+    # ({mission_id, workspace_path} + pid for image children).
+    ledger: dict[str, Any] = {
+        "mission_id": int(mission_id),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "prompts_pending",
+        "placeholders": [dict(p, tag_span=list(p["tag_span"]))
+                         for p in all_placeholders],
+        "prompt_map": {},
+        "results": {},
+    }
+    _save_ledger(workspace_path, ledger)
+
+    state = {"mission_id": int(mission_id), "workspace_path": workspace_path}
+    spec = _build_prompt_writer_spec(
         mission_id=int(mission_id), placeholders=all_placeholders,
         design_tokens=design_tokens, brand_voice=brand_voice,
     )
-    if prompt_map is None:
+    try:
+        await _enqueue_beckman(
+            spec,
+            **({"parent_id": int(task_id)} if task_id is not None else {}),
+            on_complete=ON_PROMPTS_DONE,
+            on_error=ON_PROMPTS_ERR,
+            cont_state=state,
+        )
+    except Exception as exc:
+        logger.warning("prompt_writer enqueue raised: %s", exc)
+        err = f"prompt_writer enqueue raised: {exc}"
+        for ph in all_placeholders:
+            ledger["results"][ph["placeholder_id"]] = {
+                "status": "skipped", "error": err,
+            }
+        ledger["status"] = "done"
+        ledger["errors"] = [err]
+        _save_ledger(workspace_path, ledger)
         return {
             "ok": True, "replaced_count": 0,
             "skipped_count": len(all_placeholders),
             "html_files_seen": len(html_files), "html_files_changed": 0,
-            "errors": ["prompt_writer task did not return a usable prompt map"],
+            "errors": [err], "chain": "none",
         }
-    fanout = await _fanout_and_rewrite(
-        workspace_path, all_placeholders, prompt_map,
-        mission_id=int(mission_id),
-    )
+
     return {
-        "ok": True,
-        "replaced_count": fanout.get("replaced", 0),
-        "skipped_count": fanout.get("skipped", 0),
+        "ok": True, "queued": True, "chain": "started",
+        "placeholder_count": len(all_placeholders),
         "html_files_seen": len(html_files),
-        "html_files_changed": fanout.get("html_files_changed", 0),
-        "errors": fanout.get("errors", []),
     }
 
 
-# ── prompt_writer enqueue (JSON-string-safe) ───────────────────────────
+# ── Child spec builders ────────────────────────────────────────────────
 
-async def _call_prompt_writer(
+def _build_prompt_writer_spec(
     *, mission_id: int,
     placeholders: list[dict[str, Any]],
     design_tokens: dict | None,
     brand_voice: str | None,
-) -> dict[str, str] | None:
-    """Enqueue one prompt_writer task. Returns placeholder_id -> prompt map,
-    or None on failure. Robust to JSON-string TaskResult.result.
+) -> dict:
+    """ONE prompt_writer task spec (placeholder list -> prompt map).
 
-    ``artifact_schema`` and ``is_workflow_step`` are set in the task context
-    for two reasons:
-    - ``artifact_schema`` arms the constrained_emit POSTHOOK (wired by
-      ``general_beckman/posthooks.py::determine_posthooks`` when it finds a
-      constrainable artifact_schema in the task context).
+    ``artifact_schema`` and ``is_workflow_step`` are set in the task context:
+    - ``artifact_schema`` arms the constrained_emit POSTHOOK child (wired by
+      ``general_beckman/posthooks.py::determine_posthooks``).
     - ``is_workflow_step`` triggers ``post_execute_workflow_step`` on the
       beckman apply path.
 
-    Timing: ``await_inline`` resolves only when the task reaches a TRUE
-    terminal status — AFTER the constrained_emit/grade posthook chain has
-    run — so this executor receives the POST-REPAIR result, not the raw
-    emit. Output that is still malformed after repair degrades gracefully:
-    _parse_task_result returns {} → no prompts list → the function returns
-    None → all placeholders are skipped with their original placehold.co
-    URLs intact."""
+    The continuation fires only at TRUE terminal — AFTER the posthook chain —
+    so ``prompts_done`` receives the POST-REPAIR result. Output still
+    malformed after repair degrades gracefully: ``_extract_prompts`` returns
+    {} → all placeholders are skipped with their placehold.co URLs intact."""
     from src.agents.prompt_writer import (
         PROMPT_WRITER_ARTIFACT_SCHEMA,
         load_diffusion_prompt_template,
@@ -249,7 +379,7 @@ async def _call_prompt_writer(
     except Exception:
         template_text = None
 
-    spec = {
+    return {
         "title": f"prompt_writer:mission#{mission_id}",
         "description": "Enrich placeholder <img> intents into diffusion prompts.",
         "agent_type": "prompt_writer",
@@ -270,58 +400,20 @@ async def _call_prompt_writer(
             "artifact_schema": PROMPT_WRITER_ARTIFACT_SCHEMA,
         },
     }
-    try:
-        result = await _enqueue_beckman(spec, await_inline=True)
-    except Exception as exc:
-        logger.warning("prompt_writer enqueue raised: %s", exc)
-        return None
-
-    if getattr(result, "status", "") != "completed":
-        logger.warning(
-            "prompt_writer task did not complete (status=%r, error=%r)",
-            getattr(result, "status", ""), getattr(result, "error", ""),
-        )
-        return None
-
-    parsed = _parse_task_result(result)
-    # Tolerate both shapes: top-level prompts OR nested under "result".
-    prompts = parsed.get("prompts")
-    if prompts is None and isinstance(parsed.get("result"), dict):
-        prompts = parsed["result"].get("prompts")
-    if not isinstance(prompts, list):
-        logger.warning("prompt_writer returned no prompts list (parsed=%r)", parsed)
-        return None
-
-    out: dict[str, str] = {}
-    for entry in prompts:
-        if not isinstance(entry, dict):
-            continue
-        pid = entry.get("placeholder_id")
-        prompt = entry.get("prompt")
-        if isinstance(pid, str) and isinstance(prompt, str) and prompt.strip():
-            out[pid] = prompt.strip()
-    return out or None
 
 
-# ── Per-placeholder image fanout + HTML rewrite ────────────────────────
+def _build_image_spec(
+    *, placeholder: dict[str, Any], prompt: str, out_dir: str, mission_id: int,
+) -> dict:
+    """One image task spec (context.image_call.raw_dispatch). Mirrors the
+    /image cmd shape. Beckman's admission routes agent_type=image →
+    fatih_hoca.select(needs_image=True) → paintress.
 
-async def _generate_one_image(
-    *, placeholder: dict[str, Any], prompt: str, out_dir: str,
-    mission_id: int,
-) -> str | None:
-    """Enqueue one image task; return the PNG path or None.
-
-    Mirrors the /image cmd shape (raw_dispatch=True, prompt, out_dir,
-    width/height, filename_hint, quality_tier). Enqueued via beckman —
-    Plan 1 v2's admission routes agent_type=image → dispatch_image →
-    paintress. JSON-string-safe result parse.
-
-    mission_id MUST be set so compute_task_hash includes it — without it
-    two concurrent missions with same-named HTML files (e.g. home.html)
-    share the same dedup hash, causing the 2nd mission's await_inline
-    to wait on a task owned by the 1st mission → 600 s timeout."""
+    mission_id MUST be set so compute_task_hash includes it — without it two
+    concurrent missions with same-named HTML files (e.g. home.html) share the
+    same dedup hash and the 2nd mission's child collapses onto the 1st's."""
     pid = placeholder["placeholder_id"]
-    spec = {
+    return {
         "title": f"image:{pid}",
         "description": f"Generate image for placeholder {pid}",
         "agent_type": "image",
@@ -341,22 +433,167 @@ async def _generate_one_image(
             },
         },
     }
-    try:
-        result = await _enqueue_beckman(spec, await_inline=True)
-    except Exception as exc:
-        logger.warning("image enqueue raised for %s: %s", pid, exc)
-        return None
-    if getattr(result, "status", "") != "completed":
-        logger.info("image task for %s did not complete (status=%r)",
-                    pid, getattr(result, "status", ""))
-        return None
-    payload = _parse_task_result(result)
-    path = payload.get("path") or payload.get("content")
-    if not (path and os.path.isfile(path)):
-        logger.warning("image task for %s returned no usable path", pid)
-        return None
-    return path
 
+
+# ── Continuation handlers ──────────────────────────────────────────────
+
+async def _on_prompts_done(task_id: int, result: dict, state: dict) -> None:
+    """Continuation: the prompt_writer child reached TRUE terminal (post
+    constrained_emit/grade posthooks). Store the prompt map and start the
+    sequential image chain; no usable prompts → finalize-with-degrade."""
+    workspace_path = state.get("workspace_path") or ""
+    ledger = _load_ledger(workspace_path)
+    if ledger is None:
+        logger.warning(
+            "swap chain: prompts_done fired but ledger missing (ws=%s)",
+            workspace_path,
+        )
+        return
+    prompt_map = _extract_prompts(result)
+    if not prompt_map:
+        logger.warning(
+            "swap chain: prompt_writer returned no usable prompt map "
+            "(task_id=%s) — degrading, all placeholders skipped", task_id,
+        )
+        _degrade_all(ledger, "prompt_writer task did not return a usable prompt map")
+        await _finalize(workspace_path, ledger)
+        return
+    ledger["prompt_map"] = prompt_map
+    ledger["status"] = "images_pending"
+    _save_ledger(workspace_path, ledger)
+    await _advance(workspace_path, ledger, state)
+
+
+async def _on_prompts_err(task_id: int, result: dict, state: dict) -> None:
+    """on_error continuation: prompt_writer child failed (or its continuation
+    TTL-expired). Whole chain degrades — every placeholder keeps its
+    placehold.co URL."""
+    workspace_path = state.get("workspace_path") or ""
+    ledger = _load_ledger(workspace_path)
+    if ledger is None:
+        logger.warning(
+            "swap chain: prompts_err fired but ledger missing (ws=%s)",
+            workspace_path,
+        )
+        return
+    err = str(_coerce_result_dict(result).get("error") or "prompt_writer task failed")
+    logger.warning("swap chain: prompt_writer child failed: %s", err)
+    _degrade_all(ledger, f"prompt_writer failed: {err}")
+    await _finalize(workspace_path, ledger)
+
+
+def _degrade_all(ledger: dict, error: str) -> None:
+    for ph in ledger.get("placeholders") or []:
+        ledger.setdefault("results", {}).setdefault(
+            ph["placeholder_id"], {"status": "skipped", "error": error},
+        )
+
+
+async def _on_image_done(task_id: int, result: dict, state: dict) -> None:
+    """Continuation: one image child finished. Rename to the stable
+    ``<pid>.png``, record, advance the chain."""
+    workspace_path = state.get("workspace_path") or ""
+    pid = state.get("pid") or ""
+    ledger = _load_ledger(workspace_path)
+    if ledger is None:
+        logger.warning(
+            "swap chain: image_done fired but ledger missing (ws=%s, pid=%s)",
+            workspace_path, pid,
+        )
+        return
+    path = _extract_image_path(result)
+    if path and os.path.isfile(path):
+        final_name = _rename_to_pid(path, _assets_dir(workspace_path), pid)
+        if final_name:
+            entry: dict[str, Any] = {"status": "done", "asset": final_name}
+        else:
+            entry = {"status": "error", "error": f"rename failed for {pid}"}
+    else:
+        entry = {"status": "error",
+                 "error": f"image task for {pid} returned no usable path"}
+    ledger.setdefault("results", {})[pid] = entry
+    _save_ledger(workspace_path, ledger)
+    await _advance(workspace_path, ledger, state)
+
+
+async def _on_image_err(task_id: int, result: dict, state: dict) -> None:
+    """on_error continuation: one image child failed — record and advance.
+    Graceful degrade: that placeholder keeps its placehold.co URL."""
+    workspace_path = state.get("workspace_path") or ""
+    pid = state.get("pid") or ""
+    ledger = _load_ledger(workspace_path)
+    if ledger is None:
+        logger.warning(
+            "swap chain: image_err fired but ledger missing (ws=%s, pid=%s)",
+            workspace_path, pid,
+        )
+        return
+    err = str(_coerce_result_dict(result).get("error") or "image task failed")
+    logger.info("swap chain: image child for %s failed: %s", pid, err)
+    ledger.setdefault("results", {})[pid] = {
+        "status": "error", "error": f"image gen failed for {pid}: {err}",
+    }
+    _save_ledger(workspace_path, ledger)
+    await _advance(workspace_path, ledger, state)
+
+
+async def _advance(workspace_path: str, ledger: dict, state: dict) -> None:
+    """Enqueue the next pending placeholder's image child (sequential — one
+    at a time, warm-batch friendly), or finalize when none are left."""
+    results = ledger.setdefault("results", {})
+    prompt_map = ledger.get("prompt_map") or {}
+    mission_id = int(ledger.get("mission_id") or state.get("mission_id") or 0)
+
+    for ph in ledger.get("placeholders") or []:
+        pid = ph["placeholder_id"]
+        if pid in results:
+            continue
+        prompt = prompt_map.get(pid)
+        if not prompt:
+            results[pid] = {"status": "skipped", "error": f"no prompt for {pid}"}
+            continue
+        spec = _build_image_spec(
+            placeholder=ph, prompt=prompt,
+            out_dir=_assets_dir(workspace_path), mission_id=mission_id,
+        )
+        try:
+            await _enqueue_beckman(
+                spec,
+                on_complete=ON_IMAGE_DONE,
+                on_error=ON_IMAGE_ERR,
+                cont_state={"mission_id": mission_id,
+                            "workspace_path": workspace_path, "pid": pid},
+            )
+        except Exception as exc:
+            logger.warning("image enqueue raised for %s: %s", pid, exc)
+            results[pid] = {"status": "error",
+                            "error": f"image enqueue raised for {pid}: {exc}"}
+            continue
+        ledger["status"] = "images_pending"
+        _save_ledger(workspace_path, ledger)
+        return
+
+    await _finalize(workspace_path, ledger)
+
+
+def register_continuations() -> None:
+    """Register the swap-chain CPS handlers (idempotent; called at import +
+    by general_beckman.continuations.register_startup_handlers)."""
+    try:
+        from general_beckman.continuations import register_resume
+        register_resume(ON_PROMPTS_DONE, _on_prompts_done)
+        register_resume(ON_PROMPTS_ERR, _on_prompts_err)
+        register_resume(ON_IMAGE_DONE, _on_image_done)
+        register_resume(ON_IMAGE_ERR, _on_image_err)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("swap chain continuation registration deferred: %s", exc)
+
+
+# Register at import so the handlers are present for restart reconcile.
+register_continuations()
+
+
+# ── Rename + HTML rewrite helpers ──────────────────────────────────────
 
 def _rename_to_pid(src_path: str, assets_dir: str, placeholder_id: str) -> str:
     """Rename the timestamp-named PNG to a stable <pid>.png inside assets/.
@@ -413,63 +650,92 @@ def _rewrite_html_srcs(
     return changed
 
 
-async def _fanout_and_rewrite(
-    workspace_path: str,
-    placeholders: list[dict[str, Any]],
-    prompt_map: dict[str, str],
-    mission_id: int,
-) -> dict[str, Any]:
-    """Sequential per-placeholder: image enqueue → rename to <pid>.png →
-    record rewrite. Per-placeholder failures kept in errors; original
-    placehold.co URL survives in HTML for that slot."""
+# ── Finalize (chain tail — plain function, not a continuation) ─────────
+
+async def _finalize(workspace_path: str, ledger: dict) -> None:
+    """Apply ALL HTML rewrites from the ledger in one pass, run the deep
+    shape check, write the summary into the ledger.
+
+    The rewrites use scan-time tag spans, which is safe because the HTML is
+    never rewritten between scan and finalize — all rewrites happen exactly
+    once, HERE. Per-placeholder failure keeps the placehold.co URL (graceful
+    degrade). No Telegram notify."""
     assets_dir = _assets_dir(workspace_path)
+    results = ledger.setdefault("results", {})
     rewrites_per_file: dict[str, dict[tuple[int, int], str]] = {}
     errors: list[str] = []
     replaced = 0
     skipped = 0
 
-    for ph in placeholders:
+    for ph in ledger.get("placeholders") or []:
         pid = ph["placeholder_id"]
-        prompt = prompt_map.get(pid)
-        if not prompt:
+        entry = results.get(pid)
+        if entry is None:
+            entry = {"status": "skipped", "error": f"no result recorded for {pid}"}
+            results[pid] = entry
+        if entry.get("status") == "done" and entry.get("asset"):
+            # Compute the rewritten src as the path FROM THIS HTML FILE'S OWN
+            # DIRECTORY to the flat asset file, so a static file server
+            # resolves it from ANY subdir: root HTML → "assets/<pid>.png",
+            # subdir screen → "../assets/<pid>.png".
+            asset_abs = os.path.join(assets_dir, entry["asset"])
+            html_dir = os.path.dirname(ph["html_path"])
+            new_src = os.path.relpath(asset_abs, html_dir).replace(os.sep, "/")
+            rewrites_per_file.setdefault(ph["html_path"], {})[
+                tuple(ph["tag_span"])
+            ] = new_src
+            replaced += 1
+        else:
             skipped += 1
-            errors.append(f"no prompt for {pid}")
-            continue
-        path = await _generate_one_image(
-            placeholder=ph, prompt=prompt, out_dir=assets_dir,
-            mission_id=mission_id,
-        )
-        if not path:
-            skipped += 1
-            errors.append(f"image gen failed for {pid}")
-            continue
-        final_name = _rename_to_pid(path, assets_dir, pid)
-        if not final_name:
-            skipped += 1
-            errors.append(f"rename failed for {pid}")
-            continue
-        # Compute the rewritten src as the path FROM THIS HTML FILE'S OWN
-        # DIRECTORY to the flat asset file, so a static file server resolves
-        # it correctly from ANY subdir. Root HTML (.web/home.html) → the file
-        # at .web/assets/<pid>.png is reached via "assets/<pid>.png"; a subdir
-        # screen (.web/screens/onboarding.html) reaches it via
-        # "../assets/<pid>.png". Browsers resolve relative <img src> against
-        # the document's own location, so a flat "assets/<pid>.png" would 404
-        # for subdir screens (resolved → .web/screens/assets/<pid>.png).
-        asset_abs = os.path.join(assets_dir, final_name)
-        html_dir = os.path.dirname(ph["html_path"])
-        new_src = os.path.relpath(asset_abs, html_dir).replace(os.sep, "/")
-        rewrites_per_file.setdefault(ph["html_path"], {})[
-            tuple(ph["tag_span"])
-        ] = new_src
-        replaced += 1
+            if entry.get("error"):
+                errors.append(str(entry["error"]))
 
     files_changed = 0
     for path, rewrites in rewrites_per_file.items():
         if _rewrite_html_srcs(path, rewrites):
             files_changed += 1
 
-    return {
-        "replaced": replaced, "skipped": skipped,
-        "html_files_changed": files_changed, "errors": errors,
+    # Deep shape check (lives HERE, not in 5.35.verify — the verify step may
+    # run mid-flight): every surviving placehold.co must be accounted for by
+    # a recorded skip/error, and no rewritten relative ref may point at a
+    # missing file.
+    shape_errors: list[str] = []
+    surviving = 0
+    broken_refs: list[str] = []
+    try:
+        from mr_roboto.verify_swap_placeholder_images_shape import (
+            _scan_html, _walk_html,
+        )
+        surviving, broken_refs = _scan_html(_walk_html(workspace_path))
+        if broken_refs:
+            shape_errors.append(f"broken asset ref: {broken_refs[0]}")
+        if surviving != skipped:
+            shape_errors.append(
+                f"inconsistent: surviving placeholders={surviving} but "
+                f"skipped={skipped}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        shape_errors.append(f"shape check raised: {exc}")
+
+    ledger["status"] = "done"
+    ledger["replaced"] = replaced
+    ledger["skipped"] = skipped
+    ledger["errors"] = errors + shape_errors
+    ledger["html_files_changed"] = files_changed
+    ledger["shape_check"] = {
+        "ok": not shape_errors,
+        "surviving_placeholders": surviving,
+        "broken_asset_refs": broken_refs,
     }
+    _save_ledger(workspace_path, ledger)
+
+    if skipped or errors or shape_errors:
+        logger.warning(
+            "swap chain finalized PARTIAL (ws=%s): replaced=%d skipped=%d "
+            "errors=%s", workspace_path, replaced, skipped, errors + shape_errors,
+        )
+    else:
+        logger.info(
+            "swap chain finalized (ws=%s): replaced=%d, html_files_changed=%d",
+            workspace_path, replaced, files_changed,
+        )

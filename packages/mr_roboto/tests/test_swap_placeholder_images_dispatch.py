@@ -49,6 +49,9 @@ async def test_dispatch_routes_swap_action(monkeypatch):
     assert res.result["replaced_count"] == 2
     assert captured["mission_id"] == 42
     assert captured["design_tokens"] == {"primary": "#E07A5F"}
+    # CPS kickoff threads the 5.35 task id so the prompt_writer child gets a
+    # parent_id.
+    assert captured["task_id"] == 100
 
 
 @pytest.mark.asyncio
@@ -68,6 +71,7 @@ async def test_dispatch_swap_swallows_unexpected_error(monkeypatch):
     assert res.status == "completed"
     assert res.result["ok"] is True
     assert res.result["replaced_count"] == 0
+    assert res.result["chain"] == "none"
     assert any("kaboom" in e for e in res.result["errors"])
 
 

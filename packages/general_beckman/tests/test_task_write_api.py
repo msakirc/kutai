@@ -857,9 +857,6 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
     }
     allowed_dirs = {
         (root / "packages" / "general_beckman" / "src" / "general_beckman").resolve(),
-        # Coulson is deferred — it owns posthook/checkpoint helpers that will
-        # be migrated in a separate session.
-        (root / "packages" / "coulson" / "src" / "coulson").resolve(),
     }
     # Migration scripts are one-time DB tools — not prod callers.
     skip_prefixes = {

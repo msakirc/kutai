@@ -4275,18 +4275,63 @@ def _validate_columns(kwargs: dict, whitelist: frozenset, table: str) -> None:
         )
 
 
+def _build_mission_update(
+    mission_id: int, fields: dict, whitelist: frozenset, caller: str
+) -> tuple[str, list]:
+    """Shared SQL builder for mission UPDATE statements.
+
+    Validates *fields* against *whitelist* (raises ``ValueError`` on unknown
+    columns), then returns the parameterised SQL string and its bound values.
+    Both ``update_mission`` and ``update_mission_fields`` delegate here so the
+    validation + SQL-build logic exists exactly once.
+
+    Overlap note: ``status`` and ``context`` appear in *both* whitelists
+    (_MISSION_COLUMNS for ``update_mission``; _MISSION_FIELDS_WHITELIST for
+    ``update_mission_fields``).  This is intentional: ``update_mission`` is the
+    structured legacy setter (status/description/…), while
+    ``update_mission_fields`` is the audited per-field patch path used by
+    beckman delegates.  The column sets serve different call sites; the overlap
+    is harmless because both paths ultimately emit the same ``UPDATE … SET``
+    SQL through this single builder.
+    """
+    bad = set(fields) - whitelist
+    if bad:
+        raise ValueError(
+            f"{caller}: unknown column(s) {bad!r} for missions. "
+            f"Allowed: {sorted(whitelist)}"
+        )
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [mission_id]
+    return f"UPDATE missions SET {sets} WHERE id = ?", values
+
+
 async def update_mission(mission_id, **kwargs):
-    _validate_columns(kwargs, _MISSION_COLUMNS, "missions")
+    """Structured legacy setter for core mission columns (status, description, …).
+
+    Boundary: this function covers the columns in ``_MISSION_COLUMNS`` —
+    primarily the fields that existed before the beckman write-API was
+    introduced (status, description, priority, completed_at, context, etc.).
+    ``status`` and ``context`` are intentionally present in both this whitelist
+    and ``_MISSION_FIELDS_WHITELIST``; see ``_build_mission_update`` for the
+    rationale.  For one-off field patches by beckman delegates use
+    ``update_mission_fields`` instead.
+    """
+    if not kwargs:
+        return
+    sql, values = _build_mission_update(
+        mission_id, kwargs, _MISSION_COLUMNS, "update_mission"
+    )
     db = await get_db()
-    sets = ", ".join(f"{k} = ?" for k in kwargs)
-    values = list(kwargs.values()) + [mission_id]
-    await db.execute(f"UPDATE missions SET {sets} WHERE id = ?", values)
+    await db.execute(sql, values)
     await db.commit()
 
 
 # Whitelist for update_mission_fields — columns written by the raw-SQL escape
 # sites that were migrated to beckman.update_mission_fields.  All callers
 # must pass only these columns; unknown columns raise ValueError.
+#
+# ``status`` and ``context`` are shared with _MISSION_COLUMNS (see
+# ``_build_mission_update`` for the rationale — overlap is intentional).
 _MISSION_FIELDS_WHITELIST: frozenset[str] = frozenset({
     # lifecycle / state
     "lifecycle_state",
@@ -4316,21 +4361,20 @@ async def update_mission_fields(mission_id: int, **fields) -> None:
 
     Only columns in ``_MISSION_FIELDS_WHITELIST`` are accepted; passing any
     other column name raises ``ValueError`` so callers cannot inject arbitrary
-    column identifiers.  For bulk structured updates prefer ``update_mission``;
-    this helper exists for one-off field patches by beckman delegates.
+    column identifiers.  This is the preferred path for one-off field patches
+    by beckman delegates; for bulk structured updates (status/description/…)
+    ``update_mission`` covers the same ground via ``_MISSION_COLUMNS``.
+
+    Boundary: ``status`` and ``context`` appear in both whitelists — see
+    ``_build_mission_update`` for the rationale (overlap intentional, harmless).
     """
     if not fields:
         return
-    bad = set(fields) - _MISSION_FIELDS_WHITELIST
-    if bad:
-        raise ValueError(
-            f"update_mission_fields: unknown column(s) {bad!r} for missions. "
-            f"Allowed: {sorted(_MISSION_FIELDS_WHITELIST)}"
-        )
+    sql, values = _build_mission_update(
+        mission_id, fields, _MISSION_FIELDS_WHITELIST, "update_mission_fields"
+    )
     db = await get_db()
-    sets = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [mission_id]
-    await db.execute(f"UPDATE missions SET {sets} WHERE id = ?", values)
+    await db.execute(sql, values)
     await db.commit()
 
 
@@ -4361,8 +4405,9 @@ async def purge_all_missions() -> None:
             ):
                 try:
                     await db.execute(f"DELETE FROM {_tbl}")
-                except Exception:
-                    pass
+                except Exception as _tbl_err:
+                    if "no such table" not in str(_tbl_err).lower():
+                        raise
             await db.commit()
             return
         except Exception as _err:

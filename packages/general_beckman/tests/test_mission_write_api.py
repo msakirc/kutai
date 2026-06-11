@@ -600,10 +600,14 @@ def test_no_raw_missions_sql_outside_db():
 
 def test_no_raw_db_mission_imports_outside_infra_beckman():
     """No source file outside src/infra + general_beckman may import
-    db.add_mission, db.update_mission, db.increment_mission_rework_loops,
-    db.purge_all_missions, or db.purge_all directly.
+    db.add_mission, db.update_mission, db.update_mission_fields,
+    db.increment_mission_rework_loops, db.purge_all_missions, or db.purge_all
+    directly.
 
-    After migration all callers use general_beckman's API.
+    After migration all callers use general_beckman's API.  Banning
+    ``update_mission_fields`` here closes the latent gap: callers must go
+    through ``beckman.update_mission_fields`` (which itself delegates to
+    ``src.infra.db.update_mission_fields``), not bypass beckman directly.
     """
     import re
     import os
@@ -615,13 +619,13 @@ def test_no_raw_db_mission_imports_outside_infra_beckman():
     # or:      from src.infra.db import ... add_mission ...
     import_re = re.compile(
         r'from\s+src\.infra\.db\s+import\s+.*?\b('
-        r'add_mission|update_mission\b(?!_fields)|increment_mission_rework_loops'
+        r'add_mission|update_mission|increment_mission_rework_loops'
         r'|purge_all_missions|purge_all\b'
         r')',
     )
-    # Also catch: import src.infra.db; db.add_mission(
+    # Also catch: import src.infra.db; db.add_mission( / db.update_mission_fields(
     call_re = re.compile(
-        r'\b(?:db|infra\.db)\.(add_mission|update_mission\b(?!_fields)'
+        r'\b(?:db|infra\.db)\.(add_mission|update_mission'
         r'|increment_mission_rework_loops|purge_all_missions|purge_all\b)'
     )
 

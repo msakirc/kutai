@@ -11918,7 +11918,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         cand_id = int(context.args[0].lstrip("#"))
         try:
             from src.infra.db import (
-                get_growth_events, add_mission,
+                get_growth_events,
             )
             import general_beckman
             from general_beckman import record_growth_event, update_growth_event_properties

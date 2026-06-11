@@ -598,6 +598,38 @@ def test_no_raw_missions_sql_outside_db():
     )
 
 
+def _ast_mission_write_imports(filepath, text, guarded_names):
+    """Return list of (lineno, name) pairs where a guarded mission-write name is
+    imported from src.infra.db (absolute) or a relative ...infra.db path.
+
+    Uses ast.parse so parenthesised multi-line imports are detected correctly.
+    Falls back to an empty list if the file is not valid Python (SyntaxError).
+    """
+    import ast
+
+    try:
+        tree = ast.parse(text, filename=str(filepath))
+    except SyntaxError:
+        return []
+
+    hits = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        # Absolute: from src.infra.db import ...
+        is_abs = module == "src.infra.db"
+        # Relative: from ..infra.db import ... (any level)
+        is_rel = node.level > 0 and module == "infra.db"
+        if not (is_abs or is_rel):
+            continue
+        for alias in node.names:
+            name = alias.name
+            if name in guarded_names:
+                hits.append((node.lineno, name))
+    return hits
+
+
 def test_no_raw_db_mission_imports_outside_infra_beckman():
     """No source file outside src/infra + general_beckman may import
     db.add_mission, db.update_mission, db.update_mission_fields,
@@ -608,6 +640,11 @@ def test_no_raw_db_mission_imports_outside_infra_beckman():
     ``update_mission_fields`` here closes the latent gap: callers must go
     through ``beckman.update_mission_fields`` (which itself delegates to
     ``src.infra.db.update_mission_fields``), not bypass beckman directly.
+
+    Detection uses ast.parse so parenthesised multi-line imports
+    (e.g. ``from src.infra.db import (\\n  add_mission,\\n)``) are caught.
+    Falls back to line-regex on SyntaxError.  Call-site patterns (db.add_mission)
+    remain line-regex (they are always single-line tokens).
     """
     import re
     import os
@@ -615,15 +652,18 @@ def test_no_raw_db_mission_imports_outside_infra_beckman():
 
     root = Path(__file__).parents[3]  # repo root
 
-    # Matches: from src.infra.db import add_mission  (or update_mission, etc.)
-    # or:      from src.infra.db import ... add_mission ...
+    guarded_names = frozenset({
+        "add_mission", "update_mission", "update_mission_fields",
+        "increment_mission_rework_loops", "purge_all_missions", "purge_all",
+    })
+
+    # Fallback line-regex for import statements in unparseable files.
+    _names = "|".join(sorted(guarded_names))
     import_re = re.compile(
-        r'from\s+src\.infra\.db\s+import\s+.*?\b('
-        r'add_mission|update_mission|increment_mission_rework_loops'
-        r'|purge_all_missions|purge_all\b'
-        r')',
+        rf'from\s+src\.infra\.db\s+import\s+.*?\b({_names})\b',
     )
     # Also catch: import src.infra.db; db.add_mission( / db.update_mission_fields(
+    # These are always single-line, so line-regex is correct here.
     call_re = re.compile(
         r'\b(?:db|infra\.db)\.(add_mission|update_mission'
         r'|increment_mission_rework_loops|purge_all_missions|purge_all\b)'
@@ -658,6 +698,20 @@ def test_no_raw_db_mission_imports_outside_infra_beckman():
                 text = filepath.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+
+            # AST-based import detection (catches multi-line parenthesised imports).
+            ast_hits = _ast_mission_write_imports(filepath, text, guarded_names)
+            if ast_hits:
+                rel = filepath.relative_to(root.resolve())
+                for lineno, name in ast_hits:
+                    violations.append(f"{rel}:{lineno}: import of '{name}' from src.infra.db")
+                # Still run call_re for this file (call patterns are line-level).
+                for lineno, line in enumerate(text.splitlines(), 1):
+                    if call_re.search(line):
+                        violations.append(f"{rel}:{lineno}: {line.strip()}")
+                continue
+
+            # Fallback: line-regex (handles SyntaxError files or missed imports).
             for lineno, line in enumerate(text.splitlines(), 1):
                 if import_re.search(line) or call_re.search(line):
                     rel = filepath.relative_to(root.resolve())

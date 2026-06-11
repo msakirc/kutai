@@ -803,6 +803,38 @@ def test_no_raw_tasks_sql_outside_db():
     )
 
 
+def _ast_task_write_imports(filepath, text, guarded_names):
+    """Return list of (lineno, name) pairs where a guarded task-write name is
+    imported from src.infra.db (absolute) or a relative ...infra.db path.
+
+    Uses ast.parse so parenthesised multi-line imports are detected correctly.
+    Falls back to an empty list if the file is not valid Python (SyntaxError).
+    """
+    import ast
+
+    try:
+        tree = ast.parse(text, filename=str(filepath))
+    except SyntaxError:
+        return []
+
+    hits = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        # Absolute: from src.infra.db import ...
+        is_abs = module == "src.infra.db"
+        # Relative: from ..infra.db import ... (any level)
+        is_rel = node.level > 0 and module == "infra.db"
+        if not (is_abs or is_rel):
+            continue
+        for alias in node.names:
+            name = alias.name
+            if name in guarded_names:
+                hits.append((node.lineno, name))
+    return hits
+
+
 def test_no_raw_db_task_imports_outside_infra_beckman():
     """No source file outside src/infra/db.py itself and general_beckman may
     import task-write helpers directly from src.infra.db.
@@ -818,6 +850,10 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
 
     IMPORTANT: src/infra/dead_letter.py is NOT exempt — it must route via
     beckman like everyone else. Only src/infra/db.py itself is exempt.
+
+    Detection uses ast.parse so parenthesised multi-line imports
+    (e.g. ``from src.infra.db import (\\n  add_task,\\n)``) are caught.
+    Falls back to line-regex on SyntaxError.
     """
     import re
     import os
@@ -825,29 +861,23 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
 
     root = Path(__file__).parents[3]  # repo root
 
-    # Matches: from src.infra.db import add_task  (or update_task, etc.)
+    guarded_names = frozenset({
+        "add_task", "update_task", "update_task_by_context_field",
+        "add_subtasks_atomically", "insert_tasks_atomically",
+        "propagate_skips", "claim_task", "cancel_task", "reprioritize_task",
+        "save_task_checkpoint", "clear_task_checkpoint",
+        "reset_failed_tasks", "reset_stuck_tasks", "reset_blocked_tasks",
+        "cancel_pending_tasks", "reset_workflow_step",
+        "recover_startup_tasks", "reset_cascade_failed_dependents",
+    })
+
+    # Fallback line-regex for unparseable files (SyntaxError path).
+    _names = "|".join(sorted(guarded_names))
     import_re = re.compile(
-        r'from\s+src\.infra\.db\s+import\s+.*?\b('
-        r'add_task|update_task|update_task_by_context_field'
-        r'|add_subtasks_atomically|insert_tasks_atomically'
-        r'|propagate_skips|claim_task|cancel_task|reprioritize_task'
-        r'|save_task_checkpoint|clear_task_checkpoint'
-        r'|reset_failed_tasks|reset_stuck_tasks|reset_blocked_tasks'
-        r'|cancel_pending_tasks|reset_workflow_step'
-        r'|recover_startup_tasks|reset_cascade_failed_dependents'
-        r')\b',
+        rf'from\s+src\.infra\.db\s+import\s+.*?\b({_names})\b',
     )
-    # Also catch relative imports: from ..infra.db import add_task
     rel_import_re = re.compile(
-        r'from\s+\.+infra\.db\s+import\s+.*?\b('
-        r'add_task|update_task|update_task_by_context_field'
-        r'|add_subtasks_atomically|insert_tasks_atomically'
-        r'|propagate_skips|claim_task|cancel_task|reprioritize_task'
-        r'|save_task_checkpoint|clear_task_checkpoint'
-        r'|reset_failed_tasks|reset_stuck_tasks|reset_blocked_tasks'
-        r'|cancel_pending_tasks|reset_workflow_step'
-        r'|recover_startup_tasks|reset_cascade_failed_dependents'
-        r')\b',
+        rf'from\s+\.+infra\.db\s+import\s+.*?\b({_names})\b',
     )
 
     # Only src/infra/db.py itself is exempt (not all of src/infra/)
@@ -886,6 +916,16 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
                 text = filepath.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+
+            # AST-based detection (catches multi-line imports).
+            ast_hits = _ast_task_write_imports(filepath, text, guarded_names)
+            if ast_hits:
+                rel = filepath.relative_to(root.resolve())
+                for lineno, name in ast_hits:
+                    violations.append(f"{rel}:{lineno}: import of '{name}' from src.infra.db")
+                continue  # already reported; skip line-regex for this file
+
+            # Fallback: line-regex (handles SyntaxError files).
             for lineno, line in enumerate(text.splitlines(), 1):
                 if import_re.search(line) or rel_import_re.search(line):
                     rel = filepath.relative_to(root.resolve())

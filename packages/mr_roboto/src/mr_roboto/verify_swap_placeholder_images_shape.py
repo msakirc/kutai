@@ -1,11 +1,16 @@
 """verify_swap_placeholder_images_shape — Plan 3 posthook.
 
-Validates that swap_placeholder_images produced a self-consistent result by
-RE-DERIVING its verdict from the durable workspace artifacts (like
+Validates the swap step's durable workspace artifacts (like
 verify_charter_shape), so the gate is MEANINGFUL even when the producer's
-in-memory ``swap_result`` is unavailable.
+``swap_result`` is unavailable.
 
-Two layers:
+CPS NOTE (2026-06-11): the 5.35 task result is now the KICKOFF shape — the
+image chain runs asynchronously via durable continuations, so this verifier
+may run MID-FLIGHT. It must NOT fail on surviving placehold.co URLs (the
+chain may still be generating); the deep HTML verification (surviving ==
+skipped consistency) lives in the chain's finalize, not here.
+
+Layers:
 
 1. Self-derived broken-asset-ref check (always runs; the live i2p path).
    Walks ``<ws>/.web/**/*.html``. Every ``<img src="...">`` whose src is a
@@ -13,22 +18,29 @@ Two layers:
    URL, NOT an absolute http(s) URL) must reference a file that EXISTS, resolved
    relative to the HTML file's own directory. A rewritten ref pointing at a
    missing file is the real corruption mode → FAIL. Surviving ``placehold.co``
-   ``<img>`` are ACCEPTABLE (graceful degrade) and never fail the gate alone.
+   ``<img>`` are ACCEPTABLE (graceful degrade / mid-flight chain) and never
+   fail the gate alone.
 
-2. swap_result consistency check (ADDITIONAL; only when swap_result non-empty).
-   surviving placehold.co == skipped_count, and assets/ exists when
-   replaced_count > 0. This stricter layer applies in tests / direct calls /
-   any future cross-step wiring. When swap_result is empty (the live i2p case)
-   it is skipped and the verdict rests on layer 1.
+2. swap_result validation (ADDITIONAL; only when swap_result non-empty):
+   - ``ok`` must not be False.
+   - ``chain == "started"`` (kickoff shape): the chain ledger
+     ``<ws>/.web/.swap_chain.json`` must exist, ``placeholder_count`` must be
+     > 0 and match the ledger, and the ledger status must be one of
+     prompts_pending / images_pending / done. No surviving-placeholder check
+     (chain may be mid-flight).
+   - ``chain == "none"`` or legacy no-chain dict: surviving placehold.co ==
+     skipped_count, and assets/ exists when replaced_count > 0 (tests /
+     direct calls / future cross-step wiring).
+   When swap_result is empty (the live i2p case — no cross-step injection)
+   layer 2 is skipped and the verdict rests on layer 1.
 
 Returns {ok: bool, error: str|None, surviving_placeholders: int,
          expected_replaced: int, broken_asset_refs: list[str]}.
 
-PRODUCTION SHAPE NOTE: the swap step's TaskResult.result arrives as a JSON
-STRING (orchestrator json.dumps), so when this verifier is dispatched as a
-post-hook the ``swap_result`` payload may be a JSON string rather than a
-dict. ``_coerce_swap_result`` json.loads it FIRST (mirrors
-swap_placeholder_images._parse_task_result) before any field access."""
+PRODUCTION SHAPE NOTE: a persisted task result arrives as a JSON STRING
+(orchestrator json.dumps), so the ``swap_result`` payload may be a JSON
+string rather than a dict. ``_coerce_swap_result`` json.loads it FIRST
+before any field access."""
 from __future__ import annotations
 
 import json
@@ -157,9 +169,71 @@ def verify_swap_placeholder_images_shape(
         }
 
     # Layer 2 (only when swap_result is non-empty): producer-result
-    # consistency. In the live i2p path swap_result is empty (no cross-step
+    # validation. In the live i2p path swap_result is empty (no cross-step
     # injection), so these checks are skipped and the verdict rests on layer 1.
     if have_swap_result:
+        if swap.get("ok") is False:
+            return {
+                "ok": False,
+                "error": "producer reported ok=false",
+                "surviving_placeholders": surviving,
+                "expected_replaced": replaced,
+                "broken_asset_refs": broken_refs,
+            }
+
+        # CPS kickoff shape: the chain runs asynchronously — validate the
+        # ledger instead of the (possibly mid-flight) HTML. Surviving
+        # placehold.co URLs are EXPECTED here and must NOT fail the gate.
+        if swap.get("chain") == "started":
+            ledger_path = os.path.join(workspace_path, ".web",
+                                       ".swap_chain.json")
+            ledger: dict = {}
+            try:
+                with open(ledger_path, encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                ledger = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                ledger = {}
+            if not ledger:
+                return {
+                    "ok": False,
+                    "error": "chain started but ledger missing/unreadable",
+                    "surviving_placeholders": surviving,
+                    "expected_replaced": replaced,
+                    "broken_asset_refs": broken_refs,
+                }
+            pc = int(swap.get("placeholder_count") or 0)
+            ledger_n = len(ledger.get("placeholders") or [])
+            if pc <= 0 or pc != ledger_n:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"chain started but placeholder_count={pc} does not "
+                        f"match ledger ({ledger_n})"
+                    ),
+                    "surviving_placeholders": surviving,
+                    "expected_replaced": replaced,
+                    "broken_asset_refs": broken_refs,
+                }
+            if ledger.get("status") not in (
+                "prompts_pending", "images_pending", "done",
+            ):
+                return {
+                    "ok": False,
+                    "error": f"chain ledger has bad status: "
+                             f"{ledger.get('status')!r}",
+                    "surviving_placeholders": surviving,
+                    "expected_replaced": replaced,
+                    "broken_asset_refs": broken_refs,
+                }
+            return {
+                "ok": True,
+                "error": None,
+                "surviving_placeholders": surviving,
+                "expected_replaced": replaced,
+                "broken_asset_refs": broken_refs,
+            }
+
         # Consistency FIRST: surviving placehold.co URLs must equal
         # skipped_count. (Ordered ahead of the assets-dir check so a
         # claimed-replaced-but-still-surviving prototype is reported as the

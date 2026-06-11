@@ -234,6 +234,138 @@ def test_subdir_flat_ref_is_flagged_broken(tmp_path):
     assert "broken asset ref" in (res.get("error") or "").lower()
 
 
+# ── CPS kickoff shape (chain="started") ─────────────────────────────────
+
+_HTML_PENDING = (
+    "<!DOCTYPE html><html><body>"
+    '<img src="https://placehold.co/600x400/000/FFF?text=hero" alt="h">'
+    '<img src="https://placehold.co/260x180/3D405B/FFF?text=feat" alt="f">'
+    "</body></html>"
+)
+
+
+def _write_ledger(tmp_path, *, n=2, status="prompts_pending"):
+    ledger = {
+        "mission_id": 1,
+        "status": status,
+        "placeholders": [
+            {"placeholder_id": f"home__{i}", "tag_span": [0, 1],
+             "html_path": "x"} for i in range(n)
+        ],
+        "prompt_map": {},
+        "results": {},
+    }
+    (tmp_path / ".web" / ".swap_chain.json").write_text(
+        json.dumps(ledger), encoding="utf-8",
+    )
+
+
+def test_chain_started_mid_flight_passes_despite_surviving_placeholders(tmp_path):
+    """5.35.verify may run while the image chain is still in flight — the
+    kickoff shape + a valid ledger pass even though every <img> still points
+    at placehold.co."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=2, status="prompts_pending")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "queued": True, "chain": "started",
+                     "placeholder_count": 2, "html_files_seen": 1},
+    )
+    assert res["ok"] is True
+    assert res["surviving_placeholders"] == 2
+
+
+def test_chain_started_accepts_done_ledger(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=2, status="done")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "started", "placeholder_count": 2},
+    )
+    assert res["ok"] is True
+
+
+def test_chain_started_fails_when_ledger_missing(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "started", "placeholder_count": 2},
+    )
+    assert res["ok"] is False
+    assert "ledger" in (res.get("error") or "").lower()
+
+
+def test_chain_started_fails_on_placeholder_count_mismatch(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=3)
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "started", "placeholder_count": 2},
+    )
+    assert res["ok"] is False
+    assert "placeholder_count" in (res.get("error") or "")
+
+
+def test_chain_started_fails_on_bad_ledger_status(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=2, status="exploded")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "started", "placeholder_count": 2},
+    )
+    assert res["ok"] is False
+    assert "status" in (res.get("error") or "").lower()
+
+
+def test_chain_started_still_fails_on_broken_asset_ref(tmp_path):
+    """Layer 1 outranks the chain shape: a rewritten ref pointing at a
+    missing file fails even mid-flight."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(
+        '<html><body><img src="assets/home__0.png" alt="h"></body></html>',
+        encoding="utf-8",
+    )
+    _write_ledger(tmp_path, n=1, status="images_pending")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "started", "placeholder_count": 1},
+    )
+    assert res["ok"] is False
+    assert "broken asset ref" in (res.get("error") or "").lower()
+
+
+def test_producer_ok_false_fails(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text("<html><body></body></html>",
+                                   encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": False, "chain": "started", "placeholder_count": 2},
+    )
+    assert res["ok"] is False
+    assert "ok=false" in (res.get("error") or "").lower()
+
+
+def test_chain_none_keeps_legacy_consistency_semantics(tmp_path):
+    """Degrade kickoff (chain 'none', everything skipped): surviving ==
+    skipped passes; nothing was rewritten."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "none", "replaced_count": 0,
+                     "skipped_count": 2,
+                     "errors": ["prompt_writer enqueue raised: x"]},
+    )
+    assert res["ok"] is True
+    assert res["surviving_placeholders"] == 2
+
+
 def test_live_empty_swap_result_passes_with_only_surviving_placeholders(tmp_path):
     """LIVE i2p graceful-degrade: nothing was rewritten (all images still
     point at placehold.co). With an empty swap_result the gate passes —

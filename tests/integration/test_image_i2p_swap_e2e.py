@@ -1,13 +1,19 @@
 # tests/integration/test_image_i2p_swap_e2e.py
-"""Plan 3 v2 — end-to-end placeholder swap with PRODUCTION TaskResult shape.
+"""Plan 3 — end-to-end placeholder swap, CPS drive (SP5: await_inline gone).
 
 Drives the host path: ``mr_roboto.run(task)`` with
 ``action=swap_placeholder_images`` against a temp ``.web/`` tree (including a
-subdirectory screen), with beckman.enqueue mocked at the swap module's
-namespace so the production JSON-STRING ``TaskResult.result`` shape is
-exercised (orchestrator ``json.dumps``). Image generation is mocked (no real
-network / GPU). Also asserts the verify mechanic passes on the consistent
-result and fails on an inconsistent one.
+subdirectory screen). The kickoff enqueues a prompt_writer child with
+on_complete/on_error continuations and returns immediately; this test then
+plays Beckman's terminal-fire role — it pops each captured enqueue, fabricates
+the child result (writing a real PNG for image children), and invokes the
+registered continuation handler by NAME via the beckman registry (so the
+registration wiring is exercised, not just the functions). End state must
+match the old blocking e2e expectations: HTML rewritten to subdir-correct
+relative refs, PNGs renamed to stable ``<pid>.png``, graceful degrade
+preserved. Also asserts the verify mechanic accepts the MID-FLIGHT kickoff
+shape (surviving placehold.co is acceptable while the chain runs) and still
+fails on a legacy inconsistent result.
 """
 import json
 import os
@@ -35,18 +41,13 @@ _HTML_SCREEN = """<!DOCTYPE html>
 
 
 @pytest.mark.asyncio
-async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path, temp_db):
-    """Mocks beckman.enqueue with the production JSON-string TaskResult.result
-    shape and asserts the full host path: HTML rewritten to a subdir-correct
-    relative asset ref (root → assets/<pid>.png, subdir screen →
-    ../assets/<pid>.png), PNGs written, recursive subdir screen handled, and
-    the verify mechanic accepts the consistent result.
+async def test_i2p_swap_e2e_cps_chain(monkeypatch, tmp_path, temp_db):
+    """Full CPS chain: kickoff → prompts_done → image_done ×3 → finalize.
 
     Uses the ``temp_db`` fixture so the audit-log path
     (mr_roboto.run → record_action_event → src/infra/db.py) hits an isolated,
     schema-initialised SQLite file rather than crashing on a missing
-    registry_events table against the live DB — the test's no-live-DB claim is
-    real, not merely tolerated by a best-effort swallow."""
+    registry_events table against the live DB."""
     ws = tmp_path / "mission_777"
     web = ws / ".web"
     (web / "screens").mkdir(parents=True)
@@ -57,8 +58,6 @@ async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path, temp_
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(ws),
     )
-
-    call_log: list[str] = []
 
     # placeholder_ids are slug-derived: <html-stem>__<occurrence>.
     # home.html → home__0 (hero), home__1 (feat); /assets/already_real.png
@@ -73,43 +72,23 @@ async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path, temp_
         ],
     }
 
+    queued: list[dict] = []
+    next_id = {"n": 1000}
+
     async def _fake_enqueue(spec, **kwargs):
-        agent_type = spec.get("agent_type")
-        call_log.append(agent_type or "")
-        if agent_type == "prompt_writer":
-            assert kwargs.get("await_inline") is True
-            class _R:
-                status = "completed"
-                # PRODUCTION SHAPE — JSON STRING (orchestrator json.dumps).
-                result = json.dumps(prompt_envelope)
-                error = None
-            return _R()
-        if agent_type == "image":
-            ic = spec["context"]["image_call"]
-            os.makedirs(ic["out_dir"], exist_ok=True)
-            # paintress writes a timestamp-suffixed file; simulate that exactly.
-            path = os.path.join(
-                ic["out_dir"], f"{ic['filename_hint']}_raw.png",
-            )
-            Image.new(
-                "RGB", (ic["width"], ic["height"]), (100, 150, 200)
-            ).save(path, "PNG")
-            class _R:
-                status = "completed"
-                # PRODUCTION SHAPE — JSON STRING.
-                result = json.dumps({
-                    "path": path, "provider": "pollinations",
-                    "model": "pollinations/flux", "cost": 0.0,
-                })
-                error = None
-            return _R()
-        raise AssertionError(f"unexpected agent_type: {agent_type!r}")
+        assert "await_inline" not in kwargs, "CPS regression: await_inline used"
+        assert kwargs.get("on_complete"), "child enqueued without continuation"
+        assert kwargs.get("on_error"), "child enqueued without on_error"
+        next_id["n"] += 1
+        queued.append({"spec": spec, "kwargs": kwargs, "id": next_id["n"]})
+        return next_id["n"]
 
     monkeypatch.setattr(
         "mr_roboto.swap_placeholder_images._enqueue_beckman", _fake_enqueue,
     )
 
     import mr_roboto
+    from general_beckman.continuations import _HANDLERS
 
     task = {
         "id": 12345, "mission_id": 777, "title": "swap_e2e",
@@ -121,17 +100,74 @@ async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path, temp_
     }
     action = await mr_roboto.run(task)
 
+    # ── kickoff: immediate Action-compatible completed result ────────────
     assert action.status == "completed"
     res = action.result
     assert res["ok"] is True
-    assert res["replaced_count"] == 3
-    assert res["skipped_count"] == 0
+    assert res["queued"] is True
+    assert res["chain"] == "started"
+    assert res["placeholder_count"] == 3
     assert res["html_files_seen"] == 2
-    assert res["html_files_changed"] == 2
 
+    # 5.35 threads its own task id → prompt_writer child gets parent_id.
+    assert queued[0]["kwargs"]["parent_id"] == 12345
+
+    # ── MID-FLIGHT: the verify mechanic accepts the kickoff shape even
+    # though every <img> still points at placehold.co (chain in flight). ──
+    from mr_roboto.verify_swap_placeholder_images_shape import (
+        verify_swap_placeholder_images_shape,
+    )
+    verdict = verify_swap_placeholder_images_shape(
+        workspace_path=str(ws), swap_result=json.dumps(res),
+    )
+    assert verdict["ok"] is True
+    assert verdict["surviving_placeholders"] == 3
+
+    # ── play Beckman: fire each child's continuation by NAME ─────────────
+    call_log: list[str] = []
+    guard = 0
+    while queued:
+        guard += 1
+        assert guard < 20, "chain did not terminate"
+        child = queued.pop(0)
+        spec, kwargs = child["spec"], child["kwargs"]
+        agent_type = spec.get("agent_type")
+        call_log.append(agent_type or "")
+        # cont_state survives a DB JSON round-trip — simulate it.
+        state = json.loads(json.dumps(kwargs["cont_state"]))
+        handler = _HANDLERS[kwargs["on_complete"]]
+
+        if agent_type == "prompt_writer":
+            # The continuation fires at TRUE terminal — post constrained_emit
+            # repair — with the persisted result (JSON-string body tolerated).
+            await handler(child["id"],
+                          {"result": json.dumps(prompt_envelope)}, state)
+            continue
+        if agent_type == "image":
+            ic = spec["context"]["image_call"]
+            assert spec["mission_id"] == 777
+            os.makedirs(ic["out_dir"], exist_ok=True)
+            # paintress writes a timestamp-suffixed file; simulate that.
+            path = os.path.join(
+                ic["out_dir"], f"{ic['filename_hint']}_raw.png",
+            )
+            Image.new(
+                "RGB", (ic["width"], ic["height"]), (100, 150, 200)
+            ).save(path, "PNG")
+            # The image lane returns {content, path, provider, ...}.
+            await handler(child["id"], {
+                "content": path, "path": path, "provider": "pollinations",
+                "model": "pollinations/flux", "cost": 0.0,
+            }, state)
+            continue
+        raise AssertionError(f"unexpected agent_type: {agent_type!r}")
+
+    # Sequential chain: 1 prompt_writer then 3 images, one at a time.
+    assert call_log == ["prompt_writer", "image", "image", "image"]
+
+    # ── end state: identical to the old blocking e2e expectations ────────
     assets = ws / ".web" / "assets"
     pngs = sorted(p.name for p in assets.glob("*.png"))
-    # Stable <pid>.png names (no timestamp suffix after rename).
     assert pngs == ["home__0.png", "home__1.png", "onboarding__0.png"]
     for png in pngs:
         assert (assets / png).stat().st_size > 0
@@ -153,26 +189,31 @@ async def test_i2p_swap_e2e_with_json_string_result(monkeypatch, tmp_path, temp_
     assert 'src="../assets/onboarding__0.png"' in onboarding
     assert 'src="assets/onboarding__0.png"' not in onboarding
 
-    assert call_log.count("prompt_writer") == 1
-    assert call_log.count("image") == 3
-
-    # The verify mechanic accepts this consistent result (0 surviving == 0
-    # skipped, assets/ present).
-    from mr_roboto.verify_swap_placeholder_images_shape import (
-        verify_swap_placeholder_images_shape,
+    # Chain ledger finalized: full success, deep shape check passed.
+    ledger = json.loads(
+        (web / ".swap_chain.json").read_text(encoding="utf-8")
     )
+    assert ledger["status"] == "done"
+    assert ledger["replaced"] == 3
+    assert ledger["skipped"] == 0
+    assert ledger["errors"] == []
+    assert ledger["shape_check"]["ok"] is True
+
+    # POST-CHAIN: the verify mechanic's live shape (empty swap_result) is
+    # meaningful — all rewritten refs exist on disk.
     verdict = verify_swap_placeholder_images_shape(
-        workspace_path=str(ws), swap_result=res,
+        workspace_path=str(ws), swap_result={},
     )
     assert verdict["ok"] is True
     assert verdict["surviving_placeholders"] == 0
+    assert verdict["broken_asset_refs"] == []
 
 
 @pytest.mark.asyncio
 async def test_verify_fails_on_inconsistent_result(monkeypatch, tmp_path):
-    """The verify mechanic FAILS when swap_result claims everything replaced
-    but a placehold.co URL still survives in the HTML and errors is empty —
-    i.e. an internally inconsistent result."""
+    """The verify mechanic FAILS when a (legacy, chain-less) swap_result
+    claims everything replaced but a placehold.co URL still survives in the
+    HTML and errors is empty — i.e. an internally inconsistent result."""
     ws = tmp_path / "mission_888"
     web = ws / ".web"
     web.mkdir(parents=True)

@@ -70,7 +70,7 @@ async def refresh_workflow_agent_type(task: dict, agent_type: str) -> str:
                 and _live_agent != agent_type
                 and _live_agent != "mechanical"
                 and agent_type != "mechanical"):
-            from src.infra.db import update_task
+            from general_beckman import update_task
             await update_task(task["id"], agent_type=_live_agent)
             logger.info(
                 f"[Task #{task['id']}] agent_type refresh: "

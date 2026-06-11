@@ -82,7 +82,7 @@ async def _compose_and_enqueue_digest(product_id: str, db) -> int:
         if url:
             lines.append(f"    {url}")
 
-    from src.infra.db import add_task
+    from general_beckman import add_task
     await add_task(
         title=f"Mention digest: {product_id}",
         description="",

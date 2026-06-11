@@ -120,7 +120,7 @@ async def request_interview_data(task: dict) -> dict[str, Any]:
 
     try:
         if sent:
-            from src.infra.db import update_task
+            from general_beckman import update_task
             await update_task(task["id"], status="waiting_human")
     except Exception as exc:
         logger.debug("request_interview_data: update_task waiting_human failed: %s", exc)

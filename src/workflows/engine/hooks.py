@@ -1653,7 +1653,7 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             # was already produced — preventing the agent from burning
             # iterations re-reading files it already wrote.
             try:
-                from ...infra.db import update_task
+                from general_beckman import update_task
                 new_ctx = dict(ctx)
                 new_ctx["_schema_error"] = error_msg
                 # Canonicalize before storing — collapses any escape
@@ -2010,7 +2010,7 @@ async def _check_conditional_triggers(
         # Update task statuses in DB for excluded steps
         if excluded:
             try:
-                from ...infra.db import update_task_by_context_field, propagate_skips
+                from general_beckman import update_task_by_context_field, propagate_skips
 
                 for step in excluded:
                     logger.warning(
@@ -2130,7 +2130,7 @@ async def _trigger_template_expansion(mission_id: int, backlog_text: str) -> Non
             expand_template, expand_steps_to_tasks,
             expand_steps_with_multifile,
         )
-        from ...infra.db import add_task as insert_task, update_task
+        from general_beckman import add_task as insert_task, update_task
 
         # Try the workflow used by this mission, fall back to i2p_v3
         workflow_name = "i2p_v3"

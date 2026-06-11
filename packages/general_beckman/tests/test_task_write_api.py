@@ -861,13 +861,6 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
         # be migrated in a separate session.
         (root / "packages" / "coulson" / "src" / "coulson").resolve(),
     }
-    # Deferred individual files: these are known remaining migration sites
-    # outside the scope of Task 5b. Track them explicitly so they surface
-    # as a reminder rather than silently passing.
-    deferred_files = {
-        (root / "src" / "agents" / "base.py").resolve(),
-        (root / "src" / "core" / "dispatch_prep.py").resolve(),
-    }
     # Migration scripts are one-time DB tools — not prod callers.
     skip_prefixes = {
         (root / "scripts").resolve(),
@@ -887,8 +880,6 @@ def test_no_raw_db_task_imports_outside_infra_beckman():
                 continue
             filepath = (Path(dirpath) / fname).resolve()
             if filepath in allowed_files:
-                continue
-            if filepath in deferred_files:
                 continue
             if any(str(filepath).startswith(str(d)) for d in allowed_dirs):
                 continue

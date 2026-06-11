@@ -5979,11 +5979,14 @@ async def reset_workflow_step(
         "error_category=NULL, started_at=NULL, completed_at=NULL "
         "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?"
     )
-    # Reset writer step
-    await db.execute(reset_sql, (mission_id, step_id))
-    # Reset verify sibling
-    await db.execute(reset_sql, (mission_id, step_id + ".verify"))
-    # Reset confirm task (by id if provided)
+    # Reset writer step and verify sibling only when step_id is known.
+    # Matches old `if regen_step:` gate in telegram_bot.py (commit d5b30d94):
+    # if step_id is empty the two step-scoped UPDATEs are skipped and only
+    # the confirm task is reset, preserving identical behavior.
+    if step_id:
+        await db.execute(reset_sql, (mission_id, step_id))
+        await db.execute(reset_sql, (mission_id, step_id + ".verify"))
+    # Reset confirm task (by id if provided) — always, regardless of step_id.
     if confirm_task_id is not None:
         await db.execute(
             "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "

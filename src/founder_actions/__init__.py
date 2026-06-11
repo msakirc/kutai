@@ -408,9 +408,8 @@ async def defer(action_id: int, until: str) -> None:
     Only updates ``defer_until`` and ``updated_at``; does not change
     ``status`` or any other field.
     """
-    from datetime import datetime as _dt
     from src.infra.db import get_db
-    now = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now = _utc_now()
     db = await get_db()
     await db.execute(
         "UPDATE founder_actions SET defer_until = ?, updated_at = ? WHERE id = ?",

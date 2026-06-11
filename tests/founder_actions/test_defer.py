@@ -60,21 +60,29 @@ async def test_defer_updates_updated_at(tmp_path, monkeypatch):
     _, db_mod, fa = await _setup(tmp_path, monkeypatch)
     mid = await db_mod.add_mission("m", "")
     action = await fa.create(mid, "generic", "t", "w", [], notify_telegram=False)
-    old_updated_at = action.updated_at
+
+    # Set a sentinel so that even if defer() runs within the same second we
+    # can still assert the value actually changed.
+    sentinel = "2000-01-01 00:00:00"
+    db = await db_mod.get_db()
+    await db.execute(
+        "UPDATE founder_actions SET updated_at = ? WHERE id = ?",
+        (sentinel, action.id),
+    )
+    await db.commit()
 
     until = (datetime.datetime.utcnow() + datetime.timedelta(hours=12)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
     await fa.defer(action.id, until)
 
-    db = await db_mod.get_db()
     cur = await db.execute(
         "SELECT updated_at FROM founder_actions WHERE id = ?", (action.id,)
     )
     row = await cur.fetchone()
     assert row is not None
-    # updated_at must have changed (or at least be set to a non-None string).
-    assert row[0] is not None
+    # updated_at must have actually changed away from the sentinel value.
+    assert row[0] != sentinel
 
 
 @pytest.mark.asyncio
@@ -126,16 +134,15 @@ async def test_record_deferred_routes_through_defer_api(tmp_path, monkeypatch):
     # Patch founder_actions.defer so we can confirm it is called.
     called_with = {}
 
+    import src.founder_actions as _fa_mod
+    original_defer = _fa_mod.defer
+
     async def _spy_defer(action_id, until):
         called_with["action_id"] = action_id
         called_with["until"] = until
-        # Still do the real update.
-        await fa._defer_real(action_id, until)
+        # Still do the real update (closes over original_defer).
+        await original_defer(action_id, until)
 
-    import src.founder_actions as _fa_mod
-    original_defer = _fa_mod.defer
-    # We'll swap defer in the module; attention_budget imports it lazily.
-    _fa_mod._defer_real = original_defer
     monkeypatch.setattr(_fa_mod, "defer", _spy_defer)
 
     from src.app.attention_budget import record_deferred

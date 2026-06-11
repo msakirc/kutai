@@ -83,6 +83,45 @@ def test_parse_malformed_tool_call_arguments():
     result = parse_response(resp, model_name="test", is_local=False, is_thinking=False)
     assert result["tool_calls"][0]["arguments"] == {}
 
+
+def test_malformed_nonempty_args_set_arguments_error():
+    """Non-empty but unparseable arguments (truncated mid-stream) must NOT be
+    silently dropped to {} — attach arguments_error carrying the byte length so
+    the runtime can surface a 'truncated, resend' nudge instead of running the
+    tool arg-less (mission 81 write_file empty-arg -> DLQ)."""
+    tc = MagicMock()
+    tc.id = "call_1"
+    tc.function.name = "write_file"
+    tc.function.arguments = '{"filepath": "a.json", "content": "{partial'  # truncated
+    resp = _make_response(content="", tool_calls=[tc])
+    result = parse_response(resp, model_name="test", is_local=False, is_thinking=False)
+    entry = result["tool_calls"][0]
+    assert entry["arguments"] == {}
+    assert "arguments_error" in entry
+    assert str(len(tc.function.arguments)) in entry["arguments_error"]
+
+
+def test_empty_args_no_arguments_error():
+    """Empty/absent arguments is legitimate (no-arg tools) — no error marker."""
+    tc = MagicMock()
+    tc.id = "call_1"
+    tc.function.name = "project_info"
+    tc.function.arguments = ""
+    resp = _make_response(content="", tool_calls=[tc])
+    result = parse_response(resp, model_name="test", is_local=False, is_thinking=False)
+    assert "arguments_error" not in result["tool_calls"][0]
+
+
+def test_valid_args_no_arguments_error():
+    """Well-formed arguments carry no error marker."""
+    tc = MagicMock()
+    tc.id = "call_1"
+    tc.function.name = "search"
+    tc.function.arguments = '{"query": "test"}'
+    resp = _make_response(content="", tool_calls=[tc])
+    result = parse_response(resp, model_name="test", is_local=False, is_thinking=False)
+    assert "arguments_error" not in result["tool_calls"][0]
+
 def test_cost_zero_for_local():
     resp = _make_response(content="hello")
     result = parse_response(resp, model_name="test", is_local=True, is_thinking=False)

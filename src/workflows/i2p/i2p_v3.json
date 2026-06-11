@@ -5182,8 +5182,8 @@
       "depends_on": [
         "5.30c"
       ],
-      "instruction": "Plan 3 — replace placehold.co <img> placeholders in every mission_{mission_id}/.web/**/*.html (recursive) with real diffusion-generated PNGs. Enqueues ONE prompt_writer LLM task (artifact_schema enforces shape via constrained_emit) to enrich each placeholder's alt text into a diffusion prompt, then one image task per placeholder through beckman (fatih_hoca.select(needs_image=True) -> dispatcher.dispatch -> paintress). Writes PNGs under mission_{mission_id}/.web/assets/<placeholder_id>.png and rewrites <img src> to assets/<id>.png. Best-effort: per-placeholder failures keep the original placehold.co URL — never blocks the mission. Skipping is acceptable; the preview surfaces with placeholders.",
-      "done_when": "swap_placeholder_images executor returns ok=true (replaced_count>=0; skipped_count>0 is acceptable when image generation is unavailable)",
+      "instruction": "Plan 3 — replace placehold.co <img> placeholders in every mission_{mission_id}/.web/**/*.html (recursive) with real diffusion-generated PNGs, as an ASYNC CPS chain (SP5 deleted await_inline; the swap is NOT synchronous). The 5.35 kickoff scans placeholders, writes a chain ledger to .web/.swap_chain.json, enqueues ONE prompt_writer child (artifact_schema arms constrained_emit) with durable on_complete/on_error continuations, and completes immediately. Continuations then enqueue one image child per placeholder SEQUENTIALLY through beckman (fatih_hoca.select(needs_image=True) -> paintress); the chain tail rewrites <img src> to a subdir-correct relative assets/<placeholder_id>.png ref and runs the deep shape check. Best-effort: per-placeholder failures keep the original placehold.co URL — never blocks the mission. Skipping is acceptable; the preview surfaces with placeholders until images land.",
+      "done_when": "swap_placeholder_images kickoff returns ok=true (chain 'none' when nothing to swap, or chain 'started' with the ledger written — images land asynchronously via the CPS chain; skipped placeholders are acceptable when image generation is unavailable)",
       "produces": [
         "mission_{mission_id}/.web/assets/"
       ],
@@ -5210,7 +5210,7 @@
       "depends_on": [
         "5.35"
       ],
-      "instruction": "Plan 3 verify-posthook. Asserts swap_placeholder_images produced a self-consistent result: surviving placehold.co URLs in mission_{mission_id}/.web/**/*.html equal skipped_count, and assets/ exists when replaced_count>0. Walks the workspace directly (mirrors verify_charter_shape's role for phase 0). Gates 5.40 emit_preview_url.",
+      "instruction": "Plan 3 verify-posthook. Validates the swap KICKOFF shape (CPS: the image chain may still be in flight when this runs): result.ok must be true; chain 'none' keeps the legacy empty/degrade semantics; chain 'started' requires the .web/.swap_chain.json ledger to exist with a matching placeholder_count and a sane status. NEVER fails on surviving placehold.co URLs alone (mid-flight is normal) — the deep HTML consistency check lives in the chain's finalize. Always fails on a rewritten relative asset ref pointing at a missing file (the real corruption mode). Walks the workspace directly (mirrors verify_charter_shape's role for phase 0). Gates 5.40 emit_preview_url.",
       "done_when": "verify_swap_placeholder_images_shape returns ok=true",
       "reversibility": "full",
       "payload": {
@@ -5236,7 +5236,7 @@
       "produces": [
         "mission_{mission_id}/preview_url.txt"
       ],
-      "instruction": "Z1 T4C (C10+A19) — emit a tunneled preview URL surface for the per-screen HTML prototypes. EMIT-ONLY: writes preview_url.txt with a live cloudflared URL when KUTAI_PREVIEW_PROVIDER=cloudflared and the binary is on PATH; otherwise writes a 'pending: hosting deferred to Z2' placeholder. Idempotent: any prior tunnel is terminated before re-emitting.",
+      "instruction": "Z1 T4C (C10+A19) — emit a tunneled preview URL surface for the per-screen HTML prototypes. EMIT-ONLY: writes preview_url.txt with a live cloudflared URL when KUTAI_PREVIEW_PROVIDER=cloudflared and the binary is on PATH; otherwise writes a 'pending: hosting deferred to Z2' placeholder. Idempotent: any prior tunnel is terminated before re-emitting. NOTE: 5.35's image chain is async (CPS) — the preview may surface BEFORE all swapped images land; the preview serves disk files live, so swapped HTML simply appears on refresh as the chain completes.",
       "reversibility": "full"
     },
     {

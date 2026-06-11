@@ -268,3 +268,28 @@ def test_apply_py_source_has_no_await_inline():
         "this would recreate the lane-deadlock:\n"
         + "\n".join(f"  {ln}" for ln in problematic)
     )
+
+
+# ---------------------------------------------------------------------------
+# E. SP5 — the await_inline primitive itself is GONE (not just unused)
+# ---------------------------------------------------------------------------
+
+def test_enqueue_has_no_await_inline_param():
+    """SP5 (2026-06-11): the blocking inline-wait primitive is deleted. enqueue
+    must not accept await_inline anymore — passing it is now a TypeError, the
+    strongest possible deadlock guard."""
+    import general_beckman
+    sig = inspect.signature(general_beckman.enqueue)
+    assert "await_inline" not in sig.parameters, (
+        "enqueue still accepts await_inline — the blocking primitive must be deleted"
+    )
+
+
+def test_no_inline_waiter_machinery():
+    """The inline-waiter machinery (resolve_inline / _inline_waiters /
+    INLINE_TIMEOUT / TaskResult) was deleted alongside await_inline."""
+    import general_beckman
+    for name in ("resolve_inline", "_inline_waiters", "INLINE_TIMEOUT", "TaskResult"):
+        assert not hasattr(general_beckman, name), (
+            f"general_beckman.{name} survived SP5 await_inline deletion"
+        )

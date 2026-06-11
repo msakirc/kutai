@@ -404,3 +404,507 @@ async def test_save_and_clear_task_checkpoint(tmp_path, monkeypatch):
             assert row[0] is None
     finally:
         await _close_db(db_module)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# reset_failed_tasks
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reset_failed_tasks(tmp_path, monkeypatch):
+    """reset_failed_tasks resets all failed tasks to pending."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
+    db_module._db_connection = None
+
+    try:
+        from general_beckman import add_task, update_task, reset_failed_tasks
+
+        t1 = await add_task(title="F1", description="d")
+        db_module._db_connection = None
+        t2 = await add_task(title="F2", description="d")
+        db_module._db_connection = None
+        t3 = await add_task(title="P1", description="d")
+
+        db_module._db_connection = None
+        await update_task(t1, status="failed", error="err")
+        db_module._db_connection = None
+        await update_task(t2, status="failed", error="err")
+        # t3 stays pending
+
+        db_module._db_connection = None
+        count = await reset_failed_tasks()
+        assert count == 2
+
+        r1 = await _fetch_task(db_path, t1)
+        r2 = await _fetch_task(db_path, t2)
+        r3 = await _fetch_task(db_path, t3)
+        assert r1["status"] == "pending"
+        assert r2["status"] == "pending"
+        assert r3["status"] == "pending"  # unaffected
+    finally:
+        await _close_db(db_module)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# reset_stuck_tasks
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reset_stuck_tasks(tmp_path, monkeypatch):
+    """reset_stuck_tasks resets processing tasks to pending."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
+    db_module._db_connection = None
+
+    try:
+        from general_beckman import add_task, update_task, reset_stuck_tasks
+
+        t1 = await add_task(title="S1", description="d")
+        db_module._db_connection = None
+        t2 = await add_task(title="P1", description="d")
+
+        db_module._db_connection = None
+        await update_task(t1, status="processing")
+
+        db_module._db_connection = None
+        count = await reset_stuck_tasks()
+        assert count == 1
+
+        r1 = await _fetch_task(db_path, t1)
+        r2 = await _fetch_task(db_path, t2)
+        assert r1["status"] == "pending"
+        assert r2["status"] == "pending"  # unaffected
+    finally:
+        await _close_db(db_module)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# reset_blocked_tasks
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reset_blocked_tasks(tmp_path, monkeypatch):
+    """reset_blocked_tasks clears depends_on on pending tasks."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
+    db_module._db_connection = None
+
+    try:
+        from general_beckman import add_task, reset_blocked_tasks
+
+        t1 = await add_task(title="B1", description="d", depends_on=[99])
+        db_module._db_connection = None
+        t2 = await add_task(title="P1", description="d")  # no deps
+
+        db_module._db_connection = None
+        count = await reset_blocked_tasks()
+        assert count == 1
+
+        r1 = await _fetch_task(db_path, t1)
+        assert r1["depends_on"] == "[]"
+    finally:
+        await _close_db(db_module)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# cancel_pending_tasks
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_pending_tasks(tmp_path, monkeypatch):
+    """cancel_pending_tasks cancels only pending tasks for the given mission."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
+    db_module._db_connection = None
+
+    try:
+        from general_beckman import add_task, update_task, cancel_pending_tasks
+
+        mid = await _add_mission(db_module)
+        db_module._db_connection = None
+        mid2 = await _add_mission(db_module, title="Other")
+        db_module._db_connection = None
+
+        t1 = await add_task(title="T1", description="d", mission_id=mid)
+        db_module._db_connection = None
+        t2 = await add_task(title="T2", description="d", mission_id=mid)
+        db_module._db_connection = None
+        t3 = await add_task(title="T3", description="d", mission_id=mid)
+        db_module._db_connection = None
+        t_other = await add_task(title="Other", description="d", mission_id=mid2)
+
+        # t3 is already processing — should not be cancelled
+        db_module._db_connection = None
+        await update_task(t3, status="processing")
+
+        db_module._db_connection = None
+        count = await cancel_pending_tasks(mid)
+        assert count == 2  # t1 and t2 only
+
+        r1 = await _fetch_task(db_path, t1)
+        r2 = await _fetch_task(db_path, t2)
+        r3 = await _fetch_task(db_path, t3)
+        r_other = await _fetch_task(db_path, t_other)
+        assert r1["status"] == "cancelled"
+        assert r2["status"] == "cancelled"
+        assert r3["status"] == "processing"  # unaffected
+        assert r_other["status"] == "pending"  # different mission
+    finally:
+        await _close_db(db_module)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# reset_workflow_step
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reset_workflow_step(tmp_path, monkeypatch):
+    """reset_workflow_step resets writer, verify sibling, and confirm task."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
+    db_module._db_connection = None
+
+    try:
+        from general_beckman import add_task, update_task, reset_workflow_step
+
+        mid = await _add_mission(db_module)
+        db_module._db_connection = None
+
+        # Writer step
+        writer_id = await add_task(
+            title="Writer", description="d", mission_id=mid,
+            context={"workflow_step_id": "3.draft"},
+        )
+        db_module._db_connection = None
+        # Verify sibling
+        verify_id = await add_task(
+            title="Verify", description="d", mission_id=mid,
+            context={"workflow_step_id": "3.draft.verify"},
+        )
+        db_module._db_connection = None
+        # Confirm task (by id)
+        confirm_id = await add_task(title="Confirm", description="d", mission_id=mid)
+
+        # Mark all as completed
+        db_module._db_connection = None
+        await update_task(writer_id, status="completed")
+        db_module._db_connection = None
+        await update_task(verify_id, status="completed")
+        db_module._db_connection = None
+        await update_task(confirm_id, status="completed")
+
+        db_module._db_connection = None
+        await reset_workflow_step(mid, "3.draft", confirm_task_id=confirm_id)
+
+        r_writer = await _fetch_task(db_path, writer_id)
+        r_verify = await _fetch_task(db_path, verify_id)
+        r_confirm = await _fetch_task(db_path, confirm_id)
+        assert r_writer["status"] == "pending"
+        assert r_writer["worker_attempts"] == 0
+        assert r_verify["status"] == "pending"
+        assert r_confirm["status"] == "pending"
+    finally:
+        await _close_db(db_module)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# recover_startup_tasks
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_recover_startup_tasks(tmp_path, monkeypatch):
+    """recover_startup_tasks resets processing→pending and clears backoff."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
+    db_module._db_connection = None
+
+    try:
+        from general_beckman import add_task, update_task, recover_startup_tasks
+
+        # One processing task
+        t1 = await add_task(title="Processing", description="d")
+        db_module._db_connection = None
+        await update_task(t1, status="processing")
+
+        # One pending task with a future next_retry_at
+        db_module._db_connection = None
+        t2 = await add_task(title="Backoff", description="d")
+        db_module._db_connection = None
+        # Set next_retry_at to a future time
+        db = await db_module.get_db()
+        await db.execute(
+            "UPDATE tasks SET next_retry_at = datetime('now', '+1 hour') WHERE id = ?",
+            (t2,)
+        )
+        await db.commit()
+
+        db_module._db_connection = None
+        result = await recover_startup_tasks()
+
+        assert result["interrupted"] == 1
+        assert result["backoff_cleared"] == 1
+
+        r1 = await _fetch_task(db_path, t1)
+        r2 = await _fetch_task(db_path, t2)
+        assert r1["status"] == "pending"
+        assert r1["retry_reason"] == "infrastructure"
+        assert r2["next_retry_at"] is None
+    finally:
+        await _close_db(db_module)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# reset_cascade_failed_dependents
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reset_cascade_failed_dependents(tmp_path, monkeypatch):
+    """reset_cascade_failed_dependents resets cascade-failed tasks."""
+    db_path = _reset_db(tmp_path, monkeypatch)
+    from src.infra.db import init_db
+    await init_db()
+
+    import src.infra.db as db_module
+    db_module._db_connection = None
+
+    try:
+        from general_beckman import add_task, update_task, reset_cascade_failed_dependents
+
+        # Primary task that was in DLQ
+        primary_id = await add_task(title="Primary", description="d")
+        db_module._db_connection = None
+
+        # Dependent that was cascade-failed because primary failed
+        dep_id = await add_task(
+            title="Dependent", description="d", depends_on=[primary_id]
+        )
+        db_module._db_connection = None
+        await update_task(
+            dep_id, status="failed", error="All dependencies failed"
+        )
+
+        # Another failed task with a different error — should NOT be reset
+        other_id = await add_task(title="Other", description="d")
+        db_module._db_connection = None
+        await update_task(other_id, status="failed", error="different error")
+
+        db_module._db_connection = None
+        count = await reset_cascade_failed_dependents(primary_id)
+        assert count == 1
+
+        r_dep = await _fetch_task(db_path, dep_id)
+        r_other = await _fetch_task(db_path, other_id)
+        assert r_dep["status"] == "pending"
+        assert r_dep["error"] is None
+        assert r_other["status"] == "failed"  # unaffected
+    finally:
+        await _close_db(db_module)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Guard tests: no raw task SQL or helper imports outside sanctioned modules
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_no_raw_tasks_sql_outside_db():
+    """No source file outside src/infra/db.py may contain raw
+    INSERT INTO tasks, UPDATE tasks, or DELETE FROM tasks SQL.
+
+    After migration all former raw-SQL sites call beckman APIs instead.
+    src/infra/db.py is the sole SQL owner.
+    """
+    import re
+    import os
+    from pathlib import Path
+
+    root = Path(__file__).parents[3]  # repo root (worktree)
+
+    sql_re = re.compile(
+        r'(INSERT\s+INTO\s+tasks|UPDATE\s+tasks\s+SET|DELETE\s+FROM\s+tasks)',
+        re.IGNORECASE,
+    )
+
+    # Allowed: src/infra/db.py (SQL owner) and all of general_beckman/src/
+    # (beckman is the write-owner — its internal modules may write tasks SQL).
+    allowed = {
+        (root / "src" / "infra" / "db.py").resolve(),
+    }
+    allowed_dirs = {
+        (root / "packages" / "general_beckman" / "src" / "general_beckman").resolve(),
+    }
+    # Also allow this test file and any test helpers that reference these strings.
+    allowed.add(Path(__file__).resolve())
+
+    # Migration scripts are one-time DB tools, not production callers — exclude.
+    skip_prefixes = {
+        (root / "scripts").resolve(),
+    }
+
+    violations: list[str] = []
+    skip_dirs = {".venv", "__pycache__", ".git", ".benchmark_cache", "node_modules", "worktrees"}
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fname in filenames:
+            if not fname.endswith(".py"):
+                continue
+            if fname.startswith("test_") or fname.endswith("_test.py"):
+                continue
+            if "tests" in Path(dirpath).parts:
+                continue
+            filepath = (Path(dirpath) / fname).resolve()
+            if filepath in allowed:
+                continue
+            # Allow all of general_beckman/src/general_beckman/ — beckman is the write-owner.
+            if any(str(filepath).startswith(str(d)) for d in allowed_dirs):
+                continue
+            # Skip migration scripts (one-time DB tools, not prod callers).
+            if any(str(filepath).startswith(str(p)) for p in skip_prefixes):
+                continue
+            try:
+                text = filepath.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if sql_re.search(line):
+                    rel = filepath.relative_to(root.resolve())
+                    violations.append(f"{rel}:{lineno}: {line.strip()}")
+
+    assert violations == [], (
+        "Raw tasks SQL found outside src/infra/db.py and general_beckman — "
+        "use general_beckman task write API instead:\n"
+        + "\n".join(violations)
+    )
+
+
+def test_no_raw_db_task_imports_outside_infra_beckman():
+    """No source file outside src/infra/db.py itself and general_beckman may
+    import task-write helpers directly from src.infra.db.
+
+    Covered helpers:
+      add_task, update_task, update_task_by_context_field,
+      add_subtasks_atomically, insert_tasks_atomically,
+      propagate_skips, claim_task, cancel_task, reprioritize_task,
+      save_task_checkpoint, clear_task_checkpoint,
+      reset_failed_tasks, reset_stuck_tasks, reset_blocked_tasks,
+      cancel_pending_tasks, reset_workflow_step,
+      recover_startup_tasks, reset_cascade_failed_dependents.
+
+    IMPORTANT: src/infra/dead_letter.py is NOT exempt — it must route via
+    beckman like everyone else. Only src/infra/db.py itself is exempt.
+    """
+    import re
+    import os
+    from pathlib import Path
+
+    root = Path(__file__).parents[3]  # repo root
+
+    # Matches: from src.infra.db import add_task  (or update_task, etc.)
+    import_re = re.compile(
+        r'from\s+src\.infra\.db\s+import\s+.*?\b('
+        r'add_task|update_task|update_task_by_context_field'
+        r'|add_subtasks_atomically|insert_tasks_atomically'
+        r'|propagate_skips|claim_task|cancel_task|reprioritize_task'
+        r'|save_task_checkpoint|clear_task_checkpoint'
+        r'|reset_failed_tasks|reset_stuck_tasks|reset_blocked_tasks'
+        r'|cancel_pending_tasks|reset_workflow_step'
+        r'|recover_startup_tasks|reset_cascade_failed_dependents'
+        r')\b',
+    )
+    # Also catch relative imports: from ..infra.db import add_task
+    rel_import_re = re.compile(
+        r'from\s+\.+infra\.db\s+import\s+.*?\b('
+        r'add_task|update_task|update_task_by_context_field'
+        r'|add_subtasks_atomically|insert_tasks_atomically'
+        r'|propagate_skips|claim_task|cancel_task|reprioritize_task'
+        r'|save_task_checkpoint|clear_task_checkpoint'
+        r'|reset_failed_tasks|reset_stuck_tasks|reset_blocked_tasks'
+        r'|cancel_pending_tasks|reset_workflow_step'
+        r'|recover_startup_tasks|reset_cascade_failed_dependents'
+        r')\b',
+    )
+
+    # Only src/infra/db.py itself is exempt (not all of src/infra/)
+    allowed_files = {
+        (root / "src" / "infra" / "db.py").resolve(),
+        Path(__file__).resolve(),
+    }
+    allowed_dirs = {
+        (root / "packages" / "general_beckman" / "src" / "general_beckman").resolve(),
+        # Coulson is deferred — it owns posthook/checkpoint helpers that will
+        # be migrated in a separate session.
+        (root / "packages" / "coulson" / "src" / "coulson").resolve(),
+    }
+    # Deferred individual files: these are known remaining migration sites
+    # outside the scope of Task 5b. Track them explicitly so they surface
+    # as a reminder rather than silently passing.
+    deferred_files = {
+        (root / "src" / "agents" / "base.py").resolve(),
+        (root / "src" / "core" / "dispatch_prep.py").resolve(),
+    }
+    # Migration scripts are one-time DB tools — not prod callers.
+    skip_prefixes = {
+        (root / "scripts").resolve(),
+    }
+
+    violations: list[str] = []
+    skip_dirs = {".venv", "__pycache__", ".git", ".benchmark_cache", "node_modules", "worktrees"}
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fname in filenames:
+            if not fname.endswith(".py"):
+                continue
+            if fname.startswith("test_") or fname.endswith("_test.py"):
+                continue
+            if "tests" in Path(dirpath).parts:
+                continue
+            filepath = (Path(dirpath) / fname).resolve()
+            if filepath in allowed_files:
+                continue
+            if filepath in deferred_files:
+                continue
+            if any(str(filepath).startswith(str(d)) for d in allowed_dirs):
+                continue
+            if any(str(filepath).startswith(str(p)) for p in skip_prefixes):
+                continue
+            try:
+                text = filepath.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if import_re.search(line) or rel_import_re.search(line):
+                    rel = filepath.relative_to(root.resolve())
+                    violations.append(f"{rel}:{lineno}: {line.strip()}")
+
+    assert violations == [], (
+        "Direct db task-write helper import found outside src/infra/db.py and "
+        "general_beckman — use general_beckman task write API instead:\n"
+        + "\n".join(violations)
+    )

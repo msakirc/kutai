@@ -16,6 +16,15 @@ Public API (everything else is internal):
   - purge_all_missions() -> None
   - purge_all() -> None
   - increment_mission_rework_loops(mission_id) -> int
+  - add_task(...) -> int
+  - update_task(task_id, **kwargs) -> None
+  - update_task_by_context_field(mission_id, field, value, **kwargs) -> None
+  - add_subtasks(parent_task_id, subtasks, ...) -> list[int]
+  - propagate_skips(mission_id) -> int
+  - cancel_task(task_id) -> bool
+  - reprioritize_task(task_id, new_priority) -> bool
+  - save_task_checkpoint(task_id, state) -> None
+  - clear_task_checkpoint(task_id) -> None
 """
 from __future__ import annotations
 
@@ -36,6 +45,11 @@ __all__ = [
     "block_mission", "unblock_mission",
     "purge_all_missions", "purge_all",
     "increment_mission_rework_loops",
+    # Tasks write API — single sanctioned write-owner of the tasks table.
+    "add_task", "update_task", "update_task_by_context_field",
+    "add_subtasks", "propagate_skips",
+    "cancel_task", "reprioritize_task",
+    "save_task_checkpoint", "clear_task_checkpoint",
 ]
 
 THRESHOLDS_PCT = (50, 75, 90)
@@ -1644,6 +1658,119 @@ async def increment_mission_rework_loops(mission_id: int) -> int:
     """
     from src.infra.db import increment_mission_rework_loops as _incr
     return await _incr(mission_id)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tasks write API — beckman is the single sanctioned write-owner of the tasks table.
+# Internal beckman modules (apply.py, queue.py, sweep.py, cron.py,
+# review_routing.py) call db directly as owners; all external callers use these.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def add_task(
+    title,
+    description,
+    mission_id=None,
+    parent_task_id=None,
+    agent_type="executor",
+    tier="auto",
+    priority=5,
+    requires_approval=False,
+    depends_on=None,
+    context=None,
+    kind="main_work",
+    runner=None,
+    needs_real_tools=None,
+    reversibility=None,
+    lane=None,
+    on_complete=None,
+    on_error=None,
+    cont_state=None,
+):
+    """Thin delegate to src.infra.db.add_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import add_task as _add_task
+    return await _add_task(
+        title=title,
+        description=description,
+        mission_id=mission_id,
+        parent_task_id=parent_task_id,
+        agent_type=agent_type,
+        tier=tier,
+        priority=priority,
+        requires_approval=requires_approval,
+        depends_on=depends_on,
+        context=context,
+        kind=kind,
+        runner=runner,
+        needs_real_tools=needs_real_tools,
+        reversibility=reversibility,
+        lane=lane,
+        on_complete=on_complete,
+        on_error=on_error,
+        cont_state=cont_state,
+    )
+
+
+async def update_task(task_id, **kwargs):
+    """Thin delegate to src.infra.db.update_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import update_task as _update_task
+    return await _update_task(task_id, **kwargs)
+
+
+async def update_task_by_context_field(
+    mission_id: int, field: str, value: str, **kwargs
+):
+    """Thin delegate to src.infra.db.update_task_by_context_field; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import update_task_by_context_field as _update_task_by_context_field
+    return await _update_task_by_context_field(mission_id, field, value, **kwargs)
+
+
+async def add_subtasks(
+    parent_task_id: int,
+    subtasks: list,
+    mission_id: int | None = None,
+    parent_status: str = "waiting_subtasks",
+    parent_result: str | None = None,
+) -> list:
+    """Thin delegate to src.infra.db.add_subtasks_atomically; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import add_subtasks_atomically as _add_subtasks_atomically
+    return await _add_subtasks_atomically(
+        parent_task_id=parent_task_id,
+        subtasks=subtasks,
+        mission_id=mission_id,
+        parent_status=parent_status,
+        parent_result=parent_result,
+    )
+
+
+async def propagate_skips(mission_id: int) -> int:
+    """Thin delegate to src.infra.db.propagate_skips; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import propagate_skips as _propagate_skips
+    return await _propagate_skips(mission_id)
+
+
+async def cancel_task(task_id: int) -> bool:
+    """Thin delegate to src.infra.db.cancel_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import cancel_task as _cancel_task
+    return await _cancel_task(task_id)
+
+
+async def reprioritize_task(task_id: int, new_priority: int) -> bool:
+    """Thin delegate to src.infra.db.reprioritize_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import reprioritize_task as _reprioritize_task
+    return await _reprioritize_task(task_id, new_priority)
+
+
+async def save_task_checkpoint(task_id: int, state: dict) -> None:
+    """Thin delegate to src.infra.db.save_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import save_task_checkpoint as _save_task_checkpoint
+    return await _save_task_checkpoint(task_id, state)
+
+
+async def clear_task_checkpoint(task_id: int) -> None:
+    """Thin delegate to src.infra.db.clear_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import clear_task_checkpoint as _clear_task_checkpoint
+    return await _clear_task_checkpoint(task_id)
 
 
 async def on_model_swap(old_model: str | None, new_model: str | None) -> None:

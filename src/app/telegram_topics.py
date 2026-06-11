@@ -28,21 +28,13 @@ logger = get_logger("app.telegram_topics")
 
 
 async def _store_thread_id(mission_id: int, thread_id: int | None) -> None:
-    db = await get_db()
-    await db.execute(
-        "UPDATE missions SET telegram_thread_id = ? WHERE id = ?",
-        (thread_id, mission_id),
-    )
-    await db.commit()
+    from general_beckman import update_mission_fields
+    await update_mission_fields(mission_id, telegram_thread_id=thread_id)
 
 
 async def _store_thread_archived(mission_id: int, archived: bool) -> None:
-    db = await get_db()
-    await db.execute(
-        "UPDATE missions SET telegram_thread_archived = ? WHERE id = ?",
-        (1 if archived else 0, mission_id),
-    )
-    await db.commit()
+    from general_beckman import update_mission_fields
+    await update_mission_fields(mission_id, telegram_thread_archived=(1 if archived else 0))
 
 
 async def ensure_mission_topic(

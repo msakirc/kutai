@@ -133,7 +133,8 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
     we also skip any pending workflow_advance mechanical rows on the same
     mission — they are bookkeeping, not work.)
     """
-    from src.infra.db import get_tasks_for_mission, update_mission, get_mission
+    from src.infra.db import get_tasks_for_mission, get_mission
+    from general_beckman import update_mission
     from src.infra.times import db_now
     import json as _json
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .logging_config import get_logger
-from .db import get_db, update_mission
+from .db import get_db
 
 logger = get_logger("infra.projects")
 
@@ -30,7 +30,8 @@ async def set_mission_project(
     if framework:
         kwargs["framework"] = framework
     if kwargs:
-        await update_mission(mission_id, **kwargs)
+        from general_beckman import update_mission as _bk_update_mission
+        await _bk_update_mission(mission_id, **kwargs)
 
 
 async def get_missions_by_repo(repo_path: str) -> list[dict]:

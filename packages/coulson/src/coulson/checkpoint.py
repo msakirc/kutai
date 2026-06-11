@@ -13,7 +13,7 @@ import dataclasses
 import hashlib
 import json
 
-from src.infra.db import save_task_checkpoint, clear_task_checkpoint, log_conversation
+from src.infra.db import log_conversation
 from src.infra.logging_config import get_logger
 
 logger = get_logger("runtime.checkpoint")
@@ -62,7 +62,8 @@ async def save_checkpoint(
             "format_corrections": format_corrections,
             "completed_tool_ops": completed_tool_ops or {},
         }
-        await save_task_checkpoint(task_id, state)
+        from general_beckman import save_task_checkpoint as _save_ckpt
+        await _save_ckpt(task_id, state)
         logger.debug(
             f"[Task #{task_id}] Checkpoint saved at iteration "
             f"{next_iteration}"
@@ -78,7 +79,8 @@ async def clear_checkpoint_safe(task_id) -> None:
     if task_id == "?":
         return
     try:
-        await clear_task_checkpoint(task_id)
+        from general_beckman import clear_task_checkpoint as _clear_ckpt
+        await _clear_ckpt(task_id)
     except Exception as exc:
         logger.warning(
             f"[Task #{task_id}] Checkpoint clear failed: {exc}"

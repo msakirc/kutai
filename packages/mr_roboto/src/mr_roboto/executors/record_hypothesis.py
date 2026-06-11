@@ -224,9 +224,9 @@ async def run(task: dict) -> dict:
     """
     from src.infra.db import (
         get_mission,
-        insert_growth_event,
         insert_hypothesis,
     )
+    from general_beckman import record_growth_event
 
     payload = task.get("payload") or {}
     mission_id = task.get("mission_id") or payload.get("mission_id")
@@ -254,7 +254,7 @@ async def run(task: dict) -> dict:
 
     # ── Non-measurable mission: flag but do not error ────────────────────
     if not metric and _is_non_measurable(spec_text, predicted):
-        await insert_growth_event(
+        await record_growth_event(
             mission_id,
             "hypothesis_skipped",
             {
@@ -298,7 +298,7 @@ async def run(task: dict) -> dict:
 
     # ── Suppressed (refuted feature/metric still in 90d cool-off) ────────
     if hyp_id == -1:
-        await insert_growth_event(
+        await record_growth_event(
             mission_id,
             "hypothesis_suppressed",
             {
@@ -324,7 +324,7 @@ async def run(task: dict) -> dict:
             "note": "dedup_key still suppressed — hypothesis not re-recorded",
         }
 
-    await insert_growth_event(
+    await record_growth_event(
         mission_id,
         "hypothesis_recorded",
         {

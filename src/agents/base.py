@@ -24,7 +24,7 @@ from ..context.onboarding import get_project_profile_for_task, \
 from ..memory.preferences import get_user_preferences, format_preferences
 from ..memory.rag import retrieve_context
 from fatih_hoca.requirements import ModelRequirements
-from ..infra.db import recall_memory, update_task
+from ..infra.db import recall_memory
 from ..app.config import MAX_AGENT_ITERATIONS
 from ..infra.logging_config import get_logger
 

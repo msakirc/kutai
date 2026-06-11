@@ -4,6 +4,33 @@ Public API (everything else is internal):
   - next_task() -> Task | None
   - on_task_finished(task_id, result) -> None
   - enqueue(spec, *, parent_id, on_complete, on_error, next_task_spec, cont_state) -> int | None
+  - record_growth_event(mission_id, kind, properties, segment) -> int
+  - supersede_growth_event(mission_id, kind) -> int
+  - update_growth_event_properties(event_id, properties) -> None
+  - add_mission(...) -> int
+  - update_mission(mission_id, **kwargs) -> None
+  - update_mission_fields(mission_id, **fields) -> None
+  - block_mission(mission_id) -> bool
+  - unblock_mission(mission_id) -> bool
+  - purge_all_missions() -> None
+  - purge_all() -> None
+  - increment_mission_rework_loops(mission_id) -> int
+  - add_task(...) -> int
+  - update_task(task_id, **kwargs) -> None
+  - update_task_by_context_field(mission_id, field, value, **kwargs) -> None
+  - add_subtasks(parent_task_id, subtasks, ...) -> list[int]
+  - propagate_skips(mission_id) -> int
+  - cancel_task(task_id) -> bool
+  - reprioritize_task(task_id, new_priority) -> bool
+  - save_task_checkpoint(task_id, state) -> None
+  - clear_task_checkpoint(task_id) -> None
+  - reset_failed_tasks() -> int
+  - reset_stuck_tasks() -> int
+  - reset_blocked_tasks() -> int
+  - cancel_pending_tasks(mission_id) -> int
+  - reset_workflow_step(mission_id, step_id, confirm_task_id) -> None
+  - recover_startup_tasks() -> dict
+  - reset_cascade_failed_dependents(task_id) -> int
 
 SP5 (2026-06-11): the blocking ``await_inline`` primitive + its inline-waiter
 machinery (resolve_inline / _inline_waiters / INLINE_TIMEOUT / TaskResult) were
@@ -21,6 +48,20 @@ __all__ = [
     "next_task", "on_task_finished", "enqueue", "on_model_swap",
     "Task", "AgentResult",
     "notify_threshold", "THRESHOLDS_PCT",
+    "record_growth_event", "supersede_growth_event", "update_growth_event_properties",
+    # Mission write API — single sanctioned write-owner of the missions table.
+    "add_mission", "update_mission", "update_mission_fields",
+    "block_mission", "unblock_mission",
+    "purge_all_missions", "purge_all",
+    "increment_mission_rework_loops",
+    # Tasks write API — single sanctioned write-owner of the tasks table.
+    "add_task", "update_task", "update_task_by_context_field",
+    "add_subtasks", "propagate_skips",
+    "cancel_task", "reprioritize_task",
+    "save_task_checkpoint", "clear_task_checkpoint",
+    "reset_failed_tasks", "reset_stuck_tasks", "reset_blocked_tasks",
+    "cancel_pending_tasks", "reset_workflow_step",
+    "recover_startup_tasks", "reset_cascade_failed_dependents",
 ]
 
 THRESHOLDS_PCT = (50, 75, 90)
@@ -88,6 +129,68 @@ async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: flo
         )
     except Exception as e:
         logger.warning("threshold notify post failed: %s", e)
+
+
+async def record_growth_event(
+    mission_id: int | None,
+    kind: str,
+    properties: dict,
+    segment: str | None = None,
+) -> int:
+    """Append a row to ``growth_events``.  Returns the new row id.
+
+    Single sanctioned write-path for all ``growth_events`` inserts.
+    Delegates storage to ``src.infra.db.insert_growth_event``; db.py keeps
+    the SQL, beckman is the sole external entry point.
+    """
+    from src.infra.db import insert_growth_event
+    return await insert_growth_event(
+        mission_id=mission_id, kind=kind, properties=properties, segment=segment
+    )
+
+
+async def supersede_growth_event(
+    mission_id: int | None,
+    kind: str,
+) -> int:
+    """Mark all open (non-consumed, non-superseded) events of ``kind`` for
+    ``mission_id`` as superseded.
+
+    Used by producers that write idempotent, latest-wins rows (e.g.
+    ``northstar_review``, ``backlog_candidate``, ``sunset_candidate``): call
+    this before inserting the fresh batch so stale candidates are tombstoned.
+    Append-only invariant is preserved — rows are flagged, never deleted.
+
+    WARNING: passing ``mission_id=None`` sweeps ALL missions' open events of
+    that kind — use only when a global reset is intentional.
+
+    Returns the count of rows updated.
+    """
+    from src.infra.db import (
+        get_growth_events,
+        update_growth_event_properties as _db_update_properties,
+    )
+
+    prior = await get_growth_events(mission_id=mission_id, kind=kind)
+    updated = 0
+    for row in prior or []:
+        props = row.get("properties") or {}
+        if props.get("consumed") or props.get("superseded"):
+            continue
+        props["superseded"] = True
+        await _db_update_properties(int(row["id"]), props)
+        updated += 1
+    return updated
+
+
+async def update_growth_event_properties(event_id: int, properties: dict) -> None:
+    """Overwrite ``properties_json`` on an existing ``growth_events`` row.
+
+    Thin delegate to ``src.infra.db.update_growth_event_properties``; beckman
+    is the sanctioned entry point so callers never bypass this ownership layer.
+    """
+    from src.infra.db import update_growth_event_properties as _impl
+    await _impl(event_id=event_id, properties=properties)
 
 
 def _stamp_admission_urgency(task: dict) -> float:
@@ -1465,6 +1568,362 @@ async def enqueue(
         )
     await build_and_push()
     return task_id
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mission write API — General Beckman is the single write-owner of missions.
+# SQL stays in src/infra/db.py; beckman exposes the sanctioned external API.
+# All modules outside src/infra + general_beckman must use these helpers.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def add_mission(
+    title: str,
+    description: str,
+    priority: int = 5,
+    context: dict | None = None,
+    workflow: str | None = None,
+    repo_path: str | None = None,
+    language: str | None = None,
+    framework: str | None = None,
+    budget_ceiling_usd: float | None = None,
+) -> int:
+    """Create a new mission row and return its id.
+
+    Thin delegate to ``src.infra.db.add_mission``; beckman is the single
+    sanctioned external entry point for mission creation.
+    """
+    from src.infra.db import add_mission as _add_mission
+    return await _add_mission(
+        title=title,
+        description=description,
+        priority=priority,
+        context=context,
+        workflow=workflow,
+        repo_path=repo_path,
+        language=language,
+        framework=framework,
+        budget_ceiling_usd=budget_ceiling_usd,
+    )
+
+
+async def update_mission(mission_id: int, **kwargs) -> None:
+    """Update structured fields on a mission (whitelist enforced by db.py).
+
+    Thin delegate to ``src.infra.db.update_mission``.  Accepts only the
+    columns in ``src.infra.db._MISSION_COLUMNS``; unknown columns raise
+    ``ValueError``.
+    """
+    from src.infra.db import update_mission as _update_mission
+    await _update_mission(mission_id, **kwargs)
+
+
+async def update_mission_fields(mission_id: int, **fields) -> None:
+    """Generic, audited setter for one-off missions column patches.
+
+    Accepts only columns in ``src.infra.db._MISSION_FIELDS_WHITELIST``; any
+    unknown column name raises ``ValueError`` so callers cannot inject
+    arbitrary identifiers.  Use for fields not covered by ``update_mission``
+    (Telegram integration, preview_url, budget columns, etc.).
+    """
+    from src.infra.db import update_mission_fields as _update_fields
+    await _update_fields(mission_id, **fields)
+
+
+async def block_mission(mission_id: int) -> bool:
+    """Flip mission to ``blocked_on_founder_action`` if it is currently active.
+
+    Ported from ``src.founder_actions.block_mission_if_needed``; beckman owns
+    the write so founder_actions delegates here.  Returns ``True`` if the flip
+    happened.  Does NOT check whether pending founder-actions exist — caller is
+    responsible for that gate (founder_actions.block_mission_if_needed still
+    does the count check before calling this).
+    """
+    from src.infra.logging_config import get_logger as _get_logger
+    _logger = _get_logger("beckman.block_mission")
+
+    from src.infra.db import get_mission, update_mission_fields as _update_fields
+    mission = await get_mission(mission_id)
+    if not mission:
+        return False
+
+    # Detect whether the DB schema has lifecycle_state or only status.
+    from src.infra.db import get_db
+    db = await get_db()
+    cur = await db.execute("PRAGMA table_info(missions)")
+    cols = [row[1] for row in await cur.fetchall()]
+    col = "lifecycle_state" if "lifecycle_state" in cols else "status"
+
+    current = mission.get(col) or mission.get("status")
+    if current == "blocked_on_founder_action":
+        return False  # already blocked
+
+    await _update_fields(mission_id, **{col: "blocked_on_founder_action"})
+    _logger.info(
+        "mission blocked on founder_actions",
+        mission_id=mission_id, column=col,
+    )
+    return True
+
+
+async def unblock_mission(mission_id: int) -> bool:
+    """Flip mission from ``blocked_on_founder_action`` back to ``active``.
+
+    Also resets tasks parked in ``blocked_on_founder_action`` back to
+    ``pending`` so the next pump tick re-evaluates them.  Returns ``True``
+    if the flip happened.  Does NOT check whether pending founder-actions are
+    cleared — caller is responsible for that gate.
+    """
+    from src.infra.logging_config import get_logger as _get_logger
+    _logger = _get_logger("beckman.unblock_mission")
+
+    from src.infra.db import get_mission, update_mission_fields as _update_fields, get_db
+    mission = await get_mission(mission_id)
+    if not mission:
+        return False
+
+    db = await get_db()
+    cur = await db.execute("PRAGMA table_info(missions)")
+    cols = [row[1] for row in await cur.fetchall()]
+    col = "lifecycle_state" if "lifecycle_state" in cols else "status"
+
+    current = mission.get(col) or mission.get("status")
+    if current != "blocked_on_founder_action":
+        return False
+
+    await _update_fields(mission_id, **{col: "active"})
+    # Reset tasks that beckman parked in blocked_on_founder_action for this
+    # mission back to pending so the pump re-evaluates them.
+    await db.execute(
+        "UPDATE tasks SET status = 'pending' "
+        "WHERE mission_id = ? AND status = 'blocked_on_founder_action'",
+        (mission_id,),
+    )
+    await db.commit()
+    _logger.info(
+        "mission unblocked — no pending actions",
+        mission_id=mission_id, column=col,
+    )
+    return True
+
+
+async def purge_all_missions() -> None:
+    """Delete ALL missions + dependent rows (tasks, checkpoints, etc.).
+
+    Thin delegate to ``src.infra.db.purge_all_missions``; both admin-reset
+    callbacks use this so the exact table list is maintained in one place.
+    """
+    from src.infra.db import purge_all_missions as _purge
+    await _purge()
+
+
+async def purge_all() -> None:
+    """Wipe missions + tasks + conversations + memory (legacy /resetall path).
+
+    Thin delegate to ``src.infra.db.purge_all``.
+    """
+    from src.infra.db import purge_all as _purge_all
+    await _purge_all()
+
+
+async def increment_mission_rework_loops(mission_id: int) -> int:
+    """Atomically bump missions.phase_7_rework_loops; return the new count.
+
+    Thin delegate to ``src.infra.db.increment_mission_rework_loops``; beckman
+    is the sanctioned external entry point for rework-loop telemetry.
+    """
+    from src.infra.db import increment_mission_rework_loops as _incr
+    return await _incr(mission_id)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tasks write API — beckman is the single sanctioned write-owner of the tasks table.
+# Internal beckman modules (apply.py, queue.py, sweep.py, cron.py,
+# review_routing.py) call db directly as owners; all external callers use these.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def add_task(
+    title,
+    description,
+    mission_id=None,
+    parent_task_id=None,
+    agent_type="executor",
+    tier="auto",
+    priority=5,
+    requires_approval=False,
+    depends_on=None,
+    context=None,
+    kind="main_work",
+    runner=None,
+    needs_real_tools=None,
+    reversibility=None,
+    lane=None,
+    on_complete=None,
+    on_error=None,
+    cont_state=None,
+):
+    """Thin delegate to src.infra.db.add_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import add_task as _add_task
+    return await _add_task(
+        title=title,
+        description=description,
+        mission_id=mission_id,
+        parent_task_id=parent_task_id,
+        agent_type=agent_type,
+        tier=tier,
+        priority=priority,
+        requires_approval=requires_approval,
+        depends_on=depends_on,
+        context=context,
+        kind=kind,
+        runner=runner,
+        needs_real_tools=needs_real_tools,
+        reversibility=reversibility,
+        lane=lane,
+        on_complete=on_complete,
+        on_error=on_error,
+        cont_state=cont_state,
+    )
+
+
+async def update_task(task_id, **kwargs):
+    """Thin delegate to src.infra.db.update_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import update_task as _update_task
+    return await _update_task(task_id, **kwargs)
+
+
+async def update_task_by_context_field(
+    mission_id: int, field: str, value: str, **kwargs
+):
+    """Thin delegate to src.infra.db.update_task_by_context_field; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import update_task_by_context_field as _update_task_by_context_field
+    return await _update_task_by_context_field(mission_id, field, value, **kwargs)
+
+
+async def add_subtasks(
+    parent_task_id: int,
+    subtasks: list,
+    mission_id: int | None = None,
+    parent_status: str = "waiting_subtasks",
+    parent_result: str | None = None,
+) -> list:
+    """Thin delegate to src.infra.db.add_subtasks_atomically; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import add_subtasks_atomically as _add_subtasks_atomically
+    return await _add_subtasks_atomically(
+        parent_task_id=parent_task_id,
+        subtasks=subtasks,
+        mission_id=mission_id,
+        parent_status=parent_status,
+        parent_result=parent_result,
+    )
+
+
+async def propagate_skips(mission_id: int) -> int:
+    """Thin delegate to src.infra.db.propagate_skips; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import propagate_skips as _propagate_skips
+    return await _propagate_skips(mission_id)
+
+
+async def cancel_task(task_id: int) -> bool:
+    """Thin delegate to src.infra.db.cancel_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import cancel_task as _cancel_task
+    return await _cancel_task(task_id)
+
+
+async def reprioritize_task(task_id: int, new_priority: int) -> bool:
+    """Thin delegate to src.infra.db.reprioritize_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import reprioritize_task as _reprioritize_task
+    return await _reprioritize_task(task_id, new_priority)
+
+
+async def save_task_checkpoint(task_id: int, state: dict) -> None:
+    """Thin delegate to src.infra.db.save_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import save_task_checkpoint as _save_task_checkpoint
+    return await _save_task_checkpoint(task_id, state)
+
+
+async def clear_task_checkpoint(task_id: int) -> None:
+    """Thin delegate to src.infra.db.clear_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import clear_task_checkpoint as _clear_task_checkpoint
+    return await _clear_task_checkpoint(task_id)
+
+
+async def reset_failed_tasks() -> int:
+    """Reset all failed tasks to pending. Returns count updated.
+
+    Delegate to src.infra.db.reset_failed_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_failed_tasks as _impl
+    return await _impl()
+
+
+async def reset_stuck_tasks() -> int:
+    """Reset all processing tasks (stuck) to pending. Returns count updated.
+
+    Delegate to src.infra.db.reset_stuck_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_stuck_tasks as _impl
+    return await _impl()
+
+
+async def reset_blocked_tasks() -> int:
+    """Clear dependency references on pending tasks so they can run.
+    Returns count updated.
+
+    Delegate to src.infra.db.reset_blocked_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_blocked_tasks as _impl
+    return await _impl()
+
+
+async def cancel_pending_tasks(mission_id: int) -> int:
+    """Cancel all pending tasks for a mission. Returns count updated.
+
+    Delegate to src.infra.db.cancel_pending_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import cancel_pending_tasks as _impl
+    return await _impl(mission_id)
+
+
+async def reset_workflow_step(
+    mission_id: int,
+    step_id: str,
+    confirm_task_id: int | None = None,
+) -> None:
+    """Reset workflow writer + verify sibling + optional confirm task to pending.
+
+    Delegate to src.infra.db.reset_workflow_step; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_workflow_step as _impl
+    return await _impl(mission_id, step_id, confirm_task_id)
+
+
+async def recover_startup_tasks() -> dict:
+    """Post-restart task queue hygiene: reset processing→pending + clear backoff.
+
+    Returns {'interrupted': int, 'backoff_cleared': int}.
+    Delegate to src.infra.db.recover_startup_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import recover_startup_tasks as _impl
+    return await _impl()
+
+
+async def reset_cascade_failed_dependents(task_id: int) -> int:
+    """Reset tasks cascade-failed because task_id failed (DLQ retry recovery).
+    Returns count updated.
+
+    Delegate to src.infra.db.reset_cascade_failed_dependents; beckman is the
+    sole sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_cascade_failed_dependents as _impl
+    return await _impl(task_id)
 
 
 async def on_model_swap(old_model: str | None, new_model: str | None) -> None:

@@ -96,11 +96,8 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
                 {"action": _DIGEST_ACTION, "interval_seconds": _WEEKLY_SECONDS}
             )
             cursor["cron"] = cron_entries
-            await db.execute(
-                "UPDATE missions SET cursor = ? WHERE id = ?",
-                (json.dumps(cursor), mission_id_int),
-            )
-            await db.commit()
+            from general_beckman import update_mission_fields as _umf
+            await _umf(mission_id_int, cursor=json.dumps(cursor))
             cursor_written = True
     except Exception as exc:  # noqa: BLE001
         logger.warning(

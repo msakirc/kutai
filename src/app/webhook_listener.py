@@ -523,8 +523,8 @@ async def _store_raw_signal(
     structured) before the row hits ``growth_events``. T3A does NOT classify
     or score — that is T3B/T3C.
     """
-    from src.infra.db import insert_growth_event
     from src.security.sensitivity import redact_user_pii
+    from general_beckman import record_growth_event
 
     signal = _normalize_signal(provider, event_id, payload)
     # Redact user PII from every free-text / structured field before storage.
@@ -532,7 +532,7 @@ async def _store_raw_signal(
     signal["raw_meta"] = redact_user_pii(signal.get("raw_meta") or {})
 
     try:
-        await insert_growth_event(
+        await record_growth_event(
             mission_id=mission_id,
             kind="raw_signal",
             properties=signal,

@@ -244,11 +244,10 @@ async def _persist_pages_to_db(mission_id: int, url: str) -> None:
             "VALUES (?, ?, ?, ?)",
             (int(mission_id), "pages", url, 0),
         )
-        await db.execute(
-            "UPDATE missions SET preview_url = ?, "
-            "preview_started_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (url, int(mission_id)),
-        )
         await db.commit()
+        from general_beckman import update_mission_fields as _umf
+        from datetime import datetime as _dt
+        _now = _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        await _umf(int(mission_id), preview_url=url, preview_started_at=_now)
     except Exception as e:
         logger.debug(f"publish_preview_pages DB persist skipped: {e}")

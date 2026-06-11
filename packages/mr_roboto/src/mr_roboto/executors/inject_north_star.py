@@ -162,14 +162,8 @@ async def inject_north_star(mission_id: int) -> dict:
     new_ctx = json.dumps(ctx, ensure_ascii=False)
 
     try:
-        from src.infra.db import get_db as _get_db
-
-        _db = await _get_db()
-        await _db.execute(
-            "UPDATE missions SET context = ? WHERE id = ?",
-            (new_ctx, mission_id),
-        )
-        await _db.commit()
+        from general_beckman import update_mission_fields as _umf
+        await _umf(mission_id, context=new_ctx)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             f"inject_north_star: could not write mission context: {exc}"

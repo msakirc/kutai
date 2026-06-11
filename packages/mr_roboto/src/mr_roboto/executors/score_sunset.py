@@ -276,7 +276,8 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     the mission before writing the fresh ranking, so ``/sunset`` only ever
     shows the latest scoring. Always returns a dict — never raises.
     """
-    from src.infra.db import get_db, get_growth_events, insert_growth_event
+    from src.infra.db import get_growth_events
+    from general_beckman import record_growth_event, supersede_growth_event
 
     payload = task.get("payload") or {}
     mission_id = task.get("mission_id") or payload.get("mission_id")
@@ -348,29 +349,15 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     # Idempotent rewrite: tombstone prior un-consumed candidates so /sunset
     # only ever surfaces the latest scoring. Append-only — mark, never delete.
     try:
-        prior = await get_growth_events(
+        await supersede_growth_event(
             mission_id=mission_id, kind="sunset_candidate"
         )
-        if prior:
-            import json as _json
-
-            db = await get_db()
-            for p in prior:
-                props = p.get("properties") or {}
-                if props.get("consumed") or props.get("superseded"):
-                    continue
-                props["superseded"] = True
-                await db.execute(
-                    "UPDATE growth_events SET properties_json = ? WHERE id = ?",
-                    (_json.dumps(props), p.get("id")),
-                )
-            await db.commit()
     except Exception as exc:  # noqa: BLE001
         _log.debug("score_sunset: supersede prior failed", error=str(exc))
 
     candidate_ids: list[int] = []
     for cand in candidates:
-        cid = await insert_growth_event(mission_id, "sunset_candidate", cand)
+        cid = await record_growth_event(mission_id, "sunset_candidate", cand)
         candidate_ids.append(cid)
 
     _log.info(

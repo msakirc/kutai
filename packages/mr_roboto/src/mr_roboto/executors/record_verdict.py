@@ -331,8 +331,9 @@ async def _evaluate_ab(
     if mission_id is None:
         return None
     try:
-        from src.infra.db import get_variants, insert_growth_event
+        from src.infra.db import get_variants
         from src.growth.ab_result import evaluate_ab
+        from general_beckman import record_growth_event
     except Exception as exc:  # noqa: BLE001
         logger.debug("ab eval imports failed", error=str(exc))
         return None
@@ -375,7 +376,7 @@ async def _evaluate_ab(
         ),
     }
     try:
-        await insert_growth_event(mission_id, "ab_result", result)
+        await record_growth_event(mission_id, "ab_result", result)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ab_result event failed", error=str(exc))
     logger.info(
@@ -393,9 +394,9 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     from src.growth.verdict_stats import compute_verdict
     from src.infra.db import (
         get_pending_hypotheses,
-        insert_growth_event,
         record_hypothesis_verdict,
     )
+    from general_beckman import record_growth_event
 
     payload = task.get("payload") or {}
     hyp_id = payload.get("hypothesis_id") or task.get("hypothesis_id")
@@ -467,7 +468,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
 
     # 6. growth_events row.
     try:
-        await insert_growth_event(
+        await record_growth_event(
             mission_id=mission_id,
             kind="verdict",
             properties={

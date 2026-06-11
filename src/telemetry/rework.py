@@ -113,7 +113,7 @@ async def record_rollback(
     new_count = 0
     if is_p7 and mission_id is not None:
         try:
-            from src.infra.db import increment_mission_rework_loops
+            from general_beckman import increment_mission_rework_loops
             new_count = await increment_mission_rework_loops(int(mission_id))
         except Exception as exc:
             # Swallow — telemetry must not crash the caller

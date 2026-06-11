@@ -310,7 +310,8 @@ async def _store_weekly_digest(task_id: int, result: dict, state: dict | None = 
     so the ``/digest`` Telegram command can surface the latest digest.
     """
     try:
-        from src.infra.db import get_db, insert_growth_event
+        from src.infra.db import get_db
+        from general_beckman import record_growth_event
 
         markdown = result.get("result")
         if isinstance(markdown, dict):
@@ -334,7 +335,7 @@ async def _store_weekly_digest(task_id: int, result: dict, state: dict | None = 
         except Exception as exc:  # noqa: BLE001
             logger.debug("store_weekly_digest mission lookup failed", error=str(exc))
 
-        await insert_growth_event(
+        await record_growth_event(
             mission_id=mission_id,
             kind="weekly_digest",
             properties={
@@ -486,9 +487,9 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     # 5. Write the digest_run growth_events row.
     digest_run_id: int | None = None
     try:
-        from src.infra.db import insert_growth_event
+        from general_beckman import record_growth_event
 
-        digest_run_id = await insert_growth_event(
+        digest_run_id = await record_growth_event(
             mission_id=mission_id_int,
             kind="digest_run",
             properties={
@@ -559,7 +560,8 @@ async def _emit_investor_metrics(
     """
     if mission_id is None:
         return
-    from src.infra.db import get_db, insert_growth_event
+    from src.infra.db import get_db
+    from general_beckman import record_growth_event
     db = await get_db()
 
     # ── metric_emit ──
@@ -580,7 +582,7 @@ async def _emit_investor_metrics(
     if isinstance(retry, dict) and retry.get("total"):
         metric_props["task_retry_rate"] = round(
             float(retry.get("retried", 0)) / float(retry["total"]), 4)
-    await insert_growth_event(
+    await record_growth_event(
         mission_id=mission_id, kind="metric_emit", properties=metric_props)
 
     # ── review_density_metric ──
@@ -599,7 +601,7 @@ async def _emit_investor_metrics(
         prs_shipped = int(row[0]) if row else 0
     except Exception as exc:  # noqa: BLE001
         logger.debug("prs_shipped count failed", error=str(exc))
-    await insert_growth_event(
+    await record_growth_event(
         mission_id=mission_id, kind="review_density_metric",
         properties={"prs_shipped": prs_shipped})
 

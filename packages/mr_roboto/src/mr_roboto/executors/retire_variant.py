@@ -114,9 +114,9 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     """Retire an A/B experiment's variants. Never raises."""
     from src.infra.db import (
         get_variants,
-        insert_growth_event,
         update_variant_status,
     )
+    from general_beckman import record_growth_event
 
     ctx = _parse_context(task)
     payload = _pick_payload(task, ctx)
@@ -185,7 +185,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
         })
 
     try:
-        await insert_growth_event(
+        await record_growth_event(
             mission_id, "ab_retired",
             {
                 "decision": decision,

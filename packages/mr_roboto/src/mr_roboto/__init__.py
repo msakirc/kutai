@@ -766,7 +766,7 @@ async def _await_confirmation(
 
     try:
         await tg.request_clarification(int(task_id), title, question)
-        from src.infra.db import update_task
+        from general_beckman import update_task
         await update_task(int(task_id), status="waiting_human")
     except Exception as e:
         # Park failed — fail closed rather than silently proceeding.

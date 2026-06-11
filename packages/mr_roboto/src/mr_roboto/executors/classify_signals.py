@@ -156,7 +156,8 @@ async def _on_classifier_complete(task_id: int, result: dict, state: dict | None
     Called by Beckman's ``dispatch_on_complete`` when the classifier agent
     task reaches a terminal state. Errors are swallowed by the dispatcher.
     """
-    from src.infra.db import get_growth_events, get_task, insert_growth_event
+    from src.infra.db import get_growth_events, get_task
+    from general_beckman import record_growth_event
 
     res = (result or {}).get("result")
     # The agent may return result as a JSON string or a dict.
@@ -227,7 +228,7 @@ async def _on_classifier_complete(task_id: int, result: dict, state: dict | None
             "content_excerpt": str(content)[:280],
         }
         try:
-            await insert_growth_event(
+            await record_growth_event(
                 mission_id, "classified_signal", props
             )
             written += 1

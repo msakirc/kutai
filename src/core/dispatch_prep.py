@@ -53,7 +53,7 @@ async def bridge_self_reflection(task: dict, agent_type: str, get_agent) -> None
         if getattr(_profile, "enable_self_reflection", False):
             if _refl_ctx.get("enable_self_reflection") is not True:
                 _refl_ctx["enable_self_reflection"] = True
-                from src.infra.db import update_task as _ut_refl
+                from general_beckman import update_task as _ut_refl
                 await _ut_refl(task["id"], context=json.dumps(_refl_ctx))
                 # Keep the in-memory task dict consistent so the agent
                 # execution path below reads the same context.

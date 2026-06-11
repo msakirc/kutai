@@ -398,6 +398,27 @@ async def resolve(
     return await update_status(action_id, "done", response_payload)
 
 
+async def defer(action_id: int, until: str) -> None:
+    """Set ``defer_until`` on an action, hiding the card until that time.
+
+    ``until`` must be a space-separated datetime string in the format
+    ``"%Y-%m-%d %H:%M:%S"`` (SQLite-compatible, matching the project
+    convention — never ISO-8601 with a ``T`` separator).
+
+    Only updates ``defer_until`` and ``updated_at``; does not change
+    ``status`` or any other field.
+    """
+    from src.infra.db import get_db
+    now = _utc_now()
+    db = await get_db()
+    await db.execute(
+        "UPDATE founder_actions SET defer_until = ?, updated_at = ? WHERE id = ?",
+        (until, now, action_id),
+    )
+    await db.commit()
+    logger.info("founder_action deferred", action_id=action_id, until=until)
+
+
 # ─── T1E: mission lifecycle coordination ───────────────────────────────────
 # Schema-aware: if missions.lifecycle_state (Z0) exists at runtime we use
 # that; otherwise we set missions.status to 'blocked_on_founder_action'.
@@ -432,7 +453,10 @@ async def block_mission_if_needed(mission_id: int) -> bool:
     """Flip mission to ``blocked_on_founder_action`` if any actions are
     pending/in_progress AND the mission is currently active.
 
-    Returns True if the flip happened.
+    Returns True if the flip happened.  Delegates the actual write to
+    ``general_beckman.block_mission`` so beckman is the sole write-owner of
+    the missions table; this function retains ownership of the guard check
+    (founder_actions count) because that belongs to founder_actions domain.
     """
     from src.infra.db import get_db, get_mission
     mission = await get_mission(mission_id)
@@ -451,23 +475,17 @@ async def block_mission_if_needed(mission_id: int) -> bool:
     pending = int((await cur.fetchone())[0])
     if pending == 0:
         return False
-    await db.execute(
-        f"UPDATE missions SET {col} = ? WHERE id = ?",
-        (_BLOCKED_LITERAL, mission_id),
-    )
-    await db.commit()
-    logger.info(
-        "mission blocked on founder_actions",
-        mission_id=mission_id, pending=pending, column=col,
-    )
-    return True
+    from general_beckman import block_mission as _bk_block
+    return await _bk_block(mission_id)
 
 
 async def unblock_mission_if_clear(mission_id: int) -> bool:
     """If mission is in ``blocked_on_founder_action`` AND no
     pending/in_progress actions remain, flip it back to ``active``.
 
-    Returns True if the flip happened.
+    Returns True if the flip happened.  Delegates the actual write to
+    ``general_beckman.unblock_mission`` (which also resets blocked tasks to
+    pending); this function retains the guard check (founder_actions count).
     """
     from src.infra.db import get_db, get_mission
     mission = await get_mission(mission_id)
@@ -486,26 +504,8 @@ async def unblock_mission_if_clear(mission_id: int) -> bool:
     pending = int((await cur.fetchone())[0])
     if pending > 0:
         return False
-    await db.execute(
-        f"UPDATE missions SET {col} = ? WHERE id = ?",
-        ("active", mission_id),
-    )
-    # Also flip any tasks that beckman parked in
-    # 'blocked_on_founder_action' for this mission back to pending so
-    # the next pump tick re-evaluates them. Tasks that didn't go
-    # through Z6 admission won't have that status, so this is a
-    # narrow, idempotent UPDATE.
-    await db.execute(
-        "UPDATE tasks SET status = 'pending' "
-        "WHERE mission_id = ? AND status = 'blocked_on_founder_action'",
-        (mission_id,),
-    )
-    await db.commit()
-    logger.info(
-        "mission unblocked — no pending actions",
-        mission_id=mission_id, column=col,
-    )
-    return True
+    from general_beckman import unblock_mission as _bk_unblock
+    return await _bk_unblock(mission_id)
 
 
 async def sweep_unblock_all() -> int:
@@ -537,6 +537,7 @@ __all__ = [
     "list_pending",
     "update_status",
     "resolve",
+    "defer",
     "block_mission_if_needed",
     "unblock_mission_if_clear",
     "sweep_unblock_all",

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import logging
 
-from src.infra.db import update_task
 from src.app.telegram_bot import get_telegram
+from general_beckman import update_task
 
 logger = logging.getLogger(__name__)
 

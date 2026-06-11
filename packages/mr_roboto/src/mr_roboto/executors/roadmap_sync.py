@@ -177,7 +177,8 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
 
     Always returns a dict — never raises into the dispatcher.
     """
-    from src.infra.db import get_growth_events, insert_growth_event
+    from src.infra.db import get_growth_events
+    from general_beckman import record_growth_event, supersede_growth_event
 
     payload = task.get("payload") or {}
     mission_id = task.get("mission_id") or payload.get("mission_id")
@@ -211,24 +212,9 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     # Idempotent guard: don't pile up un-consumed reviews for the same
     # status — supersede prior open reviews first.
     try:
-        import json as _json
-
-        from src.infra.db import get_db
-
-        prior = await get_growth_events(
+        await supersede_growth_event(
             mission_id=mission_id, kind="northstar_review"
         )
-        db = await get_db()
-        for p in prior or []:
-            props = p.get("properties") or {}
-            if props.get("consumed") or props.get("superseded"):
-                continue
-            props["superseded"] = True
-            await db.execute(
-                "UPDATE growth_events SET properties_json = ? WHERE id = ?",
-                (_json.dumps(props), p.get("id")),
-            )
-        await db.commit()
     except Exception as exc:  # noqa: BLE001
         _log.debug("roadmap_sync: supersede prior reviews failed", error=str(exc))
 
@@ -241,7 +227,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
         "window_days": _FLAT_WINDOW_DAYS,
         "consumed": False,
     }
-    review_id = await insert_growth_event(
+    review_id = await record_growth_event(
         mission_id, "northstar_review", review
     )
 

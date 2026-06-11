@@ -73,22 +73,21 @@ new_id = await beckman.enqueue(
     cont_state=None,            # dict passed back to the handler when it fires
     next_task_spec=None,        # fire-and-forget follow-up spec (context-based, NOT durable)
 )
-# await_inline=True instead RETURNS a TaskResult, blocking until the task
-# reaches a terminal state (resolved via resolve_inline). Mutually exclusive
-# with on_complete/on_error.
-result = await beckman.enqueue(spec, await_inline=True)   # -> TaskResult(status, result, error)
+# enqueue is fire-and-continue: it returns the new task id (or None on dedup).
+# SP5 (2026-06-11) deleted the blocking await_inline path — to react when the
+# task reaches a terminal state, pass an on_complete/on_error continuation.
+task_id = await beckman.enqueue(spec, on_complete="my.resume")   # -> int | None
 ```
 
 Wake-up hooks the host fires (not part of the pump):
 
 ```python
-beckman.resolve_inline(task_id, TaskResult(...))   # wake an await_inline waiter
 await beckman.on_model_swap(old_model, new_model)  # accelerate retries deferred on model load
 ```
 
 Top-level exports (`__all__`): functions `next_task`, `on_task_finished`,
-`enqueue`, `on_model_swap`, `resolve_inline`, `notify_threshold`; types `Task`,
-`AgentResult`, `TaskResult`; constants `INLINE_TIMEOUT`, `THRESHOLDS_PCT`.
+`enqueue`, `on_model_swap`, `notify_threshold`; types `Task`, `AgentResult`;
+constant `THRESHOLDS_PCT`.
 `Task` and `AgentResult` are both `dict[str, Any]` aliases — a task is a raw DB
 row, not a dataclass.
 
@@ -197,8 +196,9 @@ engine and returns the next phase's subtasks as a normal result, which
   failures retry immediately (waiting can't change a deterministic output). The
   admission cap-guard, `decide_retry`, and sweep all share
   `effective_max_attempts` so they agree on when a task is truly exhausted.
-- **`await_inline` and `on_complete`/`on_error` are mutually exclusive** — a
-  blocking wait can't also fire a continuation; `enqueue` raises `ValueError`.
+- **No blocking inline waits.** SP5 deleted the `await_inline` primitive; every
+  enqueue is fire-and-continue. React to terminal state via `on_complete` /
+  `on_error` continuations (durable, survive restart).
 
 ## Dependencies
 
@@ -309,22 +309,21 @@ new_id = await beckman.enqueue(
     cont_state=None,            # handler ateşlendiğinde geri verilen dict
     next_task_spec=None,        # ateşle-unut takip spec'i (context tabanlı, kalıcı DEĞİL)
 )
-# await_inline=True ise bunun yerine bir TaskResult DÖNDÜRÜR, görev terminal
-# duruma ulaşana dek bloklar (resolve_inline ile çözülür). on_complete/on_error
-# ile birlikte kullanılamaz.
-result = await beckman.enqueue(spec, await_inline=True)   # -> TaskResult(status, result, error)
+# enqueue ateşle-ve-devam et: yeni görev id'sini döndürür (dedup'ta None). SP5
+# (2026-06-11) bloklayan await_inline yolunu sildi — görev terminal duruma
+# ulaştığında tepki vermek için bir on_complete/on_error continuation geçin.
+task_id = await beckman.enqueue(spec, on_complete="my.resume")   # -> int | None
 ```
 
 Host'un ateşlediği uyandırma kancaları (pompanın parçası değil):
 
 ```python
-beckman.resolve_inline(task_id, TaskResult(...))   # bir await_inline bekleyicisini uyandır
 await beckman.on_model_swap(old_model, new_model)  # model yüklemesini bekleyen retry'leri hızlandır
 ```
 
 Üst düzey export'lar (`__all__`): `next_task`, `on_task_finished`, `enqueue`,
-`on_model_swap`, `resolve_inline`, `notify_threshold` fonksiyonları; `Task`,
-`AgentResult`, `TaskResult` tipleri; `INLINE_TIMEOUT`, `THRESHOLDS_PCT`
+`on_model_swap`, `notify_threshold` fonksiyonları; `Task`, `AgentResult`
+tipleri; `THRESHOLDS_PCT`
 sabitleri. `Task` ve `AgentResult` ikisi de `dict[str, Any]` takma adıdır — bir
 görev, dataclass değil ham bir DB satırıdır.
 
@@ -434,9 +433,9 @@ devreder ve bir sonraki fazın alt görevlerini normal bir sonuç olarak döndü
   geçer); quality hataları hemen yeniden denenir (beklemek deterministik bir
   çıktıyı değiştiremez). Admission cap-guard, `decide_retry` ve sweep, bir görevin
   gerçekten tükendiğine karar vermede aynı `effective_max_attempts`'i paylaşır.
-- **`await_inline` ile `on_complete`/`on_error` birlikte kullanılamaz** —
-  bloklayan bir bekleme aynı anda bir continuation ateşleyemez; `enqueue`
-  `ValueError` fırlatır.
+- **Bloklayan inline bekleme yok.** SP5 `await_inline` primitive'ini sildi; her
+  enqueue ateşle-ve-devam et. Terminal duruma `on_complete` / `on_error`
+  continuation'larıyla tepki verin (kalıcı, restart'tan sağ çıkar).
 
 ### Bağımlılıklar
 

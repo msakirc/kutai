@@ -3,21 +3,23 @@
 Public API (everything else is internal):
   - next_task() -> Task | None
   - on_task_finished(task_id, result) -> None
-  - enqueue(spec, *, parent_id, await_inline, on_complete, on_error, next_task_spec, cont_state) -> int | TaskResult
-  - resolve_inline(task_id, result) -> None
+  - enqueue(spec, *, parent_id, on_complete, on_error, next_task_spec, cont_state) -> int | None
+
+SP5 (2026-06-11): the blocking ``await_inline`` primitive + its inline-waiter
+machinery (resolve_inline / _inline_waiters / INLINE_TIMEOUT / TaskResult) were
+deleted. All enqueues are fire-and-continue; use on_complete/on_error
+continuations (see continuations.py) to react to a child reaching terminal.
 """
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from general_beckman.types import Task, AgentResult
 
 __all__ = [
     "next_task", "on_task_finished", "enqueue", "on_model_swap",
-    "resolve_inline", "Task", "AgentResult", "TaskResult",
-    "INLINE_TIMEOUT", "_inline_waiters",
+    "Task", "AgentResult",
     "notify_threshold", "THRESHOLDS_PCT",
 ]
 
@@ -63,28 +65,6 @@ async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: flo
         )
     except Exception as e:
         logger.warning("threshold notify post failed: %s", e)
-
-
-@dataclass
-class TaskResult:
-    """Minimal result envelope returned by await_inline enqueue."""
-    status: str
-    result: dict | None
-    error: str | None
-
-
-# Timeout (seconds) for await_inline futures. Monkeypatchable in tests.
-INLINE_TIMEOUT: float = 600.0
-
-# task_id → asyncio.Future[TaskResult] for inline waiters
-_inline_waiters: dict[int, asyncio.Future] = {}
-
-
-def resolve_inline(task_id: int, result: "TaskResult") -> None:
-    """Resolve an await_inline waiter. Called from terminal hook (Task 3) or tests."""
-    fut = _inline_waiters.pop(task_id, None)
-    if fut is not None and not fut.done():
-        fut.set_result(result)
 
 
 def _stamp_admission_urgency(task: dict) -> float:
@@ -1129,16 +1109,6 @@ async def on_task_finished(task_id, result: dict = None) -> None:
                             )
                         )
 
-            # await_inline resolve: only on TRUE terminal so retries don't
-            # prematurely wake the parent.
-            if task_id in _inline_waiters:
-                _tr = TaskResult(
-                    status=_db_status,
-                    result=_agent_result_snapshot.get("result"),
-                    error=_agent_result_snapshot.get("error"),
-                )
-                resolve_inline(task_id, _tr)
-
         # next_task_spec fire-and-forget chain (unchanged behavior: fires on
         # any on_task_finished invocation; not the durable substrate).
         _next_spec = (task_ctx.get("beckman") or {}).get("next_task_spec")
@@ -1278,14 +1248,18 @@ async def enqueue(
     spec: dict,
     *,
     parent_id: int | None = None,
-    await_inline: bool = False,
     on_complete: str | None = None,
     on_error: str | None = None,
     cont_state: dict | None = None,
     next_task_spec: dict | None = None,
     lane: str | None = None,
-) -> "int | TaskResult":
+) -> "int | None":
     """Single external write path for all Beckman tasks.
+
+    Fire-and-continue: always returns the new task id (or None on dedup). To
+    react when the task reaches a terminal state, pass an ``on_complete`` /
+    ``on_error`` continuation handler (SP5 deleted the blocking ``await_inline``
+    path).
 
     Parameters
     ----------
@@ -1294,9 +1268,6 @@ async def enqueue(
         defaults to ``"main_work"`` if absent.
     parent_id:
         ID of a parent task — stored in tasks.parent_task_id.
-    await_inline:
-        Block until the task reaches a terminal state (resolved via
-        ``resolve_inline``).  Returns a ``TaskResult``.
     on_complete:
         Name of a registered continuation handler (see continuations.py).
         Written atomically to the continuations table via add_task.
@@ -1315,12 +1286,6 @@ async def enqueue(
     from src.infra.db import add_task
     from general_beckman.queue_profile_push import build_and_push
     from general_beckman.lanes import pick_lane
-
-    if await_inline and (on_complete is not None or on_error is not None):
-        raise ValueError(
-            "enqueue: await_inline and on_complete/on_error are mutually "
-            "exclusive (a blocking wait can't also fire a continuation)"
-        )
 
     spec = dict(spec)  # shallow copy — don't mutate caller's dict
 
@@ -1370,35 +1335,7 @@ async def enqueue(
             "(dedup should be skipped for continuations — investigate add_task)"
         )
     await build_and_push()
-
-    if not await_inline:
-        return task_id
-
-    # ── inline-wait path ───────────────────────────────────────────────────
-    # Keep the PARENT task's heartbeat fresh while we wait on the child.
-    # The child's runner sets the heartbeat contextvar to the child id,
-    # so the parent goes silent and the orchestrator's no-progress watchdog
-    # kills it at 300s even though work is happening. Wrap every inline
-    # wait — grade_task and other beckman.enqueue(await_inline=True)
-    # callers all suffered from this; only dispatcher.request had its own
-    # wrapper (production 2026-05-14 mission 69 grader task #31203:
-    # 6× watchdog kills × 5 min = 30 min wasted before DLQ).
-    try:
-        from src.core import heartbeat as _hb_inline
-        _inline_keepalive_cm = _hb_inline.keepalive
-    except Exception:
-        _inline_keepalive_cm = None
-    loop = asyncio.get_event_loop()
-    fut: asyncio.Future[TaskResult] = loop.create_future()
-    _inline_waiters[task_id] = fut
-    try:
-        if _inline_keepalive_cm is not None:
-            async with _inline_keepalive_cm():
-                return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
-        return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
-    except asyncio.TimeoutError:
-        _inline_waiters.pop(task_id, None)
-        raise
+    return task_id
 
 
 async def on_model_swap(old_model: str | None, new_model: str | None) -> None:

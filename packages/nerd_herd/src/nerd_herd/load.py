@@ -23,11 +23,15 @@ VRAM_BUDGETS: dict[str, float] = {
     "minimal": 0.0,
 }
 
+# User-facing mode descriptions. Since 2026-06-09 (resource-signals) load mode
+# is placement, not a VRAM cap: it weights the desktop presence/contention
+# signals (S13/S14) that bias work cloud↔local. VRAM_BUDGETS fractions above are
+# advisory only (get_vram_budget_mb returns raw free).
 DESCRIPTIONS: dict[str, str] = {
-    "full": "Full GPU — all local capacity available",
-    "heavy": "Heavy GPU — 90% VRAM cap, slight headroom for OS/desktop",
-    "shared": "Shared GPU — 50% VRAM cap, prefer cloud for heavy tasks",
-    "minimal": "Minimal GPU — local inference disabled, cloud only",
+    "full": "Full — ignore desktop signals; send to local freely",
+    "heavy": "Heavy — bias to cloud when you're active (1.5×)",
+    "shared": "Shared — stronger cloud bias when you're active (2×)",
+    "minimal": "Minimal — local inference disabled, cloud only",
 }
 
 _g_mode = Gauge("nerd_herd_load_mode", "Current GPU load mode (0=minimal,1=shared,2=heavy,3=full)")

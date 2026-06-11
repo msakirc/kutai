@@ -766,84 +766,14 @@ class TestFullPipelineLLM:
 
         run_async(_run())
 
-    @pytest.mark.timeout(120)
-    def test_direct_llm_call_via_dispatcher(self, temp_db, fastest_local_model):
-        """dispatcher.request returns a dict with 'content' key."""
-        from src.core.llm_dispatcher import get_dispatcher, CallCategory
-
-        async def _run():
-            messages = [
-                {"role": "user", "content": "Reply with exactly the word: PONG"}
-            ]
-            kwargs = dict(
-                category=CallCategory.MAIN_WORK,
-                task="assistant",
-                difficulty=2,
-                messages=messages,
-                prefer_speed=True,
-                estimated_input_tokens=50,
-                estimated_output_tokens=50,
-            )
-            if fastest_local_model:
-                kwargs["model_override"] = fastest_local_model
-
-            response = await get_dispatcher().request(**kwargs)
-            assert isinstance(response, dict), "dispatcher.request must return a dict"
-            assert "content" in response, f"Response missing 'content' key: {response}"
-            content = response["content"]
-            assert isinstance(content, str) and len(content) > 0, (
-                f"Response content is empty or not a string: {content!r}"
-            )
-
-        run_async(_run())
-
-    @pytest.mark.timeout(120)
-    def test_llm_returns_parseable_json_for_classifier(self, temp_db, fastest_local_model):
-        """The classifier prompt produces JSON parseable by _extract_json."""
-        from src.core.llm_dispatcher import get_dispatcher, CallCategory
-        from src.core.task_classifier import _extract_json
-        from finch import build_messages
-
-        async def _run():
-            messages = [{
-                "role": "user",
-                "content": build_messages(
-                    "classifier",
-                    {"task_description": "Write a Python hello world script: simple coding task"},
-                )[1]["content"],
-            }]
-            kwargs = dict(
-                category=CallCategory.MAIN_WORK,
-                task="router",
-                difficulty=2,
-                messages=messages,
-                prefer_speed=True,
-                needs_json_mode=True,
-                estimated_input_tokens=300,
-                estimated_output_tokens=100,
-            )
-            if fastest_local_model:
-                kwargs["model_override"] = fastest_local_model
-
-            response = await get_dispatcher().request(**kwargs)
-            content = response.get("content", "")
-            assert len(content) > 0, "LLM returned empty content for classifier prompt"
-
-            # Try to parse JSON (may fail on very fast/degraded models)
-            try:
-                parsed = _extract_json(content)
-                assert "agent_type" in parsed, (
-                    f"Classifier JSON missing 'agent_type': {parsed}"
-                )
-            except (ValueError, Exception) as e:
-                # Acceptable if the model is too fast/small to reliably format JSON
-                pytest.xfail(
-                    f"LLM output not parseable as classifier JSON "
-                    f"(expected for very small/fast models): {e}\n"
-                    f"Raw output: {content[:200]}"
-                )
-
-        run_async(_run())
+# SP5 (2026-06-10): test_direct_llm_call_via_dispatcher +
+# test_llm_returns_parseable_json_for_classifier were deleted here — they
+# exercised the removed ``LLMDispatcher.request()`` shim directly. The
+# canonical LLM path is now ``beckman.enqueue()``; classifier JSON parsing is
+# covered by the task_classifier unit tests. (This branch's build_messages
+# retarget for the classifier test is moot — the whole test goes away with
+# the request() shim; the live classifier seam is exercised via build_messages
+# in finch/coulson unit tests.)
 
 
 # ---------------------------------------------------------------------------

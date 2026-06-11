@@ -544,7 +544,7 @@ def test_confirmed_verdict_fires_reinforce():
 # ---------------------------------------------------------------------------
 
 def test_verdict_pipeline_makes_no_dispatcher_call():
-    """record_verdict + verdict_window_sweep never call LLMDispatcher.request."""
+    """record_verdict + verdict_window_sweep never call LLMDispatcher.execute."""
     async def _test():
         db_mod, db_path = await _fresh_db()
         try:
@@ -566,7 +566,7 @@ def test_verdict_pipeline_makes_no_dispatcher_call():
             from src.core import llm_dispatcher
 
             with patch.object(
-                llm_dispatcher.LLMDispatcher, "request", side_effect=boom
+                llm_dispatcher.LLMDispatcher, "execute", side_effect=boom
             ):
                 with patch.object(rv, "_posthog_metric",
                                   _mock_posthog([100, 110])):

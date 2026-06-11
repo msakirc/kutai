@@ -15,11 +15,10 @@ delegate methods route through the rest of src/runtime/.
 
 Phase A.10 status — execute() is the runtime entry. It owns the setup phase
 (DB prompt override, tools_hint override, auto-strip rules, workflow step-
-config refresh, _suppress_clarification flag) plus dispatch to react.run or
-single_shot.run, plus constrained_emit post-pass and the restore-on-finally
-contract for allowed_tools mutations.
+config refresh, _suppress_clarification flag) plus dispatch to react.run and
+the restore-on-finally contract for allowed_tools mutations. (The single_shot
+path and the inline constrained_emit post-pass were deleted in SP5.)
 
-Phase A.12 will move constrained_emit out to workflow_engine post-hooks.
 Phase A.13 will move _build_model_requirements out to fatih_hoca.
 Phase A.11 cutover converts profile delegate calls (`profile._X()`) inside
 this package to direct runtime imports, leaving BaseAgent as a ~80-LOC
@@ -33,7 +32,6 @@ from typing import Callable
 from src.infra.logging_config import get_logger
 
 from .react import run as _react_run
-from .single_shot import run as _single_shot_run
 
 logger = get_logger("runtime")
 
@@ -77,7 +75,7 @@ async def execute(profile, task: dict, progress_callback: Callable | None = None
     # before paying for an LLM call:
     #   • Missing adapter/creds → emit a founder_action via z6_admission
     #     and return ``status='blocked_on_founder_action'`` without ever
-    #     entering react/single_shot. Closes G9 (LLM agents fabricating
+    #     entering the react loop. Closes G9 (LLM agents fabricating
     #     vendor responses).
     #   • Prereqs satisfied → inject a system-prompt warning block so
     #     the LLM uses ``vendor_call`` instead of hallucinating.
@@ -86,11 +84,10 @@ async def execute(profile, task: dict, progress_callback: Callable | None = None
         return _bail
 
     try:
-        # ── execution pattern routing ──
-        if profile.execution_pattern == "single_shot":
-            _result = await _single_shot_run(profile, task)
-        else:
-            _result = await _react_run(profile, task, progress_callback=progress_callback)
+        # SP5 (2026-06-10): single_shot path deleted — no live profile sets
+        # execution_pattern="single_shot" (shopping_clarifier dropped it at the
+        # v3 switch). All tasks run the react loop.
+        _result = await _react_run(profile, task, progress_callback=progress_callback)
 
         # SP3b Task 7: constrained_emit is now a Beckman post-hook child task
         # (wired in posthooks.determine_posthooks). The inline pass was removed

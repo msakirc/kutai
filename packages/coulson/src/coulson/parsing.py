@@ -169,11 +169,17 @@ def parse_function_call(tool_calls: list[dict]) -> dict | None:
 
     # Single tool call — backwards compatible
     if len(tool_calls) == 1:
-        return {
+        action = {
             "action": "tool_call",
             "tool": first_name,
             "args": first_args,
         }
+        # Carry the truncated-arguments marker so the runtime surfaces a
+        # 'resend, smaller' nudge instead of running the tool arg-less.
+        _err = first.get("arguments_error")
+        if _err:
+            action["args_error"] = _err
+        return action
 
     # Multiple → multi_tool_call (filter out pseudo-tools)
     tools = []
@@ -182,10 +188,17 @@ def parse_function_call(tool_calls: list[dict]) -> dict | None:
         args = tc.get("arguments", {})
         if name in ("final_answer", "clarify"):
             continue
-        tools.append({"tool": name, "args": args})
+        entry = {"tool": name, "args": args}
+        _err = tc.get("arguments_error")
+        if _err:
+            entry["args_error"] = _err
+        tools.append(entry)
 
     if len(tools) == 1:
-        return {"action": "tool_call", "tool": tools[0]["tool"], "args": tools[0]["args"]}
+        single = {"action": "tool_call", "tool": tools[0]["tool"], "args": tools[0]["args"]}
+        if tools[0].get("args_error"):
+            single["args_error"] = tools[0]["args_error"]
+        return single
     if not tools:
         return None
     return {"action": "multi_tool_call", "tools": tools}

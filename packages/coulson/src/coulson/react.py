@@ -145,6 +145,23 @@ def _record_tool_call(
     })
 
 
+def truncated_args_observation(tool_name: str, detail: str) -> str:
+    """Build the observation fed back when a tool call's arguments were
+    truncated mid-stream (``arguments_error`` from response.py).
+
+    Surfaces the truncation as an explicit, actionable tool failure instead of
+    running the tool arg-less — which weak models misread as "tool unavailable"
+    and loop on until DLQ (mission 81 ADR step 4.1). Starts with ❌ so the loop
+    counts it as a tool failure (drives mid-task model escalation) and grounding
+    never mistakes it for a successful write.
+    """
+    return (
+        f"❌ Tool '{tool_name}' {detail}. "
+        f"Resend the call with complete, smaller arguments — for large file "
+        f"content, write it in focused pieces or shorten it."
+    )
+
+
 async def _fire_tool_call_signal(tool_name: str, *, task_id: int | None = None) -> None:
     """Record a ``tool_call`` demand signal — an agent requested a tool with
     no backing skill/tool in any registry. Best-effort: a signal failure must
@@ -1079,6 +1096,30 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             if not isinstance(tool_args, dict):
                 tool_args = {}
 
+            # ── Truncated tool-call arguments ──
+            # The function-call arguments JSON was cut mid-stream (provider
+            # truncation on a large payload). Don't run the tool arg-less —
+            # surface a 'resend, smaller' nudge so the model retries (mission
+            # 81 ADR 4.1: empty-arg write_file -> "tool unavailable" -> DLQ).
+            _args_err = parsed.get("args_error")
+            if _args_err:
+                tool_output = truncated_args_observation(tool_name, _args_err)
+                logger.warning(
+                    f"[Task #{task_id}] truncated arguments for '{tool_name}' "
+                    f"— surfacing retry nudge instead of arg-less execution"
+                )
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": tool_output})
+                await save_checkpoint(
+                    task_id, iteration + 1, messages, total_cost,
+                    used_model, reqs, tools_used,
+                    custom_validation_retried or task_type_validation_retried,
+                    completed_tool_ops, format_corrections,
+                    tools_used_names,
+                    tool_calls=tool_calls,
+                )
+                continue
+
             # ── Intercept read_file for artifacts already in context ──
             # Workflow steps inject input artifacts into the prompt.
             # If the model tries to read_file for one of them, short-
@@ -1404,7 +1445,15 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 tools_used_names.add(t_name)
                 iter_tool_calls_seen.add(t_name)
 
-                if profile.allowed_tools is not None and t_name not in profile.allowed_tools:
+                _t_args_err = tc.get("args_error")
+                if _t_args_err:
+                    # Truncated function-call arguments — surface, don't execute
+                    # arg-less (mission 81 ADR 4.1).
+                    validated.append((
+                        t_name, t_args,
+                        truncated_args_observation(t_name, _t_args_err),
+                    ))
+                elif profile.allowed_tools is not None and t_name not in profile.allowed_tools:
                     validated.append((t_name, t_args, f"❌ Tool '{t_name}' not available."))
                 elif not check_tool_permission(profile.name, t_name):
                     validated.append((t_name, t_args, f"🚫 Tool '{t_name}' not permitted."))

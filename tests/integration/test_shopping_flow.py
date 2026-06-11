@@ -205,29 +205,28 @@ class TestShoppingAgentRealLLM:
         We accept any non-empty response — shopping results depend heavily
         on web availability and model quality.
         """
-        from src.core.task_classifier import classify_task
         from src.agents import get_agent
 
         task_title = "Find best gaming GPU under 15000 TL"
         task_desc = "I need a GPU for 1080p gaming. Compare price/performance."
 
         async def _run():
-            # Step 1: classify
-            cls = await classify_task(task_title, task_desc)
-            assert cls.agent_type in ("shopping_advisor", "researcher", "analyst"), (
-                f"Unexpected classification: {cls.agent_type}"
-            )
+            # Step 1: classify. SP5 made classify_task a CPS kickoff (no sync
+            # return); this test's value is the shopping agent-execution e2e, so
+            # route directly to shopping_advisor. Classification quality is
+            # covered by tests/core/test_parse_classification.py.
+            agent_type = "shopping_advisor"
 
             # Step 2: get the appropriate agent
-            agent = get_agent(cls.agent_type)
+            agent = get_agent(agent_type)
             if agent is None:
-                pytest.skip(f"Agent '{cls.agent_type}' not registered")
+                pytest.skip(f"Agent '{agent_type}' not registered")
 
             task = {
                 "id": 100,
                 "title": task_title,
                 "description": task_desc,
-                "agent_type": cls.agent_type,
+                "agent_type": agent_type,
                 "context": json.dumps({
                     "model_override": fastest_local_model,
                     "max_web_searches": 1,  # limit searches for speed

@@ -123,12 +123,9 @@ async def _enqueue_oncall_task(
                 "vendor_payload": vendor_payload,
             },
         }
-        task_id = await enqueue(spec, parent_id=triage_task.get("id"))
-        if isinstance(task_id, int):
-            return task_id
-        # await_inline=False path — enqueue returns int directly. Anything
-        # else is a TaskResult and shouldn't happen here.
-        return getattr(task_id, "task_id", None)
+        # enqueue is fire-and-continue (SP5): returns the new task id, or None
+        # on dedup.
+        return await enqueue(spec, parent_id=triage_task.get("id"))
     except Exception as exc:
         logger.warning(
             "alert_triage: oncall enqueue failed",

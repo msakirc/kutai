@@ -674,21 +674,22 @@ class TestFullPipelineLLM:
         3. Execute the agent
         4. Verify the result dict is non-empty
         """
-        from src.core.task_classifier import classify_task
+        from src.core.task_classifier import _classify_by_keywords
         from src.agents import get_agent
 
         idea_title = "What is 2 + 2?"
         idea_desc = "Simple arithmetic question"
 
         async def _run():
-            # Step 1: classify
-            cls = await classify_task(idea_title, idea_desc)
-            assert cls.agent_type in (
-                "assistant", "executor", "analyst", "summarizer"
-            ), f"Unexpected classification for simple math: {cls.agent_type}"
+            # Step 1: classify (SP5: classify_task is a CPS kickoff with no sync
+            # return; use the synchronous keyword classifier for a deterministic
+            # agent_type — this test's value is the agent-execution e2e, not LLM
+            # classification quality, which is unit-tested in test_parse_classification).
+            cls = _classify_by_keywords(idea_title, idea_desc)
+            agent_type = cls.agent_type
 
             # Step 2: resolve agent
-            agent = get_agent(cls.agent_type)
+            agent = get_agent(agent_type)
             assert agent is not None
 
             # Step 3: build minimal task dict and execute
@@ -696,7 +697,7 @@ class TestFullPipelineLLM:
                 "id": 1001,
                 "title": idea_title,
                 "description": idea_desc,
-                "agent_type": cls.agent_type,
+                "agent_type": agent_type,
                 "context": json.dumps({
                     "model_override": fastest_local_model,
                 }),
@@ -716,24 +717,23 @@ class TestFullPipelineLLM:
     @pytest.mark.timeout(240)
     def test_idea_to_classification_coding_task(self, temp_db, fastest_local_model):
         """Coding idea is classified as coder/planner and returns non-empty result."""
-        from src.core.task_classifier import classify_task
+        from src.core.task_classifier import _classify_by_keywords
         from src.agents import get_agent
 
         idea_title = "Write a Python function"
         idea_desc = "Write a Python function that reverses a string"
 
         async def _run():
-            cls = await classify_task(idea_title, idea_desc)
-            assert cls.agent_type in (
-                "coder", "implementer", "executor", "assistant"
-            ), f"Unexpected classification for coding task: {cls.agent_type}"
+            # SP5: deterministic keyword classification (see simple_math test).
+            cls = _classify_by_keywords(idea_title, idea_desc)
+            agent_type = cls.agent_type
 
-            agent = get_agent(cls.agent_type)
+            agent = get_agent(agent_type)
             task = {
                 "id": 1002,
                 "title": idea_title,
                 "description": idea_desc,
-                "agent_type": cls.agent_type,
+                "agent_type": agent_type,
                 "context": json.dumps({"model_override": fastest_local_model}),
                 "depends_on": "[]",
                 "mission_id": None,
@@ -745,22 +745,11 @@ class TestFullPipelineLLM:
 
         run_async(_run())
 
-    @pytest.mark.timeout(120)
-    def test_classification_method_is_llm_or_keyword(self, temp_db, fastest_local_model):
-        """classify_task always returns a valid method field."""
-        from src.core.task_classifier import classify_task
-
-        async def _run():
-            cls = await classify_task("Test task", "A generic test task description")
-            assert cls.method in ("llm", "keyword", "keyword_default"), (
-                f"Unknown classification method: {cls.method}"
-            )
-            assert cls.agent_type != "", "agent_type must not be empty"
-            assert 1 <= cls.difficulty <= 10, (
-                f"difficulty must be 1-10, got {cls.difficulty}"
-            )
-
-        run_async(_run())
+# SP5 (2026-06-11): test_classification_method_is_llm_or_keyword was deleted —
+# it asserted classify_task's old synchronous TaskClassification return. SP5
+# made classify_task a CPS kickoff (returns a child task id, result delivered
+# via the task_classifier.classify.resume continuation). The field-mapping
+# intelligence is unit-tested in tests/core/test_parse_classification.py.
 
 # SP5 (2026-06-10): test_direct_llm_call_via_dispatcher +
 # test_llm_returns_parseable_json_for_classifier were deleted here — they
@@ -793,28 +782,28 @@ class TestShoppingPipelineLLM:
         This is the core KutAI shopping flow:
         'I want to buy an RTX 4070' → shopping_advisor → result text
         """
-        from src.core.task_classifier import classify_task
+        from src.core.task_classifier import _classify_by_keywords, _classify_shopping_sub_intent
         from src.agents import get_agent
 
         title = "GPU önerisi"
         desc = "Oyun için RTX 4070 almak istiyorum, fiyat ne kadar?"
 
         async def _run():
-            cls = await classify_task(title, desc)
-            # Turkish shopping keywords should reliably classify as shopping
-            assert cls.agent_type in (
-                "shopping_advisor", "researcher", "analyst"
-            ), f"Expected shopping classification, got: {cls.agent_type}"
+            # SP5: deterministic keyword classification (see simple_math test).
+            # Turkish shopping keywords reliably classify as shopping_advisor.
+            cls = _classify_by_keywords(title, desc)
+            agent_type = cls.agent_type
+            sub_intent = _classify_shopping_sub_intent(f"{title} {desc}")
 
-            agent = get_agent(cls.agent_type)
+            agent = get_agent(agent_type)
             task = {
                 "id": 2001,
                 "title": title,
                 "description": desc,
-                "agent_type": cls.agent_type,
+                "agent_type": agent_type,
                 "context": json.dumps({
                     "model_override": fastest_local_model,
-                    "shopping_sub_intent": cls.shopping_sub_intent,
+                    "shopping_sub_intent": sub_intent,
                     "max_web_searches": 0,  # no web searches for speed
                 }),
                 "depends_on": "[]",
@@ -830,51 +819,12 @@ class TestShoppingPipelineLLM:
 
         run_async(_run())
 
-    @pytest.mark.timeout(120)
-    def test_shopping_sub_intent_attached_in_classify_task(self, temp_db, fastest_local_model):
-        """classify_task attaches shopping_sub_intent for shopping queries."""
-        from src.core.task_classifier import classify_task
-
-        async def _run():
-            cls = await classify_task(
-                "Fiyat karşılaştırması",
-                "iPhone 15 ile Samsung S24 fiyat karşılaştırması yap",
-            )
-            if cls.agent_type == "shopping_advisor":
-                assert cls.shopping_sub_intent is not None, (
-                    "shopping_sub_intent must be set for shopping_advisor tasks"
-                )
-                # With 'fiyat' and 'karşılaştırması' keywords, expect price_check or compare
-                assert cls.shopping_sub_intent in (
-                    "price_check", "compare", "exploration"
-                ), f"Unexpected sub_intent: {cls.shopping_sub_intent}"
-
-        run_async(_run())
-
-    @pytest.mark.timeout(120)
-    def test_shopping_assistant_handles_status_query(self, temp_db, fastest_local_model):
-        """Status queries go through assistant/executor, not shopping_advisor.
-
-        Regression test: 'How is the coffee machine search going?' should not
-        result in a new shopping search — it's asking for status.
-        """
-        from src.core.task_classifier import classify_task
-
-        async def _run():
-            # Keyword pre-filter in TelegramInterface catches this first;
-            # but if it falls through to LLM, test documents behavior.
-            cls = await classify_task(
-                "How is the coffee machine search going",
-                "Asking for status of an ongoing task",
-            )
-            if cls.agent_type == "shopping_advisor":
-                pytest.xfail(
-                    f"LLM classified status query as shopping_advisor. "
-                    "This is a known weakness of small models. "
-                    "The TelegramInterface keyword pre-filter is the primary guard."
-                )
-
-        run_async(_run())
+    # SP5 (2026-06-11): test_shopping_sub_intent_attached_in_classify_task +
+    # test_shopping_assistant_handles_status_query were deleted — they asserted
+    # classify_task's old synchronous return. shopping_sub_intent mapping is
+    # unit-tested in tests/core/test_parse_classification.py
+    # (test_parse_shopping_sub_intent_attached); the status-query disambiguation
+    # is guarded by the TelegramInterface keyword pre-filter (its own tests).
 
 
 # ---------------------------------------------------------------------------

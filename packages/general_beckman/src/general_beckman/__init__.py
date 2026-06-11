@@ -19,6 +19,7 @@ __all__ = [
     "resolve_inline", "Task", "AgentResult", "TaskResult",
     "INLINE_TIMEOUT", "_inline_waiters",
     "notify_threshold", "THRESHOLDS_PCT",
+    "record_growth_event", "supersede_growth_event", "update_growth_event_properties",
 ]
 
 THRESHOLDS_PCT = (50, 75, 90)
@@ -63,6 +64,62 @@ async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: flo
         )
     except Exception as e:
         logger.warning("threshold notify post failed: %s", e)
+
+
+async def record_growth_event(
+    mission_id: int | None,
+    kind: str,
+    properties: dict,
+    segment: str | None = None,
+) -> int:
+    """Append a row to ``growth_events``.  Returns the new row id.
+
+    Single sanctioned write-path for all ``growth_events`` inserts.
+    Delegates storage to ``src.infra.db.insert_growth_event``; db.py keeps
+    the SQL, beckman is the sole external entry point.
+    """
+    from src.infra.db import insert_growth_event
+    return await insert_growth_event(
+        mission_id=mission_id, kind=kind, properties=properties, segment=segment
+    )
+
+
+async def supersede_growth_event(
+    mission_id: int | None,
+    kind: str,
+) -> int:
+    """Mark all open (non-consumed, non-superseded) events of ``kind`` for
+    ``mission_id`` as superseded.
+
+    Used by producers that write idempotent, latest-wins rows (e.g.
+    ``northstar_review``, ``backlog_candidate``, ``sunset_candidate``): call
+    this before inserting the fresh batch so stale candidates are tombstoned.
+    Append-only invariant is preserved — rows are flagged, never deleted.
+
+    Returns the count of rows updated.
+    """
+    from src.infra.db import get_growth_events, update_growth_event_properties
+
+    prior = await get_growth_events(mission_id=mission_id, kind=kind)
+    updated = 0
+    for row in prior or []:
+        props = row.get("properties") or {}
+        if props.get("consumed") or props.get("superseded"):
+            continue
+        props["superseded"] = True
+        await update_growth_event_properties(int(row["id"]), props)
+        updated += 1
+    return updated
+
+
+async def update_growth_event_properties(event_id: int, properties: dict) -> None:
+    """Overwrite ``properties_json`` on an existing ``growth_events`` row.
+
+    Thin delegate to ``src.infra.db.update_growth_event_properties``; beckman
+    is the sanctioned entry point so callers never bypass this ownership layer.
+    """
+    from src.infra.db import update_growth_event_properties as _impl
+    await _impl(event_id=event_id, properties=properties)
 
 
 @dataclass

@@ -7319,6 +7319,20 @@ async def insert_growth_event(
     return cur.lastrowid or 0
 
 
+async def update_growth_event_properties(event_id: int, properties: dict) -> None:
+    """Overwrite ``properties_json`` on an existing ``growth_events`` row.
+
+    Low-level primitive — callers are responsible for fetching the current
+    properties and merging/mutating before passing here.  Commits immediately.
+    """
+    db = await get_db()
+    await db.execute(
+        "UPDATE growth_events SET properties_json = ? WHERE id = ?",
+        (json.dumps(properties or {}), event_id),
+    )
+    await db.commit()
+
+
 async def get_growth_events(
     mission_id: int | None = None,
     kind: str | None = None,

@@ -219,7 +219,8 @@ async def _resolve_hypothesis_id(
 
 async def run(task: dict[str, Any]) -> dict[str, Any]:
     """Assign A/B variants for one mission. Never raises."""
-    from src.infra.db import insert_growth_event, insert_variant
+    from src.infra.db import insert_variant
+    from general_beckman import record_growth_event
 
     ctx = _parse_context(task)
     payload = _pick_payload(task, ctx)
@@ -233,7 +234,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     if use_ab is False or str(use_ab).lower() in ("0", "false", "no"):
         logger.info("assign_variant: A/B opted out for mission %s", mission_id)
         try:
-            await insert_growth_event(
+            await record_growth_event(
                 mission_id, "ab_skipped_disabled",
                 {"feature": feature, "reason": "mission opted out via "
                  "/experiment_disable"},
@@ -254,7 +255,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
             dau,
         )
         try:
-            await insert_growth_event(
+            await record_growth_event(
                 mission_id, "ab_skipped_low_n",
                 {
                     "feature": feature,
@@ -322,7 +323,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "reason": "insert_failed", "error": str(exc)}
 
     try:
-        await insert_growth_event(
+        await record_growth_event(
             mission_id, "ab_assigned",
             {
                 "feature": feature,

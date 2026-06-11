@@ -221,7 +221,8 @@ async def run(task: dict) -> dict:
     mission before writing the fresh ranking, so re-running at each digest
     cycle rewrites rather than accumulates.
     """
-    from src.infra.db import get_growth_events, insert_growth_event
+    from src.infra.db import get_growth_events
+    from general_beckman import record_growth_event, supersede_growth_event
 
     payload = task.get("payload") or {}
     mission_id = task.get("mission_id") or payload.get("mission_id")
@@ -323,31 +324,15 @@ async def run(task: dict) -> dict:
     # only ever shows the latest ranking. We mark, not delete, to keep the
     # append-only invariant — consumers filter on properties.superseded.
     try:
-        prior = await get_growth_events(
+        await supersede_growth_event(
             mission_id=mission_id, kind="backlog_candidate"
         )
-        if prior:
-            from src.infra.db import get_db
-
-            db = await get_db()
-            import json as _json
-
-            for p in prior:
-                props = p.get("properties") or {}
-                if props.get("consumed") or props.get("superseded"):
-                    continue
-                props["superseded"] = True
-                await db.execute(
-                    "UPDATE growth_events SET properties_json = ? WHERE id = ?",
-                    (_json.dumps(props), p.get("id")),
-                )
-            await db.commit()
     except Exception as exc:  # noqa: BLE001
         _log.debug("score_backlog: supersede prior failed", error=str(exc))
 
     candidate_ids = []
     for cand in top:
-        cid = await insert_growth_event(
+        cid = await record_growth_event(
             mission_id, "backlog_candidate", cand
         )
         candidate_ids.append(cid)

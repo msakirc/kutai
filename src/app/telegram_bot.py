@@ -11991,11 +11991,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         cand_id = int(context.args[0].lstrip("#"))
         try:
-            import json as _json
             from src.infra.db import (
-                get_growth_events, insert_growth_event, get_db, add_mission,
+                get_growth_events, add_mission,
             )
             import general_beckman
+            from general_beckman import record_growth_event, update_growth_event_properties
         except Exception as e:  # noqa: BLE001
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
             return
@@ -12066,17 +12066,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         props["consumed"] = True
         props["approved_mission_id"] = mission_id
         try:
-            db = await get_db()
-            await db.execute(
-                "UPDATE growth_events SET properties_json = ? WHERE id = ?",
-                (_json.dumps(props), cand_id),
-            )
-            await db.commit()
+            await update_growth_event_properties(cand_id, props)
         except Exception as e:  # noqa: BLE001
             logger.warning("cmd_approve_sunset: consume flag failed", error=str(e))
         # Audit row — sunset_approved keeps the lifecycle loop inspectable.
         try:
-            await insert_growth_event(
+            await record_growth_event(
                 mission_id,
                 "sunset_approved",
                 {
@@ -12456,9 +12451,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         cand_id = int(context.args[0].lstrip("#"))
         try:
-            import json as _json
-            from src.infra.db import get_growth_events, insert_growth_event, get_db
+            from src.infra.db import get_growth_events
             import general_beckman
+            from general_beckman import record_growth_event, update_growth_event_properties
         except Exception as e:  # noqa: BLE001
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
             return
@@ -12531,17 +12526,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         props["consumed"] = True
         props["approved_mission_id"] = mission_id
         try:
-            db = await get_db()
-            await db.execute(
-                "UPDATE growth_events SET properties_json = ? WHERE id = ?",
-                (_json.dumps(props), cand_id),
-            )
-            await db.commit()
+            await update_growth_event_properties(cand_id, props)
         except Exception as e:  # noqa: BLE001
             logger.warning("cmd_approve: consume flag failed", error=str(e))
         # Audit row — backlog_approved keeps the loop inspectable.
         try:
-            await insert_growth_event(
+            await record_growth_event(
                 mission_id,
                 "backlog_approved",
                 {

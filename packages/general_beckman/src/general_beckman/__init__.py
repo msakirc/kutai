@@ -25,6 +25,13 @@ Public API (everything else is internal):
   - reprioritize_task(task_id, new_priority) -> bool
   - save_task_checkpoint(task_id, state) -> None
   - clear_task_checkpoint(task_id) -> None
+  - reset_failed_tasks() -> int
+  - reset_stuck_tasks() -> int
+  - reset_blocked_tasks() -> int
+  - cancel_pending_tasks(mission_id) -> int
+  - reset_workflow_step(mission_id, step_id, confirm_task_id) -> None
+  - recover_startup_tasks() -> dict
+  - reset_cascade_failed_dependents(task_id) -> int
 """
 from __future__ import annotations
 
@@ -50,6 +57,9 @@ __all__ = [
     "add_subtasks", "propagate_skips",
     "cancel_task", "reprioritize_task",
     "save_task_checkpoint", "clear_task_checkpoint",
+    "reset_failed_tasks", "reset_stuck_tasks", "reset_blocked_tasks",
+    "cancel_pending_tasks", "reset_workflow_step",
+    "recover_startup_tasks", "reset_cascade_failed_dependents",
 ]
 
 THRESHOLDS_PCT = (50, 75, 90)
@@ -1771,6 +1781,83 @@ async def clear_task_checkpoint(task_id: int) -> None:
     """Thin delegate to src.infra.db.clear_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
     from src.infra.db import clear_task_checkpoint as _clear_task_checkpoint
     return await _clear_task_checkpoint(task_id)
+
+
+async def reset_failed_tasks() -> int:
+    """Reset all failed tasks to pending. Returns count updated.
+
+    Delegate to src.infra.db.reset_failed_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_failed_tasks as _impl
+    return await _impl()
+
+
+async def reset_stuck_tasks() -> int:
+    """Reset all processing tasks (stuck) to pending. Returns count updated.
+
+    Delegate to src.infra.db.reset_stuck_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_stuck_tasks as _impl
+    return await _impl()
+
+
+async def reset_blocked_tasks() -> int:
+    """Clear dependency references on pending tasks so they can run.
+    Returns count updated.
+
+    Delegate to src.infra.db.reset_blocked_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_blocked_tasks as _impl
+    return await _impl()
+
+
+async def cancel_pending_tasks(mission_id: int) -> int:
+    """Cancel all pending tasks for a mission. Returns count updated.
+
+    Delegate to src.infra.db.cancel_pending_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import cancel_pending_tasks as _impl
+    return await _impl(mission_id)
+
+
+async def reset_workflow_step(
+    mission_id: int,
+    step_id: str,
+    confirm_task_id: int | None = None,
+) -> None:
+    """Reset workflow writer + verify sibling + optional confirm task to pending.
+
+    Delegate to src.infra.db.reset_workflow_step; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_workflow_step as _impl
+    return await _impl(mission_id, step_id, confirm_task_id)
+
+
+async def recover_startup_tasks() -> dict:
+    """Post-restart task queue hygiene: reset processing→pending + clear backoff.
+
+    Returns {'interrupted': int, 'backoff_cleared': int}.
+    Delegate to src.infra.db.recover_startup_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import recover_startup_tasks as _impl
+    return await _impl()
+
+
+async def reset_cascade_failed_dependents(task_id: int) -> int:
+    """Reset tasks cascade-failed because task_id failed (DLQ retry recovery).
+    Returns count updated.
+
+    Delegate to src.infra.db.reset_cascade_failed_dependents; beckman is the
+    sole sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_cascade_failed_dependents as _impl
+    return await _impl(task_id)
 
 
 async def on_model_swap(old_model: str | None, new_model: str | None) -> None:

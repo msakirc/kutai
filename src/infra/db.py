@@ -5898,6 +5898,168 @@ async def reprioritize_task(task_id: int, new_priority: int) -> bool:
     return cursor.rowcount > 0
 
 
+async def reset_failed_tasks() -> int:
+    """Reset all failed tasks to pending. Returns count updated.
+
+    Used by /reset failed admin command — bulk recovery after transient failures.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET status = 'pending', worker_attempts = 0, error = NULL
+           WHERE status = 'failed'"""
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def reset_stuck_tasks() -> int:
+    """Reset all processing tasks to pending. Returns count updated.
+
+    Used by /reset stuck admin command — clears tasks left in processing state
+    after a crash without full infra_resets tracking.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET status = 'pending'
+           WHERE status = 'processing'"""
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def reset_blocked_tasks() -> int:
+    """Clear dependency references on pending tasks so they can run.
+    Returns count updated.
+
+    Used by /reset blocked admin command — unblocks tasks whose depends_on
+    references tasks that will never complete.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET depends_on = '[]'
+           WHERE status = 'pending' AND depends_on != '[]'"""
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def cancel_pending_tasks(mission_id: int) -> int:
+    """Cancel all pending tasks for a mission. Returns count updated.
+
+    Used by /pause admin command — stops a running mission cleanly.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET status = 'cancelled'
+           WHERE mission_id = ? AND status IN ('pending')""",
+        (mission_id,)
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def reset_workflow_step(
+    mission_id: int,
+    step_id: str,
+    confirm_task_id: int | None = None,
+) -> None:
+    """Reset a workflow step (writer + verify sibling) and optionally a
+    confirm task back to pending for regeneration.
+
+    Fields reset: status='pending', worker_attempts=0, error=NULL,
+    error_category=NULL, started_at=NULL, completed_at=NULL.
+
+    Used by the workflow regen RE callback — clears the writer step,
+    its verify sibling (<step_id>.verify), and the confirm task so the
+    full draft→verify→confirm cycle re-runs.
+    """
+    db = await get_db()
+    reset_sql = (
+        "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
+        "error_category=NULL, started_at=NULL, completed_at=NULL "
+        "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?"
+    )
+    # Reset writer step
+    await db.execute(reset_sql, (mission_id, step_id))
+    # Reset verify sibling
+    await db.execute(reset_sql, (mission_id, step_id + ".verify"))
+    # Reset confirm task (by id if provided)
+    if confirm_task_id is not None:
+        await db.execute(
+            "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
+            "error_category=NULL, started_at=NULL, completed_at=NULL "
+            "WHERE id=?",
+            (confirm_task_id,),
+        )
+    await db.commit()
+
+
+async def recover_startup_tasks() -> dict:
+    """Post-restart: reset processing→pending (with infra_resets bump) and
+    clear stale next_retry_at backoff on pending/ungraded tasks.
+
+    Returns a summary dict:
+      {'interrupted': <count>, 'backoff_cleared': <count>}
+
+    Used by startup_recovery.py — replaces raw UPDATE SQL there.
+    """
+    db = await get_db()
+
+    # 1. Reset tasks stuck in 'processing' (prior run didn't finish them).
+    c = await db.execute(
+        "SELECT id, infra_resets FROM tasks WHERE status = 'processing'"
+    )
+    interrupted = [dict(r) for r in await c.fetchall()]
+    for t in interrupted:
+        ir = (t.get("infra_resets") or 0) + 1
+        await db.execute(
+            "UPDATE tasks SET status='pending', infra_resets=?, "
+            "retry_reason='infrastructure' WHERE id=?",
+            (ir, t["id"])
+        )
+    if interrupted:
+        await db.commit()
+
+    # 2. Clear future-dated next_retry_at on ready tasks.
+    c = await db.execute(
+        "SELECT id FROM tasks WHERE status IN ('pending','ungraded') "
+        "AND next_retry_at IS NOT NULL AND next_retry_at > datetime('now')"
+    )
+    delayed = [dict(r) for r in await c.fetchall()]
+    for t in delayed:
+        await db.execute(
+            "UPDATE tasks SET next_retry_at=NULL WHERE id=?", (t["id"],)
+        )
+    if delayed:
+        await db.commit()
+
+    return {"interrupted": len(interrupted), "backoff_cleared": len(delayed)}
+
+
+async def reset_cascade_failed_dependents(task_id: int) -> int:
+    """Reset tasks that were cascade-failed because task_id failed.
+
+    Resets tasks WHERE status='failed' AND error='All dependencies failed'
+    AND depends_on contains task_id. Returns count updated.
+
+    Used by dead_letter._plain_retry — after DLQ retry, dependents
+    that were cascade-failed must be unblocked.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET status = 'pending', error = NULL,
+               started_at = NULL, completed_at = NULL, worker_attempts = 0
+           WHERE status = 'failed'
+             AND error = 'All dependencies failed'
+             AND depends_on LIKE ?""",
+        (f"%{task_id}%",),
+    )
+    count = cursor.rowcount
+    if count > 0:
+        await db.commit()
+    return count
+
+
 # --- Dependency Graph ---
 
 async def get_task_tree(mission_id: int) -> list[dict]:

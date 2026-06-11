@@ -336,13 +336,8 @@ def _write_status(
 # ---------------------------------------------------------------------------
 async def _persist_repo_url(mission_id: int, repo_url: str) -> None:
     try:
-        from src.infra.db import get_db
-        db = await get_db()
-        await db.execute(
-            "UPDATE missions SET github_repo_url = ? WHERE id = ?",
-            (repo_url, int(mission_id)),
-        )
-        await db.commit()
+        from general_beckman import update_mission_fields as _umf
+        await _umf(int(mission_id), github_repo_url=repo_url)
     except Exception as e:  # pragma: no cover — best-effort
         logger.debug(f"github_repo_url DB persist skipped: {e}")
 

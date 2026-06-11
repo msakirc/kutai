@@ -129,7 +129,7 @@ async def quarantine_task(
 
 async def _check_mission_health(mission_id: int) -> None:
     """If too many tasks from this mission are in the DLQ, pause the mission."""
-    from src.infra.db import get_db, update_mission
+    from src.infra.db import get_db
 
     db = await get_db()
     cursor = await db.execute(
@@ -146,7 +146,8 @@ async def _check_mission_health(mission_id: int) -> None:
             f"auto-pausing mission"
         )
         try:
-            await update_mission(mission_id, status="paused")
+            from general_beckman import update_mission as _bk_update_mission
+            await _bk_update_mission(mission_id, status="paused")
         except Exception as e:
             logger.error(f"[DLQ] Failed to pause mission #{mission_id}: {e}")
 

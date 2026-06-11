@@ -40,7 +40,7 @@ async def _notify(message: str) -> None:
 async def sweep_queue() -> None:
     """Task-level recovery: stuck, ungraded, dep cascade, subtasks,
     overdue retry gates, waiting_human escalation, workflow timeouts."""
-    from src.infra.db import get_db, update_task, update_mission
+    from src.infra.db import get_db, update_task
 
     db = await get_db()
 

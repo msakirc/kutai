@@ -53,17 +53,8 @@ async def _ensure_interviews_dir(mission_id: int, workspace_path: str | None) ->
 async def _record_skip(mission_id: int, reason: str) -> dict[str, Any]:
     """Persist ``missions.interview_skip_reason`` for a skipped mission."""
     try:
-        from src.infra.db import get_db
-    except Exception as exc:
-        logger.warning("request_interview_data: db import failed: %s", exc)
-        return {"recorded": False, "error": str(exc)}
-    try:
-        db = await get_db()
-        await db.execute(
-            "UPDATE missions SET interview_skip_reason = ? WHERE id = ?",
-            (reason or "founder_skipped", int(mission_id)),
-        )
-        await db.commit()
+        from general_beckman import update_mission_fields as _umf
+        await _umf(int(mission_id), interview_skip_reason=(reason or "founder_skipped"))
         return {"recorded": True, "mission_id": mission_id, "reason": reason}
     except Exception as exc:
         logger.exception("request_interview_data: skip persist failed")

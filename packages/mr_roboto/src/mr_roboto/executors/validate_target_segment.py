@@ -132,14 +132,8 @@ async def validate_target_segment(mission_id: int) -> dict:
     if not explicit and ctx.get("target_segment") != DEFAULT_SEGMENT:
         ctx["target_segment"] = DEFAULT_SEGMENT
         try:
-            from src.infra.db import get_db as _get_db
-
-            _db = await _get_db()
-            await _db.execute(
-                "UPDATE missions SET context = ? WHERE id = ?",
-                (json.dumps(ctx, ensure_ascii=False), mission_id),
-            )
-            await _db.commit()
+            from general_beckman import update_mission_fields as _umf
+            await _umf(mission_id, context=json.dumps(ctx, ensure_ascii=False))
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 f"validate_target_segment: default back-fill failed: {exc}"

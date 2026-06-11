@@ -15,11 +15,11 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 
-from ..infra.db import (add_task, add_mission, get_active_missions,
+from ..infra.db import (add_task, get_active_missions,
                 get_ready_tasks, get_daily_stats, update_task, get_recent_completed_tasks,
                 get_db, cancel_task, reprioritize_task, get_task_tree,
                 get_task, get_mission, get_budget, set_budget, get_model_stats,
-                get_mission_locks, get_tasks_for_mission, update_mission,
+                get_mission_locks, get_tasks_for_mission,
                 insert_approval_request, update_approval_status,
                 add_todo, get_todos, get_todo, toggle_todo, delete_todo,
                 update_todo, get_blocked_task_summary)
@@ -1720,7 +1720,8 @@ class TelegramInterface:
                     parse_mode="Markdown")
             elif workflow:
                 # Other workflows (research, etc.) — plain task with workflow context
-                mission_id = await add_mission(title=description[:80], description=description)
+                from general_beckman import add_mission as _add_mission
+                mission_id = await _add_mission(title=description[:80], description=description)
                 await add_task(description[:80], description, mission_id=mission_id,
                               priority=5,
                               context={"workflow": workflow})
@@ -1730,7 +1731,8 @@ class TelegramInterface:
                     f"📋 {description[:100]}")
             else:
                 # Quick single task
-                mission_id = await add_mission(title=description[:80], description=description)
+                from general_beckman import add_mission as _add_mission
+                mission_id = await _add_mission(title=description[:80], description=description)
                 await add_task(description[:80], description, mission_id=mission_id, priority=5)
                 await self._reply(update,
                     f"✅ Görev oluşturuldu (#{mission_id})\n"
@@ -2460,7 +2462,8 @@ class TelegramInterface:
             return
 
         # Regular mission — create and plan
-        mission_id = await add_mission(
+        from general_beckman import add_mission as _add_mission
+        mission_id = await _add_mission(
             title=description[:80],
             description=description,
             priority=7,
@@ -3329,7 +3332,8 @@ class TelegramInterface:
         # Not a task — try as a mission
         mission = await get_mission(item_id)
         if mission and mission.get("status") not in ("completed", "cancelled"):
-            await update_mission(item_id, status="cancelled")
+            from general_beckman import update_mission as _update_mission
+            await _update_mission(item_id, status="cancelled")
             # Also cancel all pending tasks for this mission
             tasks = await get_tasks_for_mission(item_id)
             cancelled_count = 0
@@ -3965,7 +3969,8 @@ class TelegramInterface:
         outreach founder_actions. founder_actions.mission_id is NOT NULL but
         ad-hoc outreach has no natural mission — one ongoing mission per
         product owns all its outreach cards."""
-        from src.infra.db import get_db, add_mission
+        from src.infra.db import get_db
+        from general_beckman import add_mission as _add_mission
         db = await get_db()
         title = f"Cold outreach: {product_id}"
         cur = await db.execute(
@@ -3973,7 +3978,7 @@ class TelegramInterface:
         row = await cur.fetchone()
         if row:
             return int(row[0])
-        return int(await add_mission(title, "Cold-outreach campaign container"))
+        return int(await _add_mission(title, "Cold-outreach campaign container"))
 
     async def cmd_force_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /force_action command — manually trigger an on-call action.
@@ -5287,12 +5292,8 @@ class TelegramInterface:
             if minutes < 0:
                 await self._reply(update, "Minutes must be >= 0.")
                 return
-            await db.execute(
-                "UPDATE missions SET founder_attention_budget_minutes = ? "
-                "WHERE id = ?",
-                (minutes, mission_id),
-            )
-            await db.commit()
+            from general_beckman import update_mission_fields as _umf
+            await _umf(mission_id, founder_attention_budget_minutes=minutes)
             await self._reply(
                 update,
                 f"Budget set: mission #{mission_id} = {minutes} minutes.",
@@ -7033,13 +7034,8 @@ class TelegramInterface:
                             await self._reply(update, "Invalid number. Skipping (no ceiling).")
                             ceiling = None
                     if ceiling is not None:
-                        from src.infra.db import get_db
-                        _db = await get_db()
-                        await _db.execute(
-                            "UPDATE missions SET cost_ceiling_usd = ? WHERE id = ?",
-                            (ceiling, pending_action["mission_id"]),
-                        )
-                        await _db.commit()
+                        from general_beckman import update_mission_fields as _umf
+                        await _umf(pending_action["mission_id"], cost_ceiling_usd=ceiling)
                     self._pending_action.pop(chat_id, None)
                     await self._reply(update, "Mission starting…")
                     return
@@ -7519,7 +7515,8 @@ class TelegramInterface:
                     logger.error("workflow mission failed", error=str(e))
                     await self._reply(update,f"❌ {_friendly_error(str(e))}")
             else:
-                mission_id = await add_mission(title=text[:80], description=text, priority=5)
+                from general_beckman import add_mission as _add_mission
+                mission_id = await _add_mission(title=text[:80], description=text, priority=5)
                 if self.orchestrator:
                     await self.orchestrator.plan_mission(mission_id, text[:80], text)
                 await self._reply(update,
@@ -7693,7 +7690,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except AttributeError:
             mission_desc = None
         if mission_desc is not None:
-            from ..infra.db import add_mission as _add_mission
+            from general_beckman import add_mission as _add_mission
             wf = classification.get("workflow")
             if wf == "i2p":
                 try:
@@ -7783,7 +7780,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         chat_id, f"❌ {_friendly_error(str(e))}",
                     )
             else:
-                from ..infra.db import add_mission as _add_mission
+                from general_beckman import add_mission as _add_mission
                 mission_id = await _add_mission(
                     title=text[:80], description=text, priority=5,
                 )
@@ -9135,13 +9132,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     await query.message.reply_text("❌ Bozuk branch butonu.")
                     return
                 try:
-                    db = await get_db()
-                    await db.execute(
-                        "UPDATE missions SET branched_from_mission_id = ? "
-                        "WHERE id = ?",
-                        (from_mid, mid),
-                    )
-                    await db.commit()
+                    from general_beckman import update_mission_fields as _umf
+                    await _umf(mid, branched_from_mission_id=from_mid)
                     await self._resume_needs_review_tasks(
                         mid, "find_similar_missions",
                         note=f"founder: branch_from_{from_mid}",
@@ -9159,12 +9151,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 return
             if kind == "a":
                 try:
-                    # NOTE: do NOT re-import update_mission here. It is already
-                    # module-global (top of file). A local import binds the
-                    # name function-local for the WHOLE handle_callback scope,
-                    # making the earlier m:task:pause / m:task:cancel handlers
-                    # raise UnboundLocalError ("referenced before assignment").
-                    await update_mission(mid, status="cancelled")
+                    from general_beckman import update_mission as _bk_update_mission
+                    await _bk_update_mission(mid, status="cancelled")
                     await self._resume_needs_review_tasks(
                         mid, "find_similar_missions", note="founder: abort",
                         cancel=True,
@@ -9528,7 +9516,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if data.startswith("m:task:pause:"):
             mid = int(data.split(":")[-1])
             try:
-                await update_mission(mid, status="cancelled")
+                from general_beckman import update_mission as _bk_update_mission
+                await _bk_update_mission(mid, status="cancelled")
                 await query.message.reply_text(f"🚫 Görev #{mid} iptal edildi.")
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
@@ -9537,7 +9526,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if data.startswith("m:task:cancel:"):
             mid = int(data.split(":")[-1])
             try:
-                await update_mission(mid, status="cancelled")
+                from general_beckman import update_mission as _bk_update_mission
+                await _bk_update_mission(mid, status="cancelled")
                 await query.message.reply_text(f"🚫 Görev #{mid} iptal edildi.")
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
@@ -9982,7 +9972,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if data.startswith("wfcancel:"):
             mission_id = int(data.split(":", 1)[1])
             try:
-                await update_mission(mission_id, status="cancelled")
+                from general_beckman import update_mission as _bk_update_mission
+                await _bk_update_mission(mission_id, status="cancelled")
                 await query.edit_message_text(f"🗑 Mission #{mission_id} has been cancelled.")
             except Exception as e:
                 await query.edit_message_text(f"❌ {_friendly_error(str(e))}")
@@ -10004,23 +9995,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 self.orchestrator._running_futures = []
                 self.orchestrator._current_task_future = None
 
-            db = await get_db()
-            for _attempt in range(3):
-                try:
-                    await db.execute("DELETE FROM tasks")
-                    await db.execute("DELETE FROM missions")
-                    await db.execute("DELETE FROM dead_letter_tasks")
-                    await db.execute("DELETE FROM workflow_checkpoints")
-                    await db.execute("DELETE FROM blackboards")
-                    await db.execute("DELETE FROM approval_requests")
-                    await db.execute("DELETE FROM scheduled_tasks")
-                    await db.commit()
-                    break
-                except Exception as _db_err:
-                    if _attempt < 2:
-                        await asyncio.sleep(1)
-                    else:
-                        raise
+            from general_beckman import purge_all_missions as _purge_missions
+            await _purge_missions()
             # Also wipe shopping cache (separate DB)
             try:
                 import aiosqlite as _aiosqlite
@@ -10044,12 +10020,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         # ── Legacy Callbacks (approval, resetall confirm) ──────
         if data == "resetall_confirm":
-            db = await get_db()
-            await db.execute("DELETE FROM conversations")
-            await db.execute("DELETE FROM tasks")
-            await db.execute("DELETE FROM missions")
-            await db.execute("DELETE FROM memory")
-            await db.commit()
+            from general_beckman import purge_all as _purge_all
+            await _purge_all()
             await query.edit_message_text("☢️ Everything wiped. Fresh start.")
             return
         elif data == "resetall_cancel":
@@ -12038,7 +12010,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
 
         # Spawn exactly ONE deprecation mission via Beckman — mirror /approve.
-        mission_id = await add_mission(
+        from general_beckman import add_mission as _add_mission
+        mission_id = await _add_mission(
             title=title,
             description=description,
             priority=5,
@@ -12280,7 +12253,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         mid = int(context.args[0].lstrip("#"))
         try:
             import json as _json
-            from src.infra.db import get_mission, update_mission
+            from src.infra.db import get_mission
+            from general_beckman import update_mission as _bk_update_mission
         except Exception as e:  # noqa: BLE001
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
             return
@@ -12297,7 +12271,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if not isinstance(ctx, dict):
             ctx = {}
         ctx["use_ab"] = False
-        await update_mission(mid, context=_json.dumps(ctx))
+        await _bk_update_mission(mid, context=_json.dumps(ctx))
         await self._reply(
             update,
             f"🚫 Mission #{mid} opted out of A/B. The Phase-8 "
@@ -12496,9 +12470,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         # mechanical workflow_advance after planning; here we enqueue a
         # planner task scoped to the new mission so the founder gate stays
         # the single entry point.
-        from src.infra.db import add_mission
+        from general_beckman import add_mission as _add_mission
 
-        mission_id = await add_mission(
+        mission_id = await _add_mission(
             title=title,
             description=description,
             priority=6,

@@ -153,12 +153,8 @@ async def set_dial(mission_id: int, key: str, value) -> ReviewDensityDials:
     current = await get_dials(mission_id)
     updated = _replace(current, key, coerced)
 
-    db = await get_db()
-    await db.execute(
-        "UPDATE missions SET review_density_json = ? WHERE id = ?",
-        (json.dumps(asdict(updated)), mission_id),
-    )
-    await db.commit()
+    from general_beckman import update_mission_fields
+    await update_mission_fields(mission_id, review_density_json=json.dumps(asdict(updated)))
     logger.info(
         "Mission %s: set dial %s=%r", mission_id, key, coerced,
     )

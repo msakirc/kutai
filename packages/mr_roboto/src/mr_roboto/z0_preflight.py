@@ -96,27 +96,22 @@ async def z0_preflight_write(
 
     # Persist DB columns. Best-effort: file write is authoritative; DB
     # update failures log + don't block.
+    # Persist DB columns via the beckman write API.
+    # z0_preflight previously built a dynamic SET clause; we now pass only
+    # the non-None values as keyword arguments — update_mission_fields
+    # validates every key against its whitelist (ambition_tier,
+    # cost_ceiling_usd, founder_attention_budget_minutes are all whitelisted).
     try:
-        from src.infra.db import get_db
-        db = await get_db()
-        sets: list[str] = []
-        args: list[Any] = []
+        from general_beckman import update_mission_fields as _umf
+        _fields: dict = {}
         if ambition_tier is not None:
-            sets.append("ambition_tier = ?")
-            args.append(ambition_tier)
+            _fields["ambition_tier"] = ambition_tier
         if cost_ceiling_usd is not None:
-            sets.append("cost_ceiling_usd = ?")
-            args.append(float(cost_ceiling_usd))
+            _fields["cost_ceiling_usd"] = float(cost_ceiling_usd)
         if effective_attention is not None:
-            sets.append("founder_attention_budget_minutes = ?")
-            args.append(int(effective_attention))
-        if sets:
-            args.append(int(mission_id))
-            await db.execute(
-                f"UPDATE missions SET {', '.join(sets)} WHERE id = ?",
-                tuple(args),
-            )
-            await db.commit()
+            _fields["founder_attention_budget_minutes"] = int(effective_attention)
+        if _fields:
+            await _umf(int(mission_id), **_fields)
     except Exception as exc:
         logger.warning("z0_preflight_write: DB update failed: %s", exc)
 

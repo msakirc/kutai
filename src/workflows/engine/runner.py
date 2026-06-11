@@ -342,7 +342,8 @@ class WorkflowRunner:
         Returns the mission_id.
         """
         # Lazy imports to avoid circular dependencies
-        from src.infra.db import add_mission, add_task
+        from src.infra.db import add_task
+        from general_beckman import add_mission
 
         # 1. Load workflow definition
         wf = load_workflow(workflow_name)

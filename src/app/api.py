@@ -123,7 +123,7 @@ def create_app() -> Any:
 
     @app.post("/missions", status_code=201)
     async def create_mission(body: MissionCreate, _: None = Depends(_check_api_key)):
-        from src.infra.db import add_mission
+        from general_beckman import add_mission
         mission_id = await add_mission(
             title=body.title,
             description=body.description,

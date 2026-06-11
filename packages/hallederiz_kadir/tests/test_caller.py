@@ -3,8 +3,58 @@ import sys, os, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unittest.mock import AsyncMock, MagicMock, patch
-from hallederiz_kadir.caller import call
+from hallederiz_kadir.caller import call, _resolve_max_tokens
 from hallederiz_kadir.types import CallResult, CallError
+
+
+# ── max_tokens resolution (reasoning-token starvation fix) ──────────────
+
+
+def test_resolve_max_tokens_local_uncapped():
+    """Local models: no cap — llama-server enforces ctx-size naturally."""
+    assert _resolve_max_tokens(
+        is_local=True, is_thinking=False,
+        model_max_tokens=8192, estimated_output_tokens=500,
+    ) is None
+
+
+def test_resolve_max_tokens_cloud_nonthinking_caps_at_est_x2():
+    """Cloud non-thinking: est*2 cost guard (bounded by model cap)."""
+    assert _resolve_max_tokens(
+        is_local=False, is_thinking=False,
+        model_max_tokens=65536, estimated_output_tokens=500,
+    ) == 1000
+
+
+def test_resolve_max_tokens_cloud_nonthinking_floor_256():
+    """Cloud non-thinking floor: 256 so Gemini never sees max_tokens=0."""
+    assert _resolve_max_tokens(
+        is_local=False, is_thinking=False,
+        model_max_tokens=65536, estimated_output_tokens=0,
+    ) == 256
+
+
+def test_resolve_max_tokens_cloud_thinking_not_starved_by_est_x2():
+    """Cloud THINKING: the est*2 visible-output heuristic must NOT cap the
+    call — reasoning tokens count against max_output_tokens on Gemini/OpenAI,
+    so est*2 (e.g. 3158 for arch ADR 4.1) gets entirely consumed by reasoning
+    (3179 observed) and the structured artifact truncates -> empty-arg
+    write_file -> DLQ. Thinking calls use the provider's own max cap instead,
+    mirroring the local path.
+    """
+    cap = _resolve_max_tokens(
+        is_local=False, is_thinking=True,
+        model_max_tokens=65536, estimated_output_tokens=1579,
+    )
+    assert cap == 65536  # full provider cap, NOT 1579*2=3158
+
+
+def test_resolve_max_tokens_cloud_thinking_defaults_cap_when_unknown():
+    """Cloud thinking with unknown model cap: fall back to 4096, never est*2."""
+    assert _resolve_max_tokens(
+        is_local=False, is_thinking=True,
+        model_max_tokens=None, estimated_output_tokens=500,
+    ) == 4096
 
 
 def run_async(coro):

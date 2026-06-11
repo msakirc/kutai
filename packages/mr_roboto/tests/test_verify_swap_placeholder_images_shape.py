@@ -255,7 +255,11 @@ def _write_ledger(tmp_path, *, n=2, status="prompts_pending"):
         "prompt_map": {},
         "results": {},
     }
-    (tmp_path / ".web" / ".swap_chain.json").write_text(
+    # Ledger lives OUTSIDE the served .web root (it carries prompts/paths/
+    # exception strings; .web is tunnel-served + gh-pages-published).
+    state_dir = tmp_path / ".swap_state"
+    state_dir.mkdir(exist_ok=True)
+    (state_dir / "swap_chain.json").write_text(
         json.dumps(ledger), encoding="utf-8",
     )
 

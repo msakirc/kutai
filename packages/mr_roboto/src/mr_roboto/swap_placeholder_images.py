@@ -3,7 +3,9 @@
 CPS chain (SP5: migrated off the deleted ``await_inline`` 2026-06-11):
   1. KICKOFF (the 5.35 mechanic, ``swap_placeholder_images``): recursively
      walk ``mission_{id}/.web/**/*.html``, scan for placehold.co <img>, write
-     a durable chain ledger to ``<ws>/.web/.swap_chain.json``, enqueue ONE
+     a durable chain ledger to ``<ws>/.swap_state/swap_chain.json`` (OUTSIDE
+     the served/published ``.web`` root — it carries prompts, absolute paths
+     and exception strings), enqueue ONE
      prompt_writer child with ``on_complete``/``on_error`` continuations, and
      return immediately (``{ok, queued, chain: "started", ...}``). When there
      is nothing to swap it returns the old completed shape with
@@ -147,11 +149,16 @@ def _list_html_files(workspace_path: str) -> list[str]:
 
 # ── Chain ledger (durable chain state on disk; cont_state stays SMALL) ─
 
-LEDGER_FILENAME = ".swap_chain.json"
+# The ledger carries diffusion prompts, absolute filesystem paths and raw
+# exception strings. It must live OUTSIDE the served .web root: .web/ is
+# tunnel-served live and copytree'd to a PUBLIC gh-pages repo by
+# publish_preview_pages.
+LEDGER_DIRNAME = ".swap_state"
+LEDGER_FILENAME = "swap_chain.json"
 
 
 def _ledger_path(workspace_path: str) -> str:
-    return os.path.join(_web_root(workspace_path), LEDGER_FILENAME)
+    return os.path.join(workspace_path, LEDGER_DIRNAME, LEDGER_FILENAME)
 
 
 def _load_ledger(workspace_path: str) -> dict | None:

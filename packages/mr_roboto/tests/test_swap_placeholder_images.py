@@ -264,6 +264,17 @@ async def test_kickoff_enqueues_prompt_writer_with_continuations(ws, cap):
 
 
 @pytest.mark.asyncio
+async def test_ledger_lives_outside_served_web_root(ws, cap):
+    """The chain ledger holds absolute Windows paths, diffusion prompts and
+    exception strings — it must NEVER sit inside <ws>/.web/, which is served
+    live by the preview tunnel and copytree'd to a PUBLIC gh-pages repo by
+    publish_preview_pages."""
+    await swap_placeholder_images(mission_id=42)
+    assert (ws / ".swap_state" / "swap_chain.json").is_file()
+    assert not (ws / ".web" / ".swap_chain.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_kickoff_without_task_id_omits_parent_id(ws, cap):
     await swap_placeholder_images(mission_id=42)
     assert "parent_id" not in cap.calls[0]["kwargs"]

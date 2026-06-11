@@ -189,9 +189,11 @@ async def test_i2p_swap_e2e_cps_chain(monkeypatch, tmp_path, temp_db):
     assert 'src="../assets/onboarding__0.png"' in onboarding
     assert 'src="assets/onboarding__0.png"' not in onboarding
 
-    # Chain ledger finalized: full success, deep shape check passed.
+    # Chain ledger finalized: full success, deep shape check passed. The
+    # ledger lives OUTSIDE the served .web root (never published/tunneled).
+    assert not (web / ".swap_chain.json").exists()
     ledger = json.loads(
-        (web / ".swap_chain.json").read_text(encoding="utf-8")
+        (ws / ".swap_state" / "swap_chain.json").read_text(encoding="utf-8")
     )
     assert ledger["status"] == "done"
     assert ledger["replaced"] == 3

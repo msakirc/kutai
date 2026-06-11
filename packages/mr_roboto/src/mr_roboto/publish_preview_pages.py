@@ -125,7 +125,10 @@ async def publish_preview_pages(
     if os.path.isdir(pages_dir):
         shutil.rmtree(pages_dir)
     # Copy the contents of root INTO pages_dir so index.html lands at the root.
-    shutil.copytree(root, pages_dir)
+    # Skip ALL dotfiles/dot-dirs (defense-in-depth): a static preview never
+    # needs them, and stray internal state (chain ledgers with prompts and
+    # absolute paths, .git, editor droppings) must not reach the PUBLIC repo.
+    shutil.copytree(root, pages_dir, ignore=shutil.ignore_patterns(".*"))
 
     # 8. Init gh-pages branch in .pages_export/.
     # Try -b gh-pages flag first; fall back for older gits.

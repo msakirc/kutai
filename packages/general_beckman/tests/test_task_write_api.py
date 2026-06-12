@@ -570,6 +570,36 @@ async def test_recover_startup_tasks_below_cap_still_repends(fresh_db):
     assert count == 0
 
 
+@pytest.mark.asyncio
+async def test_recover_startup_tasks_availability_ladder_exempt_from_cap(fresh_db):
+    """Sweep stores availability-ladder seconds (60..7200) in infra_resets
+    with retry_reason='availability' — those rows must NOT trip the poison
+    cap; they re-pend with ladder state untouched."""
+    db_path = fresh_db
+    import src.infra.db as db_module
+    from general_beckman import add_task, update_task, recover_startup_tasks
+
+    t = await add_task(title="Sweep-laddered", description="d")
+    await update_task(t, status="processing")
+    db = await db_module.get_db()
+    await db.execute(
+        "UPDATE tasks SET infra_resets = 120, retry_reason = 'availability' "
+        "WHERE id = ?",
+        (t,),
+    )
+    await db.commit()
+
+    result = await recover_startup_tasks()
+
+    assert result["dead_lettered"] == 0
+    assert result["interrupted"] == 1
+
+    row = await _fetch_task(db_path, t)
+    assert row["status"] == "pending"
+    assert row["infra_resets"] == 120  # ladder seconds preserved, no bump
+    assert row["retry_reason"] == "availability"  # marker survives
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # reset_cascade_failed_dependents
 # ──────────────────────────────────────────────────────────────────────────────

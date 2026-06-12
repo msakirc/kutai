@@ -105,6 +105,7 @@ class TestDLQOperations:
                     assert result is True
                     # Explicit retry grants fresh infra-reset budget
                     # (poison-task cap guard must not re-trip instantly).
+                    mock_update.assert_called_once()
                     requeue_kwargs = mock_update.call_args.kwargs
                     assert requeue_kwargs.get("infra_resets") == 0
                     assert requeue_kwargs.get("worker_attempts") == 0

@@ -6004,7 +6004,16 @@ async def reset_workflow_step(
 # crashes the orchestrator gets reset processing→pending on every boot and
 # re-dispatched forever. After this many startup resets without completion,
 # recover_startup_tasks dead-letters it instead of re-pending.
+#
+# CAVEAT — infra_resets is overloaded: the stuck-task sweep
+# (general_beckman/sweep.py) stores the availability ladder's
+# seconds-of-last-delay (60..7200) in this column with
+# retry_reason='availability'. Those rows are NOT startup-reset counts and
+# must never trip this cap (the ladder has its own terminal at >=7200s).
+# Detected by retry_reason marker OR value >= _LADDER_FLOOR_SECONDS; the
+# cap must stay below the ladder floor for that to hold.
 INFRA_RESET_CAP = 5
+_LADDER_FLOOR_SECONDS = 60
 
 
 async def recover_startup_tasks() -> dict:
@@ -6024,7 +6033,7 @@ async def recover_startup_tasks() -> dict:
     # 1. Reset tasks stuck in 'processing' (prior run didn't finish them) —
     #    unless they've hit the infra-reset cap, in which case they're poison.
     c = await db.execute(
-        "SELECT id, mission_id, agent_type, infra_resets "
+        "SELECT id, mission_id, agent_type, infra_resets, retry_reason "
         "FROM tasks WHERE status = 'processing'"
     )
     stuck = [dict(r) for r in await c.fetchall()]
@@ -6036,6 +6045,17 @@ async def recover_startup_tasks() -> dict:
     poisoned: list[dict] = []
     for t in stuck:
         prior = t.get("infra_resets") or 0
+        if (t.get("retry_reason") == "availability"
+                or prior >= _LADDER_FLOOR_SECONDS):
+            # Sweep availability-ladder row: infra_resets holds
+            # seconds-of-last-delay, not a startup-reset count. Re-pend
+            # untouched so ladder state and marker survive; the ladder's
+            # own terminal (>=7200s) handles chronic offenders.
+            await db.execute(
+                "UPDATE tasks SET status='pending' WHERE id=?", (t["id"],)
+            )
+            interrupted.append(t)
+            continue
         if prior >= INFRA_RESET_CAP:
             # Same task-row shape as general_beckman.apply._dlq_write.
             await db.execute(
@@ -6058,9 +6078,10 @@ async def recover_startup_tasks() -> dict:
     # Quarantine poison tasks via the canonical dead-letter machinery
     # (dead_letter_tasks insert + mission-health check + pattern analysis).
     # Lazy import: dead_letter imports back into src.infra.db.
+    if poisoned:
+        from src.infra.dead_letter import quarantine_task
     for t in poisoned:
         try:
-            from src.infra.dead_letter import quarantine_task
             await quarantine_task(
                 task_id=t["id"],
                 mission_id=t.get("mission_id"),

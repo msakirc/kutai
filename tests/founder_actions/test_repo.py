@@ -12,7 +12,6 @@ async def _setup(tmp_path, monkeypatch):
     await db_mod.init_db()
     # Reset lifecycle cache between tests so the schema probe re-runs.
     import src.founder_actions as fa
-    fa._reset_lifecycle_cache()
     return db_path, db_mod, fa
 
 

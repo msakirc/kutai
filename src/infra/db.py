@@ -4177,8 +4177,8 @@ async def add_mission(title, description, priority=5, context=None,
     # Z0/Z8: a freshly created mission is running. The lifecycle_state column
     # (added by the Z8 T1A migration) defaults to 'terminal' — correct for
     # legacy rows backfilled during the ALTER, WRONG for new inserts. Without
-    # this set, the founder-action gate (_missions_lifecycle_column reads
-    # lifecycle_state post-Z0) sees 'terminal' != 'active' and never blocks
+    # this set, the founder-action gate (reads lifecycle_state, hard-coded
+    # post-probe-removal) sees 'terminal' != 'active' and never blocks
     # the mission, and the ongoing-resumption query never matches it. Set it
     # explicitly. Guarded so installs predating the migration don't error.
     try:

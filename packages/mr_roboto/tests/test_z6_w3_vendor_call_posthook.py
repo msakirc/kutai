@@ -121,7 +121,6 @@ async def test_w3_vendor_call_failure_emits_founder_action(monkeypatch, tmp_path
     await db_mod.init_db()
 
     import src.founder_actions as fa
-    fa._reset_lifecycle_cache()
     mid = await db_mod.add_mission("w3 mission", "")
 
     class _BrokenAdapter:

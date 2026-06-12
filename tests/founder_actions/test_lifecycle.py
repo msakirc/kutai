@@ -11,33 +11,32 @@ async def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(db_mod, "DB_PATH", str(db_path), raising=False)
     await db_mod.init_db()
     import src.founder_actions as fa
-    fa._reset_lifecycle_cache()
     return db_path, db_mod, fa
 
 
 async def _mission_status(db_mod, mid: int) -> str:
-    """Read the mission's lifecycle gate column. Post-Z0 the gate is
-    ``lifecycle_state`` (Z8 T1A migration always adds it on init_db); the
-    legacy ``status`` fallback only applies to installs predating it."""
-    import src.founder_actions as fa
-    col = await fa._missions_lifecycle_column()
+    """Read the mission's lifecycle gate column (``lifecycle_state``,
+    schema-guaranteed by the Z8 T1A migration in init_db)."""
     db = await db_mod.get_db()
     cur = await db.execute(
-        f"SELECT {col} FROM missions WHERE id = ?", (mid,),
+        "SELECT lifecycle_state FROM missions WHERE id = ?", (mid,),
     )
     row = await cur.fetchone()
     return row[0]
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_column_uses_lifecycle_state_when_present(
+async def test_lifecycle_state_column_schema_guaranteed(
     tmp_path, monkeypatch,
 ):
-    """Post-Z0 main: init_db always adds missions.lifecycle_state (Z8 T1A
-    migration), so the coordinator targets it, not legacy ``status``."""
+    """init_db always adds missions.lifecycle_state NOT NULL (Z8 T1A) —
+    the gate column the coordinator hard-codes."""
     _, db_mod, fa = await _setup(tmp_path, monkeypatch)
-    col = await fa._missions_lifecycle_column()
-    assert col == "lifecycle_state"
+    db = await db_mod.get_db()
+    cur = await db.execute("PRAGMA table_info(missions)")
+    cols = {row[1]: row for row in await cur.fetchall()}
+    assert "lifecycle_state" in cols
+    assert cols["lifecycle_state"][3] == 1  # notnull flag
 
 
 @pytest.mark.asyncio

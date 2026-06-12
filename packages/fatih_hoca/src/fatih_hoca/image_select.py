@@ -18,6 +18,16 @@ _EVICTION_HIGH = 50.0
 _EVICTION_LOW = 2.0
 _WARM_BATCH_BONUS = 1.0
 
+# S14 hard threshold (another process owns >=30% of VRAM → veto local).
+# Sourced from nerd_herd so the image path can't drift from the selector's
+# contention signal; fallback keeps fatih_hoca importable standalone.
+try:
+    from nerd_herd.signals.s14_contention import (
+        EXTERNAL_GPU_VETO_FRACTION as _EXTERNAL_GPU_VETO,
+    )
+except Exception:  # pragma: no cover
+    _EXTERNAL_GPU_VETO = 0.30
+
 
 def _snapshot():
     """Read LIVE in-process nerd_herd state via the singleton.
@@ -174,6 +184,20 @@ def select_image(
         # in prod; see _effective_snapshot's seam table).
         if m.is_local and load_mode == "minimal":
             continue
+        # Desktop-veto parity (S13/S14): select(needs_image=True) bypasses
+        # ALL selector eligibility, so mirror the hard-veto semantics here
+        # under M4 (nerd_herd modifiers.M4_load_mode_weights): "full"
+        # SILENCES desktop signals, heavy/shared honor them, minimal is the
+        # blanket veto above. Eligibility-only — local is skipped, cloud
+        # unaffected. This mirrors selector S13 (foreground-fullscreen
+        # sentinel) and S14 (external-GPU contention) pending a shared
+        # eligibility helper (future altitude fix).
+        if m.is_local and load_mode != "full":
+            if getattr(snap, "foreground_fullscreen", False):
+                continue
+            ext_gpu = float(getattr(snap, "external_gpu_fraction", 0.0) or 0.0)
+            if ext_gpu >= _EXTERNAL_GPU_VETO:
+                continue
         # VRAM-fit eligibility (mirrors selector.py's needs_vision gate).
         # Local: refuse if free VRAM (after a hypothetical llama unload — we
         # add a conservative 4GB local-recoverable allowance) can't fit.

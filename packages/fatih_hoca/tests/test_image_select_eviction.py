@@ -5,7 +5,8 @@ from fatih_hoca.types import Pick, SelectionFailure
 
 
 def _snap(*, llm_in_flight=0, llm_loaded=False, llm_queue=0,
-          image_resident=False, vram_mb=None, mode="full"):
+          image_resident=False, vram_mb=None, mode="full",
+          fullscreen=False, ext_gpu=0.0):
     # Realistic 8GB-GPU story: non-resident idle GPU has ~6000MB free; with
     # the ~4.5GB image server RESIDENT, raw free VRAM is only ~2800MB. The
     # old default (6000 free WITH the server resident) was physically
@@ -26,6 +27,8 @@ def _snap(*, llm_in_flight=0, llm_loaded=False, llm_queue=0,
         image_server_vram_mb = 4500 if image_resident else 0
         vram_available_mb = vram_mb
         load_mode = mode
+        foreground_fullscreen = fullscreen
+        external_gpu_fraction = ext_gpu
     return _S()
 
 
@@ -192,6 +195,64 @@ def test_minimal_veto_reads_client_seam_not_singleton(monkeypatch, real_exe):
     pick = select_image(quality_tier="quality", failures=[], hf_available=True)
     assert isinstance(pick, Pick)
     assert pick.model.is_local is False
+
+
+# ── FIX 3.3: S13/S14 desktop-veto parity in the image path ─────────────
+# select(needs_image=True) bypasses ALL selector eligibility, so the image
+# path must mirror the hard-veto semantics under M4: load_mode "full"
+# SILENCES desktop signals; heavy/shared honor them; minimal is already a
+# blanket local veto. Eligibility-only — cloud is never affected. Warm-
+# resident fixtures would otherwise WIN (8.5 > 8.0), so a cloud pick proves
+# the veto (not scoring) excluded local.
+
+
+def test_fullscreen_shared_vetoes_local(monkeypatch, real_exe):
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, mode="shared",
+                                      fullscreen=True))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert isinstance(pick, Pick)
+    assert pick.model.is_local is False
+
+
+def test_fullscreen_full_mode_keeps_local(monkeypatch, real_exe):
+    """M4 'full' silences desktop signals — fullscreen must NOT veto."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, mode="full",
+                                      fullscreen=True))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.provider == "clair_obscur"
+
+
+def test_external_gpu_heavy_vetoes_local(monkeypatch, real_exe):
+    """S14 hard threshold: another process owns >=30% VRAM → veto local."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, mode="heavy",
+                                      ext_gpu=0.4))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert isinstance(pick, Pick)
+    assert pick.model.is_local is False
+
+
+def test_external_gpu_full_mode_keeps_local(monkeypatch, real_exe):
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, mode="full",
+                                      ext_gpu=0.4))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.provider == "clair_obscur"
+
+
+def test_external_gpu_below_threshold_keeps_local(monkeypatch, real_exe):
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, mode="shared",
+                                      ext_gpu=0.2))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert pick.model.provider == "clair_obscur"
 
 
 def test_local_unavailable_filters_local(monkeypatch):

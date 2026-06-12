@@ -722,6 +722,10 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         except Exception as exc:
             logger.warning("posthook DLQ cascade failed",
                            task_id=task["id"], error=str(exc))
+        # FIX 2.1 — the cascade may have flipped the SOURCE terminal
+        # (failed for blocker kinds, completed for drained warning kinds)
+        # inside the CHILD's DLQ write; fire the source's continuation now.
+        await _fire_source_continuation(_ctx_for_cascade.get("source_task_id"))
     # Telegram DLQ notification → mechanical mr_roboto task (no inline send).
     await add_task(
         title=f"Notify: DLQ task #{task['id']}",
@@ -1334,6 +1338,27 @@ _REWRITE_POSTHOOK_KINDS: frozenset[str] = frozenset(
 )
 
 
+async def _fire_source_continuation(source_task_id) -> None:
+    """FIX 2.1 chokepoint — fire the SOURCE's own continuation when a
+    verdict-completion path just flipped it terminal.
+
+    A source completed/failed by a verdict apply, a chain drain, or the
+    post-hook DLQ cascade reaches terminal during ANOTHER task's
+    on_task_finished, so its own continuation (e.g. the swap-chain
+    image_done/image_err resumes) never fired until the reconcile TTL.
+    Best-effort: a fire hiccup must never break the verdict path; the
+    periodic reconcile remains the safety net.
+    """
+    if source_task_id is None:
+        return
+    try:
+        from general_beckman.continuations import fire_if_terminal
+        await fire_if_terminal(int(source_task_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("source continuation fire failed",
+                       source_id=source_task_id, error=str(exc))
+
+
 async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
     """Park the source in `ungraded`, enqueue a post-hook task row.
 
@@ -1343,6 +1368,10 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
     """
     async with _source_verdict_guard(a.source_task_id):
         await _apply_request_posthook_locked(task, a)
+    # FIX 2.1 — the locked body can complete the source synchronously (chain
+    # drain via the direct _advance_posthook_chain_locked call, or the
+    # trivial-source auto-fail short-circuit inside the child enqueue).
+    await _fire_source_continuation(a.source_task_id)
 
 
 async def _apply_request_posthook_locked(task: dict, a: RequestPostHook) -> None:
@@ -1468,6 +1497,9 @@ async def _advance_posthook_chain(source_task_id: int) -> None:
     """
     async with _source_verdict_guard(source_task_id):
         await _advance_posthook_chain_locked(source_task_id)
+    # FIX 2.1 — a drained cursor completes the source synchronously
+    # (_complete_source_if_no_pending); fire its continuation now.
+    await _fire_source_continuation(source_task_id)
 
 
 async def _advance_posthook_chain_locked(source_task_id: int) -> None:
@@ -4769,6 +4801,10 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
     """
     async with _source_verdict_guard(a.source_task_id):
         await _apply_posthook_verdict_locked(task, a)
+    # FIX 2.1 — verdict appliers flip the source terminal (grade-PASS
+    # completion, attempt-cap DLQ, blocker fails). Fire the source's own
+    # continuation now instead of leaving it for the reconcile TTL.
+    await _fire_source_continuation(a.source_task_id)
 
 
 async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None:

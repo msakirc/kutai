@@ -156,6 +156,56 @@ async def fire_for_task(child_task_id: int, result: dict, raw_status: str) -> bo
     return True
 
 
+def _result_from_persisted(status: str, raw) -> dict:
+    """Reconstruct a handler ``result`` dict from the persisted tasks.result.
+
+    Top-level JSON decode only (same contract as reconcile): handlers that
+    need nested decoding do it themselves. ``status`` is always present.
+    """
+    res: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            res = dict(parsed) if isinstance(parsed, dict) else {"result": parsed}
+        except Exception:  # noqa: BLE001
+            res = {"result": raw}
+    res.setdefault("status", status)
+    return res
+
+
+async def fire_if_terminal(child_task_id: int) -> bool:
+    """Fire the pending continuation for a task IF its DB status is terminal.
+
+    Chokepoint for verdict-completion paths: a source task whose terminal
+    transition happens during ANOTHER task's on_task_finished (grade/review
+    verdict apply, post-hook chain drain, post-hook DLQ cascade) never gets
+    its own on_task_finished — without this, its continuation row stayed
+    'pending' until the reconcile TTL (up to an hour late). The apply layer
+    calls this after any write that may have made a source terminal.
+
+    Cheap when there is nothing to do (one indexed SELECT bails when no
+    pending row exists); the CAS inside fire_for_task keeps it idempotent
+    against the on_task_finished hook and reconcile.
+    """
+    from src.infra.db import get_db
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT 1 FROM continuations WHERE child_task_id=? AND status='pending'",
+        (child_task_id,),
+    )
+    if await cur.fetchone() is None:
+        return False
+    tcur = await db.execute(
+        "SELECT status, result FROM tasks WHERE id=?", (child_task_id,),
+    )
+    trow = await tcur.fetchone()
+    if trow is None or trow[0] not in ("completed", "failed"):
+        return False
+    return await fire_for_task(
+        child_task_id, _result_from_persisted(trow[0], trow[1]), trow[0],
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Modules that register continuation handlers AT IMPORT TIME via a module-
 # level `register_continuations()` call. register_startup_handlers() imports
@@ -278,14 +328,7 @@ async def reconcile_continuations(ttl_seconds: int = CONTINUATION_TTL_SECONDS) -
             tstatus, tresult = trow[0], trow[1]
 
             if tstatus in ("completed", "failed"):
-                res: dict = {}
-                if tresult:
-                    try:
-                        parsed = json.loads(tresult) if isinstance(tresult, str) else tresult
-                        res = dict(parsed) if isinstance(parsed, dict) else {"result": parsed}
-                    except Exception:
-                        res = {"result": tresult}
-                res.setdefault("status", tstatus)
+                res = _result_from_persisted(tstatus, tresult)
                 await fire_for_task(cid, res, tstatus)
                 continue
 

@@ -1,10 +1,9 @@
 """Purpose-built image-model scorer. Sibling to selector.py (text). Plan 1
 shipped cloud-only with a stub eviction-cost. Plan 2 adds the local
-clair_obscur entry and the real eviction-cost + VRAM-fit gate, reading the
-LIVE in-process nerd_herd singleton snapshot (residency/VRAM). load_mode is
-the one exception — it is read from the client-backed module-level
-``nerd_herd.snapshot()`` because /mode lands on the sidecar, never on the
-orchestrator-process singleton (see ``_client_load_mode``)."""
+clair_obscur entry and the real eviction-cost + VRAM-fit gate. All system
+state is read through ONE merged snapshot view (``_effective_snapshot``)
+that composes the sidecar-backed CLIENT snapshot with the few fields only
+the in-process singleton sees — see the seam table on that helper."""
 from __future__ import annotations
 
 import os
@@ -40,25 +39,66 @@ def _snapshot():
         return SystemSnapshot()
 
 
-def _client_load_mode() -> str:
-    """Read load_mode from the CLIENT-backed module-level
-    ``nerd_herd.snapshot()`` (the NerdHerdClient cache, refreshed ~2s by
-    run.py's _snapshot_refresh_loop) — NOT from ``_snapshot()``.
+def _effective_snapshot():
+    """ONE merged snapshot view — client base + in-process overlay.
 
-    Process split: in prod NerdHerd runs as a SIDECAR process. ``/mode
-    minimal`` flows telegram_bot → load_manager.set_load_mode →
-    NerdHerdClient → sidecar, so the orchestrator-process singleton's
-    LoadManager stays "full" forever — a singleton read would make the
-    Minimal veto dead in prod. Residency/VRAM stay on the singleton seam
-    (``_snapshot``), which is where ``record_image_server_state()`` writes.
+    Process split: in prod NerdHerd runs as a SIDECAR. Pushes
+    (push_local_state, push_in_flight, /mode) land client→sidecar, so the
+    orchestrator-process singleton NEVER sees them; conversely residency and
+    queue_profile are written in-process and the sidecar never sees those.
+    Reading everything off one seam silently kills the other half (the
+    +4000 llama-unload allowance and the _EVICTION_HUGE in-flight guard were
+    dead in prod when this module read only the singleton).
 
-    Defaults to "full" on any error / missing field. Tests monkeypatch this
-    helper (the real-seam test goes through the client round-trip instead)."""
+    Seam table (which process is authoritative, and why):
+
+      CLIENT base — module-level ``nerd_herd.snapshot()`` (NerdHerdClient
+      cache, refreshed ~2s by run.py's _snapshot_refresh_loop):
+        load_mode               /mode lands on the sidecar only
+        local.model_name        dispatcher push_local_state → sidecar
+        in_flight_calls         beckman push_in_flight → sidecar
+        user_idle_s, foreground_fullscreen, ram_*, external_gpu_fraction
+                                sidecar owns the desktop/GPU sensors
+        vram_available_mb       sidecar polls the GPU itself (real value;
+                                the singleton also reads GPU live — either
+                                works, client kept as the base)
+
+      SINGLETON overlay — ``_snapshot()`` (in-process writes only):
+        image_server_resident   clair_obscur record_image_server_state()
+        image_server_vram_mb    (same writer)
+        queue_profile           beckman push_queue_profile (in-process)
+        recent_swap_count       this process's own swap-budget window
+
+    Degrade: no wired client / any client failure → singleton-only view
+    (exactly the pre-merge behavior). Tests monkeypatch ``_snapshot`` for
+    the singleton side and install a NerdHerdClient with a cached snapshot
+    for the client side — or monkeypatch this helper directly.
+
+    Future: a nerd_herd-owned merged view (sidecar echoes in-process fields
+    back, or the client composes) is the right altitude; kept here for now
+    to avoid widening the nerd_herd API in a fix batch."""
+    import copy
+
+    sing = _snapshot()
     try:
         import nerd_herd
-        return str(getattr(nerd_herd.snapshot(), "load_mode", "full") or "full")
+        from nerd_herd.client import get_default
+        if get_default() is None:
+            return sing
+        client_snap = nerd_herd.snapshot()
     except Exception:
-        return "full"
+        return sing
+    if client_snap is None:
+        return sing
+    merged = copy.copy(client_snap)  # never mutate the client's cache
+    merged.image_server_resident = bool(
+        getattr(sing, "image_server_resident", False))
+    merged.image_server_vram_mb = int(
+        getattr(sing, "image_server_vram_mb", 0) or 0)
+    merged.queue_profile = getattr(sing, "queue_profile", None)
+    merged.recent_swap_count = int(
+        getattr(sing, "recent_swap_count", 0) or 0)
+    return merged
 
 
 def _provider_available(m: ImageModelInfo, hf_available: bool | None) -> bool:
@@ -82,10 +122,10 @@ def _eviction_cost(m: ImageModelInfo, snap=None) -> float:
     """Real eviction cost (Plan 2). Cloud providers always score 0.
 
     Reads the snapshot ONCE per ``select_image`` call (passed in via ``snap``);
-    falls back to ``_snapshot()`` for direct/legacy callers."""
+    falls back to ``_effective_snapshot()`` for direct/legacy callers."""
     if not getattr(m, "is_local", False):
         return 0.0
-    s = snap if snap is not None else _snapshot()
+    s = snap if snap is not None else _effective_snapshot()
     if getattr(s, "image_server_resident", False):
         return 0.0
     in_flight = len(getattr(s, "in_flight_calls", []) or [])
@@ -117,8 +157,8 @@ def select_image(
 ) -> Pick | SelectionFailure:
     # IMPORTANT: failures is a list of STRING provider/model names.
     failed = set(failures or [])
-    snap = _snapshot()
-    load_mode = _client_load_mode()
+    snap = _effective_snapshot()
+    load_mode = str(getattr(snap, "load_mode", "full") or "full")
     candidates: list[tuple[float, ImageModelInfo]] = []
     for m in image_catalog():
         if m.name in failed:
@@ -129,11 +169,9 @@ def select_image(
         # load_mode_minimal eligibility veto, which never fires for images
         # because select() short-circuits to select_image() first). Under
         # Minimal a local image pick would shut down the loaded llama and
-        # grab ~4.5GB VRAM.
-        # TWO SEAMS by design: residency/VRAM come from the in-process
-        # singleton (``snap`` — where record_image_server_state writes), but
-        # load_mode comes from the client-backed nerd_herd.snapshot()
-        # (sidecar truth — the singleton never sees /mode in prod).
+        # grab ~4.5GB VRAM. load_mode rides the merged snapshot's CLIENT
+        # base (sidecar truth — the in-process singleton never sees /mode
+        # in prod; see _effective_snapshot's seam table).
         if m.is_local and load_mode == "minimal":
             continue
         # VRAM-fit eligibility (mirrors selector.py's needs_vision gate).

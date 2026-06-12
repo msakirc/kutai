@@ -250,6 +250,47 @@ async def test_block_unblock_mission_missing_row(fresh_db):
     assert await unblock_mission(99999) is False
 
 
+@pytest.mark.asyncio
+async def test_unblock_mission_require_actions_clear_atomic_guard(fresh_db):
+    """require_actions_clear=True must refuse to unblock while a pending
+    founder action exists, and succeed only once none remain. The count
+    re-check lives in the same atomic UPDATE that flips lifecycle_state
+    (TOCTOU close)."""
+    db_path = fresh_db
+    import src.infra.db as db_module
+    from general_beckman import add_mission, block_mission, unblock_mission
+
+    mid = await add_mission(title="T", description="d")
+    await block_mission(mid)
+
+    db = await db_module.get_db()
+    await db.execute(
+        "INSERT INTO founder_actions "
+        "(mission_id, kind, title, why, instructions_json, status, "
+        " created_at, updated_at) "
+        "VALUES (?, 'approval', 't', 'w', '{}', 'pending', "
+        "'2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        (mid,),
+    )
+    await db.commit()
+
+    # Guarded flip refuses while the action is pending.
+    assert await unblock_mission(mid, require_actions_clear=True) is False
+    row = await _fetch_mission(db_path, mid)
+    assert (row.get("lifecycle_state") or row.get("status")) \
+        == "blocked_on_founder_action"
+
+    # Resolve the action — guarded flip now succeeds.
+    await db.execute(
+        "UPDATE founder_actions SET status='resolved' WHERE mission_id=?",
+        (mid,),
+    )
+    await db.commit()
+    assert await unblock_mission(mid, require_actions_clear=True) is True
+    row2 = await _fetch_mission(db_path, mid)
+    assert (row2.get("lifecycle_state") or row2.get("status")) == "active"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # purge_all_missions / purge_all
 # ──────────────────────────────────────────────────────────────────────────────

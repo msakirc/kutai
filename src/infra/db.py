@@ -6243,6 +6243,33 @@ async def reset_blocked_on_founder_tasks(mission_id: int) -> int:
     return count
 
 
+async def conditional_unblock_mission(mission_id: int) -> bool:
+    """Atomically flip a mission 'blocked_on_founder_action' → 'active' ONLY
+    if it is still blocked AND no pending/in_progress founder_actions remain.
+
+    Single-statement guard that closes the founder-action TOCTOU: on the
+    shared single-pump event loop every ``await`` yields, so a separate
+    pending-count check followed by a later flip lets a founder_action
+    inserted in between slip through (mission unblocks while an action is
+    still pending). Re-checking the count inside the same UPDATE removes the
+    window. Returns True iff the flip happened.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE missions SET lifecycle_state = 'active' "
+        "WHERE id = ? AND lifecycle_state = 'blocked_on_founder_action' "
+        "AND NOT EXISTS ("
+        "    SELECT 1 FROM founder_actions "
+        "    WHERE mission_id = ? AND status IN ('pending', 'in_progress')"
+        ")",
+        (mission_id, mission_id),
+    )
+    flipped = cursor.rowcount > 0
+    if flipped:
+        await db.commit()
+    return flipped
+
+
 # --- Dependency Graph ---
 
 async def get_task_tree(mission_id: int) -> list[dict]:

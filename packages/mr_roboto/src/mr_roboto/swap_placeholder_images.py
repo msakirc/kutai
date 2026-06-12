@@ -793,11 +793,14 @@ async def _finalize(workspace_path: str, ledger: dict) -> None:
     shape_errors: list[str] = []
     surviving = 0
     broken_refs: list[str] = []
+    agent_ref_warnings: list[str] = []
     try:
         from mr_roboto.verify_swap_placeholder_images_shape import (
             _scan_html, _walk_html,
         )
-        surviving, broken_refs = _scan_html(_walk_html(workspace_path))
+        surviving, broken_refs, agent_ref_warnings = _scan_html(
+            _walk_html(workspace_path)
+        )
         if broken_refs:
             shape_errors.append(f"broken asset ref: {broken_refs[0]}")
         if surviving != skipped:
@@ -817,6 +820,9 @@ async def _finalize(workspace_path: str, ledger: dict) -> None:
         "ok": not shape_errors,
         "surviving_placeholders": surviving,
         "broken_asset_refs": broken_refs,
+        # Agent-authored relative refs missing on disk (the swap never wrote
+        # them) — observability only, never a shape failure.
+        "agent_ref_warnings": agent_ref_warnings,
     }
     _save_ledger(workspace_path, ledger)
 

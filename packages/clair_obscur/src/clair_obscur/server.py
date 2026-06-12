@@ -92,6 +92,7 @@ class ImageServer:
     def __init__(self, config: ClairObscurConfig):
         self._config = config
         self._pid: int | None = None
+        self._proc: subprocess.Popen | None = None
         self._resident: bool = False
         self._release_hint_at: float | None = None
         self._idle_task: asyncio.Task | None = None
@@ -100,6 +101,11 @@ class ImageServer:
         self._stderr_path: str = ""
         self._stderr_fh = None
         self._job_object = _create_job_object()
+        # Serializes start()/stop(): without it, concurrent start() calls
+        # (cloud-failover storm; beckman lane cap 4) race through the
+        # cold-start window — B's _reconcile_orphan kills A's just-launched
+        # backend and both mutate _pid/_stderr_fh.
+        self._lock = asyncio.Lock()
 
     # ───────── Public API ─────────
     def available(self) -> bool:
@@ -116,6 +122,13 @@ class ImageServer:
         }
 
     async def start(self) -> str:
+        """Serialized on self._lock: a concurrent caller waits, then hits the
+        resident-guard and returns the base_url — never a second launch, never
+        an orphan-reconcile against a live cold-starting backend."""
+        async with self._lock:
+            return await self._start_locked()
+
+    async def _start_locked(self) -> str:
         if self._resident and self._pid is not None:
             # Idempotent + clears any pending release hint so the backstop
             # window resets for the new image task.
@@ -128,6 +141,24 @@ class ImageServer:
         self._acquire_lock()
         deadline = time.time() + self._health_timeout_seconds
         while time.time() < deadline:
+            # Child died during the health wait → abort NOW (mirror dallama's
+            # _wait_for_healthy is_alive check), don't burn the full timeout.
+            proc = self._proc
+            if proc is not None and proc.poll() is not None:
+                tail = self._read_stderr_tail(30)
+                logger.error(
+                    "%s backend (pid=%s) exited during startup (rc=%s). "
+                    "Last stderr:\n%s",
+                    self._config.backend, self._pid, proc.returncode, tail,
+                )
+                self._pid = None
+                self._proc = None
+                self._close_stderr()
+                self._release_lock()
+                raise RuntimeError(
+                    f"clair_obscur {self._config.backend} exited during "
+                    f"startup (rc={proc.returncode})"
+                )
             if await self._health_probe():
                 self._resident = True
                 self._release_hint_at = None
@@ -153,6 +184,7 @@ class ImageServer:
                 self._kill_own_pid(self._pid)
             finally:
                 self._pid = None
+        self._proc = None
         self._close_stderr()
         self._release_lock()
         raise TimeoutError(
@@ -162,7 +194,16 @@ class ImageServer:
 
     async def stop(self) -> None:
         """Forced/emergency stop. Normal lane switches go through
-        record_release_hint() so the backstop handles release after idle."""
+        record_release_hint() so the backstop handles release after idle.
+
+        Takes the same lock as start() (it mutates the same state). The idle
+        backstop watcher calls this public stop() from its own task — the
+        lock serializes it against any in-flight start(); cleanup paths that
+        already HOLD the lock must call _stop_locked() instead."""
+        async with self._lock:
+            await self._stop_locked()
+
+    async def _stop_locked(self) -> None:
         task = self._idle_task
         self._idle_task = None
         if task is not None and not task.done():
@@ -177,6 +218,7 @@ class ImageServer:
                     pass
         pid = self._pid
         self._pid = None
+        self._proc = None
         self._resident = False
         self._release_hint_at = None
         if pid is not None:
@@ -223,11 +265,36 @@ class ImageServer:
             stderr_target = subprocess.DEVNULL
 
         proc = subprocess.Popen(  # noqa: S603 — caller-supplied exe
-            cmd, creationflags=creationflags,
+            cmd, creationflags=creationflags, cwd=self._resolve_cwd(),
             stdout=subprocess.DEVNULL, stderr=stderr_target,
         )
+        self._proc = proc
         self._pid = proc.pid
         _assign_to_job(self._job_object, proc.pid)
+
+    def _resolve_cwd(self) -> str | None:
+        """Directory the backend launches FROM (Popen cwd).
+
+        - comfyui: cmd is ``<python> -u main.py ...`` — main.py resolves
+          against cwd, so the ComfyUI checkout dir is REQUIRED. Only
+          working_dir (env CLAIR_OBSCUR_DIR) can supply it (the python exe
+          may live in any venv — its dirname is NOT the checkout). Unset →
+          WARNING + cwd None (launch resolves main.py against the
+          orchestrator cwd and will likely crash at startup).
+        - a1111: the launcher (webui-user.bat / launch.py) lives inside the
+          webui checkout — default to its own directory when working_dir is
+          unset."""
+        cfg = self._config
+        if cfg.working_dir:
+            return cfg.working_dir
+        if cfg.backend == "comfyui":
+            logger.warning(
+                "CLAIR_OBSCUR_DIR not set — ComfyUI launch cmd references "
+                "main.py relative to cwd; without the checkout dir the "
+                "backend will likely fail to start"
+            )
+            return None
+        return os.path.dirname(cfg.exe_path) or None
 
     def _build_launch_cmd(self) -> list[str]:
         cfg = self._config

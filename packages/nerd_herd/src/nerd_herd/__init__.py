@@ -72,8 +72,23 @@ def _get_singleton() -> NerdHerd:
 
 
 def record_swap(model_name: str = "") -> None:
-    """Record that a model swap occurred. Called by dispatcher after ensure_local_model."""
+    """Record that a model swap occurred. Called by dispatcher after ensure_local_model.
+
+    MIRROR pattern: fans out to BOTH the in-process singleton AND the default
+    NerdHerdClient's local swap budget. The text selector's hard gate reads
+    ``client.recent_swap_count()`` and ranking stickiness reads
+    ``snapshot.recent_swap_count`` off the client's snapshot — without the
+    mirror, both read 0 forever in prod (NerdHerd runs as a sidecar; the
+    sidecar has no swap write path).
+    """
     _get_singleton().record_swap(model_name)
+    try:
+        from nerd_herd.client import get_default
+        client = get_default()
+        if client is not None:
+            client.record_swap(model_name)
+    except Exception:
+        pass  # best-effort mirror — singleton write already landed
 
 
 def record_image_server_state(*, resident: bool, vram_mb: int) -> None:

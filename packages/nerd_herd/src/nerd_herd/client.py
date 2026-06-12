@@ -264,9 +264,44 @@ class NerdHerdClient:
     def snapshot(self) -> SystemSnapshot:
         """Return the last cached SystemSnapshot (sync, for Fatih Hoca).
 
-        Call refresh_snapshot() periodically to keep this fresh.
+        Call refresh_snapshot() periodically to keep this fresh. Locally
+        known state (swap budget — see _overlay_local) is overlaid on the
+        sidecar-parsed cache so read seams stay truthful without new
+        transport.
         """
-        return self._cached_snapshot
+        return self._overlay_local(self._cached_snapshot)
+
+    def _overlay_local(self, snap: SystemSnapshot) -> SystemSnapshot:
+        """Overlay locally-known values onto a (sidecar-)parsed snapshot.
+
+        MIRROR pattern (2026-06-12): prod writers call the module-level
+        nerd_herd write APIs, which fan out to the singleton AND this
+        client's local state. The sidecar never receives those writes
+        (no transport), so its parsed snapshot reads 0/None/False for
+        them; the overlay makes the client snapshot truthful.
+
+        - recent_swap_count: max(parsed, local budget) — ranking's
+          anti-flap stickiness reads this; max() keeps a genuine
+          (future-transport) sidecar value authoritative when higher.
+
+        Never mutates *snap* (the cached snapshot stays pure-parsed);
+        returns a shallow copy only when an overlay actually applies.
+        Tolerates bare instances built via __new__ in tests (getattr
+        fallbacks).
+        """
+        import dataclasses
+
+        changes: dict[str, Any] = {}
+
+        budget = getattr(self, "_swap_budget", None)
+        if budget is not None:
+            local_swaps = budget.recent_count()
+            if local_swaps > snap.recent_swap_count:
+                changes["recent_swap_count"] = local_swaps
+
+        if not changes:
+            return snap
+        return dataclasses.replace(snap, **changes)
 
     async def refresh_snapshot(self) -> SystemSnapshot:
         """Fetch a fresh SystemSnapshot from the sidecar and cache it.
@@ -278,7 +313,7 @@ class NerdHerdClient:
         data = await self._get_json("/api/snapshot", default=None)
         if isinstance(data, dict):
             self._cached_snapshot = self._parse_snapshot(data)
-            return self._cached_snapshot
+            return self._overlay_local(self._cached_snapshot)
 
         # Fallback: build snapshot from existing endpoints
         state = await self._get_state()
@@ -304,7 +339,7 @@ class NerdHerdClient:
             # sidecar that predates them), so they take dataclass defaults.
             load_mode=str(state.get("load_mode", "full")),
         )
-        return self._cached_snapshot
+        return self._overlay_local(self._cached_snapshot)
 
     def _parse_snapshot(self, data: dict) -> SystemSnapshot:
         """Parse a SystemSnapshot from the /api/snapshot JSON response."""

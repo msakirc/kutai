@@ -6050,15 +6050,49 @@ async def reset_cascade_failed_dependents(task_id: int) -> int:
 
     Used by dead_letter._plain_retry — after DLQ retry, dependents
     that were cascade-failed must be unblocked.
+
+    depends_on is a JSON list of task ids (ints from every live writer;
+    historically possibly strings).  A bare substring LIKE '%5%' wrongly
+    matches '[15]' or '[52]', so the LIKE is only a broad prefilter —
+    exact membership is decided by json-parsing each candidate row.
     """
     db = await get_db()
     cursor = await db.execute(
-        """UPDATE tasks SET status = 'pending', error = NULL,
-               started_at = NULL, completed_at = NULL, worker_attempts = 0
+        """SELECT id, depends_on FROM tasks
            WHERE status = 'failed'
              AND error = 'All dependencies failed'
              AND depends_on LIKE ?""",
         (f"%{task_id}%",),
+    )
+    rows = await cursor.fetchall()
+
+    target_ids: list[int] = []
+    for row in rows:
+        raw = row["depends_on"]
+        try:
+            deps = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(deps, list):
+            deps = [deps]
+        # str() comparison covers both int (live writers) and string
+        # (legacy) elements without false substring matches.
+        if any(str(d) == str(task_id) for d in deps):
+            target_ids.append(row["id"])
+
+    if not target_ids:
+        return 0
+
+    placeholders = ",".join("?" for _ in target_ids)
+    # Re-assert the status/error guard: another coroutine may have touched
+    # a candidate row between the SELECT above and this UPDATE.
+    cursor = await db.execute(
+        f"""UPDATE tasks SET status = 'pending', error = NULL,
+               started_at = NULL, completed_at = NULL, worker_attempts = 0
+           WHERE id IN ({placeholders})
+             AND status = 'failed'
+             AND error = 'All dependencies failed'""",
+        target_ids,
     )
     count = cursor.rowcount
     if count > 0:

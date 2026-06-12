@@ -532,6 +532,78 @@ async def test_reset_cascade_failed_dependents(fresh_db):
     assert r_other["status"] == "failed"  # unaffected
 
 
+@pytest.mark.asyncio
+async def test_reset_cascade_no_substring_false_positive(fresh_db):
+    """Retrying task 5 must NOT reset a dependent of task 15.
+
+    depends_on is stored as a JSON int list (e.g. '[15]'); a naive
+    substring LIKE '%5%' wrongly matches '[15]' and resets tasks whose
+    real blocker is still failed.
+    """
+    db_path = fresh_db
+    from general_beckman import add_task, update_task, reset_cascade_failed_dependents
+
+    # Burn ids so real tasks with ids 5 and 15 exist (fresh DB → ids 1..15).
+    ids = [
+        await add_task(title=f"filler-{i}", description="d") for i in range(15)
+    ]
+    assert 5 in ids and 15 in ids
+
+    # Cascade-failed dependent of task 15 ONLY — must stay failed when 5 retries.
+    dep_of_15 = await add_task(
+        title="dep-of-15", description="d", depends_on=[15]
+    )
+    await update_task(dep_of_15, status="failed", error="All dependencies failed")
+
+    # Cascade-failed dependent of task 5 — the only legitimate reset target.
+    dep_of_5 = await add_task(
+        title="dep-of-5", description="d", depends_on=[5]
+    )
+    await update_task(dep_of_5, status="failed", error="All dependencies failed")
+
+    # Multi-dep rows: [15, 25] must not match 5; [5, 7] must match.
+    dep_of_15_25 = await add_task(
+        title="dep-of-15-25", description="d", depends_on=[15, 25]
+    )
+    await update_task(
+        dep_of_15_25, status="failed", error="All dependencies failed"
+    )
+    dep_of_5_7 = await add_task(
+        title="dep-of-5-7", description="d", depends_on=[5, 7]
+    )
+    await update_task(dep_of_5_7, status="failed", error="All dependencies failed")
+
+    count = await reset_cascade_failed_dependents(5)
+    assert count == 2  # dep_of_5 + dep_of_5_7 only
+
+    assert (await _fetch_task(db_path, dep_of_5))["status"] == "pending"
+    assert (await _fetch_task(db_path, dep_of_5_7))["status"] == "pending"
+    # Blocker 15 is still failed — these must NOT have been reset.
+    assert (await _fetch_task(db_path, dep_of_15))["status"] == "failed"
+    assert (await _fetch_task(db_path, dep_of_15_25))["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_reset_cascade_handles_string_element_deps(fresh_db):
+    """Legacy rows whose depends_on holds string ids ('["5"]') still reset."""
+    db_path = fresh_db
+    from general_beckman import add_task, update_task, reset_cascade_failed_dependents
+
+    primary_id = await add_task(title="Primary", description="d")
+    dep_id = await add_task(title="Dependent", description="d")
+    # Simulate a legacy/foreign writer that stored ids as JSON strings.
+    await update_task(
+        dep_id,
+        depends_on=json.dumps([str(primary_id)]),
+        status="failed",
+        error="All dependencies failed",
+    )
+
+    count = await reset_cascade_failed_dependents(primary_id)
+    assert count == 1
+    assert (await _fetch_task(db_path, dep_id))["status"] == "pending"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Guard tests: no raw task SQL or helper imports outside sanctioned modules
 # ──────────────────────────────────────────────────────────────────────────────

@@ -69,6 +69,13 @@ class NerdHerdClient:
         # snapshot's queue_profile is None today — the local value is
         # overlaid in _overlay_local (local wins when set).
         self._local_queue_profile: QueueProfile | None = None
+        # Locally-known image-server residency (MIRROR pattern): clair_obscur
+        # writes via module-level record_image_server_state, which fans out
+        # here. None = never written this process (parsed sidecar values pass
+        # through); a (resident, vram_mb) tuple = written — overlay wins even
+        # for falsy stop-state (False, 0), so a stale parsed True can't
+        # resurrect a stopped server.
+        self._local_image_server: tuple[bool, int] | None = None
 
     # ------------------------------------------------------------------
     # Swap event stream (sync passthroughs — data only, policy in hoca)
@@ -86,6 +93,15 @@ class NerdHerdClient:
         pattern) — keeps one write call site per producer (beckman).
         """
         self._local_queue_profile = profile
+
+    def set_local_image_server_state(self, *, resident: bool, vram_mb: int) -> None:
+        """Store in-process image-server residency for snapshot overlay.
+
+        Called by module-level nerd_herd.record_image_server_state (MIRROR
+        pattern). Setting it marks the value as "written this process" —
+        the overlay then wins over parsed sidecar values, falsy included.
+        """
+        self._local_image_server = (bool(resident), int(vram_mb or 0))
 
     # ------------------------------------------------------------------
     # Session management
@@ -299,6 +315,10 @@ class NerdHerdClient:
           (future-transport) sidecar value authoritative when higher.
         - queue_profile: local value wins when set (parsed is always
           None today — no transport); parsed kept when local unset.
+        - image_server_resident/vram_mb: local value wins once written
+          this process (even falsy — a stopped server must read False);
+          parsed values pass through when never written, so a future
+          sidecar transport isn't clobbered.
 
         Never mutates *snap* (the cached snapshot stays pure-parsed);
         returns a shallow copy only when an overlay actually applies.
@@ -318,6 +338,14 @@ class NerdHerdClient:
         local_qp = getattr(self, "_local_queue_profile", None)
         if local_qp is not None:
             changes["queue_profile"] = local_qp
+
+        local_img = getattr(self, "_local_image_server", None)
+        if local_img is not None:
+            resident, vram_mb = local_img
+            if (resident != snap.image_server_resident
+                    or vram_mb != snap.image_server_vram_mb):
+                changes["image_server_resident"] = resident
+                changes["image_server_vram_mb"] = vram_mb
 
         if not changes:
             return snap

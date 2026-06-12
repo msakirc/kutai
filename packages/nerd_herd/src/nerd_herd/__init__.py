@@ -94,8 +94,23 @@ def record_swap(model_name: str = "") -> None:
 def record_image_server_state(*, resident: bool, vram_mb: int) -> None:
     """Record clair_obscur (local image-server) residency. Called by
     clair_obscur on start/stop. Read by fatih_hoca.image_select via the
-    snapshot."""
+    snapshot.
+
+    MIRROR pattern: also stores on the default NerdHerdClient, which
+    overlays the values onto sidecar-parsed snapshots (no transport
+    delivers them to the sidecar, so parsed values were permanently
+    False/0). fatih_hoca's image path reads the singleton directly via
+    _effective_snapshot and stays correct either way; the mirror makes
+    the client snapshot truthful for other consumers.
+    """
     _get_singleton().push_image_server_state(resident=resident, vram_mb=vram_mb)
+    try:
+        from nerd_herd.client import get_default
+        client = get_default()
+        if client is not None:
+            client.set_local_image_server_state(resident=resident, vram_mb=vram_mb)
+    except Exception:
+        pass  # best-effort mirror — singleton write already landed
 
 
 def push_queue_profile(profile: QueueProfile) -> None:

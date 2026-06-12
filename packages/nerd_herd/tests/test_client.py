@@ -377,6 +377,51 @@ def test_parse_snapshot_field_completeness_guard():
         )
 
 
+def test_snapshot_overlay_passthrough_field_completeness():
+    """Companion to the field-completeness guard for the 2026-06-12 local
+    overlays (_overlay_local): with NO locally-written state (no swaps
+    recorded, no queue_profile pushed, no image-server state written),
+    client.snapshot() must return the parsed cached snapshot unmodified —
+    the overlay must not perturb a single field of genuine sidecar data."""
+    import dataclasses
+
+    from nerd_herd.client import NerdHerdClient
+    from nerd_herd.types import (
+        CloudModelState, CloudProviderState, InFlightCall, LocalModelState,
+        QueueProfile, SystemSnapshot,
+    )
+
+    snap_in = SystemSnapshot(
+        vram_available_mb=1234,
+        local=LocalModelState(model_name="qwen2.5", measured_tps=12.5),
+        cloud={"gemini": CloudProviderState(
+            provider="gemini", utilization_pct=75.0,
+            models={"m": CloudModelState(model_id="m", daily_exhausted=True)},
+        )},
+        queue_profile=QueueProfile(hard_tasks_count=3, total_ready_count=7),
+        in_flight_calls=[InFlightCall(
+            call_id="c1", task_id=42, category="main_work", model="m1",
+            provider="p1", is_local=True, started_at=123.0, est_tokens=500,
+        )],
+        recent_swap_count=2,
+        image_server_resident=True,
+        image_server_vram_mb=4500,
+        load_mode="shared",
+        user_idle_s=5.0,
+        foreground_fullscreen=True,
+        ram_available_mb=4000,
+        ram_total_mb=32000,
+        external_gpu_fraction=0.7,
+    )
+
+    client = NerdHerdClient(port=UNREACHABLE_PORT, timeout=0.5)
+    client._cached_snapshot = snap_in
+    snap_out = client.snapshot()
+    assert dataclasses.asdict(snap_out) == dataclasses.asdict(snap_in), (
+        "overlay with no local state must be a pure pass-through"
+    )
+
+
 def test_parse_snapshot_skips_non_dict_model_entries():
     from nerd_herd.client import NerdHerdClient
     client = NerdHerdClient.__new__(NerdHerdClient)

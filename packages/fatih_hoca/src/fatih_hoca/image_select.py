@@ -79,6 +79,14 @@ def _effective_snapshot():
         queue_profile           beckman push_queue_profile (in-process)
         recent_swap_count       this process's own swap-budget window
 
+    Note (2026-06-12 mirror fixes): the module-level write APIs now ALSO
+    fan out to the NerdHerdClient's local state, and the client overlays
+    them onto its snapshot — so ``nerd_herd.snapshot()`` carries these
+    four fields for OTHER consumers (text selector/ranking) too. This
+    merged view reads them from the singleton directly, which remains
+    correct (same writers, same values); keep the singleton overlay so
+    the image path stays truthful even with no client wired.
+
     Degrade: no wired client / any client failure → singleton-only view
     (exactly the pre-merge behavior). Tests monkeypatch ``_snapshot`` for
     the singleton side and install a NerdHerdClient with a cached snapshot

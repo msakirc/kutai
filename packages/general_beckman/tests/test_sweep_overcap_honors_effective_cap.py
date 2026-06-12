@@ -90,3 +90,44 @@ async def test_sweep_still_dlqs_quality_at_cap(tmp_path, monkeypatch):
 
     # quality keeps the raw cap — 6/6 is genuinely exhausted → swept to DLQ.
     assert await _status(db_path, tid) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_sweep_section1_writes_ladder_to_context_not_infra_resets(tmp_path, monkeypatch):
+    """A task stuck >5min in 'processing' (and not in_flight) is re-pended
+    with availability backoff. The ladder's seconds-of-last-delay must land
+    in context['last_avail_delay'], NOT the infra_resets column (which stays
+    a pure reset count). First step of the ladder is 60s."""
+    import json
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    import src.infra.db as db_module
+    _reset_db(db_module, db_path)
+    from src.infra.db import init_db
+    await init_db()
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO tasks (title, status, agent_type, runner, "
+            "infra_resets, started_at) "
+            "VALUES ('stuck', 'processing', 'coder', 'react', 0, "
+            "datetime('now', '-10 minutes'))"
+        )
+        cur = await db.execute("SELECT last_insert_rowid()")
+        tid = (await cur.fetchone())[0]
+        await db.commit()
+
+    await _run_sweep(monkeypatch, db_module, db_path)
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT status, infra_resets, retry_reason, context "
+            "FROM tasks WHERE id=?", (tid,)
+        )
+        row = await cur.fetchone()
+
+    assert row["status"] == "pending"
+    assert row["retry_reason"] == "availability"
+    assert row["infra_resets"] == 0  # NOT overloaded with ladder seconds
+    assert json.loads(row["context"] or "{}").get("last_avail_delay") == 60

@@ -3956,6 +3956,46 @@ async def init_db():
                 pass
         logger.info("Added infra_resets/exhaustion_reason columns")
 
+    # One-time data migration (2026-06-12): de-overload infra_resets.
+    # The stuck-task sweep used to store the availability-ladder's
+    # seconds-of-last-delay (60..7200) in infra_resets with
+    # retry_reason='availability'. That state now lives in
+    # context['last_avail_delay'] so infra_resets is purely a reset COUNT
+    # (startup recoveries + in-flight infra failures). Move any legacy
+    # seconds-in-column values into context and zero the column.
+    # Idempotent: after running, no row matches (column reset to 0 < 60),
+    # and the new sweep never writes ladder seconds to the column again.
+    try:
+        import json as _mig_json
+        mig_cur = await db.execute(
+            "SELECT id, context, infra_resets FROM tasks "
+            "WHERE retry_reason = 'availability' AND infra_resets >= 60"
+        )
+        legacy_ladder = [dict(r) for r in await mig_cur.fetchall()]
+        for row in legacy_ladder:
+            raw = row.get("context")
+            try:
+                ctx = _mig_json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+                if isinstance(ctx, str):
+                    ctx = _mig_json.loads(ctx)
+                if not isinstance(ctx, dict):
+                    ctx = {}
+            except (ValueError, TypeError):
+                ctx = {}
+            ctx["last_avail_delay"] = int(row.get("infra_resets") or 0)
+            await db.execute(
+                "UPDATE tasks SET context = ?, infra_resets = 0 WHERE id = ?",
+                (_mig_json.dumps(ctx), row["id"]),
+            )
+        if legacy_ladder:
+            await db.commit()
+            logger.info(
+                f"Migrated {len(legacy_ladder)} availability-ladder task(s): "
+                "infra_resets seconds → context.last_avail_delay"
+            )
+    except Exception as e:
+        logger.debug(f"infra_resets de-overload migration skipped: {e}")
+
     # Migration: add suggestion columns to todo_items
     for col in ["suggestion", "suggestion_agent", "suggestion_at"]:
         try:
@@ -6005,15 +6045,13 @@ async def reset_workflow_step(
 # re-dispatched forever. After this many startup resets without completion,
 # recover_startup_tasks dead-letters it instead of re-pending.
 #
-# CAVEAT — infra_resets is overloaded: the stuck-task sweep
-# (general_beckman/sweep.py) stores the availability ladder's
-# seconds-of-last-delay (60..7200) in this column with
-# retry_reason='availability'. Those rows are NOT startup-reset counts and
-# must never trip this cap (the ladder has its own terminal at >=7200s).
-# Detected by retry_reason marker OR value >= _LADDER_FLOOR_SECONDS; the
-# cap must stay below the ladder floor for that to hold.
+# infra_resets is a pure reset COUNT (startup recoveries + in-flight infra
+# failures). The stuck-task sweep's availability-ladder backoff lives in
+# context['last_avail_delay'], NOT this column, so the cap below applies
+# cleanly with no overload to special-case. (A one-time init_db migration
+# moves any legacy seconds-in-column ladder state into context — see
+# init_db "de-overload infra_resets".)
 INFRA_RESET_CAP = 5
-_LADDER_FLOOR_SECONDS = 60
 
 
 async def recover_startup_tasks() -> dict:
@@ -6033,7 +6071,7 @@ async def recover_startup_tasks() -> dict:
     # 1. Reset tasks stuck in 'processing' (prior run didn't finish them) —
     #    unless they've hit the infra-reset cap, in which case they're poison.
     c = await db.execute(
-        "SELECT id, mission_id, agent_type, infra_resets, retry_reason "
+        "SELECT id, mission_id, agent_type, infra_resets "
         "FROM tasks WHERE status = 'processing'"
     )
     stuck = [dict(r) for r in await c.fetchall()]
@@ -6045,17 +6083,6 @@ async def recover_startup_tasks() -> dict:
     poisoned: list[dict] = []
     for t in stuck:
         prior = t.get("infra_resets") or 0
-        if (t.get("retry_reason") == "availability"
-                or prior >= _LADDER_FLOOR_SECONDS):
-            # Sweep availability-ladder row: infra_resets holds
-            # seconds-of-last-delay, not a startup-reset count. Re-pend
-            # untouched so ladder state and marker survive; the ladder's
-            # own terminal (>=7200s) handles chronic offenders.
-            await db.execute(
-                "UPDATE tasks SET status='pending' WHERE id=?", (t["id"],)
-            )
-            interrupted.append(t)
-            continue
         if prior >= INFRA_RESET_CAP:
             # Same task-row shape as general_beckman.apply._dlq_write.
             await db.execute(

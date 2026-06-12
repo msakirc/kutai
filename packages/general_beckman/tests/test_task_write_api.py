@@ -571,11 +571,14 @@ async def test_recover_startup_tasks_below_cap_still_repends(fresh_db):
 
 
 @pytest.mark.asyncio
-async def test_recover_startup_tasks_availability_ladder_exempt_from_cap(fresh_db):
-    """Sweep stores availability-ladder seconds (60..7200) in infra_resets
-    with retry_reason='availability' — those rows must NOT trip the poison
-    cap; they re-pend with ladder state untouched."""
+async def test_recover_startup_tasks_ladder_state_preserved_in_context(fresh_db):
+    """infra_resets is a pure reset COUNT now; the availability-ladder
+    backoff lives in context['last_avail_delay']. A stuck-processing row
+    with a small reset count re-pends by count (bumped) AND keeps its
+    ladder state in context untouched — recover no longer special-cases
+    retry_reason='availability'."""
     db_path = fresh_db
+    import json
     import src.infra.db as db_module
     from general_beckman import add_task, update_task, recover_startup_tasks
 
@@ -583,9 +586,9 @@ async def test_recover_startup_tasks_availability_ladder_exempt_from_cap(fresh_d
     await update_task(t, status="processing")
     db = await db_module.get_db()
     await db.execute(
-        "UPDATE tasks SET infra_resets = 120, retry_reason = 'availability' "
-        "WHERE id = ?",
-        (t,),
+        "UPDATE tasks SET infra_resets = 2, retry_reason = 'availability', "
+        "context = ? WHERE id = ?",
+        (json.dumps({"last_avail_delay": 120}), t),
     )
     await db.commit()
 
@@ -596,8 +599,45 @@ async def test_recover_startup_tasks_availability_ladder_exempt_from_cap(fresh_d
 
     row = await _fetch_task(db_path, t)
     assert row["status"] == "pending"
-    assert row["infra_resets"] == 120  # ladder seconds preserved, no bump
-    assert row["retry_reason"] == "availability"  # marker survives
+    assert row["infra_resets"] == 3  # treated as a count, bumped
+    assert row["retry_reason"] == "infrastructure"  # reclassified
+    ctx = json.loads(row["context"] or "{}")
+    assert ctx.get("last_avail_delay") == 120  # ladder state preserved
+
+
+@pytest.mark.asyncio
+async def test_init_db_migrates_legacy_ladder_seconds_to_context(fresh_db):
+    """One-time de-overload migration: a legacy row that stored ladder
+    seconds in infra_resets (retry_reason='availability', value >= 60) is
+    rewritten so the seconds move into context['last_avail_delay'] and the
+    column is zeroed. Idempotent — re-running init_db is a no-op."""
+    db_path = fresh_db
+    import json
+    import src.infra.db as db_module
+    from src.infra.db import init_db
+    from general_beckman import add_task
+
+    t = await add_task(title="Legacy ladder", description="d")
+    db = await db_module.get_db()
+    await db.execute(
+        "UPDATE tasks SET infra_resets = 240, retry_reason = 'availability', "
+        "context = '{}' WHERE id = ?",
+        (t,),
+    )
+    await db.commit()
+
+    await init_db()  # runs the migration
+
+    row = await _fetch_task(db_path, t)
+    assert row["infra_resets"] == 0  # column zeroed
+    ctx = json.loads(row["context"] or "{}")
+    assert ctx.get("last_avail_delay") == 240  # seconds moved to context
+
+    # Idempotent: re-run finds nothing to migrate, leaves the row as-is.
+    await init_db()
+    row2 = await _fetch_task(db_path, t)
+    assert row2["infra_resets"] == 0
+    assert json.loads(row2["context"] or "{}").get("last_avail_delay") == 240
 
 
 # ──────────────────────────────────────────────────────────────────────────────

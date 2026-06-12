@@ -23,7 +23,8 @@ Layers:
 
 2. swap_result validation (ADDITIONAL; only when swap_result non-empty):
    - ``ok`` must not be False.
-   - ``chain == "started"`` (kickoff shape): the chain ledger
+   - ``chain == "started"`` / ``"in_flight"`` (kickoff shapes; "in_flight"
+     = a re-run kickoff that found the chain mid-flight): the chain ledger
      ``<ws>/.swap_state/swap_chain.json`` must exist, ``placeholder_count`` must be
      > 0 and match the ledger, and the ledger status must be one of
      prompts_pending / images_pending / done. No surviving-placeholder check
@@ -184,7 +185,10 @@ def verify_swap_placeholder_images_shape(
         # CPS kickoff shape: the chain runs asynchronously — validate the
         # ledger instead of the (possibly mid-flight) HTML. Surviving
         # placehold.co URLs are EXPECTED here and must NOT fail the gate.
-        if swap.get("chain") == "started":
+        # "in_flight" is the re-run kickoff shape (reentrancy guard found
+        # the chain mid-flight; no overwrite, no duplicate enqueue) —
+        # validated identically.
+        if swap.get("chain") in ("started", "in_flight"):
             ledger_path = os.path.join(workspace_path, ".swap_state",
                                        "swap_chain.json")
             ledger: dict = {}

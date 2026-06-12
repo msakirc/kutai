@@ -115,6 +115,9 @@ def _scan_placeholders(html_path: str) -> list[dict[str, Any]]:
             "section": _section_from_alt(alt),
             "original_src": src,
             "tag_span": (m.start(), m.end()),
+            # Full matched tag text — _finalize verifies html[start:end]
+            # still equals this before splicing (stale-span guard).
+            "tag_text": m.group(0),
             "html_path": html_path,
         })
         occ += 1
@@ -271,6 +274,10 @@ async def swap_placeholder_images(
       - chain started:
         {ok: True, queued: True, chain: "started", placeholder_count,
          html_files_seen}
+      - chain already mid-flight (re-pend / restart re-run / manual retry —
+        reentrancy guard; nothing overwritten, nothing enqueued):
+        {ok: True, chain: "in_flight", placeholder_count (from the existing
+         ledger), html_files_seen}
       - prompt_writer enqueue raised (graceful degrade — all placeholders keep
         their placehold.co URLs):
         the chain:"none" shape with skipped_count=N and the error recorded.
@@ -288,6 +295,24 @@ async def swap_placeholder_images(
             "ok": True, "replaced_count": 0, "skipped_count": 0,
             "html_files_seen": 0, "html_files_changed": 0, "errors": [],
             "chain": "none",
+        }
+
+    # Reentrancy guard: a re-pend / restart re-run / manual retry of 5.35
+    # while the chain is mid-flight must NOT overwrite the ledger or enqueue
+    # a duplicate prompt_writer chain. status "done" does not block — a
+    # finished chain may be re-kicked (e.g. regenerated HTML).
+    existing = _load_ledger(workspace_path)
+    if existing and existing.get("status") in (
+        "prompts_pending", "images_pending",
+    ):
+        logger.info(
+            "swap chain already in flight (status=%s, ws=%s) — kickoff no-op",
+            existing.get("status"), workspace_path,
+        )
+        return {
+            "ok": True, "chain": "in_flight",
+            "placeholder_count": len(existing.get("placeholders") or []),
+            "html_files_seen": len(html_files),
         }
 
     all_placeholders: list[dict[str, Any]] = []
@@ -663,13 +688,24 @@ async def _finalize(workspace_path: str, ledger: dict) -> None:
     """Apply ALL HTML rewrites from the ledger in one pass, run the deep
     shape check, write the summary into the ledger.
 
-    The rewrites use scan-time tag spans, which is safe because the HTML is
-    never rewritten between scan and finalize — all rewrites happen exactly
-    once, HERE. Per-placeholder failure keeps the placehold.co URL (graceful
-    degrade). No Telegram notify."""
+    The rewrites use scan-time tag spans. Each span is verified against the
+    recorded scan-time tag text before splicing (the HTML could have been
+    rewritten between scan and finalize — e.g. a regenerated screen); a
+    stale span is skipped with the error recorded, keeping the placehold.co
+    URL (graceful degrade). Idempotent: a ledger already finalized
+    (status=done) is left untouched — a second finalize would re-splice the
+    stale scan-time spans into the already-rewritten HTML. No Telegram
+    notify."""
+    if ledger.get("status") == "done":
+        logger.info(
+            "swap chain: finalize skipped — ledger already done (ws=%s)",
+            workspace_path,
+        )
+        return
+
     assets_dir = _assets_dir(workspace_path)
     results = ledger.setdefault("results", {})
-    rewrites_per_file: dict[str, dict[tuple[int, int], str]] = {}
+    candidates_per_file: dict[str, dict[tuple[int, int], dict]] = {}
     errors: list[str] = []
     replaced = 0
     skipped = 0
@@ -688,14 +724,42 @@ async def _finalize(workspace_path: str, ledger: dict) -> None:
             asset_abs = os.path.join(assets_dir, entry["asset"])
             html_dir = os.path.dirname(ph["html_path"])
             new_src = os.path.relpath(asset_abs, html_dir).replace(os.sep, "/")
-            rewrites_per_file.setdefault(ph["html_path"], {})[
+            candidates_per_file.setdefault(ph["html_path"], {})[
                 tuple(ph["tag_span"])
-            ] = new_src
-            replaced += 1
+            ] = {"src": new_src, "tag_text": ph.get("tag_text"), "pid": pid}
         else:
             skipped += 1
             if entry.get("error"):
                 errors.append(str(entry["error"]))
+
+    # Splice validation: only spans whose scan-time tag text still sits at
+    # the recorded offsets may be spliced — anything else would corrupt the
+    # HTML. Stale spans degrade to skipped (placehold.co URL survives).
+    rewrites_per_file: dict[str, dict[tuple[int, int], str]] = {}
+    for path, candidates in candidates_per_file.items():
+        try:
+            with open(path, encoding="utf-8") as fh:
+                current_html: str | None = fh.read()
+        except OSError:
+            current_html = None
+        for span, cand in candidates.items():
+            tag_text = cand.get("tag_text")
+            pid = cand["pid"]
+            if (
+                current_html is not None
+                and isinstance(tag_text, str)
+                and current_html[span[0]:span[1]] != tag_text
+            ):
+                err = (
+                    f"stale span for {pid}: HTML changed between scan and "
+                    f"finalize — splice skipped"
+                )
+                results[pid] = {"status": "skipped", "error": err}
+                errors.append(err)
+                skipped += 1
+                continue
+            rewrites_per_file.setdefault(path, {})[span] = cand["src"]
+            replaced += 1
 
     files_changed = 0
     for path, rewrites in rewrites_per_file.items():

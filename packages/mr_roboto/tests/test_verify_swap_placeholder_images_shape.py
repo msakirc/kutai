@@ -291,6 +291,35 @@ def test_chain_started_accepts_done_ledger(tmp_path):
     assert res["ok"] is True
 
 
+def test_chain_in_flight_accepted_like_started(tmp_path):
+    """FIX 1.2d: a re-run kickoff that found the chain mid-flight returns
+    chain='in_flight' (no overwrite, no duplicate enqueue). The verifier
+    must validate it like 'started' — ledger exists, count matches, sane
+    status — NOT fall through to the legacy surviving==skipped branch
+    (which would fail every mid-flight re-run)."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=2, status="images_pending")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "in_flight",
+                     "placeholder_count": 2, "html_files_seen": 1},
+    )
+    assert res["ok"] is True
+    assert res["surviving_placeholders"] == 2
+
+
+def test_chain_in_flight_fails_when_ledger_missing(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "in_flight", "placeholder_count": 2},
+    )
+    assert res["ok"] is False
+    assert "ledger" in (res.get("error") or "").lower()
+
+
 def test_chain_started_fails_when_ledger_missing(tmp_path):
     web = tmp_path / ".web"; web.mkdir()
     (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")

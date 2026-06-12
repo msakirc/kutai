@@ -297,6 +297,57 @@ async def test_kickoff_enqueue_raises_degrades(ws, monkeypatch):
     assert all(v["status"] == "skipped" for v in ledger["results"].values())
 
 
+# -- kickoff reentrancy (FIX 1.2a) ------------------------------------------
+
+@pytest.mark.asyncio
+async def test_kickoff_refuses_overwrite_while_prompts_pending(ws, cap):
+    """Re-pends / restart re-runs / manual retries of 5.35 must be harmless:
+    a second kickoff while the chain is mid-flight must NOT overwrite the
+    ledger or enqueue a duplicate prompt_writer chain."""
+    await swap_placeholder_images(mission_id=42)
+    assert len(cap.calls) == 1
+    ledger_before = _load_ledger(str(ws))
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["ok"] is True
+    assert res["chain"] == "in_flight"
+    assert res["placeholder_count"] == 3
+    assert len(cap.calls) == 1  # NO second prompt_writer
+    assert _load_ledger(str(ws)) == ledger_before  # untouched
+
+
+@pytest.mark.asyncio
+async def test_kickoff_refuses_overwrite_while_images_pending(ws, cap):
+    await swap_placeholder_images(mission_id=42)
+    cap.calls.clear()
+    ledger = _load_ledger(str(ws))
+    ledger["status"] = "images_pending"
+    _save_ledger(str(ws), ledger)
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["chain"] == "in_flight"
+    assert res["placeholder_count"] == 3
+    assert cap.calls == []
+    assert _load_ledger(str(ws))["status"] == "images_pending"
+
+
+@pytest.mark.asyncio
+async def test_kickoff_proceeds_when_previous_chain_done(ws, cap):
+    """A finished chain does not block a fresh kickoff (e.g. regenerated
+    HTML with new placeholders): the ledger is rebuilt and a new
+    prompt_writer child is enqueued."""
+    await swap_placeholder_images(mission_id=42)
+    cap.calls.clear()
+    ledger = _load_ledger(str(ws))
+    ledger["status"] = "done"
+    _save_ledger(str(ws), ledger)
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["chain"] == "started"
+    assert len(cap.calls) == 1
+    assert _load_ledger(str(ws))["status"] == "prompts_pending"
+
+
 # -- prompts_done / prompts_err handlers -----------------------------------
 
 async def _kickoff(ws, cap, mission_id=42):
@@ -469,6 +520,74 @@ async def test_finalize_rewrites_html(ws, cap):
     assert ledger["shape_check"]["surviving_placeholders"] == 1
     assert any("image gen failed" in e for e in ledger["errors"])
     _ = state  # silence unused
+
+
+@pytest.mark.asyncio
+async def test_double_finalize_is_noop(ws, cap):
+    """FIX 1.2b: finalize must be idempotent. A second _finalize on a
+    status=done ledger must NOT re-splice the (now stale) scan-time spans
+    into the already-rewritten HTML."""
+    await _drive_chain(ws, cap)
+    html_after = (ws / ".web" / "home.html").read_text(encoding="utf-8")
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+
+    await _finalize(str(ws), ledger)
+
+    assert (ws / ".web" / "home.html").read_text(encoding="utf-8") == html_after
+    assert _load_ledger(str(ws)) == ledger
+
+
+@pytest.mark.asyncio
+async def test_stale_span_skipped_not_spliced(ws, cap):
+    """FIX 1.2c: if the HTML changed between scan and finalize, splicing the
+    recorded spans would corrupt the file. Each span is verified against the
+    recorded tag text; mismatches are skipped (placehold.co URL survives —
+    graceful degrade) with the error recorded in the ledger."""
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(101, dict(_PROMPTS_3), state)
+
+    # Mutate the HTML mid-flight: lengthen the SECOND placeholder's tag.
+    # home__0 (before the edit) keeps a valid span; home__1's own tag text
+    # changed; home__2's span shifted.
+    p = ws / ".web" / "home.html"
+    html = p.read_text(encoding="utf-8")
+    p.write_text(html.replace("text=feat", "text=feature"), encoding="utf-8")
+
+    # Drive the image children to done as usual.
+    guard = 0
+    while cap.calls:
+        guard += 1
+        assert guard < 10
+        call = cap.calls.pop(0)
+        ic = call["spec"]["context"]["image_call"]
+        raw = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_raw.png")
+        _write_real_png(raw, ic["width"], ic["height"])
+        await _on_image_done(
+            call["id"], {"path": raw, "content": raw},
+            _roundtrip(call["kwargs"]["cont_state"]),
+        )
+
+    rewritten = p.read_text(encoding="utf-8")
+    # home__0: valid span → spliced.
+    assert rewritten.count('src="assets/home__0.png"') == 1
+    # home__1 + home__2: stale spans → NOT spliced, placehold.co survives.
+    assert rewritten.count("placehold.co") == 2
+    assert 'src="assets/home__1.png"' not in rewritten
+    assert 'src="assets/home__2.png"' not in rewritten
+    # No corrupt splice: the document structure is intact.
+    assert rewritten.count("<img") == 4
+    assert "/assets/already_real.png" in rewritten
+
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+    assert ledger["replaced"] == 1
+    assert ledger["skipped"] == 2
+    assert ledger["results"]["home__1"]["status"] == "skipped"
+    assert ledger["results"]["home__2"]["status"] == "skipped"
+    stale_errors = [e for e in ledger["errors"] if "stale span" in e]
+    assert any("home__1" in e for e in stale_errors)
+    assert any("home__2" in e for e in stale_errors)
 
 
 # -- full chain --------------------------------------------------------------

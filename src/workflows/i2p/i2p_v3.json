@@ -5177,9 +5177,6 @@
       ],
       "instruction": "Plan 3 — replace placehold.co <img> placeholders in every mission_{mission_id}/.web/**/*.html (recursive) with real diffusion-generated PNGs, as an ASYNC CPS chain (SP5 deleted await_inline; the swap is NOT synchronous). The 5.35 kickoff scans placeholders, writes a chain ledger to .swap_state/swap_chain.json (OUTSIDE the served/published .web root), enqueues ONE prompt_writer child (artifact_schema arms constrained_emit) with durable on_complete/on_error continuations, and completes immediately. Continuations then enqueue one image child per placeholder SEQUENTIALLY through beckman (fatih_hoca.select(needs_image=True) -> paintress); the chain tail rewrites <img src> to a subdir-correct relative assets/<placeholder_id>.png ref and runs the deep shape check. Best-effort: per-placeholder failures keep the original placehold.co URL — never blocks the mission. Skipping is acceptable; the preview surfaces with placeholders until images land.",
       "done_when": "swap_placeholder_images kickoff returns ok=true (chain 'none' when nothing to swap, or chain 'started' with the ledger written — images land asynchronously via the CPS chain; skipped placeholders are acceptable when image generation is unavailable)",
-      "produces": [
-        "mission_{mission_id}/.web/assets/"
-      ],
       "reversibility": "full",
       "artifact_schema": {
         "diffusion_prompts": {

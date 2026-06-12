@@ -141,17 +141,24 @@ def test_workflow_engine_stub_stays_a_stub():
 # ── 4. src/agents stays thin — new agents are Foundry YAML, not classes ─────
 def test_src_agents_is_thin():
     """Only the back-compat shim (__init__), the legacy base residual (base.py),
-    and the oncall_agent carve-out (needs coulson.get_whitelist; can't live in
-    the leaf) are allowed in src/agents/. Any other .py means a new agent was
-    added as a class instead of a YAML data profile — fail so it's deliberate.
+    the oncall_agent carve-out (needs coulson.get_whitelist; can't live in the
+    leaf), and prompt_writer.py are allowed in src/agents/. Any other .py means a
+    new agent was added as a class instead of a YAML data profile — fail so it's
+    deliberate.
+
+    prompt_writer.py is NOT an agent class: the prompt_writer agent IS a Foundry
+    YAML profile (profiles/prompt_writer.yaml). This file retains only the
+    image-gen artifact schema (PROMPT_WRITER_ARTIFACT_SCHEMA) + diffusion-template
+    loader that mr_roboto's swap step imports. Ideally relocate that data/util to
+    src/workflows or a mr_roboto-adjacent module in a follow-up, then drop it here.
 
     When base.py is deleted by the A.12/A.13 follow-on, tighten allowed to
-    {"__init__.py", "oncall_agent.py"}.
+    {"__init__.py", "oncall_agent.py", "prompt_writer.py"}.
     """
     import pathlib
     pys = list(pathlib.Path("src/agents").glob("*.py"))
     names = {p.name for p in pys}
-    allowed = {"__init__.py", "base.py", "oncall_agent.py"}
+    allowed = {"__init__.py", "base.py", "oncall_agent.py", "prompt_writer.py"}
     extra = names - allowed
     assert not extra, (
         f"new agent classes must be Foundry YAML, not src/agents/*.py: {extra}"

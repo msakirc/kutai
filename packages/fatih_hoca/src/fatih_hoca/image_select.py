@@ -141,6 +141,14 @@ def select_image(
         # add a conservative 4GB local-recoverable allowance) can't fit.
         if m.is_local and m.vram_mb > 0:
             free_mb = int(getattr(snap, "vram_available_mb", 0) or 0)
+            # Residency credit: when the image server is already RESIDENT,
+            # its own footprint (~4.5GB) is exactly the VRAM the model
+            # occupies — reusing it warm needs no NEW VRAM. Raw free VRAM
+            # already has that footprint subtracted, so without the credit
+            # image #2..N of a warm batch on the 8GB GPU always fails this
+            # gate and skips local.
+            if getattr(snap, "image_server_resident", False):
+                free_mb += int(getattr(snap, "image_server_vram_mb", 0) or 0)
             llm_loaded_mb = 4000 if getattr(
                 getattr(snap, "local", None), "model_name", None
             ) else 0

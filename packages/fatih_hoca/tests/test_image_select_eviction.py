@@ -5,7 +5,14 @@ from fatih_hoca.types import Pick, SelectionFailure
 
 
 def _snap(*, llm_in_flight=0, llm_loaded=False, llm_queue=0,
-          image_resident=False, vram_mb=6000, mode="full"):
+          image_resident=False, vram_mb=None, mode="full"):
+    # Realistic 8GB-GPU story: non-resident idle GPU has ~6000MB free; with
+    # the ~4.5GB image server RESIDENT, raw free VRAM is only ~2800MB. The
+    # old default (6000 free WITH the server resident) was physically
+    # impossible on the 8GB card and masked the missing residency credit
+    # in the VRAM-fit gate (warm image #2..N always skipped local).
+    if vram_mb is None:
+        vram_mb = 2800 if image_resident else 6000
     class _Local:
         model_name = "qwen2.5" if llm_loaded else None
         requests_processing = llm_in_flight
@@ -68,6 +75,35 @@ def test_resident_with_warm_bonus_picks_local(monkeypatch, real_exe):
     assert pick.model.provider == "clair_obscur"
 
 
+def test_residency_credit_makes_warm_local_eligible(monkeypatch, real_exe):
+    """Warm-batch image #2..N on the 8GB GPU: raw free VRAM (2800) is BELOW
+    the model's 4500MB need because the resident server itself holds ~4.5GB.
+    The VRAM-fit gate must credit the resident server's own footprint
+    (reuse-by-warm needs no NEW VRAM) — then local is eligible and wins via
+    the warm bonus (7.5 + 1.0 = 8.5 > HF 8.0)."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(image_resident=True, vram_mb=2800))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality", failures=[], hf_available=True)
+    assert isinstance(pick, Pick)
+    assert pick.model.provider == "clair_obscur"
+
+
+def test_no_residency_credit_when_not_resident(monkeypatch, real_exe):
+    """Cold server + genuinely low free VRAM: no credit applies, local stays
+    gated. With every cloud provider failed this surfaces as a
+    SelectionFailure — proving the gate (not scoring) filtered local."""
+    monkeypatch.setattr("fatih_hoca.image_select._snapshot",
+                        lambda: _snap(vram_mb=2800))
+    monkeypatch.setenv("HF_TOKEN", "x")
+    pick = select_image(quality_tier="quality",
+                        failures=["huggingface/flux-schnell",
+                                  "pollinations/flux"],
+                        hf_available=True)
+    assert isinstance(pick, SelectionFailure)
+    assert pick.reason == "availability"
+
+
 def test_vram_too_low_filters_local(monkeypatch, real_exe):
     # Exe EXISTS (real_exe) so provider-availability passes; local must still
     # be filtered on the VRAM-fit gate alone.
@@ -86,7 +122,7 @@ def test_minimal_load_mode_vetoes_local(monkeypatch, real_exe):
     so local must be skipped even with plenty of VRAM. load_mode is read off
     the CLIENT seam (_client_load_mode), not the singleton snapshot."""
     monkeypatch.setattr("fatih_hoca.image_select._snapshot",
-                        lambda: _snap(image_resident=True, vram_mb=8000))
+                        lambda: _snap(image_resident=True))
     monkeypatch.setattr("fatih_hoca.image_select._client_load_mode",
                         lambda: "minimal")
     monkeypatch.setenv("HF_TOKEN", "x")
@@ -99,7 +135,7 @@ def test_minimal_load_mode_only_local_left_fails(monkeypatch, real_exe):
     """If every cloud provider has failed, Minimal yields SelectionFailure
     rather than falling back to a local image model."""
     monkeypatch.setattr("fatih_hoca.image_select._snapshot",
-                        lambda: _snap(image_resident=True, vram_mb=8000))
+                        lambda: _snap(image_resident=True))
     monkeypatch.setattr("fatih_hoca.image_select._client_load_mode",
                         lambda: "minimal")
     monkeypatch.setenv("HF_TOKEN", "x")
@@ -141,8 +177,7 @@ def test_minimal_veto_reads_client_seam_not_singleton(monkeypatch, real_exe):
     from nerd_herd.types import SystemSnapshot
 
     monkeypatch.setattr("fatih_hoca.image_select._snapshot",
-                        lambda: _snap(image_resident=True, vram_mb=8000,
-                                      mode="full"))
+                        lambda: _snap(image_resident=True, mode="full"))
     monkeypatch.setenv("HF_TOKEN", "x")
 
     c = nh_client.NerdHerdClient()

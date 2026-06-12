@@ -47,7 +47,6 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from src.infra.logging_config import get_logger
@@ -75,8 +74,21 @@ def _parse_attrs(tag_inner: str) -> dict[str, str]:
     return {k.lower(): v for k, v in _ATTR_RE.findall(tag_inner)}
 
 
-def _slug_from_path(html_path: str) -> str:
-    return Path(html_path).stem
+def _slug_from_path(html_path: str, web_root: str) -> str:
+    """Placeholder-id slug from the path RELATIVE to the .web root.
+
+    The walk is recursive, so .web/index.html and .web/screens/index.html
+    can coexist — a stem-derived slug would collide ("index__0" twice: the
+    second placeholder never gets an image and both files get rewritten to
+    the same asset). Flat files keep the old slug (relpath of a top-level
+    file is just the name → "home.html" → "home"); subdir files prefix
+    their dirs ("screens/index.html" → "screens__index"). Separators/dots
+    sanitize to filesystem-safe chars — the pid is used as a flat filename
+    (assets/<pid>.png)."""
+    rel = os.path.relpath(html_path, web_root)
+    stem = os.path.splitext(rel)[0]
+    stem = stem.replace("\\", "/").replace("/", "__")
+    return re.sub(r"[^A-Za-z0-9_\-]+", "_", stem)
 
 
 def _section_from_alt(alt: str) -> str:
@@ -92,13 +104,13 @@ def _section_from_alt(alt: str) -> str:
     return "feature"
 
 
-def _scan_placeholders(html_path: str) -> list[dict[str, Any]]:
+def _scan_placeholders(html_path: str, web_root: str) -> list[dict[str, Any]]:
     try:
         with open(html_path, encoding="utf-8") as fh:
             html = fh.read()
     except OSError:
         return []
-    slug = _slug_from_path(html_path)
+    slug = _slug_from_path(html_path, web_root)
     out: list[dict[str, Any]] = []
     occ = 0
     for m in _IMG_RE.finditer(html):
@@ -316,8 +328,9 @@ async def swap_placeholder_images(
         }
 
     all_placeholders: list[dict[str, Any]] = []
+    web_root = _web_root(workspace_path)
     for h in html_files:
-        all_placeholders.extend(_scan_placeholders(h))
+        all_placeholders.extend(_scan_placeholders(h, web_root))
 
     if not all_placeholders:
         return {

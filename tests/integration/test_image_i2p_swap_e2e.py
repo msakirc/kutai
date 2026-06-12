@@ -59,16 +59,18 @@ async def test_i2p_swap_e2e_cps_chain(monkeypatch, tmp_path, temp_db):
         "src.tools.workspace.get_mission_workspace", lambda mid: str(ws),
     )
 
-    # placeholder_ids are slug-derived: <html-stem>__<occurrence>.
+    # placeholder_ids are slug-derived from the path RELATIVE to .web
+    # (FIX 1.3 — stem-only slugs collided across subdirs):
     # home.html → home__0 (hero), home__1 (feat); /assets/already_real.png
     # is NOT a placeholder and is skipped by the scanner.
-    # onboarding.html → onboarding__0 (user portrait).
+    # screens/onboarding.html → screens__onboarding__0 (user portrait).
     prompt_envelope = {
         "_schema_version": "1",
         "prompts": [
             {"placeholder_id": "home__0", "prompt": "coral barista"},
             {"placeholder_id": "home__1", "prompt": "slate dashboard"},
-            {"placeholder_id": "onboarding__0", "prompt": "teal portrait"},
+            {"placeholder_id": "screens__onboarding__0",
+             "prompt": "teal portrait"},
         ],
     }
 
@@ -168,7 +170,8 @@ async def test_i2p_swap_e2e_cps_chain(monkeypatch, tmp_path, temp_db):
     # ── end state: identical to the old blocking e2e expectations ────────
     assets = ws / ".web" / "assets"
     pngs = sorted(p.name for p in assets.glob("*.png"))
-    assert pngs == ["home__0.png", "home__1.png", "onboarding__0.png"]
+    assert pngs == ["home__0.png", "home__1.png",
+                    "screens__onboarding__0.png"]
     for png in pngs:
         assert (assets / png).stat().st_size > 0
 
@@ -186,8 +189,8 @@ async def test_i2p_swap_e2e_cps_chain(monkeypatch, tmp_path, temp_db):
     # Subdir screen: relpath from .web/screens/ to .web/assets/ →
     # "../assets/<pid>.png" — resolves correctly in a static file server,
     # whereas a flat "assets/<pid>.png" would 404 (→ .web/screens/assets/...).
-    assert 'src="../assets/onboarding__0.png"' in onboarding
-    assert 'src="assets/onboarding__0.png"' not in onboarding
+    assert 'src="../assets/screens__onboarding__0.png"' in onboarding
+    assert 'src="assets/screens__onboarding__0.png"' not in onboarding
 
     # Chain ledger finalized: full success, deep shape check passed. The
     # ledger lives OUTSIDE the served .web root (never published/tunneled).

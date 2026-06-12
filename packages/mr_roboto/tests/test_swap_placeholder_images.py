@@ -64,7 +64,7 @@ _PROMPTS_3 = {
 def test_scan_finds_three(tmp_path):
     p = tmp_path / "home.html"
     p.write_text(_HTML, encoding="utf-8")
-    hits = _scan_placeholders(str(p))
+    hits = _scan_placeholders(str(p), str(tmp_path))
     assert len(hits) == 3
     ids = {h["placeholder_id"] for h in hits}
     assert ids == {"home__0", "home__1", "home__2"}
@@ -73,13 +73,35 @@ def test_scan_finds_three(tmp_path):
 
 
 def test_scan_handles_missing(tmp_path):
-    assert _scan_placeholders(str(tmp_path / "missing.html")) == []
+    assert _scan_placeholders(str(tmp_path / "missing.html"),
+                              str(tmp_path)) == []
 
 
 def test_scan_handles_no_placeholders(tmp_path):
     p = tmp_path / "empty.html"
     p.write_text("<html><body>no images</body></html>", encoding="utf-8")
-    assert _scan_placeholders(str(p)) == []
+    assert _scan_placeholders(str(p), str(tmp_path)) == []
+
+
+def test_scan_distinct_pids_for_same_stem_in_subdirs(tmp_path):
+    """FIX 1.3: the recursive walk can yield .web/index.html AND
+    .web/screens/index.html — a stem-derived slug gives BOTH the pid
+    'index__0' (second placeholder never gets an image; both files get
+    rewritten to the same asset). The slug derives from the path RELATIVE
+    to the .web root; the flat-file slug is unchanged."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    html = ('<html><body>'
+            '<img src="https://placehold.co/64x64/000/FFF?text=h" alt="hero">'
+            '</body></html>')
+    (web / "index.html").write_text(html, encoding="utf-8")
+    (web / "screens" / "index.html").write_text(html, encoding="utf-8")
+
+    root_hits = _scan_placeholders(str(web / "index.html"), str(web))
+    sub_hits = _scan_placeholders(
+        str(web / "screens" / "index.html"), str(web))
+    assert root_hits[0]["placeholder_id"] == "index__0"
+    assert sub_hits[0]["placeholder_id"] == "screens__index__0"
 
 
 def test_list_html_recursive(tmp_path):
@@ -673,23 +695,73 @@ async def test_full_chain_subdir_html_gets_relative_dotdot_ref(
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
+    # FIX 1.3: subdir pids are relpath-derived → "screens__onboarding__0".
     prompts = {
         "prompts": [
             {"placeholder_id": "home__0", "prompt": "coral barista"},
-            {"placeholder_id": "onboarding__0", "prompt": "teal portrait"},
+            {"placeholder_id": "screens__onboarding__0",
+             "prompt": "teal portrait"},
         ],
     }
     await _drive_chain(tmp_path, cap, prompts=prompts)
 
     assets = web / "assets"
     pngs = sorted(p.name for p in assets.glob("*.png"))
-    assert pngs == ["home__0.png", "onboarding__0.png"]
+    assert pngs == ["home__0.png", "screens__onboarding__0.png"]
 
     home = (web / "home.html").read_text(encoding="utf-8")
     assert 'src="assets/home__0.png"' in home
     onboarding = (web / "screens" / "onboarding.html").read_text(encoding="utf-8")
-    assert 'src="../assets/onboarding__0.png"' in onboarding
-    assert 'src="assets/onboarding__0.png"' not in onboarding
+    assert 'src="../assets/screens__onboarding__0.png"' in onboarding
+    assert 'src="assets/screens__onboarding__0.png"' not in onboarding
+
+
+@pytest.mark.asyncio
+async def test_full_chain_same_stem_files_get_distinct_assets(
+    monkeypatch, tmp_path, cap,
+):
+    """FIX 1.3 end-to-end: .web/index.html + .web/screens/index.html (same
+    stem) must get DISTINCT pids, DISTINCT images and correct per-file
+    rewrites — not collapse onto one shared asset."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    (web / "index.html").write_text(
+        '<html><body>'
+        '<img src="https://placehold.co/390x220/E07A5F/FFF?text=hero" alt="hero">'
+        '</body></html>',
+        encoding="utf-8",
+    )
+    (web / "screens" / "index.html").write_text(
+        '<html><body>'
+        '<img src="https://placehold.co/64x64/264653/FFF?text=u" alt="user portrait">'
+        '</body></html>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+    prompts = {
+        "prompts": [
+            {"placeholder_id": "index__0", "prompt": "coral hero"},
+            {"placeholder_id": "screens__index__0", "prompt": "teal portrait"},
+        ],
+    }
+    await _drive_chain(tmp_path, cap, prompts=prompts)
+
+    pngs = sorted(p.name for p in (web / "assets").glob("*.png"))
+    assert pngs == ["index__0.png", "screens__index__0.png"]
+
+    root = (web / "index.html").read_text(encoding="utf-8")
+    assert 'src="assets/index__0.png"' in root
+    sub = (web / "screens" / "index.html").read_text(encoding="utf-8")
+    assert 'src="../assets/screens__index__0.png"' in sub
+    assert "index__0.png\"" not in sub.replace("screens__index__0.png", "")
+
+    ledger = _load_ledger(str(tmp_path))
+    assert ledger["status"] == "done"
+    assert ledger["replaced"] == 2
+    assert ledger["skipped"] == 0
+    assert ledger["shape_check"]["ok"] is True
 
 
 @pytest.mark.asyncio

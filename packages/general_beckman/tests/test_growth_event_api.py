@@ -139,16 +139,14 @@ async def test_supersede_returns_zero_when_all_already_closed(fresh_db):
 async def test_supersede_handles_null_properties_json(fresh_db):
     """supersede_growth_event handles rows with NULL properties_json (no crash, marks superseded)."""
     db_path = fresh_db
-    import src.infra.db as db_module
     from general_beckman import supersede_growth_event
 
     # Insert a row with NULL properties_json directly (simulates legacy rows).
     async with aiosqlite.connect(db_path) as db:
-        cur = await db.execute(
+        await db.execute(
             "INSERT INTO growth_events (mission_id, kind, properties_json) VALUES (?, ?, NULL)",
             (42, "null_props_kind"),
         )
-        event_id = cur.lastrowid
         await db.commit()
 
     count = await supersede_growth_event(mission_id=42, kind="null_props_kind")

@@ -1,10 +1,12 @@
 """Tests for beckman task write API:
   beckman.add_task, update_task, update_task_by_context_field,
   add_subtasks, propagate_skips, cancel_task, reprioritize_task,
-  save_task_checkpoint, clear_task_checkpoint.
+  save_task_checkpoint, clear_task_checkpoint,
+  reset_failed_tasks, reset_stuck_tasks, reset_blocked_tasks,
+  cancel_pending_tasks, reset_workflow_step,
+  recover_startup_tasks, reset_cascade_failed_dependents.
 
-No guard tests in this file — guards come in part 5b when src/app and
-src/core call sites are also migrated.
+Includes two guard tests (no_raw_tasks_sql, no_raw_db_task_imports).
 """
 from __future__ import annotations
 
@@ -27,14 +29,6 @@ async def _fetch_task(db_path: str, task_id: int) -> dict | None:
         cur = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
-
-
-async def _fetch_all_tasks(db_path: str) -> list[dict]:
-    """Return all tasks rows."""
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM tasks")
-        return [dict(r) for r in await cur.fetchall()]
 
 
 async def _fetch_tasks_for_mission(db_path: str, mission_id: int) -> list[dict]:

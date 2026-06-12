@@ -96,18 +96,13 @@ async def fresh_db(tmp_path, monkeypatch):
 
     db_path = str(tmp_path / "kutai.db")
     monkeypatch.setenv("DB_PATH", db_path)
-    db_module.DB_PATH = db_path
+    monkeypatch.setattr(db_module, "DB_PATH", db_path)
     # Reset cached connection so get_db() opens a fresh connection to the
     # new path (not a stale connection to a previous test's DB).
     db_module._db_connection = None
     db_module._db_connection_path = None
 
     await init_db()
-
-    # Reset again so the first beckman call in the test body opens its own
-    # connection rather than reusing the one init_db left open.
-    db_module._db_connection = None
-    db_module._db_connection_path = None
 
     yield db_path
 

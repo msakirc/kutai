@@ -38,7 +38,13 @@ register = register_resume
 
 async def dispatch_on_complete(name: str, task_id: int, result: dict,
                                state: dict | None = None) -> None:
-    """Look up and invoke the named handler (3-arg). Swallows handler errors."""
+    """Look up and invoke the named handler (3-arg).
+
+    A handler exception is contained (never propagates to the caller), but
+    the continuation row is UN-CLAIMED (fired→pending, TTL-bounded) so the
+    periodic reconcile retries it instead of silently losing the
+    continuation — see _unclaim_after_crash.
+    """
     handler = _HANDLERS.get(name)
     if handler is None:
         _log.warning("dispatch: no handler registered", name=name, task_id=task_id)
@@ -48,6 +54,45 @@ async def dispatch_on_complete(name: str, task_id: int, result: dict,
     except Exception as exc:  # noqa: BLE001
         _log.error("continuation handler raised", name=name, task_id=task_id,
                    error=str(exc))
+        await _unclaim_after_crash(task_id, name)
+
+
+async def _unclaim_after_crash(child_task_id: int, name: str) -> None:
+    """Un-claim a continuation row (fired→pending) after its handler crashed.
+
+    The claim happens BEFORE handler dispatch (CAS in claim_for_fire), so a
+    crashing handler used to consume the row — the continuation was lost and
+    e.g. the swap-chain ledger stalled forever. Flipping the row back to
+    'pending' lets reconcile_continuations (startup + periodic) reconstruct
+    the result from tasks.result and retry the handler.
+
+    TTL-bounded: only rows still inside CONTINUATION_TTL_SECONDS (by
+    created_at) are un-claimed. A handler that crashes on every retry is
+    re-driven by reconcile only until the TTL, after which the row expires
+    through the normal on_error/expire path; if THAT on_error dispatch
+    crashes too, it is past the TTL by definition and stays consumed — no
+    infinite crash→un-claim→re-fire loop. Legacy dispatches with no row
+    match zero rows and no-op.
+    """
+    try:
+        from src.infra.db import get_db
+        db = await get_db()
+        upd = await db.execute(
+            "UPDATE continuations SET status='pending' "
+            "WHERE child_task_id=? AND status='fired' "
+            "AND datetime(created_at, '+' || ? || ' seconds') >= datetime('now')",
+            (child_task_id, CONTINUATION_TTL_SECONDS),
+        )
+        await db.commit()
+        if upd.rowcount == 1:
+            _log.warning(
+                "continuation un-claimed after handler crash — "
+                "reconcile will retry",
+                child_task_id=child_task_id, handler=name,
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.error("continuation un-claim failed", child_task_id=child_task_id,
+                   handler=name, error=str(exc))
 
 
 async def claim_for_fire(child_task_id: int) -> dict | None:

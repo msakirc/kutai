@@ -1617,30 +1617,6 @@ async def update_mission_fields(mission_id: int, **fields) -> None:
     await _update_fields(mission_id, **fields)
 
 
-# Cache for the missions lifecycle column name.  Probed once per process on
-# first call to block_mission or unblock_mission; the schema is immutable at
-# runtime so a single probe is sufficient.
-_lifecycle_col_cache: str | None = None
-
-
-async def _missions_lifecycle_col() -> str:
-    """Return the missions column used for lifecycle state.
-
-    Returns ``'lifecycle_state'`` when the schema has that column (post-
-    migration), otherwise ``'status'`` (legacy schema).  Result is cached for
-    the process lifetime — the schema never changes at runtime.
-    """
-    global _lifecycle_col_cache
-    if _lifecycle_col_cache is not None:
-        return _lifecycle_col_cache
-    from src.infra.db import get_db
-    db = await get_db()
-    cur = await db.execute("PRAGMA table_info(missions)")
-    cols = [row[1] for row in await cur.fetchall()]
-    _lifecycle_col_cache = "lifecycle_state" if "lifecycle_state" in cols else "status"
-    return _lifecycle_col_cache
-
-
 async def block_mission(mission_id: int) -> bool:
     """Flip mission to ``blocked_on_founder_action`` if it is currently active.
 
@@ -1658,16 +1634,15 @@ async def block_mission(mission_id: int) -> bool:
     if not mission:
         return False
 
-    col = await _missions_lifecycle_col()
-
-    current = mission.get(col) or mission.get("status")
-    if current == "blocked_on_founder_action":
+    # lifecycle_state is schema-guaranteed NOT NULL since the Z8 T1A
+    # migration in init_db — no column probe or status fallback needed.
+    if mission.get("lifecycle_state") == "blocked_on_founder_action":
         return False  # already blocked
 
-    await _update_fields(mission_id, **{col: "blocked_on_founder_action"})
+    await _update_fields(mission_id, lifecycle_state="blocked_on_founder_action")
     _logger.info(
         "mission blocked on founder_actions",
-        mission_id=mission_id, column=col,
+        mission_id=mission_id,
     )
     return True
 
@@ -1688,20 +1663,17 @@ async def unblock_mission(mission_id: int) -> bool:
     if not mission:
         return False
 
-    col = await _missions_lifecycle_col()
-
-    current = mission.get(col) or mission.get("status")
-    if current != "blocked_on_founder_action":
+    if mission.get("lifecycle_state") != "blocked_on_founder_action":
         return False
 
-    await _update_fields(mission_id, **{col: "active"})
+    await _update_fields(mission_id, lifecycle_state="active")
     # Reset tasks that beckman parked in blocked_on_founder_action for this
     # mission back to pending so the pump re-evaluates them.
     from src.infra.db import reset_blocked_on_founder_tasks as _reset_founder_tasks
     await _reset_founder_tasks(mission_id)
     _logger.info(
         "mission unblocked — no pending actions",
-        mission_id=mission_id, column=col,
+        mission_id=mission_id,
     )
     return True
 
@@ -1874,7 +1846,10 @@ async def reset_workflow_step(
 async def recover_startup_tasks() -> dict:
     """Post-restart task queue hygiene: reset processing→pending + clear backoff.
 
-    Returns {'interrupted': int, 'backoff_cleared': int}.
+    Tasks at the infra-reset cap (INFRA_RESET_CAP=5) are dead-lettered
+    instead of re-pended (poison-task crash-loop guard).
+
+    Returns {'interrupted': int, 'dead_lettered': int, 'backoff_cleared': int}.
     Delegate to src.infra.db.recover_startup_tasks; beckman is the sole
     sanctioned write-owner of the tasks table.
     """

@@ -163,7 +163,6 @@ async def test_admission_emits_google_play_vendor_enroll(tmp_path, monkeypatch):
     monkeypatch.setattr(db_mod, "DB_PATH", str(db_path), raising=False)
     await db_mod.init_db()
     import src.founder_actions as fa
-    fa._reset_lifecycle_cache()
 
     from general_beckman.z6_admission import check_z6_admission
     monkeypatch.setattr(

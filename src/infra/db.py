@@ -4177,8 +4177,8 @@ async def add_mission(title, description, priority=5, context=None,
     # Z0/Z8: a freshly created mission is running. The lifecycle_state column
     # (added by the Z8 T1A migration) defaults to 'terminal' — correct for
     # legacy rows backfilled during the ALTER, WRONG for new inserts. Without
-    # this set, the founder-action gate (_missions_lifecycle_column reads
-    # lifecycle_state post-Z0) sees 'terminal' != 'active' and never blocks
+    # this set, the founder-action gate (reads lifecycle_state, hard-coded
+    # post-probe-removal) sees 'terminal' != 'active' and never blocks
     # the mission, and the ongoing-resumption query never matches it. Set it
     # explicitly. Guarded so installs predating the migration don't error.
     try:
@@ -6000,31 +6000,107 @@ async def reset_workflow_step(
     await db.commit()
 
 
+# Poison-task crash-loop guard: a task whose execution deterministically
+# crashes the orchestrator gets reset processing→pending on every boot and
+# re-dispatched forever. After this many startup resets without completion,
+# recover_startup_tasks dead-letters it instead of re-pending.
+#
+# CAVEAT — infra_resets is overloaded: the stuck-task sweep
+# (general_beckman/sweep.py) stores the availability ladder's
+# seconds-of-last-delay (60..7200) in this column with
+# retry_reason='availability'. Those rows are NOT startup-reset counts and
+# must never trip this cap (the ladder has its own terminal at >=7200s).
+# Detected by retry_reason marker OR value >= _LADDER_FLOOR_SECONDS; the
+# cap must stay below the ladder floor for that to hold.
+INFRA_RESET_CAP = 5
+_LADDER_FLOOR_SECONDS = 60
+
+
 async def recover_startup_tasks() -> dict:
     """Post-restart: reset processing→pending (with infra_resets bump) and
     clear stale next_retry_at backoff on pending/ungraded tasks.
 
+    Tasks already at INFRA_RESET_CAP infra_resets are NOT re-pended — they
+    are routed to the dead-letter queue (poison-task crash-loop guard).
+
     Returns a summary dict:
-      {'interrupted': <count>, 'backoff_cleared': <count>}
+      {'interrupted': <count>, 'dead_lettered': <count>, 'backoff_cleared': <count>}
 
     Used by startup_recovery.py — replaces raw UPDATE SQL there.
     """
     db = await get_db()
 
-    # 1. Reset tasks stuck in 'processing' (prior run didn't finish them).
+    # 1. Reset tasks stuck in 'processing' (prior run didn't finish them) —
+    #    unless they've hit the infra-reset cap, in which case they're poison.
     c = await db.execute(
-        "SELECT id, infra_resets FROM tasks WHERE status = 'processing'"
+        "SELECT id, mission_id, agent_type, infra_resets, retry_reason "
+        "FROM tasks WHERE status = 'processing'"
     )
-    interrupted = [dict(r) for r in await c.fetchall()]
-    for t in interrupted:
-        ir = (t.get("infra_resets") or 0) + 1
+    stuck = [dict(r) for r in await c.fetchall()]
+    cap_error = (
+        f"Infra reset cap exceeded ({INFRA_RESET_CAP} startup recoveries "
+        "without completion) [infra_reset_cap_exceeded]"
+    )
+    interrupted: list[dict] = []
+    poisoned: list[dict] = []
+    for t in stuck:
+        prior = t.get("infra_resets") or 0
+        if (t.get("retry_reason") == "availability"
+                or prior >= _LADDER_FLOOR_SECONDS):
+            # Sweep availability-ladder row: infra_resets holds
+            # seconds-of-last-delay, not a startup-reset count. Re-pend
+            # untouched so ladder state and marker survive; the ladder's
+            # own terminal (>=7200s) handles chronic offenders.
+            await db.execute(
+                "UPDATE tasks SET status='pending' WHERE id=?", (t["id"],)
+            )
+            interrupted.append(t)
+            continue
+        if prior >= INFRA_RESET_CAP:
+            # Same task-row shape as general_beckman.apply._dlq_write.
+            await db.execute(
+                "UPDATE tasks SET status='failed', error=?, "
+                "failed_in_phase=COALESCE(failed_in_phase, 'worker') "
+                "WHERE id=?",
+                (cap_error, t["id"])
+            )
+            poisoned.append(t)
+            continue
         await db.execute(
             "UPDATE tasks SET status='pending', infra_resets=?, "
             "retry_reason='infrastructure' WHERE id=?",
-            (ir, t["id"])
+            (prior + 1, t["id"])
         )
-    if interrupted:
+        interrupted.append(t)
+    if stuck:
         await db.commit()
+
+    # Quarantine poison tasks via the canonical dead-letter machinery
+    # (dead_letter_tasks insert + mission-health check + pattern analysis).
+    # Lazy import: dead_letter imports back into src.infra.db.
+    if poisoned:
+        from src.infra.dead_letter import quarantine_task
+    for t in poisoned:
+        try:
+            await quarantine_task(
+                task_id=t["id"],
+                mission_id=t.get("mission_id"),
+                error=cap_error,
+                error_category="infra_reset_cap_exceeded",
+                original_agent=t.get("agent_type") or "executor",
+                attempts_snapshot=t.get("infra_resets") or 0,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[Startup Recovery] DLQ quarantine failed for poison "
+                f"task #{t['id']}: {exc}"
+            )
+    if poisoned:
+        logger.warning(
+            f"[Startup Recovery] Dead-lettered {len(poisoned)} poison "
+            f"task(s) at infra_resets cap ({INFRA_RESET_CAP}): "
+            f"{[t['id'] for t in poisoned]}"
+        )
 
     # 2. Clear future-dated next_retry_at on ready tasks.
     c = await db.execute(
@@ -6039,7 +6115,11 @@ async def recover_startup_tasks() -> dict:
     if delayed:
         await db.commit()
 
-    return {"interrupted": len(interrupted), "backoff_cleared": len(delayed)}
+    return {
+        "interrupted": len(interrupted),
+        "dead_lettered": len(poisoned),
+        "backoff_cleared": len(delayed),
+    }
 
 
 async def reset_cascade_failed_dependents(task_id: int) -> int:
@@ -6050,15 +6130,52 @@ async def reset_cascade_failed_dependents(task_id: int) -> int:
 
     Used by dead_letter._plain_retry — after DLQ retry, dependents
     that were cascade-failed must be unblocked.
+
+    depends_on is a JSON list of task ids (ints from every live writer;
+    historically possibly strings).  A bare substring LIKE '%5%' wrongly
+    matches '[15]' or '[52]', so the LIKE is only a broad prefilter —
+    exact membership is decided by json-parsing each candidate row.
     """
     db = await get_db()
     cursor = await db.execute(
-        """UPDATE tasks SET status = 'pending', error = NULL,
-               started_at = NULL, completed_at = NULL, worker_attempts = 0
+        """SELECT id, depends_on FROM tasks
            WHERE status = 'failed'
              AND error = 'All dependencies failed'
              AND depends_on LIKE ?""",
         (f"%{task_id}%",),
+    )
+    rows = await cursor.fetchall()
+
+    target_ids: list[int] = []
+    for row in rows:
+        raw = row["depends_on"]
+        try:
+            deps = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                f"Skipping task {row['id']} in cascade reset: unparseable depends_on {raw!r}"
+            )
+            continue
+        if not isinstance(deps, list):
+            deps = [deps]
+        # str() comparison covers both int (live writers) and string
+        # (legacy) elements without false substring matches.
+        if any(str(d) == str(task_id) for d in deps):
+            target_ids.append(row["id"])
+
+    if not target_ids:
+        return 0
+
+    placeholders = ",".join("?" for _ in target_ids)
+    # Re-assert the status/error guard: another coroutine may have touched
+    # a candidate row between the SELECT above and this UPDATE.
+    cursor = await db.execute(
+        f"""UPDATE tasks SET status = 'pending', error = NULL,
+               started_at = NULL, completed_at = NULL, worker_attempts = 0
+           WHERE id IN ({placeholders})
+             AND status = 'failed'
+             AND error = 'All dependencies failed'""",
+        target_ids,
     )
     count = cursor.rowcount
     if count > 0:

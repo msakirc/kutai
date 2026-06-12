@@ -420,8 +420,6 @@ async def defer(action_id: int, until: str) -> None:
 
 
 # ─── T1E: mission lifecycle coordination ───────────────────────────────────
-# Schema-aware: if missions.lifecycle_state (Z0) exists at runtime we use
-# that; otherwise we set missions.status to 'blocked_on_founder_action'.
 # lifecycle_state is schema-guaranteed NOT NULL since the Z8 T1A migration
 # in init_db — the old PRAGMA column probe and 'status' fallback are gone.
 

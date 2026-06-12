@@ -337,6 +337,10 @@ async def _plain_retry(task: dict) -> bool:
         task_id,
         status=new_status,
         worker_attempts=0,
+        # Explicit human retry grants fresh infra-reset budget — without
+        # this, a retried poison task caught in 'processing' during any
+        # later restart re-DLQs instantly (INFRA_RESET_CAP guard).
+        infra_resets=0,
         next_retry_at=None,
         retry_reason=None,
         context=json.dumps(ctx),

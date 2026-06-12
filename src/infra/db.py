@@ -4177,8 +4177,8 @@ async def add_mission(title, description, priority=5, context=None,
     # Z0/Z8: a freshly created mission is running. The lifecycle_state column
     # (added by the Z8 T1A migration) defaults to 'terminal' — correct for
     # legacy rows backfilled during the ALTER, WRONG for new inserts. Without
-    # this set, the founder-action gate (_missions_lifecycle_column reads
-    # lifecycle_state post-Z0) sees 'terminal' != 'active' and never blocks
+    # this set, the founder-action gate (reads lifecycle_state, hard-coded
+    # post-probe-removal) sees 'terminal' != 'active' and never blocks
     # the mission, and the ongoing-resumption query never matches it. Set it
     # explicitly. Guarded so installs predating the migration don't error.
     try:
@@ -4275,12 +4275,163 @@ def _validate_columns(kwargs: dict, whitelist: frozenset, table: str) -> None:
         )
 
 
+def _build_mission_update(
+    mission_id: int, fields: dict, whitelist: frozenset, caller: str
+) -> tuple[str, list]:
+    """Shared SQL builder for mission UPDATE statements.
+
+    Validates *fields* against *whitelist* (raises ``ValueError`` on unknown
+    columns), then returns the parameterised SQL string and its bound values.
+    Both ``update_mission`` and ``update_mission_fields`` delegate here so the
+    validation + SQL-build logic exists exactly once.
+
+    Overlap note: ``status`` and ``context`` appear in *both* whitelists
+    (_MISSION_COLUMNS for ``update_mission``; _MISSION_FIELDS_WHITELIST for
+    ``update_mission_fields``).  This is intentional: ``update_mission`` is the
+    structured legacy setter (status/description/…), while
+    ``update_mission_fields`` is the audited per-field patch path used by
+    beckman delegates.  The column sets serve different call sites; the overlap
+    is harmless because both paths ultimately emit the same ``UPDATE … SET``
+    SQL through this single builder.
+    """
+    bad = set(fields) - whitelist
+    if bad:
+        raise ValueError(
+            f"{caller}: unknown column(s) {bad!r} for missions. "
+            f"Allowed: {sorted(whitelist)}"
+        )
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [mission_id]
+    return f"UPDATE missions SET {sets} WHERE id = ?", values
+
+
 async def update_mission(mission_id, **kwargs):
-    _validate_columns(kwargs, _MISSION_COLUMNS, "missions")
+    """Structured legacy setter for core mission columns (status, description, …).
+
+    Boundary: this function covers the columns in ``_MISSION_COLUMNS`` —
+    primarily the fields that existed before the beckman write-API was
+    introduced (status, description, priority, completed_at, context, etc.).
+    ``status`` and ``context`` are intentionally present in both this whitelist
+    and ``_MISSION_FIELDS_WHITELIST``; see ``_build_mission_update`` for the
+    rationale.  For one-off field patches by beckman delegates use
+    ``update_mission_fields`` instead.
+    """
+    if not kwargs:
+        return
+    sql, values = _build_mission_update(
+        mission_id, kwargs, _MISSION_COLUMNS, "update_mission"
+    )
     db = await get_db()
-    sets = ", ".join(f"{k} = ?" for k in kwargs)
-    values = list(kwargs.values()) + [mission_id]
-    await db.execute(f"UPDATE missions SET {sets} WHERE id = ?", values)
+    await db.execute(sql, values)
+    await db.commit()
+
+
+# Whitelist for update_mission_fields — columns written by the raw-SQL escape
+# sites that were migrated to beckman.update_mission_fields.  All callers
+# must pass only these columns; unknown columns raise ValueError.
+#
+# ``status`` and ``context`` are shared with _MISSION_COLUMNS (see
+# ``_build_mission_update`` for the rationale — overlap is intentional).
+_MISSION_FIELDS_WHITELIST: frozenset[str] = frozenset({
+    # lifecycle / state
+    "lifecycle_state",
+    "status",
+    # scheduling / budget
+    "founder_attention_budget_minutes",
+    "cost_ceiling_usd",
+    "ambition_tier",
+    # Telegram integration
+    "telegram_thread_id",
+    "telegram_thread_archived",
+    # relational
+    "branched_from_mission_id",
+    # product metadata
+    "review_density_json",
+    "context",
+    "cursor",
+    "github_repo_url",
+    "preview_url",
+    "preview_started_at",
+    "interview_skip_reason",
+})
+
+
+async def update_mission_fields(mission_id: int, **fields) -> None:
+    """Generic, audited setter for missions columns.
+
+    Only columns in ``_MISSION_FIELDS_WHITELIST`` are accepted; passing any
+    other column name raises ``ValueError`` so callers cannot inject arbitrary
+    column identifiers.  This is the preferred path for one-off field patches
+    by beckman delegates; for bulk structured updates (status/description/…)
+    ``update_mission`` covers the same ground via ``_MISSION_COLUMNS``.
+
+    Boundary: ``status`` and ``context`` appear in both whitelists — see
+    ``_build_mission_update`` for the rationale (overlap intentional, harmless).
+    """
+    if not fields:
+        return
+    sql, values = _build_mission_update(
+        mission_id, fields, _MISSION_FIELDS_WHITELIST, "update_mission_fields"
+    )
+    db = await get_db()
+    await db.execute(sql, values)
+    await db.commit()
+
+
+async def purge_all_missions() -> None:
+    """Delete ALL missions rows (and dependent rows for tasks, checkpoints,
+    dead_letter_tasks, blackboards, approval_requests, scheduled_tasks).
+
+    This is the single sanctioned bulk-delete path used by the admin reset
+    commands.  Both the modern ``reset_tasks_confirm`` callback and the legacy
+    ``resetall_confirm`` callback delegate here so the exact table list is
+    maintained in one place.  Optional tables that may not exist in every
+    deployment are wrapped in per-table try/except so a missing table never
+    aborts the whole operation.
+    """
+    db = await get_db()
+    for _attempt in range(3):
+        try:
+            # Core tables — always present.
+            await db.execute("DELETE FROM tasks")
+            await db.execute("DELETE FROM missions")
+            # Optional tables — may not exist in minimal/test schemas.
+            for _tbl in (
+                "dead_letter_tasks",
+                "workflow_checkpoints",
+                "blackboards",
+                "approval_requests",
+                "scheduled_tasks",
+            ):
+                try:
+                    await db.execute(f"DELETE FROM {_tbl}")
+                except Exception as _tbl_err:
+                    if "no such table" not in str(_tbl_err).lower():
+                        raise
+            await db.commit()
+            return
+        except Exception as _err:
+            if _attempt < 2:
+                import asyncio as _asyncio
+                await _asyncio.sleep(1)
+            else:
+                raise
+
+
+async def purge_all() -> None:
+    """Wipe missions + tasks + conversations + memory (legacy /resetall semantics).
+
+    Ports the legacy ``/resetall`` admin command behavior: DELETEs across
+    missions, tasks, conversations, and memory in a single transaction.
+    Does NOT call ``purge_all_missions`` — it issues its own DELETE statements
+    across a wider set of tables (conversations + memory) than
+    ``purge_all_missions`` covers.
+    """
+    db = await get_db()
+    await db.execute("DELETE FROM conversations")
+    await db.execute("DELETE FROM tasks")
+    await db.execute("DELETE FROM missions")
+    await db.execute("DELETE FROM memory")
     await db.commit()
 
 
@@ -5748,6 +5899,307 @@ async def reprioritize_task(task_id: int, new_priority: int) -> bool:
     )
     await db.commit()
     return cursor.rowcount > 0
+
+
+async def reset_failed_tasks() -> int:
+    """Reset all failed tasks to pending. Returns count updated.
+
+    Used by /reset failed admin command — bulk recovery after transient failures.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET status = 'pending', worker_attempts = 0, error = NULL
+           WHERE status = 'failed'"""
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def reset_stuck_tasks() -> int:
+    """Reset all processing tasks to pending. Returns count updated.
+
+    Used by /reset stuck admin command — clears tasks left in processing state
+    after a crash without full infra_resets tracking.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET status = 'pending'
+           WHERE status = 'processing'"""
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def reset_blocked_tasks() -> int:
+    """Clear dependency references on pending tasks so they can run.
+    Returns count updated.
+
+    Used by /reset blocked admin command — unblocks tasks whose depends_on
+    references tasks that will never complete.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET depends_on = '[]'
+           WHERE status = 'pending' AND depends_on != '[]'"""
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def cancel_pending_tasks(mission_id: int) -> int:
+    """Cancel all pending tasks for a mission. Returns count updated.
+
+    Used by /pause admin command — stops a running mission cleanly.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """UPDATE tasks SET status = 'cancelled'
+           WHERE mission_id = ? AND status IN ('pending')""",
+        (mission_id,)
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
+async def reset_workflow_step(
+    mission_id: int,
+    step_id: str,
+    confirm_task_id: int | None = None,
+) -> None:
+    """Reset a workflow step (writer + verify sibling) and optionally a
+    confirm task back to pending for regeneration.
+
+    Fields reset: status='pending', worker_attempts=0, error=NULL,
+    error_category=NULL, started_at=NULL, completed_at=NULL.
+
+    Used by the workflow regen RE callback — clears the writer step,
+    its verify sibling (<step_id>.verify), and the confirm task so the
+    full draft→verify→confirm cycle re-runs.
+    """
+    db = await get_db()
+    reset_sql = (
+        "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
+        "error_category=NULL, started_at=NULL, completed_at=NULL "
+        "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?"
+    )
+    # Reset writer step and verify sibling only when step_id is known.
+    # Matches old `if regen_step:` gate in telegram_bot.py (commit d5b30d94):
+    # if step_id is empty the two step-scoped UPDATEs are skipped and only
+    # the confirm task is reset, preserving identical behavior.
+    if step_id:
+        await db.execute(reset_sql, (mission_id, step_id))
+        await db.execute(reset_sql, (mission_id, step_id + ".verify"))
+    # Reset confirm task (by id if provided) — always, regardless of step_id.
+    if confirm_task_id is not None:
+        await db.execute(
+            "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
+            "error_category=NULL, started_at=NULL, completed_at=NULL "
+            "WHERE id=?",
+            (confirm_task_id,),
+        )
+    await db.commit()
+
+
+# Poison-task crash-loop guard: a task whose execution deterministically
+# crashes the orchestrator gets reset processing→pending on every boot and
+# re-dispatched forever. After this many startup resets without completion,
+# recover_startup_tasks dead-letters it instead of re-pending.
+#
+# CAVEAT — infra_resets is overloaded: the stuck-task sweep
+# (general_beckman/sweep.py) stores the availability ladder's
+# seconds-of-last-delay (60..7200) in this column with
+# retry_reason='availability'. Those rows are NOT startup-reset counts and
+# must never trip this cap (the ladder has its own terminal at >=7200s).
+# Detected by retry_reason marker OR value >= _LADDER_FLOOR_SECONDS; the
+# cap must stay below the ladder floor for that to hold.
+INFRA_RESET_CAP = 5
+_LADDER_FLOOR_SECONDS = 60
+
+
+async def recover_startup_tasks() -> dict:
+    """Post-restart: reset processing→pending (with infra_resets bump) and
+    clear stale next_retry_at backoff on pending/ungraded tasks.
+
+    Tasks already at INFRA_RESET_CAP infra_resets are NOT re-pended — they
+    are routed to the dead-letter queue (poison-task crash-loop guard).
+
+    Returns a summary dict:
+      {'interrupted': <count>, 'dead_lettered': <count>, 'backoff_cleared': <count>}
+
+    Used by startup_recovery.py — replaces raw UPDATE SQL there.
+    """
+    db = await get_db()
+
+    # 1. Reset tasks stuck in 'processing' (prior run didn't finish them) —
+    #    unless they've hit the infra-reset cap, in which case they're poison.
+    c = await db.execute(
+        "SELECT id, mission_id, agent_type, infra_resets, retry_reason "
+        "FROM tasks WHERE status = 'processing'"
+    )
+    stuck = [dict(r) for r in await c.fetchall()]
+    cap_error = (
+        f"Infra reset cap exceeded ({INFRA_RESET_CAP} startup recoveries "
+        "without completion) [infra_reset_cap_exceeded]"
+    )
+    interrupted: list[dict] = []
+    poisoned: list[dict] = []
+    for t in stuck:
+        prior = t.get("infra_resets") or 0
+        if (t.get("retry_reason") == "availability"
+                or prior >= _LADDER_FLOOR_SECONDS):
+            # Sweep availability-ladder row: infra_resets holds
+            # seconds-of-last-delay, not a startup-reset count. Re-pend
+            # untouched so ladder state and marker survive; the ladder's
+            # own terminal (>=7200s) handles chronic offenders.
+            await db.execute(
+                "UPDATE tasks SET status='pending' WHERE id=?", (t["id"],)
+            )
+            interrupted.append(t)
+            continue
+        if prior >= INFRA_RESET_CAP:
+            # Same task-row shape as general_beckman.apply._dlq_write.
+            await db.execute(
+                "UPDATE tasks SET status='failed', error=?, "
+                "failed_in_phase=COALESCE(failed_in_phase, 'worker') "
+                "WHERE id=?",
+                (cap_error, t["id"])
+            )
+            poisoned.append(t)
+            continue
+        await db.execute(
+            "UPDATE tasks SET status='pending', infra_resets=?, "
+            "retry_reason='infrastructure' WHERE id=?",
+            (prior + 1, t["id"])
+        )
+        interrupted.append(t)
+    if stuck:
+        await db.commit()
+
+    # Quarantine poison tasks via the canonical dead-letter machinery
+    # (dead_letter_tasks insert + mission-health check + pattern analysis).
+    # Lazy import: dead_letter imports back into src.infra.db.
+    if poisoned:
+        from src.infra.dead_letter import quarantine_task
+    for t in poisoned:
+        try:
+            await quarantine_task(
+                task_id=t["id"],
+                mission_id=t.get("mission_id"),
+                error=cap_error,
+                error_category="infra_reset_cap_exceeded",
+                original_agent=t.get("agent_type") or "executor",
+                attempts_snapshot=t.get("infra_resets") or 0,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[Startup Recovery] DLQ quarantine failed for poison "
+                f"task #{t['id']}: {exc}"
+            )
+    if poisoned:
+        logger.warning(
+            f"[Startup Recovery] Dead-lettered {len(poisoned)} poison "
+            f"task(s) at infra_resets cap ({INFRA_RESET_CAP}): "
+            f"{[t['id'] for t in poisoned]}"
+        )
+
+    # 2. Clear future-dated next_retry_at on ready tasks.
+    c = await db.execute(
+        "SELECT id FROM tasks WHERE status IN ('pending','ungraded') "
+        "AND next_retry_at IS NOT NULL AND next_retry_at > datetime('now')"
+    )
+    delayed = [dict(r) for r in await c.fetchall()]
+    for t in delayed:
+        await db.execute(
+            "UPDATE tasks SET next_retry_at=NULL WHERE id=?", (t["id"],)
+        )
+    if delayed:
+        await db.commit()
+
+    return {
+        "interrupted": len(interrupted),
+        "dead_lettered": len(poisoned),
+        "backoff_cleared": len(delayed),
+    }
+
+
+async def reset_cascade_failed_dependents(task_id: int) -> int:
+    """Reset tasks that were cascade-failed because task_id failed.
+
+    Resets tasks WHERE status='failed' AND error='All dependencies failed'
+    AND depends_on contains task_id. Returns count updated.
+
+    Used by dead_letter._plain_retry — after DLQ retry, dependents
+    that were cascade-failed must be unblocked.
+
+    depends_on is a JSON list of task ids (ints from every live writer;
+    historically possibly strings).  A bare substring LIKE '%5%' wrongly
+    matches '[15]' or '[52]', so the LIKE is only a broad prefilter —
+    exact membership is decided by json-parsing each candidate row.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT id, depends_on FROM tasks
+           WHERE status = 'failed'
+             AND error = 'All dependencies failed'
+             AND depends_on LIKE ?""",
+        (f"%{task_id}%",),
+    )
+    rows = await cursor.fetchall()
+
+    target_ids: list[int] = []
+    for row in rows:
+        raw = row["depends_on"]
+        try:
+            deps = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                f"Skipping task {row['id']} in cascade reset: unparseable depends_on {raw!r}"
+            )
+            continue
+        if not isinstance(deps, list):
+            deps = [deps]
+        # str() comparison covers both int (live writers) and string
+        # (legacy) elements without false substring matches.
+        if any(str(d) == str(task_id) for d in deps):
+            target_ids.append(row["id"])
+
+    if not target_ids:
+        return 0
+
+    placeholders = ",".join("?" for _ in target_ids)
+    # Re-assert the status/error guard: another coroutine may have touched
+    # a candidate row between the SELECT above and this UPDATE.
+    cursor = await db.execute(
+        f"""UPDATE tasks SET status = 'pending', error = NULL,
+               started_at = NULL, completed_at = NULL, worker_attempts = 0
+           WHERE id IN ({placeholders})
+             AND status = 'failed'
+             AND error = 'All dependencies failed'""",
+        target_ids,
+    )
+    count = cursor.rowcount
+    if count > 0:
+        await db.commit()
+    return count
+
+
+async def reset_blocked_on_founder_tasks(mission_id: int) -> int:
+    """Reset tasks parked in 'blocked_on_founder_action' back to 'pending'.
+
+    Called by beckman.unblock_mission after the mission itself is unblocked,
+    so the pump re-evaluates tasks that were parked waiting for a founder action.
+    Returns the count of rows updated.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE tasks SET status = 'pending' "
+        "WHERE mission_id = ? AND status = 'blocked_on_founder_action'",
+        (mission_id,),
+    )
+    count = cursor.rowcount
+    if count > 0:
+        await db.commit()
+    return count
 
 
 # --- Dependency Graph ---
@@ -7319,6 +7771,20 @@ async def insert_growth_event(
     return cur.lastrowid or 0
 
 
+async def update_growth_event_properties(event_id: int, properties: dict) -> None:
+    """Overwrite ``properties_json`` on an existing ``growth_events`` row.
+
+    Low-level primitive — callers are responsible for fetching the current
+    properties and merging/mutating before passing here.  Commits immediately.
+    """
+    db = await get_db()
+    await db.execute(
+        "UPDATE growth_events SET properties_json = ? WHERE id = ?",
+        (json.dumps(properties or {}), event_id),
+    )
+    await db.commit()
+
+
 async def get_growth_events(
     mission_id: int | None = None,
     kind: str | None = None,
@@ -7371,6 +7837,40 @@ async def get_growth_events(
         d["properties"] = decoded
         result.append(d)
     return result
+
+
+async def supersede_growth_events(
+    mission_id: int | None,
+    kind: str,
+) -> int:
+    """Mark all open (non-consumed, non-superseded) growth_events of ``kind``
+    as superseded, using a per-row fetch-then-update loop with a single commit.
+
+    NOTE: SQLite 3.38+ json_valid() would allow a single-UPDATE path; this
+    runtime uses SQLite 3.37.x which lacks json_valid(), so we use the
+    fetch-then-loop approach instead, batching all writes under one commit.
+
+    Returns the count of rows updated.
+    """
+    prior = await get_growth_events(mission_id=mission_id, kind=kind)
+    if not prior:
+        return 0
+
+    db = await get_db()
+    updated = 0
+    for row in prior:
+        props = row.get("properties") or {}
+        if props.get("consumed") or props.get("superseded"):
+            continue
+        props["superseded"] = True
+        await db.execute(
+            "UPDATE growth_events SET properties_json = ? WHERE id = ?",
+            (json.dumps(props), int(row["id"])),
+        )
+        updated += 1
+    if updated > 0:
+        await db.commit()
+    return updated
 
 
 # Z9 T4E — reinforce loop. A confirmed hypothesis verdict bumps the model

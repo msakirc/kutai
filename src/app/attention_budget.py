@@ -355,6 +355,7 @@ async def record_deferred(card_id: int, product_id: int, deferred_to: str) -> No
     Also updates founder_actions.defer_until to hide the card until then.
     """
     from src.infra.db import get_db
+    from src.founder_actions import defer as _fa_defer
     db = await get_db()
     now = _now_str()
     await db.execute(
@@ -364,11 +365,8 @@ async def record_deferred(card_id: int, product_id: int, deferred_to: str) -> No
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (product_id, "", "deferred", 0, now, card_id, deferred_to),
     )
-    await db.execute(
-        "UPDATE founder_actions SET defer_until = ?, updated_at = ? WHERE id = ?",
-        (deferred_to, now, card_id),
-    )
     await db.commit()
+    await _fa_defer(card_id, deferred_to)
     logger.info(
         "attention_budget: deferred card %d (product %d) to %s",
         card_id, product_id, deferred_to,
@@ -377,13 +375,8 @@ async def record_deferred(card_id: int, product_id: int, deferred_to: str) -> No
 
 async def set_daily_budget(product_id: int, minutes: int) -> None:
     """Set the daily attention budget for a product (stored on missions row)."""
-    from src.infra.db import get_db
-    db = await get_db()
-    await db.execute(
-        "UPDATE missions SET founder_attention_budget_minutes = ? WHERE id = ?",
-        (minutes, product_id),
-    )
-    await db.commit()
+    from general_beckman import update_mission_fields
+    await update_mission_fields(product_id, founder_attention_budget_minutes=minutes)
     logger.info("attention_budget: set budget for product %d = %d min", product_id, minutes)
 
 

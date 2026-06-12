@@ -99,10 +99,16 @@ class TestDLQOperations:
         mock_db, cursor = _make_mock_db()
         fake_task = {"id": 42, "context": "{}", "failed_in_phase": None}
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):
-            with patch("src.infra.db.update_task", AsyncMock()):
+            with patch("src.infra.db.update_task", AsyncMock()) as mock_update:
                 with patch("src.infra.db.get_task", AsyncMock(return_value=fake_task)):
                     result = _run(retry_dlq_task(42))
                     assert result is True
+                    # Explicit retry grants fresh infra-reset budget
+                    # (poison-task cap guard must not re-trip instantly).
+                    mock_update.assert_called_once()
+                    requeue_kwargs = mock_update.call_args.kwargs
+                    assert requeue_kwargs.get("infra_resets") == 0
+                    assert requeue_kwargs.get("worker_attempts") == 0
 
     def test_get_dlq_summary(self):
         mock_db, cursor = _make_mock_db()

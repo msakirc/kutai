@@ -253,6 +253,12 @@ class SystemSnapshot:
     # by ranking._apply_loaded_stickiness; defaults to 0 in tests that
     # build snapshots manually.
     recent_swap_count: int = 0
+    # Image-server residency (clair_obscur). Read by fatih_hoca's
+    # image_select._eviction_cost. Written via NerdHerd.push_image_server_state()
+    # / module-level record_image_server_state(), driven by clair_obscur on
+    # start()/stop() (Plan 2).
+    image_server_resident: bool = False
+    image_server_vram_mb: int = 0
     # ── Desktop-awareness fields (2026-06-09 resource-signals) ──────
     # Populated by NerdHerd.snapshot(). Defaults describe an absent user
     # on an idle machine in "full" mode, so a manually-built snapshot

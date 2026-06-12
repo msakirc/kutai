@@ -16,6 +16,12 @@ from src.infra.logging_config import get_logger
 logger = get_logger("core.task_classifier")
 
 
+async def _enqueue(spec: dict, **kwargs):
+    """Thin, monkeypatchable wrapper over general_beckman.enqueue."""
+    import general_beckman
+    return await general_beckman.enqueue(spec, **kwargs)
+
+
 def _extract_json(text: str) -> dict:
     """Extract JSON from LLM output that may contain think tags, markdown, or preamble."""
     # Strip <think>...</think> blocks (Qwen3/DeepSeek thinking)
@@ -47,7 +53,12 @@ class TaskClassification:
     search_depth: str = "none"
 
 
-# ─── LLM Classification Prompt (now in rubrics/classifier.yaml) ───────────
+# ─── LLM Classification Prompt ────────────────────────────────────────────
+# The classifier system prompt now lives in the Foundry rubric
+# (packages/finch/src/finch/rubrics/classifier.yaml). It is rendered via
+# finch.build_messages("classifier", {"task_description": ...}) in
+# classify_task below. The inline CLASSIFIER_PROMPT constant was deleted in the
+# finch merge — the rubric text was verified char-exact against it.
 
 
 PRIORITY_MAP = {
@@ -176,83 +187,47 @@ def _classify_search_depth(text: str) -> str:
     return depth
 
 
-# ─── Public API ────────────────────────────────────────────────────────────
+# ─── Public API (CPS) ────────────────────────────────────────────────────────
 
-async def classify_task(title: str, description: str) -> TaskClassification:
-    """
-    Classify a task. Tries LLM first, falls back to keywords.
-    """
-    try:
-        cls = await _classify_with_llm(title, description)
-    except Exception as e:
-        logger.warning("llm classification failed fallback to keyword", error=str(e))
-        cls = _classify_by_keywords(title, description)
-
-    # Attach shopping sub-intent if classified as shopping_advisor
-    if cls.agent_type == "shopping_advisor":
-        cls.shopping_sub_intent = _classify_shopping_sub_intent(
-            f"{title} {description}"
-        )
-
-    return cls
-
-
-# ─── LLM-Based Classification ─────────────────────────────────────────────
-
-async def _enqueue_inline_classifier(
-    *,
+async def classify_task(
     title: str,
     description: str,
-    llm_call_kwargs: dict,
-) -> dict:
-    """Enqueue a classifier LLM call as a Beckman task with await_inline=True.
+    *,
+    on_complete: str = "task_classifier.classify.resume",
+    cont_state: dict | None = None,
+) -> int | None:
+    """CPS kickoff: enqueue the classifier LLM child and return its task id.
 
-    Returns the dispatcher response dict so callers can do
-    `response.get("content", ...)` unchanged.
+    The classification result is delivered asynchronously to the named
+    ``on_complete`` continuation handler (default: this module's
+    ``_classify_resume``), which rebuilds the TaskClassification via
+    ``parse_classification``. No synchronous return value, no await_inline.
+
+    Keyword-only callers that want a synchronous classification with no LLM
+    can call ``_classify_by_keywords`` directly. ``parse_classification`` is the
+    pure mapping used by the resume handler.
     """
-    import general_beckman
+    # The classifier prompt is a Foundry rubric. build_messages returns
+    # [system, user]; the legacy classifier sends ONE user message carrying the
+    # full prompt — preserve that structure by taking the rendered user content.
+    from finch import build_messages
+    classifier_prompt = build_messages(
+        "classifier", {"task_description": f"{title}: {description[:500]}"}
+    )[1]["content"]
+    messages = [{
+        "role": "user",
+        "content": classifier_prompt,
+    }]
+    state = dict(cont_state or {})
+    state.setdefault("title", title)
+    state.setdefault("description", description)
     spec = {
-        "title": title,
-        "description": description,
+        "title": "task-classifier",
+        "description": f"Classify task: {title[:80]!r}",
         "agent_type": "classifier",
         "kind": "classifier",
-        "context": {
-            "llm_call": {
-                "raw_dispatch": True,
-                **llm_call_kwargs,
-            },
-        },
-    }
-    # SP5-DEFERRED: this is the one edge-group await_inline site SP2 keeps,
-    # because classify_task's caller (add_task) consumes the returned
-    # TaskClassification synchronously. CPS-migrating this requires
-    # redesigning task admission — see SP2 spec §Site 2 special case.
-    tr = await general_beckman.enqueue(spec, parent_id=None, await_inline=True)
-    if tr.status == "failed":
-        from src.core.router import ModelCallFailed
-        raise ModelCallFailed(tr.error or "call failed", error_category="availability")
-    res = tr.result
-    if isinstance(res, str):
-        try:
-            res = json.loads(res)
-        except Exception:
-            res = {"content": res}
-    return res or {}
-
-
-async def _classify_with_llm(title: str, description: str) -> TaskClassification:
-    """Classify using the standard router — just another LLM call."""
-    from finch import build_messages
-    _msgs = build_messages("classifier", {
-        "task_description": f"{title}: {description[:500]}",
-    })
-    # Original sends a single user message (no system) — preserve that structure.
-    messages = [_msgs[1]]
-
-    response = await _enqueue_inline_classifier(
-        title="task-classifier",
-        description=f"Classify task: {title[:80]!r}",
-        llm_call_kwargs={
+        "context": {"llm_call": {
+            "raw_dispatch": True,
             "task": "router",
             "agent_type": "classifier",
             "difficulty": 3,
@@ -263,49 +238,84 @@ async def _classify_with_llm(title: str, description: str) -> TaskClassification
             "estimated_input_tokens": 500,
             "estimated_output_tokens": 200,
             "call_category": "overhead",
-        },
-    )
+        }},
+    }
+    return await _enqueue(spec, on_complete=on_complete, cont_state=state)
 
-    raw = response.get("content", "").strip()
-    result = _extract_json(raw)
 
-    search_depth = result.get("search_depth") or _classify_search_depth(title + " " + description)
+def parse_classification(result: dict, *, title: str, description: str) -> "TaskClassification":
+    """Map a raw classifier-LLM result dict -> TaskClassification.
 
-    agent_type = result.get("agent_type", "executor")
+    Pure + synchronous (no LLM, no Beckman). On any parse failure, degrades to
+    the keyword classifier. This is the intelligence formerly inlined in
+    _classify_with_llm's post-await block; extracted so it is unit-testable and
+    reusable by the CPS resume handler.
+    """
+    content = result.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+        )
+    raw = str(content or "").strip()
+    try:
+        parsed = _extract_json(raw)
+    except Exception:
+        cls = _classify_by_keywords(title, description)
+        if cls.agent_type == "shopping_advisor":
+            cls.shopping_sub_intent = _classify_shopping_sub_intent(f"{title} {description}")
+        return cls
 
+    search_depth = parsed.get("search_depth") or _classify_search_depth(title + " " + description)
+    agent_type = parsed.get("agent_type", "executor")
     # Only visual_reviewer actually uses analyze_image. The LLM classifier
-    # often over-tags needs_vision for tasks mentioning "UI" or "design".
-    # A false needs_vision triggers a 60s server restart to load the 876MB
-    # mmproj projector — extremely wasteful for text-only work.
-    needs_vision = result.get("needs_vision", False) and agent_type == "visual_reviewer"
+    # often over-tags needs_vision for tasks mentioning "UI" or "design". A
+    # false needs_vision triggers a 60s mmproj reload — guard it.
+    needs_vision = parsed.get("needs_vision", False) and agent_type == "visual_reviewer"
 
     cls = TaskClassification(
         agent_type=agent_type,
-        difficulty=max(1, min(10, int(result.get("difficulty", 5)))),
-        needs_tools=result.get("needs_tools", False),
+        difficulty=max(1, min(10, int(parsed.get("difficulty", 5)))),
+        needs_tools=parsed.get("needs_tools", False),
         needs_vision=needs_vision,
-        needs_thinking=result.get("needs_thinking", False),
-        local_only=result.get("local_only", False),
-        priority=PRIORITY_MAP.get(result.get("priority", "normal"), 5),
+        needs_thinking=parsed.get("needs_thinking", False),
+        local_only=parsed.get("local_only", False),
+        priority=PRIORITY_MAP.get(parsed.get("priority", "normal"), 5),
         confidence=0.85,
         method="llm",
         search_depth=search_depth,
     )
+    if cls.agent_type == "shopping_advisor":
+        cls.shopping_sub_intent = _classify_shopping_sub_intent(f"{title} {description}")
+    return cls
 
+
+def _on_classified(cls: "TaskClassification", state: dict) -> None:
+    """Default consumer for a completed classification. No live caller wires a
+    real consumer yet (telegram + /task admit typed tasks directly), so this
+    logs. Future wiring: pass your own on_complete to classify_task and consume
+    the TaskClassification there."""
     logger.info(
-        "task classified",
-        agent_type=cls.agent_type,
-        difficulty=cls.difficulty,
-        needs_tools=cls.needs_tools,
-        needs_vision=cls.needs_vision,
-        needs_thinking=cls.needs_thinking,
-        local_only=cls.local_only,
-        priority=cls.priority,
-        confidence=cls.confidence,
+        "task classified (cps)",
+        agent_type=cls.agent_type, difficulty=cls.difficulty,
+        method=cls.method, title=str(state.get("title", ""))[:60],
     )
 
-    # Record 429s for adaptive rate limiting
-    return cls
+
+async def _classify_resume(child_task_id: int, result: dict, state: dict) -> None:
+    """Continuation: rebuild the classification from the classifier LLM result."""
+    cls = parse_classification(
+        result or {},
+        title=str(state.get("title", "")),
+        description=str(state.get("description", "")),
+    )
+    _on_classified(cls, state)
+
+
+def register_continuations() -> None:
+    """Register CPS handlers for the task classifier (called at import + by
+    general_beckman.continuations.register_startup_handlers)."""
+    from general_beckman.continuations import register_resume
+    register_resume("task_classifier.classify.resume", _classify_resume)
 
 
 # ─── Keyword Fallback ─────────────────────────────────────────────────────
@@ -389,3 +399,8 @@ def _classify_by_keywords(title: str, description: str) -> TaskClassification:
         method="keyword_default",
         search_depth=search_depth,
     )
+
+
+# Register CPS continuation handlers at import time (mirrors the substrate's
+# register_startup_handlers contract — module is listed in _HANDLER_MODULES).
+register_continuations()

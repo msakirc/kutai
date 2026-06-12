@@ -48,6 +48,12 @@ def _resolve_preview_root(workspace_path: str) -> str | None:
     1. ``<ws>/.prototype/index.html`` exists → return ``<ws>/.prototype``
     2. ``<ws>/.web`` is a non-empty directory → return ``<ws>/.web``
     3. None
+
+    Plan 3 note: ``<ws>/.web/assets/`` (image-gen output from
+    swap_placeholder_images) is served automatically — the static server
+    serves the resolved root recursively and ``.web/`` is that root, so the
+    rewritten ``<img src="assets/<id>.png">`` references resolve with no
+    resolver change required (see test_emit_preview_url_assets.py).
     """
     proto = os.path.join(workspace_path, ".prototype")
     if os.path.isfile(os.path.join(proto, "index.html")):
@@ -396,16 +402,10 @@ async def _persist_to_db(
         "VALUES (?, ?, ?, ?)",
         (int(mission_id), action, url, exit_code),
     )
-    if action == "emit" and url:
-        await db.execute(
-            "UPDATE missions SET preview_url = ?, "
-            "preview_started_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (url, int(mission_id)),
-        )
-    elif action == "kill":
-        await db.execute(
-            "UPDATE missions SET preview_url = NULL, "
-            "preview_started_at = NULL WHERE id = ?",
-            (int(mission_id),),
-        )
     await db.commit()
+    from general_beckman import update_mission_fields as _umf
+    if action == "emit" and url:
+        from src.infra.times import db_now as _db_now
+        await _umf(int(mission_id), preview_url=url, preview_started_at=_db_now())
+    elif action == "kill":
+        await _umf(int(mission_id), preview_url=None, preview_started_at=None)

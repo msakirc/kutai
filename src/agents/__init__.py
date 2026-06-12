@@ -3,6 +3,9 @@ from finch import PROFILE_REGISTRY, get_profile as _get_profile
 from .base import BaseAgent
 from .oncall_agent import OncallAgent
 
+# All 28 agents (incl. SP3/Z9/shopping-v3/image-gen-Plan3 additions) are
+# Foundry data profiles in PROFILE_REGISTRY. oncall_agent stays a class
+# carve-out (dynamic domain/whitelist prompt).
 AGENT_REGISTRY = {**PROFILE_REGISTRY, "oncall_agent": OncallAgent()}
 
 

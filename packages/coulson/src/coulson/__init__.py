@@ -156,7 +156,7 @@ async def _maybe_detect_and_bail(task: dict, task_ctx: dict) -> dict | None:
     if not result.admit:
         # Short-circuit. Tell beckman to park the task.
         try:
-            from src.infra.db import update_task
+            from general_beckman import update_task
             await update_task(
                 int(task["id"]),
                 status="blocked_on_founder_action",
@@ -409,7 +409,7 @@ async def _refresh_workflow_step_config(task: dict, task_ctx: dict) -> None:
             # advance saw the old legacy schema even though base.py had
             # refreshed in-memory.
             try:
-                from src.infra.db import update_task as _update_task
+                from general_beckman import update_task as _update_task
                 _persist: dict = {"context": task["context"]}
                 # The grader and self_reflect children read tasks.description
                 # straight from the DB. If we only persist context, an edited

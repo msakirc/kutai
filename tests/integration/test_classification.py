@@ -165,94 +165,13 @@ class TestKeywordTaskClassification:
 # ---------------------------------------------------------------------------
 # LLM-based classification (real model calls)
 # ---------------------------------------------------------------------------
-
-@pytest.mark.integration
-@pytest.mark.llm
-class TestLLMTaskClassification:
-    """Tests that call the real LLM for classification.
-
-    These require a loaded model and can take 30-120 s each.
-    Skip automatically when no local model is available.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _check_model(self, fastest_local_model):
-        if fastest_local_model is None:
-            pytest.skip("No local model available — skipping LLM test")
-
-    def test_classify_shopping_query_real_llm(self, temp_db, fastest_local_model):
-        """LLM classifies a shopping query as shopping_advisor."""
-        from src.core.task_classifier import classify_task
-
-        async def _run():
-            result = await classify_task(
-                title="Find me a good gaming GPU under 15000 TL",
-                description="Looking for the best price/performance GPU for 1080p gaming",
-            )
-            # LLM should pick shopping_advisor; we accept researcher as a near-miss
-            assert result.agent_type in ("shopping_advisor", "researcher", "analyst"), (
-                f"Unexpected agent_type: {result.agent_type}"
-            )
-            assert result.method in ("llm", "keyword"), f"method={result.method}"
-
-        run_async(_run())
-
-    @pytest.mark.timeout(120)
-    def test_classify_build_request_real_llm(self, temp_db, fastest_local_model):
-        """LLM classifies a 'build me X' request as planner or coder."""
-        from src.core.task_classifier import classify_task
-
-        async def _run():
-            result = await classify_task(
-                title="Build me a todo app",
-                description="Create a full-stack todo application with React frontend and FastAPI backend",
-            )
-            assert result.agent_type in ("coder", "planner", "architect", "implementer"), (
-                f"Unexpected agent_type: {result.agent_type}"
-            )
-
-        run_async(_run())
-
-    @pytest.mark.timeout(120)
-    def test_classify_simple_question_real_llm(self, temp_db, fastest_local_model):
-        """LLM classifies 'what is 2+2' as assistant or executor."""
-        from src.core.task_classifier import classify_task
-
-        async def _run():
-            result = await classify_task(
-                title="What is 2+2",
-                description="Simple arithmetic question",
-            )
-            assert result.agent_type in ("assistant", "executor", "analyst"), (
-                f"Unexpected agent_type: {result.agent_type}"
-            )
-            # Simple question should have low difficulty
-            assert result.difficulty <= 5
-
-        run_async(_run())
-
-    @pytest.mark.timeout(120)
-    def test_classify_status_query_not_shopping_real_llm(self, temp_db, fastest_local_model):
-        """Critical regression: 'how is the coffee machine search going' → not shopping.
-
-        This is the key ambiguity bug: small LLMs see 'coffee machine' and
-        classify as shopping, when the user is actually asking for task status.
-        """
-        from src.core.task_classifier import classify_task
-
-        async def _run():
-            result = await classify_task(
-                title="How is the coffee machine search going",
-                description="Asking about the status of a previous shopping task",
-            )
-            # Should be assistant, executor, or researcher — NOT shopping_advisor
-            # We document the actual LLM behavior to detect regressions
-            is_correct = result.agent_type not in ("shopping_advisor",)
-            if not is_correct:
-                pytest.xfail(
-                    f"LLM misclassified status query as {result.agent_type}. "
-                    "This is a known weakness of small/fast models. "
-                    "The TelegramInterface keyword pre-filter is the primary guard."
-                )
-
-        run_async(_run())
+#
+# SP5 (2026-06-11): the TestLLMTaskClassification class was deleted. Its tests
+# asserted classify_task's old synchronous TaskClassification return. SP5 made
+# classify_task a CPS kickoff (returns a child task id; the classification is
+# delivered via the task_classifier.classify.resume continuation). The
+# field-mapping intelligence is unit-tested in
+# tests/core/test_parse_classification.py, prompt pick-rules in
+# tests/core/test_task_classifier_picks.py, and live message-classification
+# quality is the TelegramInterface keyword pre-filter + _classify_user_message
+# (their own tests).

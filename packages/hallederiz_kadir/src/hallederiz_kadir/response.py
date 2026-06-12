@@ -4,6 +4,15 @@ import json
 import re
 
 
+def _get_logger():
+    try:
+        from src.infra.logging_config import get_logger
+        return get_logger("hallederiz_kadir.response")
+    except Exception:
+        import logging
+        return logging.getLogger("hallederiz_kadir.response")
+
+
 def parse_response(response, model_name: str, is_local: bool, is_thinking: bool) -> dict:
     """Parse a litellm ModelResponse into a flat dict.
 
@@ -43,11 +52,35 @@ def parse_response(response, model_name: str, is_local: bool, is_thinking: bool)
         tool_calls = []
         for tc in msg.tool_calls:
             fn = tc.function
-            try:
-                args = json.loads(fn.arguments) if fn.arguments else {}
-            except (json.JSONDecodeError, TypeError):
-                args = {}
-            tool_calls.append({"id": tc.id, "name": fn.name, "arguments": args})
+            raw_args = fn.arguments
+            args = {}
+            args_error = None
+            if raw_args:
+                try:
+                    args = json.loads(raw_args)
+                except (json.JSONDecodeError, TypeError):
+                    # NON-empty but unparseable arguments = the function-call
+                    # stream was cut mid-JSON (provider truncation on a large
+                    # payload, e.g. a big write_file `content`). Do NOT silently
+                    # drop to {} and run the tool arg-less — that surfaces as a
+                    # misleading "argument error / tool unavailable" loop and
+                    # DLQs (mission 81 ADR 4.1). Keep {} for execution safety
+                    # but record the truncation so the runtime can re-prompt.
+                    _n = len(raw_args)
+                    args_error = (
+                        f"arguments were not valid JSON ({_n} chars received) "
+                        f"— the tool call was truncated mid-stream, likely "
+                        f"because the payload was too large for one response"
+                    )
+                    _get_logger().warning(
+                        "[%s] tool_call '%s' arguments unparseable (%d chars) "
+                        "— truncated mid-stream; surfacing as retry nudge: %.200s",
+                        model_name, getattr(fn, "name", "?"), _n, raw_args,
+                    )
+            entry = {"id": tc.id, "name": fn.name, "arguments": args}
+            if args_error:
+                entry["arguments_error"] = args_error
+            tool_calls.append(entry)
 
     # ── Usage ──
     usage = {}

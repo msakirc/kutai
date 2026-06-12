@@ -92,7 +92,8 @@ async def mine_dlq_patterns() -> int:
 
     Returns the number of new dlq_pattern rows written.
     """
-    from src.infra.db import get_db, insert_growth_event
+    from src.infra.db import get_db
+    from general_beckman import record_growth_event
 
     # Make sure the DLQ table exists even on a fresh DB / test bootstrap.
     try:
@@ -167,7 +168,7 @@ async def mine_dlq_patterns() -> int:
         }
 
         try:
-            await insert_growth_event(
+            await record_growth_event(
                 mission_id=None,  # global signal — not mission-scoped
                 kind=GROWTH_KIND,
                 properties=properties,

@@ -8,6 +8,10 @@ from finch import PROFILE_REGISTRY
 # writer: included — base branch satisfies all 3 invariants (Task 9).
 _CARVE_OUTS = {"oncall_agent"}
 
+# NOTE: union of Foundry-data profiles + class-backed agents auto-covers every
+# active agent (including the SP3-deleted grader/code_reviewer/artifact_summarizer
+# wrappers' replacements, the Z9 growth agents, shopping v3 producers, and the
+# image-gen Plan 3 prompt_writer) — no static list to keep in sync.
 ALL_AGENTS = sorted((set(PROFILE_REGISTRY) | set(AGENT_REGISTRY)) - _CARVE_OUTS)
 
 _TASK_STUB = {"id": 0, "title": "x", "description": "x"}

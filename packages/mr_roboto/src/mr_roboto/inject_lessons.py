@@ -115,13 +115,8 @@ async def inject_lessons(
     new_ctx = json.dumps(ctx, ensure_ascii=False)
 
     try:
-        from src.infra.db import get_db as _get_db
-        _db = await _get_db()
-        await _db.execute(
-            "UPDATE missions SET context = ? WHERE id = ?",
-            (new_ctx, mission_id),
-        )
-        await _db.commit()
+        from general_beckman import update_mission_fields as _umf
+        await _umf(mission_id, context=new_ctx)
     except Exception as exc:
         logger.warning(f"inject_lessons: could not write mission context: {exc}")
         return {"ok": True, "lessons_count": 0, "mission_id": mission_id}

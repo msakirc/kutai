@@ -248,6 +248,49 @@ async def test_repo_missing_create_invoked(workspace_web, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Dotfiles never reach the published tree (defense-in-depth)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dotfiles_not_copied_to_pages_export(workspace_web, monkeypatch):
+    """A dotfile/dot-dir in .web/ (e.g. a stray chain ledger with prompts and
+    absolute paths) must NOT land in the .pages_export tree that gets
+    force-pushed to the PUBLIC gh-pages repo. Dotfiles are never needed for a
+    static preview."""
+    calls: list[dict] = []
+    monkeypatch.setattr(_init_mod, "_run", _make_run_stub(calls))
+    monkeypatch.setattr(_ppp_mod, "_run", _make_run_stub(calls))
+
+    monkeypatch.setattr(_ppp_mod, "_gh_available", lambda: (True, "ok"))
+    monkeypatch.setattr(_ppp_mod, "_gh_authenticated", lambda: (True, "ok"))
+    monkeypatch.setattr(_ppp_mod, "_gh_current_user", lambda: "dotowner")
+    monkeypatch.setattr(_ppp_mod, "_gh_repo_exists", lambda o, r: True)
+
+    _epu_mod = importlib.import_module("mr_roboto.emit_preview_url")
+    monkeypatch.setattr(_epu_mod, "_resolve_preview_root",
+                        lambda ws: os.path.join(ws, ".web"))
+
+    monkeypatch.delenv("KUTAI_GITHUB_ORG", raising=False)
+
+    web = os.path.join(workspace_web, ".web")
+    with open(os.path.join(web, ".swap_chain.json"), "w", encoding="utf-8") as fh:
+        fh.write('{"prompt_map": {"home__0": "secret diffusion prompt"}}')
+    dot_dir = os.path.join(web, ".secrets")
+    os.makedirs(dot_dir)
+    with open(os.path.join(dot_dir, "leak.txt"), "w", encoding="utf-8") as fh:
+        fh.write("leak")
+
+    res = await publish_preview_pages(mission_id=11, workspace_path=workspace_web)
+    assert res["ok"] is True
+    assert res["pending"] is False
+
+    pages_dir = os.path.join(workspace_web, ".pages_export")
+    assert os.path.isfile(os.path.join(pages_dir, "index.html"))
+    assert not os.path.exists(os.path.join(pages_dir, ".swap_chain.json"))
+    assert not os.path.exists(os.path.join(pages_dir, ".secrets"))
+
+
+# ---------------------------------------------------------------------------
 # Dispatch smoke: mr_roboto.run() routes publish_preview_pages
 # ---------------------------------------------------------------------------
 

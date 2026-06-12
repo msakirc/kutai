@@ -22,7 +22,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     Always returns a result dict — errors are caught and logged.
     """
     from src.infra.monitoring import check_url_uptime, check_github_repo, _url_statuses
-    from src.infra.db import add_task
+    from general_beckman import add_task
     from general_beckman.apply import _mechanical_context
 
     task_id = task.get("id")

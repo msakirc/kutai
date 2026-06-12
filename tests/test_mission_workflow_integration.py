@@ -42,7 +42,7 @@ from src.core.task_classifier import (
     TaskClassification,
     _classify_by_keywords,
     _extract_json,
-    classify_task,
+    parse_classification,
 )
 from src.workflows.engine.loader import load_workflow
 from src.workflows.engine.runner import WorkflowRunner
@@ -158,12 +158,16 @@ class TestLLMClassification(unittest.IsolatedAsyncioTestCase):
 
 
 class TestTaskClassification(unittest.IsolatedAsyncioTestCase):
-    """Verify classify_task with mocked LLM and keyword fallback."""
+    """Verify parse_classification (the intelligence behind the CPS classify_task)
+    maps a classifier-LLM result dict, plus the keyword fallback.
 
-    async def test_classify_shoplist_app(self):
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.request = AsyncMock(return_value={
-            "content": json.dumps({
+    Post-SP5: classify_task is a CPS kickoff returning a child task id; the
+    field-mapping intelligence lives in the pure parse_classification(), which
+    the resume handler calls. These tests exercise that mapping directly."""
+
+    def test_classify_shoplist_app(self):
+        result = parse_classification(
+            {"content": json.dumps({
                 "agent_type": "planner",
                 "difficulty": 6,
                 "needs_tools": False,
@@ -171,23 +175,19 @@ class TestTaskClassification(unittest.IsolatedAsyncioTestCase):
                 "needs_thinking": True,
                 "local_only": False,
                 "priority": "normal",
-            })
-        })
-        with patch("src.core.llm_dispatcher.get_dispatcher", return_value=mock_dispatcher):
-            result = await classify_task(
-                "Build shoplist app",
-                "Build an app that allows multiple users to share and manage shoplists",
-            )
+            })},
+            title="Build shoplist app",
+            description="Build an app that allows multiple users to share and manage shoplists",
+        )
         self.assertIsInstance(result, TaskClassification)
         self.assertEqual(result.agent_type, "planner")
         self.assertEqual(result.difficulty, 6)
         self.assertTrue(result.needs_thinking)
         self.assertEqual(result.method, "llm")
 
-    async def test_classify_web_search(self):
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.request = AsyncMock(return_value={
-            "content": json.dumps({
+    def test_classify_web_search(self):
+        result = parse_classification(
+            {"content": json.dumps({
                 "agent_type": "researcher",
                 "difficulty": 4,
                 "needs_tools": True,
@@ -195,13 +195,10 @@ class TestTaskClassification(unittest.IsolatedAsyncioTestCase):
                 "needs_thinking": False,
                 "local_only": False,
                 "priority": "normal",
-            })
-        })
-        with patch("src.core.llm_dispatcher.get_dispatcher", return_value=mock_dispatcher):
-            result = await classify_task(
-                "Research Python frameworks",
-                "Search the web for the best Python frameworks for web development",
-            )
+            })},
+            title="Research Python frameworks",
+            description="Search the web for the best Python frameworks for web development",
+        )
         self.assertIsInstance(result, TaskClassification)
         self.assertEqual(result.agent_type, "researcher")
         self.assertEqual(result.difficulty, 4)

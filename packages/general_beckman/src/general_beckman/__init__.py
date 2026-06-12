@@ -3,25 +3,91 @@
 Public API (everything else is internal):
   - next_task() -> Task | None
   - on_task_finished(task_id, result) -> None
-  - enqueue(spec, *, parent_id, await_inline, on_complete, on_error, next_task_spec, cont_state) -> int | TaskResult
-  - resolve_inline(task_id, result) -> None
+  - enqueue(spec, *, parent_id, on_complete, on_error, next_task_spec, cont_state) -> int | None
+  - record_growth_event(mission_id, kind, properties, segment) -> int
+  - supersede_growth_event(mission_id, kind) -> int
+  - update_growth_event_properties(event_id, properties) -> None
+  - add_mission(...) -> int
+  - update_mission(mission_id, **kwargs) -> None
+  - update_mission_fields(mission_id, **fields) -> None
+  - block_mission(mission_id) -> bool
+  - unblock_mission(mission_id) -> bool
+  - purge_all_missions() -> None
+  - purge_all() -> None
+  - increment_mission_rework_loops(mission_id) -> int
+  - add_task(...) -> int
+  - update_task(task_id, **kwargs) -> None
+  - update_task_by_context_field(mission_id, field, value, **kwargs) -> None
+  - add_subtasks(parent_task_id, subtasks, ...) -> list[int]
+  - propagate_skips(mission_id) -> int
+  - cancel_task(task_id) -> bool
+  - reprioritize_task(task_id, new_priority) -> bool
+  - save_task_checkpoint(task_id, state) -> None
+  - clear_task_checkpoint(task_id) -> None
+  - reset_failed_tasks() -> int
+  - reset_stuck_tasks() -> int
+  - reset_blocked_tasks() -> int
+  - cancel_pending_tasks(mission_id) -> int
+  - reset_workflow_step(mission_id, step_id, confirm_task_id) -> None
+  - recover_startup_tasks() -> dict
+  - reset_cascade_failed_dependents(task_id) -> int
+
+SP5 (2026-06-11): the blocking ``await_inline`` primitive + its inline-waiter
+machinery (resolve_inline / _inline_waiters / INLINE_TIMEOUT / TaskResult) were
+deleted. All enqueues are fire-and-continue; use on_complete/on_error
+continuations (see continuations.py) to react to a child reaching terminal.
 """
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from general_beckman.types import Task, AgentResult
 
 __all__ = [
     "next_task", "on_task_finished", "enqueue", "on_model_swap",
-    "resolve_inline", "Task", "AgentResult", "TaskResult",
-    "INLINE_TIMEOUT", "_inline_waiters",
+    "Task", "AgentResult",
     "notify_threshold", "THRESHOLDS_PCT",
+    "record_growth_event", "supersede_growth_event", "update_growth_event_properties",
+    # Mission write API — single sanctioned write-owner of the missions table.
+    "add_mission", "update_mission", "update_mission_fields",
+    "block_mission", "unblock_mission",
+    "purge_all_missions", "purge_all",
+    "increment_mission_rework_loops",
+    # Tasks write API — single sanctioned write-owner of the tasks table.
+    "add_task", "update_task", "update_task_by_context_field",
+    "add_subtasks", "propagate_skips",
+    "cancel_task", "reprioritize_task",
+    "save_task_checkpoint", "clear_task_checkpoint",
+    "reset_failed_tasks", "reset_stuck_tasks", "reset_blocked_tasks",
+    "cancel_pending_tasks", "reset_workflow_step",
+    "recover_startup_tasks", "reset_cascade_failed_dependents",
 ]
 
 THRESHOLDS_PCT = (50, 75, 90)
+
+
+def _estimate_task_tokens(agent_type: str, ctx_d, btable: dict) -> tuple[int, int]:
+    """Per-task ``(in_tokens, out_tokens)`` estimate for admission/gating.
+
+    Forwards the task's ``needs_thinking`` flag as ``model_is_thinking`` so the
+    B-table output estimate is scaled (THINKING_OUT_SCALE) for thinking tasks.
+    Without it, thinking steps (e.g. architect ADR 4.1) under-count output:
+    reasoning tokens go untracked, the KDV TPM gate over-admits, and the
+    max_tokens budget the estimate feeds starves the artifact -> truncation
+    -> empty-arg write_file -> DLQ (mission 81).
+    """
+    from fatih_hoca.estimates import estimate_for
+
+    class _EstShim:
+        __slots__ = ("agent_type", "context")
+
+    shim = _EstShim()
+    shim.agent_type = agent_type
+    shim.context = ctx_d if isinstance(ctx_d, dict) else {}
+    needs_thinking = bool(isinstance(ctx_d, dict) and ctx_d.get("needs_thinking"))
+    est = estimate_for(shim, btable=btable, model_is_thinking=needs_thinking)
+    return est.in_tokens, est.out_tokens
 
 
 async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: float):
@@ -65,26 +131,53 @@ async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: flo
         logger.warning("threshold notify post failed: %s", e)
 
 
-@dataclass
-class TaskResult:
-    """Minimal result envelope returned by await_inline enqueue."""
-    status: str
-    result: dict | None
-    error: str | None
+async def record_growth_event(
+    mission_id: int | None,
+    kind: str,
+    properties: dict,
+    segment: str | None = None,
+) -> int:
+    """Append a row to ``growth_events``.  Returns the new row id.
+
+    Single sanctioned write-path for all ``growth_events`` inserts.
+    Delegates storage to ``src.infra.db.insert_growth_event``; db.py keeps
+    the SQL, beckman is the sole external entry point.
+    """
+    from src.infra.db import insert_growth_event
+    return await insert_growth_event(
+        mission_id=mission_id, kind=kind, properties=properties, segment=segment
+    )
 
 
-# Timeout (seconds) for await_inline futures. Monkeypatchable in tests.
-INLINE_TIMEOUT: float = 600.0
+async def supersede_growth_event(
+    mission_id: int | None,
+    kind: str,
+) -> int:
+    """Mark all open (non-consumed, non-superseded) events of ``kind`` for
+    ``mission_id`` as superseded.
 
-# task_id → asyncio.Future[TaskResult] for inline waiters
-_inline_waiters: dict[int, asyncio.Future] = {}
+    Used by producers that write idempotent, latest-wins rows (e.g.
+    ``northstar_review``, ``backlog_candidate``, ``sunset_candidate``): call
+    this before inserting the fresh batch so stale candidates are tombstoned.
+    Append-only invariant is preserved — rows are flagged, never deleted.
+
+    WARNING: passing ``mission_id=None`` sweeps ALL missions' open events of
+    that kind — use only when a global reset is intentional.
+
+    Returns the count of rows updated.
+    """
+    from src.infra.db import supersede_growth_events as _supersede
+    return await _supersede(mission_id=mission_id, kind=kind)
 
 
-def resolve_inline(task_id: int, result: "TaskResult") -> None:
-    """Resolve an await_inline waiter. Called from terminal hook (Task 3) or tests."""
-    fut = _inline_waiters.pop(task_id, None)
-    if fut is not None and not fut.done():
-        fut.set_result(result)
+async def update_growth_event_properties(event_id: int, properties: dict) -> None:
+    """Overwrite ``properties_json`` on an existing ``growth_events`` row.
+
+    Thin delegate to ``src.infra.db.update_growth_event_properties``; beckman
+    is the sanctioned entry point so callers never bypass this ownership layer.
+    """
+    from src.infra.db import update_growth_event_properties as _impl
+    await _impl(event_id=event_id, properties=properties)
 
 
 def _stamp_admission_urgency(task: dict) -> float:
@@ -719,7 +812,6 @@ async def next_task(lane: str | None = None):
         # calls and admitted all five. Mid-task: quota wall, retry
         # recursion's select() sees exhausted pool, returns None.
         try:
-            from fatih_hoca.estimates import estimate_for
             from general_beckman.btable_cache import get_btable
             import json as _json
 
@@ -729,15 +821,7 @@ async def next_task(lane: str | None = None):
             except Exception:
                 ctx_d = {}
 
-            class _EstShim:
-                __slots__ = ("agent_type", "context")
-
-            shim = _EstShim()
-            shim.agent_type = agent_type
-            shim.context = ctx_d if isinstance(ctx_d, dict) else {}
-            est = estimate_for(shim, btable=get_btable())
-            est_in = est.in_tokens
-            est_out = est.out_tokens
+            est_in, est_out = _estimate_task_tokens(agent_type, ctx_d, get_btable())
         except Exception:
             est_in = 0
             est_out = 0
@@ -846,6 +930,35 @@ async def next_task(lane: str | None = None):
         task["preselected_pick"] = pick
         task["status"] = "processing"
 
+        # Plan 2 Task 11: stamp the picked provider so on_task_finished's
+        # image-lane warm-batch hook can tell the finished task was a LOCAL
+        # image (provider == 'clair_obscur') without re-loading the pick. Set
+        # the in-memory top-level key AND persist into context — on_task_finished
+        # reloads the DB row, where only the persisted context survives.
+        try:
+            _provider = getattr(getattr(pick, "model", None), "provider", "") or ""
+            task["preselected_pick_provider"] = _provider
+            if (task.get("kind") or "").lower() == "image":
+                import json as _json_p
+                _ctx_raw_p = task.get("context") or "{}"
+                _ctx_p = (
+                    _json_p.loads(_ctx_raw_p)
+                    if isinstance(_ctx_raw_p, str) else dict(_ctx_raw_p or {})
+                )
+                if isinstance(_ctx_p, dict):
+                    _ctx_p["preselected_pick_provider"] = _provider
+                    task["context"] = _json_p.dumps(_ctx_p)
+                    try:
+                        from src.infra.db import update_task as _ut_p
+                        await _ut_p(int(task["id"]), context=task["context"])
+                    except Exception as _e:
+                        _log.debug(
+                            f"admission: provider-stamp persist skipped "
+                            f"#{task['id']}: {_e}"
+                        )
+        except Exception as _e:
+            _log.debug(f"admission: provider stamp failed #{task.get('id')}: {_e}")
+
         # Z10 T2A: stamp estimated_cost_usd on the task. Pulls historical
         # avg cost for (model, agent_type) or falls back to per-kind
         # defaults. Best-effort — never blocks admission.
@@ -880,6 +993,83 @@ async def next_task(lane: str | None = None):
     _last_admission_fp = fp
     _last_admission_admitted = False
     return None
+
+
+async def _peek_next_admittable() -> dict | None:
+    """Read-only peek at the highest-priority ready candidate. Mirrors
+    next_task()'s candidate fetch — uses the same queue.pick_ready_top_k so the
+    prediction matches what beckman will admit next. Does NOT claim anything."""
+    try:
+        from general_beckman import queue as _queue
+        candidates = await _queue.pick_ready_top_k(k=1, lane=None)
+        if not candidates:
+            return None
+        return candidates[0]
+    except Exception:
+        return None
+
+
+def _is_local_image_task(task: dict) -> bool:
+    """A just-finished task is a LOCAL image only when it was an image-kind task
+    AND admission stamped its provider as clair_obscur. Cloud-image tasks never
+    started a local server, so there is nothing to release.
+
+    ``preselected_pick_provider`` is stamped at admission (top-level on the
+    in-memory dict + persisted into context so it survives the DB round-trip in
+    on_task_finished). Read both surfaces."""
+    if (task.get("kind") or "").lower() != "image":
+        return False
+    prov = task.get("preselected_pick_provider")
+    if prov is None:
+        # Fall back to the persisted context copy (on_task_finished reloads the
+        # DB row, where the top-level key is absent).
+        try:
+            import json as _json
+            ctx_raw = task.get("context") or "{}"
+            ctx = _json.loads(ctx_raw) if isinstance(ctx_raw, str) else dict(ctx_raw or {})
+            prov = (ctx or {}).get("preselected_pick_provider")
+        except Exception:
+            prov = None
+    return prov == "clair_obscur"
+
+
+async def _post_completion_image_lane(task: dict, result: dict) -> None:
+    """After an image task finishes, decide whether to keep clair_obscur warm
+    or hint release. Only acts when the just-finished task was a LOCAL image
+    (preselected_pick_provider == 'clair_obscur'). Cloud-image tasks left
+    clair_obscur untouched — nothing to release.
+
+    v2: on lane switch, calls clair_obscur.record_release_hint() — NOT a
+    direct stop. The backstop in clair_obscur.server.ImageServer fires the
+    actual stop() after idle_release_seconds. This wires the backstop and
+    gives a back-to-back image batch a window to reuse the warm server."""
+    if not _is_local_image_task(task):
+        return
+
+    nxt = await _peek_next_admittable()
+    is_image_next = (
+        nxt is not None
+        and ((nxt.get("kind") or "").lower() == "image"
+             or "image_call" in (nxt.get("context") or ""))
+    )
+    if is_image_next:
+        # Warm-batch: NO hint. The next dispatch's idempotent clair_obscur.start()
+        # also clears any stale hint (husam _run_image, Task 10).
+        return
+
+    # Lane switch (or idle queue) — hint release; the clair_obscur backstop
+    # times the actual stop after idle_release_seconds.
+    try:
+        import clair_obscur
+        clair_obscur.record_release_hint()
+    except Exception as _e:
+        try:
+            from src.infra.logging_config import get_logger
+            get_logger("beckman.image_lane").warning(
+                "clair_obscur.record_release_hint failed", error=str(_e),
+            )
+        except Exception:
+            pass
 
 
 async def on_task_finished(task_id, result: dict = None) -> None:
@@ -1086,6 +1276,15 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     actions = rewrite_actions(task, task_ctx, actions)
     await apply_actions(task, actions)
 
+    # Plan 2 Task 11: image-lane warm-batch decision. After a LOCAL image task
+    # finishes, hold clair_obscur warm when the next admittable is another image,
+    # else record_release_hint() and let clair_obscur's backstop time the stop.
+    # Best-effort — never let a clair_obscur hiccup break the completion path.
+    try:
+        await _post_completion_image_lane(task, result or {})
+    except Exception as _e:
+        log.debug("image_lane hook failed", task_id=task_id, error=str(_e))
+
     # ── Continuation hooks (CPS SP1.1: relocated post-apply) ──────────────
     # The continuation FIRE trigger is the DB tasks.status AFTER apply_actions,
     # NOT the in-memory result["status"]. Rationale: apply_actions runs
@@ -1128,16 +1327,6 @@ async def on_task_finished(task_id, result: dict = None) -> None:
                                 dict(_agent_result_snapshot), {},
                             )
                         )
-
-            # await_inline resolve: only on TRUE terminal so retries don't
-            # prematurely wake the parent.
-            if task_id in _inline_waiters:
-                _tr = TaskResult(
-                    status=_db_status,
-                    result=_agent_result_snapshot.get("result"),
-                    error=_agent_result_snapshot.get("error"),
-                )
-                resolve_inline(task_id, _tr)
 
         # next_task_spec fire-and-forget chain (unchanged behavior: fires on
         # any on_task_finished invocation; not the durable substrate).
@@ -1278,14 +1467,18 @@ async def enqueue(
     spec: dict,
     *,
     parent_id: int | None = None,
-    await_inline: bool = False,
     on_complete: str | None = None,
     on_error: str | None = None,
     cont_state: dict | None = None,
     next_task_spec: dict | None = None,
     lane: str | None = None,
-) -> "int | TaskResult":
+) -> "int | None":
     """Single external write path for all Beckman tasks.
+
+    Fire-and-continue: always returns the new task id (or None on dedup). To
+    react when the task reaches a terminal state, pass an ``on_complete`` /
+    ``on_error`` continuation handler (SP5 deleted the blocking ``await_inline``
+    path).
 
     Parameters
     ----------
@@ -1294,9 +1487,6 @@ async def enqueue(
         defaults to ``"main_work"`` if absent.
     parent_id:
         ID of a parent task — stored in tasks.parent_task_id.
-    await_inline:
-        Block until the task reaches a terminal state (resolved via
-        ``resolve_inline``).  Returns a ``TaskResult``.
     on_complete:
         Name of a registered continuation handler (see continuations.py).
         Written atomically to the continuations table via add_task.
@@ -1315,12 +1505,6 @@ async def enqueue(
     from src.infra.db import add_task
     from general_beckman.queue_profile_push import build_and_push
     from general_beckman.lanes import pick_lane
-
-    if await_inline and (on_complete is not None or on_error is not None):
-        raise ValueError(
-            "enqueue: await_inline and on_complete/on_error are mutually "
-            "exclusive (a blocking wait can't also fire a continuation)"
-        )
 
     spec = dict(spec)  # shallow copy — don't mutate caller's dict
 
@@ -1370,35 +1554,318 @@ async def enqueue(
             "(dedup should be skipped for continuations — investigate add_task)"
         )
     await build_and_push()
+    return task_id
 
-    if not await_inline:
-        return task_id
 
-    # ── inline-wait path ───────────────────────────────────────────────────
-    # Keep the PARENT task's heartbeat fresh while we wait on the child.
-    # The child's runner sets the heartbeat contextvar to the child id,
-    # so the parent goes silent and the orchestrator's no-progress watchdog
-    # kills it at 300s even though work is happening. Wrap every inline
-    # wait — grade_task and other beckman.enqueue(await_inline=True)
-    # callers all suffered from this; only dispatcher.request had its own
-    # wrapper (production 2026-05-14 mission 69 grader task #31203:
-    # 6× watchdog kills × 5 min = 30 min wasted before DLQ).
-    try:
-        from src.core import heartbeat as _hb_inline
-        _inline_keepalive_cm = _hb_inline.keepalive
-    except Exception:
-        _inline_keepalive_cm = None
-    loop = asyncio.get_event_loop()
-    fut: asyncio.Future[TaskResult] = loop.create_future()
-    _inline_waiters[task_id] = fut
-    try:
-        if _inline_keepalive_cm is not None:
-            async with _inline_keepalive_cm():
-                return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
-        return await asyncio.wait_for(asyncio.shield(fut), timeout=INLINE_TIMEOUT)
-    except asyncio.TimeoutError:
-        _inline_waiters.pop(task_id, None)
-        raise
+# ─────────────────────────────────────────────────────────────────────────────
+# Mission write API — General Beckman is the single write-owner of missions.
+# SQL stays in src/infra/db.py; beckman exposes the sanctioned external API.
+# All modules outside src/infra + general_beckman must use these helpers.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def add_mission(
+    title: str,
+    description: str,
+    priority: int = 5,
+    context: dict | None = None,
+    workflow: str | None = None,
+    repo_path: str | None = None,
+    language: str | None = None,
+    framework: str | None = None,
+    budget_ceiling_usd: float | None = None,
+) -> int:
+    """Create a new mission row and return its id.
+
+    Thin delegate to ``src.infra.db.add_mission``; beckman is the single
+    sanctioned external entry point for mission creation.
+    """
+    from src.infra.db import add_mission as _add_mission
+    return await _add_mission(
+        title=title,
+        description=description,
+        priority=priority,
+        context=context,
+        workflow=workflow,
+        repo_path=repo_path,
+        language=language,
+        framework=framework,
+        budget_ceiling_usd=budget_ceiling_usd,
+    )
+
+
+async def update_mission(mission_id: int, **kwargs) -> None:
+    """Update structured fields on a mission (whitelist enforced by db.py).
+
+    Thin delegate to ``src.infra.db.update_mission``.  Accepts only the
+    columns in ``src.infra.db._MISSION_COLUMNS``; unknown columns raise
+    ``ValueError``.
+    """
+    from src.infra.db import update_mission as _update_mission
+    await _update_mission(mission_id, **kwargs)
+
+
+async def update_mission_fields(mission_id: int, **fields) -> None:
+    """Generic, audited setter for one-off missions column patches.
+
+    Accepts only columns in ``src.infra.db._MISSION_FIELDS_WHITELIST``; any
+    unknown column name raises ``ValueError`` so callers cannot inject
+    arbitrary identifiers.  Use for fields not covered by ``update_mission``
+    (Telegram integration, preview_url, budget columns, etc.).
+    """
+    from src.infra.db import update_mission_fields as _update_fields
+    await _update_fields(mission_id, **fields)
+
+
+async def block_mission(mission_id: int) -> bool:
+    """Flip mission to ``blocked_on_founder_action`` if it is currently active.
+
+    Ported from ``src.founder_actions.block_mission_if_needed``; beckman owns
+    the write so founder_actions delegates here.  Returns ``True`` if the flip
+    happened.  Does NOT check whether pending founder-actions exist — caller is
+    responsible for that gate (founder_actions.block_mission_if_needed still
+    does the count check before calling this).
+    """
+    from src.infra.logging_config import get_logger as _get_logger
+    _logger = _get_logger("beckman.block_mission")
+
+    from src.infra.db import get_mission, update_mission_fields as _update_fields
+    mission = await get_mission(mission_id)
+    if not mission:
+        return False
+
+    # lifecycle_state is schema-guaranteed NOT NULL since the Z8 T1A
+    # migration in init_db — no column probe or status fallback needed.
+    if mission.get("lifecycle_state") == "blocked_on_founder_action":
+        return False  # already blocked
+
+    await _update_fields(mission_id, lifecycle_state="blocked_on_founder_action")
+    _logger.info(
+        "mission blocked on founder_actions",
+        mission_id=mission_id,
+    )
+    return True
+
+
+async def unblock_mission(mission_id: int) -> bool:
+    """Flip mission from ``blocked_on_founder_action`` back to ``active``.
+
+    Also resets tasks parked in ``blocked_on_founder_action`` back to
+    ``pending`` so the next pump tick re-evaluates them.  Returns ``True``
+    if the flip happened.  Does NOT check whether pending founder-actions are
+    cleared — caller is responsible for that gate.
+    """
+    from src.infra.logging_config import get_logger as _get_logger
+    _logger = _get_logger("beckman.unblock_mission")
+
+    from src.infra.db import get_mission, update_mission_fields as _update_fields
+    mission = await get_mission(mission_id)
+    if not mission:
+        return False
+
+    if mission.get("lifecycle_state") != "blocked_on_founder_action":
+        return False
+
+    await _update_fields(mission_id, lifecycle_state="active")
+    # Reset tasks that beckman parked in blocked_on_founder_action for this
+    # mission back to pending so the pump re-evaluates them.
+    from src.infra.db import reset_blocked_on_founder_tasks as _reset_founder_tasks
+    await _reset_founder_tasks(mission_id)
+    _logger.info(
+        "mission unblocked — no pending actions",
+        mission_id=mission_id,
+    )
+    return True
+
+
+async def purge_all_missions() -> None:
+    """Delete ALL missions + dependent rows (tasks, checkpoints, etc.).
+
+    Thin delegate to ``src.infra.db.purge_all_missions``; both admin-reset
+    callbacks use this so the exact table list is maintained in one place.
+    """
+    from src.infra.db import purge_all_missions as _purge
+    await _purge()
+
+
+async def purge_all() -> None:
+    """Wipe missions + tasks + conversations + memory (legacy /resetall path).
+
+    Thin delegate to ``src.infra.db.purge_all``.
+    """
+    from src.infra.db import purge_all as _purge_all
+    await _purge_all()
+
+
+async def increment_mission_rework_loops(mission_id: int) -> int:
+    """Atomically bump missions.phase_7_rework_loops; return the new count.
+
+    Thin delegate to ``src.infra.db.increment_mission_rework_loops``; beckman
+    is the sanctioned external entry point for rework-loop telemetry.
+    """
+    from src.infra.db import increment_mission_rework_loops as _incr
+    return await _incr(mission_id)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tasks write API — beckman is the single sanctioned write-owner of the tasks table.
+# Internal beckman modules (apply.py, queue.py, sweep.py, cron.py,
+# review_routing.py) call db directly as owners; all external callers use these.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def add_task(title: str, description: str, **kwargs) -> int:
+    """Thin delegate to src.infra.db.add_task; beckman is the single sanctioned write-owner of the tasks table.
+
+    See src.infra.db.add_task for the full parameter list (mission_id,
+    parent_task_id, agent_type, tier, priority, requires_approval, depends_on,
+    context, kind, runner, needs_real_tools, reversibility, lane, on_complete,
+    on_error, cont_state, etc.).
+    """
+    from src.infra.db import add_task as _add_task
+    return await _add_task(title=title, description=description, **kwargs)
+
+
+async def update_task(task_id, **kwargs):
+    """Thin delegate to src.infra.db.update_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import update_task as _update_task
+    return await _update_task(task_id, **kwargs)
+
+
+async def update_task_by_context_field(
+    mission_id: int, field: str, value: str, **kwargs
+):
+    """Thin delegate to src.infra.db.update_task_by_context_field; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import update_task_by_context_field as _update_task_by_context_field
+    return await _update_task_by_context_field(mission_id, field, value, **kwargs)
+
+
+async def add_subtasks(
+    parent_task_id: int,
+    subtasks: list,
+    mission_id: int | None = None,
+    parent_status: str = "waiting_subtasks",
+    parent_result: str | None = None,
+) -> list:
+    """Thin delegate to src.infra.db.add_subtasks_atomically; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import add_subtasks_atomically as _add_subtasks_atomically
+    return await _add_subtasks_atomically(
+        parent_task_id=parent_task_id,
+        subtasks=subtasks,
+        mission_id=mission_id,
+        parent_status=parent_status,
+        parent_result=parent_result,
+    )
+
+
+async def propagate_skips(mission_id: int) -> int:
+    """Thin delegate to src.infra.db.propagate_skips; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import propagate_skips as _propagate_skips
+    return await _propagate_skips(mission_id)
+
+
+async def cancel_task(task_id: int) -> bool:
+    """Thin delegate to src.infra.db.cancel_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import cancel_task as _cancel_task
+    return await _cancel_task(task_id)
+
+
+async def reprioritize_task(task_id: int, new_priority: int) -> bool:
+    """Thin delegate to src.infra.db.reprioritize_task; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import reprioritize_task as _reprioritize_task
+    return await _reprioritize_task(task_id, new_priority)
+
+
+async def save_task_checkpoint(task_id: int, state: dict) -> None:
+    """Thin delegate to src.infra.db.save_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import save_task_checkpoint as _save_task_checkpoint
+    return await _save_task_checkpoint(task_id, state)
+
+
+async def clear_task_checkpoint(task_id: int) -> None:
+    """Thin delegate to src.infra.db.clear_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
+    from src.infra.db import clear_task_checkpoint as _clear_task_checkpoint
+    return await _clear_task_checkpoint(task_id)
+
+
+async def reset_failed_tasks() -> int:
+    """Reset all failed tasks to pending. Returns count updated.
+
+    Delegate to src.infra.db.reset_failed_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_failed_tasks as _impl
+    return await _impl()
+
+
+async def reset_stuck_tasks() -> int:
+    """Reset all processing tasks (stuck) to pending. Returns count updated.
+
+    Delegate to src.infra.db.reset_stuck_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_stuck_tasks as _impl
+    return await _impl()
+
+
+async def reset_blocked_tasks() -> int:
+    """Clear dependency references on pending tasks so they can run.
+    Returns count updated.
+
+    Delegate to src.infra.db.reset_blocked_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_blocked_tasks as _impl
+    return await _impl()
+
+
+async def cancel_pending_tasks(mission_id: int) -> int:
+    """Cancel all pending tasks for a mission. Returns count updated.
+
+    Delegate to src.infra.db.cancel_pending_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import cancel_pending_tasks as _impl
+    return await _impl(mission_id)
+
+
+async def reset_workflow_step(
+    mission_id: int,
+    step_id: str,
+    confirm_task_id: int | None = None,
+) -> None:
+    """Reset workflow writer + verify sibling + optional confirm task to pending.
+
+    Delegate to src.infra.db.reset_workflow_step; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_workflow_step as _impl
+    return await _impl(mission_id, step_id, confirm_task_id)
+
+
+async def recover_startup_tasks() -> dict:
+    """Post-restart task queue hygiene: reset processing→pending + clear backoff.
+
+    Tasks at the infra-reset cap (INFRA_RESET_CAP=5) are dead-lettered
+    instead of re-pended (poison-task crash-loop guard).
+
+    Returns {'interrupted': int, 'dead_lettered': int, 'backoff_cleared': int}.
+    Delegate to src.infra.db.recover_startup_tasks; beckman is the sole
+    sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import recover_startup_tasks as _impl
+    return await _impl()
+
+
+async def reset_cascade_failed_dependents(task_id: int) -> int:
+    """Reset tasks cascade-failed because task_id failed (DLQ retry recovery).
+    Returns count updated.
+
+    Delegate to src.infra.db.reset_cascade_failed_dependents; beckman is the
+    sole sanctioned write-owner of the tasks table.
+    """
+    from src.infra.db import reset_cascade_failed_dependents as _impl
+    return await _impl(task_id)
 
 
 async def on_model_swap(old_model: str | None, new_model: str | None) -> None:

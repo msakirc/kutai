@@ -398,49 +398,48 @@ async def resolve(
     return await update_status(action_id, "done", response_payload)
 
 
+async def defer(action_id: int, until: str) -> None:
+    """Set ``defer_until`` on an action, hiding the card until that time.
+
+    ``until`` must be a space-separated datetime string in the format
+    ``"%Y-%m-%d %H:%M:%S"`` (SQLite-compatible, matching the project
+    convention — never ISO-8601 with a ``T`` separator).
+
+    Only updates ``defer_until`` and ``updated_at``; does not change
+    ``status`` or any other field.
+    """
+    from src.infra.db import get_db
+    now = _utc_now()
+    db = await get_db()
+    await db.execute(
+        "UPDATE founder_actions SET defer_until = ?, updated_at = ? WHERE id = ?",
+        (until, now, action_id),
+    )
+    await db.commit()
+    logger.info("founder_action deferred", action_id=action_id, until=until)
+
+
 # ─── T1E: mission lifecycle coordination ───────────────────────────────────
-# Schema-aware: if missions.lifecycle_state (Z0) exists at runtime we use
-# that; otherwise we set missions.status to 'blocked_on_founder_action'.
-# Cached after first probe — the check is one PRAGMA call.
+# lifecycle_state is schema-guaranteed NOT NULL since the Z8 T1A migration
+# in init_db — the old PRAGMA column probe and 'status' fallback are gone.
 
 _BLOCKED_LITERAL = "blocked_on_founder_action"
-_lifecycle_column_cache: Optional[str] = None
-
-
-async def _missions_lifecycle_column() -> str:
-    """Return 'lifecycle_state' if the column exists, else 'status'."""
-    global _lifecycle_column_cache
-    if _lifecycle_column_cache is not None:
-        return _lifecycle_column_cache
-    from src.infra.db import get_db
-    db = await get_db()
-    cur = await db.execute("PRAGMA table_info(missions)")
-    cols = [row[1] for row in await cur.fetchall()]
-    _lifecycle_column_cache = (
-        "lifecycle_state" if "lifecycle_state" in cols else "status"
-    )
-    return _lifecycle_column_cache
-
-
-def _reset_lifecycle_cache() -> None:
-    """Test hook: force re-probe on next call. Used after fixture switches DBs."""
-    global _lifecycle_column_cache
-    _lifecycle_column_cache = None
 
 
 async def block_mission_if_needed(mission_id: int) -> bool:
     """Flip mission to ``blocked_on_founder_action`` if any actions are
     pending/in_progress AND the mission is currently active.
 
-    Returns True if the flip happened.
+    Returns True if the flip happened.  Delegates the actual write to
+    ``general_beckman.block_mission`` so beckman is the sole write-owner of
+    the missions table; this function retains ownership of the guard check
+    (founder_actions count) because that belongs to founder_actions domain.
     """
     from src.infra.db import get_db, get_mission
     mission = await get_mission(mission_id)
     if not mission:
         return False
-    col = await _missions_lifecycle_column()
-    current = mission.get(col) or mission.get("status")
-    if current != "active":
+    if mission.get("lifecycle_state") != "active":
         return False
     db = await get_db()
     cur = await db.execute(
@@ -451,31 +450,23 @@ async def block_mission_if_needed(mission_id: int) -> bool:
     pending = int((await cur.fetchone())[0])
     if pending == 0:
         return False
-    await db.execute(
-        f"UPDATE missions SET {col} = ? WHERE id = ?",
-        (_BLOCKED_LITERAL, mission_id),
-    )
-    await db.commit()
-    logger.info(
-        "mission blocked on founder_actions",
-        mission_id=mission_id, pending=pending, column=col,
-    )
-    return True
+    from general_beckman import block_mission as _bk_block
+    return await _bk_block(mission_id)
 
 
 async def unblock_mission_if_clear(mission_id: int) -> bool:
     """If mission is in ``blocked_on_founder_action`` AND no
     pending/in_progress actions remain, flip it back to ``active``.
 
-    Returns True if the flip happened.
+    Returns True if the flip happened.  Delegates the actual write to
+    ``general_beckman.unblock_mission`` (which also resets blocked tasks to
+    pending); this function retains the guard check (founder_actions count).
     """
     from src.infra.db import get_db, get_mission
     mission = await get_mission(mission_id)
     if not mission:
         return False
-    col = await _missions_lifecycle_column()
-    current = mission.get(col) or mission.get("status")
-    if current != _BLOCKED_LITERAL:
+    if mission.get("lifecycle_state") != _BLOCKED_LITERAL:
         return False
     db = await get_db()
     cur = await db.execute(
@@ -486,26 +477,8 @@ async def unblock_mission_if_clear(mission_id: int) -> bool:
     pending = int((await cur.fetchone())[0])
     if pending > 0:
         return False
-    await db.execute(
-        f"UPDATE missions SET {col} = ? WHERE id = ?",
-        ("active", mission_id),
-    )
-    # Also flip any tasks that beckman parked in
-    # 'blocked_on_founder_action' for this mission back to pending so
-    # the next pump tick re-evaluates them. Tasks that didn't go
-    # through Z6 admission won't have that status, so this is a
-    # narrow, idempotent UPDATE.
-    await db.execute(
-        "UPDATE tasks SET status = 'pending' "
-        "WHERE mission_id = ? AND status = 'blocked_on_founder_action'",
-        (mission_id,),
-    )
-    await db.commit()
-    logger.info(
-        "mission unblocked — no pending actions",
-        mission_id=mission_id, column=col,
-    )
-    return True
+    from general_beckman import unblock_mission as _bk_unblock
+    return await _bk_unblock(mission_id)
 
 
 async def sweep_unblock_all() -> int:
@@ -513,10 +486,9 @@ async def sweep_unblock_all() -> int:
     clear. Returns the count of unblocks performed.
     """
     from src.infra.db import get_db
-    col = await _missions_lifecycle_column()
     db = await get_db()
     cur = await db.execute(
-        f"SELECT id FROM missions WHERE {col} = ?",
+        "SELECT id FROM missions WHERE lifecycle_state = ?",
         (_BLOCKED_LITERAL,),
     )
     rows = await cur.fetchall()
@@ -537,6 +509,7 @@ __all__ = [
     "list_pending",
     "update_status",
     "resolve",
+    "defer",
     "block_mission_if_needed",
     "unblock_mission_if_clear",
     "sweep_unblock_all",

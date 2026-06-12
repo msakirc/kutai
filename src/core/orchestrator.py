@@ -5,8 +5,9 @@ import os
 from pathlib import Path
 from ..app.config import TASK_PRIORITY
 from ..infra.db import (
-    init_db, get_db, close_db, add_task, release_task_locks,
+    init_db, get_db, close_db, release_task_locks,
 )
+from general_beckman import add_task as _add_task
 from src.infra.logging_config import get_logger
 from .router import ModelCallFailed
 from .task_context import parse_context
@@ -157,8 +158,8 @@ class Orchestrator:
                 # layer doesn't spawn a grader.
                 try:
                     ctx["requires_grading"] = False
-                    from src.infra.db import update_task
-                    await update_task(task_id, context=json.dumps(ctx))
+                    from general_beckman import update_task as _update_task
+                    await _update_task(task_id, context=json.dumps(ctx))
                 except Exception:
                     pass
                 return {
@@ -419,7 +420,7 @@ class Orchestrator:
         except Exception as e:
             logger.debug(f"[Mission #{mission_id}] Workspace setup skipped: {e}")
 
-        await add_task(
+        await _add_task(
             title=f"Plan: {title[:40]}",
             description=f"Create an execution plan for this mission:\n\n{title}\n\n{description}",
             mission_id=mission_id, agent_type="planner", priority=TASK_PRIORITY["high"],

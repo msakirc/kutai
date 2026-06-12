@@ -15,14 +15,22 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 
-from ..infra.db import (add_task, add_mission, get_active_missions,
-                get_ready_tasks, get_daily_stats, update_task, get_recent_completed_tasks,
-                get_db, cancel_task, reprioritize_task, get_task_tree,
+from ..infra.db import (get_active_missions,
+                get_ready_tasks, get_daily_stats, get_recent_completed_tasks,
+                get_db, get_task_tree,
                 get_task, get_mission, get_budget, set_budget, get_model_stats,
-                get_mission_locks, get_tasks_for_mission, update_mission,
+                get_mission_locks, get_tasks_for_mission,
                 insert_approval_request, update_approval_status,
                 add_todo, get_todos, get_todo, toggle_todo, delete_todo,
                 update_todo, get_blocked_task_summary)
+from general_beckman import (
+    add_task, update_task, cancel_task, reprioritize_task,
+    reset_failed_tasks as _reset_failed_tasks,
+    reset_stuck_tasks as _reset_stuck_tasks,
+    reset_blocked_tasks as _reset_blocked_tasks,
+    cancel_pending_tasks as _cancel_pending_tasks,
+    reset_workflow_step as _reset_workflow_step,
+)
 from ..memory.conversations import format_recent_context, find_followup_context, \
     store_exchange
 from ..memory.ingest import ingest_document
@@ -1720,7 +1728,8 @@ class TelegramInterface:
                     parse_mode="Markdown")
             elif workflow:
                 # Other workflows (research, etc.) — plain task with workflow context
-                mission_id = await add_mission(title=description[:80], description=description)
+                from general_beckman import add_mission as _add_mission
+                mission_id = await _add_mission(title=description[:80], description=description)
                 await add_task(description[:80], description, mission_id=mission_id,
                               priority=5,
                               context={"workflow": workflow})
@@ -1730,7 +1739,8 @@ class TelegramInterface:
                     f"📋 {description[:100]}")
             else:
                 # Quick single task
-                mission_id = await add_mission(title=description[:80], description=description)
+                from general_beckman import add_mission as _add_mission
+                mission_id = await _add_mission(title=description[:80], description=description)
                 await add_task(description[:80], description, mission_id=mission_id, priority=5)
                 await self._reply(update,
                     f"✅ Görev oluşturuldu (#{mission_id})\n"
@@ -2460,7 +2470,8 @@ class TelegramInterface:
             return
 
         # Regular mission — create and plan
-        mission_id = await add_mission(
+        from general_beckman import add_mission as _add_mission
+        mission_id = await _add_mission(
             title=description[:80],
             description=description,
             priority=7,
@@ -3198,34 +3209,16 @@ class TelegramInterface:
         arg = context.args[0].lower()
 
         if arg == "failed":
-            db = await get_db()
-            cursor = await db.execute(
-                """UPDATE tasks SET status = 'pending', worker_attempts = 0, error = NULL
-                   WHERE status = 'failed'"""
-            )
-            count = cursor.rowcount
-            await db.commit()
+            count = await _reset_failed_tasks()
             await self._reply(update,f"♻️ Reset {count} failed task(s) to pending.")
 
         elif arg == "stuck":
-            db = await get_db()
-            cursor = await db.execute(
-                """UPDATE tasks SET status = 'pending'
-                   WHERE status = 'processing'"""
-            )
-            count = cursor.rowcount
-            await db.commit()
+            count = await _reset_stuck_tasks()
             await self._reply(update,f"♻️ Reset {count} stuck task(s) to pending.")
 
         elif arg == "blocked":
             # Clear all dependency references so blocked tasks can run
-            db = await get_db()
-            cursor = await db.execute(
-                """UPDATE tasks SET depends_on = '[]'
-                   WHERE status = 'pending' AND depends_on != '[]'"""
-            )
-            count = cursor.rowcount
-            await db.commit()
+            count = await _reset_blocked_tasks()
             await self._reply(update,
                 f"♻️ Cleared dependencies on {count} blocked task(s). They'll run now."
             )
@@ -3329,7 +3322,8 @@ class TelegramInterface:
         # Not a task — try as a mission
         mission = await get_mission(item_id)
         if mission and mission.get("status") not in ("completed", "cancelled"):
-            await update_mission(item_id, status="cancelled")
+            from general_beckman import update_mission as _update_mission
+            await _update_mission(item_id, status="cancelled")
             # Also cancel all pending tasks for this mission
             tasks = await get_tasks_for_mission(item_id)
             cancelled_count = 0
@@ -3965,7 +3959,8 @@ class TelegramInterface:
         outreach founder_actions. founder_actions.mission_id is NOT NULL but
         ad-hoc outreach has no natural mission — one ongoing mission per
         product owns all its outreach cards."""
-        from src.infra.db import get_db, add_mission
+        from src.infra.db import get_db
+        from general_beckman import add_mission as _add_mission
         db = await get_db()
         title = f"Cold outreach: {product_id}"
         cur = await db.execute(
@@ -3973,7 +3968,7 @@ class TelegramInterface:
         row = await cur.fetchone()
         if row:
             return int(row[0])
-        return int(await add_mission(title, "Cold-outreach campaign container"))
+        return int(await _add_mission(title, "Cold-outreach campaign container"))
 
     async def cmd_force_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle the /force_action command — manually trigger an on-call action.
@@ -5287,12 +5282,8 @@ class TelegramInterface:
             if minutes < 0:
                 await self._reply(update, "Minutes must be >= 0.")
                 return
-            await db.execute(
-                "UPDATE missions SET founder_attention_budget_minutes = ? "
-                "WHERE id = ?",
-                (minutes, mission_id),
-            )
-            await db.commit()
+            from general_beckman import update_mission_fields as _umf
+            await _umf(mission_id, founder_attention_budget_minutes=minutes)
             await self._reply(
                 update,
                 f"Budget set: mission #{mission_id} = {minutes} minutes.",
@@ -6681,15 +6672,7 @@ class TelegramInterface:
             return
         try:
             mission_id = int(args[0])
-            from ..infra.db import get_db
-            async with get_db() as db:
-                result = await db.execute(
-                    """UPDATE tasks SET status = 'cancelled'
-                       WHERE mission_id = ? AND status IN ('pending')""",
-                    (mission_id,)
-                )
-                await db.commit()
-                count = result.rowcount
+            count = await _cancel_pending_tasks(mission_id)
             await self._reply(update,f"🚫 Mission #{mission_id}: cancelled {count} task(s).")
             logger.info("mission cancelled via command", mission_id=mission_id, tasks_cancelled=count)
         except ValueError:
@@ -6812,8 +6795,22 @@ class TelegramInterface:
             return
         from src.infra.load_manager import set_load_mode
         msg = await set_load_mode(choice, source="user")
+        if choice == "minimal":
+            msg += await self._free_local_for_minimal()
         await self._reply(update,msg, parse_mode="Markdown")
         logger.info("load mode changed via command", mode=choice)
+
+    async def _free_local_for_minimal(self) -> str:
+        """Unload the resident local model so minimal mode actually frees the
+        GPU (not just pauses new local inference). Returns a status suffix."""
+        try:
+            from src.models.local_model_manager import get_local_manager
+            freed = await get_local_manager().unload(reason="load_mode_minimal")
+            return "\n🧹 Freed local GPU (model unloaded)." if freed \
+                else "\n(No local model was loaded.)"
+        except Exception as exc:
+            logger.warning("minimal-mode local unload failed", error=str(exc))
+            return "\n⚠️ Could not unload local model — free VRAM manually if needed."
 
     async def cmd_tune(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/tune — force an auto-tuning cycle and report results."""
@@ -7033,13 +7030,8 @@ class TelegramInterface:
                             await self._reply(update, "Invalid number. Skipping (no ceiling).")
                             ceiling = None
                     if ceiling is not None:
-                        from src.infra.db import get_db
-                        _db = await get_db()
-                        await _db.execute(
-                            "UPDATE missions SET cost_ceiling_usd = ? WHERE id = ?",
-                            (ceiling, pending_action["mission_id"]),
-                        )
-                        await _db.commit()
+                        from general_beckman import update_mission_fields as _umf
+                        await _umf(pending_action["mission_id"], cost_ceiling_usd=ceiling)
                     self._pending_action.pop(chat_id, None)
                     await self._reply(update, "Mission starting…")
                     return
@@ -7071,9 +7063,8 @@ class TelegramInterface:
                     # Edit = founder's text IS the final artifact. Mark
                     # confirm task completed; DO NOT reset the writer step
                     # (that would overwrite the founder's edits).
-                    from src.infra.db import update_task as _update_task
                     try:
-                        await _update_task(task_id, status="completed", result='{"confirmed": true, "edited_inline": true}')
+                        await update_task(task_id, status="completed", result='{"confirmed": true, "edited_inline": true}')
                     except Exception as e:
                         logger.exception(f"artifact_edit_inline complete failed: {e}")
                         await self._reply(update, f"❌ Complete failed: {e}")
@@ -7519,7 +7510,8 @@ class TelegramInterface:
                     logger.error("workflow mission failed", error=str(e))
                     await self._reply(update,f"❌ {_friendly_error(str(e))}")
             else:
-                mission_id = await add_mission(title=text[:80], description=text, priority=5)
+                from general_beckman import add_mission as _add_mission
+                mission_id = await _add_mission(title=text[:80], description=text, priority=5)
                 if self.orchestrator:
                     await self.orchestrator.plan_mission(mission_id, text[:80], text)
                 await self._reply(update,
@@ -7630,8 +7622,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
 
         if msg_type == "question":
-            from ..infra.db import add_task as _add_task
-            task_id = await _add_task(
+            task_id = await add_task(
                 title=f"Q: {text[:50]}", description=text,
                 tier="auto", priority=TASK_PRIORITY.get("high", 8),
                 agent_type="assistant",
@@ -7641,8 +7632,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
 
         if msg_type == "shopping":
-            from ..infra.db import add_task as _add_task
-            task_id = await _add_task(
+            task_id = await add_task(
                 title=text[:80], description=text, tier="auto",
                 priority=TASK_PRIORITY.get("high", 8),
                 agent_type="shopping_advisor",
@@ -7693,7 +7683,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except AttributeError:
             mission_desc = None
         if mission_desc is not None:
-            from ..infra.db import add_mission as _add_mission
+            from general_beckman import add_mission as _add_mission
             wf = classification.get("workflow")
             if wf == "i2p":
                 try:
@@ -7783,7 +7773,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                         chat_id, f"❌ {_friendly_error(str(e))}",
                     )
             else:
-                from ..infra.db import add_mission as _add_mission
+                from general_beckman import add_mission as _add_mission
                 mission_id = await _add_mission(
                     title=text[:80], description=text, priority=5,
                 )
@@ -7805,8 +7795,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         # linkage when it merged everything into the fall-through plain task
         # branch. Restore both branches here. Both helpers take only
         # ``chat_id`` + ``text`` so they work without a live ``Update``.
-        from ..infra.db import add_task as _add_task
-
         if msg_type == "clarification_response":
             parent_id = await self._find_followup_parent(chat_id, text)
             if parent_id:
@@ -7814,7 +7802,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     "chat_id": chat_id,
                     "followup_to": parent_id,
                 }
-                task_id = await _add_task(
+                task_id = await add_task(
                     title=f"Follow-up to #{parent_id}: {text[:40]}",
                     description=text,
                     tier="auto",
@@ -7851,7 +7839,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 task_context: dict = {"chat_id": chat_id}
                 if recent_context:
                     task_context["recent_conversation"] = recent_context
-                task_id = await _add_task(
+                task_id = await add_task(
                     title=f"Follow-up to #{parent_id}: {text[:40]}",
                     description=text,
                     tier="auto",
@@ -7873,7 +7861,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             # No parent_id → fall through to plain task (matches pre-SP2).
 
         # Fall-through: treat as plain task.
-        task_id = await _add_task(
+        task_id = await add_task(
             title=text[:50], description=text, tier="auto",
             priority=TASK_PRIORITY["critical"],
             context={"chat_id": chat_id},
@@ -8088,7 +8076,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         Returns the count of tasks transitioned.
         """
         import json as _json
-        from src.infra.db import get_db, update_task
+        from src.infra.db import get_db
 
         try:
             db = await get_db()
@@ -8513,8 +8501,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if any(w in lower for w in ["game", "gaming", "play"]):
             from ..infra.load_manager import set_load_mode
             msg = await set_load_mode("minimal", source="user")
+            freed = await self._free_local_for_minimal()
             await self._reply(update,
-                f"\U0001f3ae Switching to minimal mode for gaming.\n{msg}\n"
+                f"\U0001f3ae Switching to minimal mode for gaming.\n{msg}{freed}\n"
                 "Use `/load auto` when you're done.",
                 parse_mode="Markdown",
             )
@@ -9135,13 +9124,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                     await query.message.reply_text("❌ Bozuk branch butonu.")
                     return
                 try:
-                    db = await get_db()
-                    await db.execute(
-                        "UPDATE missions SET branched_from_mission_id = ? "
-                        "WHERE id = ?",
-                        (from_mid, mid),
-                    )
-                    await db.commit()
+                    from general_beckman import update_mission_fields as _umf
+                    await _umf(mid, branched_from_mission_id=from_mid)
                     await self._resume_needs_review_tasks(
                         mid, "find_similar_missions",
                         note=f"founder: branch_from_{from_mid}",
@@ -9159,12 +9143,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 return
             if kind == "a":
                 try:
-                    # NOTE: do NOT re-import update_mission here. It is already
-                    # module-global (top of file). A local import binds the
-                    # name function-local for the WHOLE handle_callback scope,
-                    # making the earlier m:task:pause / m:task:cancel handlers
-                    # raise UnboundLocalError ("referenced before assignment").
-                    await update_mission(mid, status="cancelled")
+                    from general_beckman import update_mission as _bk_update_mission
+                    await _bk_update_mission(mid, status="cancelled")
                     await self._resume_needs_review_tasks(
                         mid, "find_similar_missions", note="founder: abort",
                         cancel=True,
@@ -9528,7 +9508,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if data.startswith("m:task:pause:"):
             mid = int(data.split(":")[-1])
             try:
-                await update_mission(mid, status="cancelled")
+                from general_beckman import update_mission as _bk_update_mission
+                await _bk_update_mission(mid, status="cancelled")
                 await query.message.reply_text(f"🚫 Görev #{mid} iptal edildi.")
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
@@ -9537,7 +9518,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if data.startswith("m:task:cancel:"):
             mid = int(data.split(":")[-1])
             try:
-                await update_mission(mid, status="cancelled")
+                from general_beckman import update_mission as _bk_update_mission
+                await _bk_update_mission(mid, status="cancelled")
                 await query.message.reply_text(f"🚫 Görev #{mid} iptal edildi.")
             except Exception as e:
                 await query.message.reply_text(f"❌ {e}")
@@ -9982,7 +9964,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if data.startswith("wfcancel:"):
             mission_id = int(data.split(":", 1)[1])
             try:
-                await update_mission(mission_id, status="cancelled")
+                from general_beckman import update_mission as _bk_update_mission
+                await _bk_update_mission(mission_id, status="cancelled")
                 await query.edit_message_text(f"🗑 Mission #{mission_id} has been cancelled.")
             except Exception as e:
                 await query.edit_message_text(f"❌ {_friendly_error(str(e))}")
@@ -10004,23 +9987,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
                 self.orchestrator._running_futures = []
                 self.orchestrator._current_task_future = None
 
-            db = await get_db()
-            for _attempt in range(3):
-                try:
-                    await db.execute("DELETE FROM tasks")
-                    await db.execute("DELETE FROM missions")
-                    await db.execute("DELETE FROM dead_letter_tasks")
-                    await db.execute("DELETE FROM workflow_checkpoints")
-                    await db.execute("DELETE FROM blackboards")
-                    await db.execute("DELETE FROM approval_requests")
-                    await db.execute("DELETE FROM scheduled_tasks")
-                    await db.commit()
-                    break
-                except Exception as _db_err:
-                    if _attempt < 2:
-                        await asyncio.sleep(1)
-                    else:
-                        raise
+            from general_beckman import purge_all_missions as _purge_missions
+            await _purge_missions()
             # Also wipe shopping cache (separate DB)
             try:
                 import aiosqlite as _aiosqlite
@@ -10044,12 +10012,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         # ── Legacy Callbacks (approval, resetall confirm) ──────
         if data == "resetall_confirm":
-            db = await get_db()
-            await db.execute("DELETE FROM conversations")
-            await db.execute("DELETE FROM tasks")
-            await db.execute("DELETE FROM missions")
-            await db.execute("DELETE FROM memory")
-            await db.commit()
+            from general_beckman import purge_all as _purge_all
+            await _purge_all()
             await query.edit_message_text("☢️ Everything wiped. Fresh start.")
             return
         elif data == "resetall_cancel":
@@ -10612,7 +10576,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return
         option_label = " + ".join(surfaces)
         from mr_roboto.surfaces_persist import write_surfaces_json
-        from src.infra.db import update_task
         try:
             written = await write_surfaces_json(
                 mission_id=mission_id,
@@ -10708,8 +10671,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             reviewer_task_id = int(parts[3])
         except ValueError:
             return
-
-        from src.infra.db import update_task
 
         if verb == "regen":
             if len(parts) < 5:
@@ -10899,7 +10860,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         pending = self._pending_action.get(chat_id) or {}
         files = pending.get("files") or []
 
-        from src.infra.db import get_db, update_task, get_task
+        from src.infra.db import get_db, get_task
         db = await get_db()
 
         # Resolve the regenerate step id DURABLY from the confirm task's
@@ -10932,30 +10893,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             # Reset the originating writer step (if known) AND this confirm
             # step so the workflow re-runs draft + verify + confirm.
             try:
-                if regen_step:
-                    await db.execute(
-                        "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
-                        "error_category=NULL, started_at=NULL, completed_at=NULL "
-                        "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?",
-                        (mission_id, regen_step),
-                    )
-                # Reset the verify sibling too if present (`<regen>.verify`).
-                if regen_step:
-                    await db.execute(
-                        "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
-                        "error_category=NULL, started_at=NULL, completed_at=NULL "
-                        "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?",
-                        (mission_id, regen_step + ".verify"),
-                    )
-                # Reset this confirm task back to pending so it re-fires
-                # after regeneration.
-                await db.execute(
-                    "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
-                    "error_category=NULL, started_at=NULL, completed_at=NULL "
-                    "WHERE id=?",
-                    (task_id,),
+                await _reset_workflow_step(
+                    mission_id,
+                    regen_step,
+                    confirm_task_id=task_id,
                 )
-                await db.commit()
             except Exception as exc:
                 logger.exception(f"rpc:RE failed: {exc}")
                 await self.app.bot.send_message(chat_id=chat_id, text=f"❌ Regenerate failed: {exc}")
@@ -11335,7 +11277,6 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         write and every branch step would skip on stale state (mission #85:
         variant tap stored, but 2.2*/2.3* skipped on the cached 'pending')."""
         import json as _json
-        from src.infra.db import update_task  # lazy import keeps module load cheap
         from src.workflows.engine.hooks import get_artifact_store
         store = get_artifact_store()
         await store.store(
@@ -11991,11 +11932,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         cand_id = int(context.args[0].lstrip("#"))
         try:
-            import json as _json
             from src.infra.db import (
-                get_growth_events, insert_growth_event, get_db, add_mission,
+                get_growth_events,
             )
             import general_beckman
+            from general_beckman import record_growth_event, update_growth_event_properties
         except Exception as e:  # noqa: BLE001
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
             return
@@ -12038,7 +11979,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         )
 
         # Spawn exactly ONE deprecation mission via Beckman — mirror /approve.
-        mission_id = await add_mission(
+        from general_beckman import add_mission as _add_mission
+        mission_id = await _add_mission(
             title=title,
             description=description,
             priority=5,
@@ -12066,17 +12008,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         props["consumed"] = True
         props["approved_mission_id"] = mission_id
         try:
-            db = await get_db()
-            await db.execute(
-                "UPDATE growth_events SET properties_json = ? WHERE id = ?",
-                (_json.dumps(props), cand_id),
-            )
-            await db.commit()
+            await update_growth_event_properties(cand_id, props)
         except Exception as e:  # noqa: BLE001
             logger.warning("cmd_approve_sunset: consume flag failed", error=str(e))
         # Audit row — sunset_approved keeps the lifecycle loop inspectable.
         try:
-            await insert_growth_event(
+            await record_growth_event(
                 mission_id,
                 "sunset_approved",
                 {
@@ -12285,7 +12222,8 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         mid = int(context.args[0].lstrip("#"))
         try:
             import json as _json
-            from src.infra.db import get_mission, update_mission
+            from src.infra.db import get_mission
+            from general_beckman import update_mission as _bk_update_mission
         except Exception as e:  # noqa: BLE001
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
             return
@@ -12302,7 +12240,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         if not isinstance(ctx, dict):
             ctx = {}
         ctx["use_ab"] = False
-        await update_mission(mid, context=_json.dumps(ctx))
+        await _bk_update_mission(mid, context=_json.dumps(ctx))
         await self._reply(
             update,
             f"🚫 Mission #{mid} opted out of A/B. The Phase-8 "
@@ -12456,9 +12394,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         cand_id = int(context.args[0].lstrip("#"))
         try:
-            import json as _json
-            from src.infra.db import get_growth_events, insert_growth_event, get_db
+            from src.infra.db import get_growth_events
             import general_beckman
+            from general_beckman import record_growth_event, update_growth_event_properties
         except Exception as e:  # noqa: BLE001
             await self._reply(update, f"❌ {_friendly_error(str(e))}")
             return
@@ -12501,9 +12439,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         # mechanical workflow_advance after planning; here we enqueue a
         # planner task scoped to the new mission so the founder gate stays
         # the single entry point.
-        from src.infra.db import add_mission
+        from general_beckman import add_mission as _add_mission
 
-        mission_id = await add_mission(
+        mission_id = await _add_mission(
             title=title,
             description=description,
             priority=6,
@@ -12531,17 +12469,12 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         props["consumed"] = True
         props["approved_mission_id"] = mission_id
         try:
-            db = await get_db()
-            await db.execute(
-                "UPDATE growth_events SET properties_json = ? WHERE id = ?",
-                (_json.dumps(props), cand_id),
-            )
-            await db.commit()
+            await update_growth_event_properties(cand_id, props)
         except Exception as e:  # noqa: BLE001
             logger.warning("cmd_approve: consume flag failed", error=str(e))
         # Audit row — backlog_approved keeps the loop inspectable.
         try:
-            await insert_growth_event(
+            await record_growth_event(
                 mission_id,
                 "backlog_approved",
                 {

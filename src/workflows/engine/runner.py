@@ -165,8 +165,8 @@ class WorkflowRunner:
         """
         from src.infra.db import (
             get_tasks_for_mission, get_workflow_checkpoint,
-            update_task, add_task,
         )
+        from general_beckman import update_task, add_task
 
         checkpoint = await get_workflow_checkpoint(mission_id)
         if checkpoint is None:
@@ -342,7 +342,7 @@ class WorkflowRunner:
         Returns the mission_id.
         """
         # Lazy imports to avoid circular dependencies
-        from src.infra.db import add_mission, add_task
+        from general_beckman import add_task, add_mission
 
         # 1. Load workflow definition
         wf = load_workflow(workflow_name)

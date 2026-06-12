@@ -496,6 +496,80 @@ async def test_recover_startup_tasks(fresh_db):
     assert r2["next_retry_at"] is None
 
 
+@pytest.mark.asyncio
+async def test_recover_startup_tasks_dead_letters_at_cap(fresh_db):
+    """Poison-task guard: a processing task with infra_resets >= 5 must NOT
+    be re-pended (eternal crash loop) — it goes to the dead-letter queue."""
+    db_path = fresh_db
+    import src.infra.db as db_module
+    from general_beckman import add_task, update_task, recover_startup_tasks
+
+    t = await add_task(title="Poison", description="d")
+    await update_task(t, status="processing")
+    db = await db_module.get_db()
+    await db.execute("UPDATE tasks SET infra_resets = 5 WHERE id = ?", (t,))
+    await db.commit()
+
+    result = await recover_startup_tasks()
+
+    assert result["interrupted"] == 0
+    assert result["dead_lettered"] == 1
+
+    row = await _fetch_task(db_path, t)
+    assert row["status"] == "failed"
+    assert "infra_reset_cap_exceeded" in (row["error"] or "")
+    assert row["infra_resets"] == 5  # not bumped further
+
+    # Canonical dead-letter entry (same machinery as apply._dlq_write)
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            "SELECT * FROM dead_letter_tasks WHERE task_id = ?", (t,)
+        )
+        dlq = await cur.fetchone()
+    assert dlq is not None
+    assert dlq["resolved_at"] is None
+    assert dlq["error_category"] == "infra_reset_cap_exceeded"
+    assert dlq["attempts_snapshot"] == 5
+
+
+@pytest.mark.asyncio
+async def test_recover_startup_tasks_below_cap_still_repends(fresh_db):
+    """Boundary: infra_resets=4 is below the cap — still reset to pending
+    (bumped to 5), no dead-letter entry."""
+    db_path = fresh_db
+    import src.infra.db as db_module
+    from general_beckman import add_task, update_task, recover_startup_tasks
+
+    t = await add_task(title="Almost poison", description="d")
+    await update_task(t, status="processing")
+    db = await db_module.get_db()
+    await db.execute("UPDATE tasks SET infra_resets = 4 WHERE id = ?", (t,))
+    await db.commit()
+
+    result = await recover_startup_tasks()
+
+    assert result["interrupted"] == 1
+    assert result["dead_lettered"] == 0
+
+    row = await _fetch_task(db_path, t)
+    assert row["status"] == "pending"
+    assert row["infra_resets"] == 5
+    assert row["retry_reason"] == "infrastructure"
+
+    # dead_letter_tasks is created lazily by _ensure_dlq_table — a missing
+    # table is itself proof that no quarantine happened.
+    async with aiosqlite.connect(db_path) as conn:
+        try:
+            cur = await conn.execute(
+                "SELECT COUNT(*) FROM dead_letter_tasks WHERE task_id = ?", (t,)
+            )
+            count = (await cur.fetchone())[0]
+        except aiosqlite.OperationalError:
+            count = 0
+    assert count == 0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # reset_cascade_failed_dependents
 # ──────────────────────────────────────────────────────────────────────────────

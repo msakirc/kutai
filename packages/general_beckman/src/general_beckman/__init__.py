@@ -1874,7 +1874,10 @@ async def reset_workflow_step(
 async def recover_startup_tasks() -> dict:
     """Post-restart task queue hygiene: reset processing→pending + clear backoff.
 
-    Returns {'interrupted': int, 'backoff_cleared': int}.
+    Tasks at the infra-reset cap (INFRA_RESET_CAP=5) are dead-lettered
+    instead of re-pended (poison-task crash-loop guard).
+
+    Returns {'interrupted': int, 'dead_lettered': int, 'backoff_cleared': int}.
     Delegate to src.infra.db.recover_startup_tasks; beckman is the sole
     sanctioned write-owner of the tasks table.
     """

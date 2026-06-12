@@ -467,6 +467,13 @@ def _build_image_spec(
         "priority": 5,
         "mission_id": mission_id,
         "context": {
+            # FIX 2.3 — agent_type 'image' is NOT in beckman's
+            # _NO_POSTHOOKS_AGENT_TYPES, so without this opt-out the child
+            # got the default LLM grade posthook on an image-generation
+            # result (pointless judge of a file path), parked 'ungraded',
+            # and the image_done continuation only fired via the verdict
+            # path instead of the child's own terminal.
+            "requires_grading": False,
             "image_call": {
                 "raw_dispatch": True,
                 "prompt": prompt,

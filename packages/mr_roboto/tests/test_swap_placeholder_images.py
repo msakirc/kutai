@@ -160,6 +160,34 @@ def test_extract_image_path():
     assert _extract_image_path({"status": "completed"}) is None
 
 
+def _image_spec():
+    from mr_roboto.swap_placeholder_images import _build_image_spec
+    return _build_image_spec(
+        placeholder={"placeholder_id": "home__0", "alt": "hero",
+                     "width": 512, "height": 512, "section": "hero"},
+        prompt="coral barista scene", out_dir="/ws/assets/img", mission_id=7,
+    )
+
+
+def test_image_child_spec_opts_out_of_grading():
+    """FIX 2.3 — a swap image child must NOT get the default grade posthook.
+
+    agent_type='image' is not in beckman's _NO_POSTHOOKS_AGENT_TYPES, so
+    without an explicit requires_grading=False the child got an LLM grader
+    on an image-generation result (pointless), parked 'ungraded', and its
+    image_done continuation only fired through the verdict path."""
+    assert _image_spec()["context"]["requires_grading"] is False
+
+
+def test_image_child_gets_no_posthooks_from_beckman():
+    """Integration: beckman's determine_posthooks must return NO kinds for
+    the swap image child spec (no grade, no emit, no extras)."""
+    from general_beckman.posthooks import determine_posthooks
+    spec = _image_spec()
+    task = {"agent_type": spec["agent_type"]}
+    assert determine_posthooks(task, spec["context"], {}) == []
+
+
 # -- test driver ----------------------------------------------------------
 
 class _Capture:

@@ -534,6 +534,47 @@ async def test_recover_startup_tasks_dead_letters_at_cap(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_recover_startup_tasks_quarantine_failure_keeps_processing(fresh_db, monkeypatch):
+    """If quarantine_task raises mid-recover, the poison task must stay
+    'processing' (so the next boot re-attempts the DLQ write) rather than
+    become 'failed' but absent from the dead-letter queue — invisible to
+    /dlq. dead_lettered must not count it."""
+    db_path = fresh_db
+    import src.infra.db as db_module
+    import src.infra.dead_letter as dl
+    from general_beckman import add_task, update_task, recover_startup_tasks
+
+    t = await add_task(title="Poison-quarantine-fails", description="d")
+    await update_task(t, status="processing")
+    db = await db_module.get_db()
+    await db.execute("UPDATE tasks SET infra_resets = 5 WHERE id = ?", (t,))
+    await db.commit()
+
+    async def _boom(*a, **k):
+        raise RuntimeError("dlq insert failed")
+
+    monkeypatch.setattr(dl, "quarantine_task", _boom)
+
+    result = await recover_startup_tasks()
+
+    assert result["dead_lettered"] == 0
+    row = await _fetch_task(db_path, t)
+    assert row["status"] == "processing"  # NOT flipped to failed
+    assert row["infra_resets"] == 5
+
+    # No DLQ row materialized (failed-invisible avoided).
+    async with aiosqlite.connect(db_path) as conn:
+        try:
+            cur = await conn.execute(
+                "SELECT COUNT(*) FROM dead_letter_tasks WHERE task_id = ?", (t,)
+            )
+            count = (await cur.fetchone())[0]
+        except aiosqlite.OperationalError:
+            count = 0
+    assert count == 0
+
+
+@pytest.mark.asyncio
 async def test_recover_startup_tasks_below_cap_still_repends(fresh_db):
     """Boundary: infra_resets=4 is below the cap — still reset to pending
     (bumped to 5), no dead-letter entry."""

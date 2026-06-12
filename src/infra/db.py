@@ -6084,13 +6084,10 @@ async def recover_startup_tasks() -> dict:
     for t in stuck:
         prior = t.get("infra_resets") or 0
         if prior >= INFRA_RESET_CAP:
-            # Same task-row shape as general_beckman.apply._dlq_write.
-            await db.execute(
-                "UPDATE tasks SET status='failed', error=?, "
-                "failed_in_phase=COALESCE(failed_in_phase, 'worker') "
-                "WHERE id=?",
-                (cap_error, t["id"])
-            )
+            # Defer the status flip until the DLQ row is durably written
+            # (quarantine loop below). Flipping to 'failed' first means a
+            # quarantine failure leaves the task failed-but-absent from the
+            # dead-letter queue — invisible to /dlq. Collect now, flip after.
             poisoned.append(t)
             continue
         await db.execute(
@@ -6099,12 +6096,18 @@ async def recover_startup_tasks() -> dict:
             (prior + 1, t["id"])
         )
         interrupted.append(t)
-    if stuck:
+    if interrupted:
         await db.commit()
 
     # Quarantine poison tasks via the canonical dead-letter machinery
-    # (dead_letter_tasks insert + mission-health check + pattern analysis).
-    # Lazy import: dead_letter imports back into src.infra.db.
+    # (dead_letter_tasks insert + mission-health check + pattern analysis),
+    # THEN flip to 'failed' only on success. Ordering the visible DLQ row
+    # before the terminal status means a quarantine failure leaves the row
+    # in 'processing' so the next boot re-attempts the quarantine, instead
+    # of stranding a failed task that /dlq can never surface. The dispatcher
+    # only picks 'pending', so a parked 'processing' row is not re-dispatched
+    # in the meantime. Lazy import: dead_letter imports back into src.infra.db.
+    dead_lettered = 0
     if poisoned:
         from src.infra.dead_letter import quarantine_task
     for t in poisoned:
@@ -6120,13 +6123,24 @@ async def recover_startup_tasks() -> dict:
         except Exception as exc:
             logger.warning(
                 f"[Startup Recovery] DLQ quarantine failed for poison "
-                f"task #{t['id']}: {exc}"
+                f"task #{t['id']}: {exc}; left in 'processing' for "
+                f"next-boot retry"
             )
-    if poisoned:
+            continue
+        # DLQ row is durable — now safe to mark the task terminal.
+        # Same task-row shape as general_beckman.apply._dlq_write.
+        await db.execute(
+            "UPDATE tasks SET status='failed', error=?, "
+            "failed_in_phase=COALESCE(failed_in_phase, 'worker') "
+            "WHERE id=?",
+            (cap_error, t["id"])
+        )
+        await db.commit()
+        dead_lettered += 1
+    if dead_lettered:
         logger.warning(
-            f"[Startup Recovery] Dead-lettered {len(poisoned)} poison "
-            f"task(s) at infra_resets cap ({INFRA_RESET_CAP}): "
-            f"{[t['id'] for t in poisoned]}"
+            f"[Startup Recovery] Dead-lettered {dead_lettered} poison "
+            f"task(s) at infra_resets cap ({INFRA_RESET_CAP})"
         )
 
     # 2. Clear future-dated next_retry_at on ready tasks.
@@ -6144,7 +6158,7 @@ async def recover_startup_tasks() -> dict:
 
     return {
         "interrupted": len(interrupted),
-        "dead_lettered": len(poisoned),
+        "dead_lettered": dead_lettered,
         "backoff_cleared": len(delayed),
     }
 

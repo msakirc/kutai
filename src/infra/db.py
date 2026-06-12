@@ -6072,6 +6072,9 @@ async def reset_cascade_failed_dependents(task_id: int) -> int:
         try:
             deps = json.loads(raw) if isinstance(raw, str) else raw
         except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                f"Skipping task {row['id']} in cascade reset: unparseable depends_on {raw!r}"
+            )
             continue
         if not isinstance(deps, list):
             deps = [deps]

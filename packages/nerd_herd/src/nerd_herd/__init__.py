@@ -99,8 +99,21 @@ def record_image_server_state(*, resident: bool, vram_mb: int) -> None:
 
 
 def push_queue_profile(profile: QueueProfile) -> None:
-    """Store the latest queue profile. Called by Beckman on queue-change events."""
+    """Store the latest queue profile. Called by Beckman on queue-change events.
+
+    MIRROR pattern: also stores the profile on the default NerdHerdClient,
+    which overlays it onto sidecar-parsed snapshots. Without the mirror the
+    text selector (which reads snapshots through the client) saw
+    queue_profile=None forever — the sidecar has no queue_profile transport.
+    """
     _get_singleton().push_queue_profile(profile)
+    try:
+        from nerd_herd.client import get_default
+        client = get_default()
+        if client is not None:
+            client.set_local_queue_profile(profile)
+    except Exception:
+        pass  # best-effort mirror — singleton write already landed
 
 
 def snapshot() -> SystemSnapshot:

@@ -63,6 +63,12 @@ class NerdHerdClient:
         # cadence without an extra RPC hop.
         from nerd_herd.swap_budget import SwapBudget
         self._swap_budget = SwapBudget()
+        # Locally-known queue profile (MIRROR pattern): beckman pushes
+        # in-process via module-level push_queue_profile, which fans out
+        # here. No transport delivers it to the sidecar, so the parsed
+        # snapshot's queue_profile is None today — the local value is
+        # overlaid in _overlay_local (local wins when set).
+        self._local_queue_profile: QueueProfile | None = None
 
     # ------------------------------------------------------------------
     # Swap event stream (sync passthroughs — data only, policy in hoca)
@@ -72,6 +78,14 @@ class NerdHerdClient:
 
     def record_swap(self, model_name: str = "") -> None:
         self._swap_budget.record_swap()
+
+    def set_local_queue_profile(self, profile: QueueProfile | None) -> None:
+        """Store the in-process queue profile for snapshot overlay.
+
+        Called by module-level nerd_herd.push_queue_profile (MIRROR
+        pattern) — keeps one write call site per producer (beckman).
+        """
+        self._local_queue_profile = profile
 
     # ------------------------------------------------------------------
     # Session management
@@ -283,6 +297,8 @@ class NerdHerdClient:
         - recent_swap_count: max(parsed, local budget) — ranking's
           anti-flap stickiness reads this; max() keeps a genuine
           (future-transport) sidecar value authoritative when higher.
+        - queue_profile: local value wins when set (parsed is always
+          None today — no transport); parsed kept when local unset.
 
         Never mutates *snap* (the cached snapshot stays pure-parsed);
         returns a shallow copy only when an overlay actually applies.
@@ -298,6 +314,10 @@ class NerdHerdClient:
             local_swaps = budget.recent_count()
             if local_swaps > snap.recent_swap_count:
                 changes["recent_swap_count"] = local_swaps
+
+        local_qp = getattr(self, "_local_queue_profile", None)
+        if local_qp is not None:
+            changes["queue_profile"] = local_qp
 
         if not changes:
             return snap

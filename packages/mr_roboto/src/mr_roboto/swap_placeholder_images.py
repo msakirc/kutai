@@ -51,6 +51,16 @@ from typing import Any
 
 from src.infra.logging_config import get_logger
 
+# Shared HTML primitives (one definition; aliased to the historical private
+# names this module exported — tests import them from here).
+from mr_roboto._html_common import (
+    IMG_RE as _IMG_RE,
+    PLACEHOLDER_HOST_RE as _PLACEHOLDER_HOST_RE,
+    coerce_result_dict as _coerce_result_dict,
+    parse_attrs as _parse_attrs,
+    walk_html as _list_html_files,
+)
+
 logger = get_logger("mr_roboto.swap_placeholder_images")
 
 
@@ -64,14 +74,7 @@ ON_IMAGE_ERR = "mr_roboto.swap_images.image_err"
 
 # ── Placeholder detection ──────────────────────────────────────────────
 
-_PLACEHOLDER_HOST_RE = re.compile(r"^https?://placehold\.co/", re.IGNORECASE)
-_IMG_RE = re.compile(r"<img\b([^>]*?)/?>", re.IGNORECASE | re.DOTALL)
-_ATTR_RE = re.compile(r'(\b[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"([^"]*)"')
 _DIM_RE = re.compile(r"/(\d{2,4})x(\d{2,4})", re.IGNORECASE)
-
-
-def _parse_attrs(tag_inner: str) -> dict[str, str]:
-    return {k.lower(): v for k, v in _ATTR_RE.findall(tag_inner)}
 
 
 def _slug_from_path(html_path: str, web_root: str) -> str:
@@ -148,20 +151,6 @@ def _assets_dir(workspace_path: str) -> str:
     return p
 
 
-def _list_html_files(workspace_path: str) -> list[str]:
-    """v2 fix: recursive walk of <ws>/.web/**/*.html (Plan 3 v1 was flat
-    and missed subdirectory screens)."""
-    root = _web_root(workspace_path)
-    if not os.path.isdir(root):
-        return []
-    out = []
-    for dirpath, _dirs, filenames in os.walk(root):
-        for name in filenames:
-            if name.lower().endswith(".html"):
-                out.append(os.path.join(dirpath, name))
-    return sorted(out)
-
-
 # ── Chain ledger (durable chain state on disk; cont_state stays SMALL) ─
 
 # The ledger carries diffusion prompts, absolute filesystem paths and raw
@@ -195,25 +184,8 @@ def _save_ledger(workspace_path: str, ledger: dict) -> None:
 
 
 # ── Tolerant child-result parsing (CPS handlers receive plain dicts) ───
-
-def _coerce_result_dict(result: Any) -> dict:
-    """A continuation handler's ``result`` should arrive as a dict, but be
-    defensive: a JSON-string body (restart-reconcile decodes only the TOP
-    level; tests may fabricate strings) coerces via json.loads FIRST before
-    any isinstance check on the decoded value. Adapted from the deleted
-    ``_parse_task_result`` (TaskResult is gone — SP5)."""
-    if result is None:
-        return {}
-    if isinstance(result, dict):
-        return result
-    if isinstance(result, str):
-        try:
-            decoded = json.loads(result)
-            return decoded if isinstance(decoded, dict) else {}
-        except Exception:
-            return {}
-    return {}
-
+# _coerce_result_dict is the shared mr_roboto._html_common.coerce_result_dict
+# (imported above) — one definition for this module + the verify posthook.
 
 def _extract_prompts(result: Any) -> dict[str, str]:
     """Pull the placeholder_id -> prompt map out of a prompt_writer child
@@ -366,19 +338,20 @@ async def swap_placeholder_images(
             cont_state=state,
         )
     except Exception as exc:
+        # Graceful degrade through the NORMAL chain tail: mark every
+        # placeholder skipped and run _finalize, so this status=="done"
+        # ledger carries the same schema (replaced/skipped/errors/
+        # html_files_changed/shape_check) as every other finalized ledger —
+        # no second hand-rolled "done" shape.
         logger.warning("prompt_writer enqueue raised: %s", exc)
         err = f"prompt_writer enqueue raised: {exc}"
-        for ph in all_placeholders:
-            ledger["results"][ph["placeholder_id"]] = {
-                "status": "skipped", "error": err,
-            }
-        ledger["status"] = "done"
-        ledger["errors"] = [err]
-        _save_ledger(workspace_path, ledger)
+        _degrade_all(ledger, err)
+        await _finalize(workspace_path, ledger)
         return {
             "ok": True, "replaced_count": 0,
             "skipped_count": len(all_placeholders),
-            "html_files_seen": len(html_files), "html_files_changed": 0,
+            "html_files_seen": len(html_files),
+            "html_files_changed": int(ledger.get("html_files_changed") or 0),
             "errors": [err], "chain": "none",
         }
 
@@ -489,17 +462,31 @@ def _build_image_spec(
 
 # ── Continuation handlers ──────────────────────────────────────────────
 
+def _open_chain(event: str, state: dict) -> tuple[str, str, dict | None]:
+    """Common handler open: workspace (+pid) from cont_state → load the chain
+    ledger → WARN when it is missing (caller no-ops on ledger=None)."""
+    workspace_path = state.get("workspace_path") or ""
+    pid = state.get("pid") or ""
+    ledger = _load_ledger(workspace_path)
+    if ledger is None:
+        logger.warning(
+            "swap chain: %s fired but ledger missing (ws=%s, pid=%s)",
+            event, workspace_path, pid,
+        )
+    return workspace_path, pid, ledger
+
+
+def _result_error(result: Any, default: str) -> str:
+    """Error string out of an on_error continuation result (tolerant shape)."""
+    return str(_coerce_result_dict(result).get("error") or default)
+
+
 async def _on_prompts_done(task_id: int, result: dict, state: dict) -> None:
     """Continuation: the prompt_writer child reached TRUE terminal (post
     constrained_emit/grade posthooks). Store the prompt map and start the
     sequential image chain; no usable prompts → finalize-with-degrade."""
-    workspace_path = state.get("workspace_path") or ""
-    ledger = _load_ledger(workspace_path)
+    workspace_path, _pid, ledger = _open_chain("prompts_done", state)
     if ledger is None:
-        logger.warning(
-            "swap chain: prompts_done fired but ledger missing (ws=%s)",
-            workspace_path,
-        )
         return
     prompt_map = _extract_prompts(result)
     if not prompt_map:
@@ -520,15 +507,10 @@ async def _on_prompts_err(task_id: int, result: dict, state: dict) -> None:
     """on_error continuation: prompt_writer child failed (or its continuation
     TTL-expired). Whole chain degrades — every placeholder keeps its
     placehold.co URL."""
-    workspace_path = state.get("workspace_path") or ""
-    ledger = _load_ledger(workspace_path)
+    workspace_path, _pid, ledger = _open_chain("prompts_err", state)
     if ledger is None:
-        logger.warning(
-            "swap chain: prompts_err fired but ledger missing (ws=%s)",
-            workspace_path,
-        )
         return
-    err = str(_coerce_result_dict(result).get("error") or "prompt_writer task failed")
+    err = _result_error(result, "prompt_writer task failed")
     logger.warning("swap chain: prompt_writer child failed: %s", err)
     _degrade_all(ledger, f"prompt_writer failed: {err}")
     await _finalize(workspace_path, ledger)
@@ -544,14 +526,8 @@ def _degrade_all(ledger: dict, error: str) -> None:
 async def _on_image_done(task_id: int, result: dict, state: dict) -> None:
     """Continuation: one image child finished. Rename to the stable
     ``<pid>.png``, record, advance the chain."""
-    workspace_path = state.get("workspace_path") or ""
-    pid = state.get("pid") or ""
-    ledger = _load_ledger(workspace_path)
+    workspace_path, pid, ledger = _open_chain("image_done", state)
     if ledger is None:
-        logger.warning(
-            "swap chain: image_done fired but ledger missing (ws=%s, pid=%s)",
-            workspace_path, pid,
-        )
         return
     path = _extract_image_path(result)
     if path and os.path.isfile(path):
@@ -564,28 +540,22 @@ async def _on_image_done(task_id: int, result: dict, state: dict) -> None:
         entry = {"status": "error",
                  "error": f"image task for {pid} returned no usable path"}
     ledger.setdefault("results", {})[pid] = entry
-    _save_ledger(workspace_path, ledger)
+    # _advance re-saves the ledger on every path (enqueue → save+return;
+    # nothing left → _finalize saves), so no save here.
     await _advance(workspace_path, ledger, state)
 
 
 async def _on_image_err(task_id: int, result: dict, state: dict) -> None:
     """on_error continuation: one image child failed — record and advance.
     Graceful degrade: that placeholder keeps its placehold.co URL."""
-    workspace_path = state.get("workspace_path") or ""
-    pid = state.get("pid") or ""
-    ledger = _load_ledger(workspace_path)
+    workspace_path, pid, ledger = _open_chain("image_err", state)
     if ledger is None:
-        logger.warning(
-            "swap chain: image_err fired but ledger missing (ws=%s, pid=%s)",
-            workspace_path, pid,
-        )
         return
-    err = str(_coerce_result_dict(result).get("error") or "image task failed")
+    err = _result_error(result, "image task failed")
     logger.info("swap chain: image child for %s failed: %s", pid, err)
     ledger.setdefault("results", {})[pid] = {
         "status": "error", "error": f"image gen failed for {pid}: {err}",
     }
-    _save_ledger(workspace_path, ledger)
     await _advance(workspace_path, ledger, state)
 
 

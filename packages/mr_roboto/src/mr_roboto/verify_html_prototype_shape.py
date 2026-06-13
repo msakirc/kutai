@@ -27,6 +27,10 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
+# Shared HTML primitives — one definition for the `<img>` tag matcher + attr
+# parser across the swap chain and both verify posthooks.
+from mr_roboto._html_common import IMG_RE as _IMG_RE, parse_attrs as _parse_attrs
+
 _DOCTYPE_RE = re.compile(r"<!DOCTYPE\s+html\s*>", re.IGNORECASE)
 
 # Width 390 + height 844 — check both Tailwind arbitrary-value classes
@@ -45,12 +49,6 @@ _TAILWIND_PATTERNS = (
     re.compile(r"cdn\.jsdelivr\.net/npm/tailwind", re.IGNORECASE),
     re.compile(r"unpkg\.com/tailwind", re.IGNORECASE),
     re.compile(r"static\.paraflowcontent\.com/.*tailwind", re.IGNORECASE),
-)
-
-# `<img ...>` matcher — captures the full tag text for attr extraction.
-_IMG_RE = re.compile(r"<img\b([^>]*?)/?>", re.IGNORECASE | re.DOTALL)
-_ATTR_RE = re.compile(
-    r'(\b[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"([^"]*)"',
 )
 
 # Color tokens — `#RRGGBB`, `#RGB`, `rgb(...)`, `rgba(...)`. Tailwind
@@ -107,8 +105,7 @@ def _img_problems(html: str) -> tuple[int, list[dict[str, str]]]:
     problems: list[dict[str, str]] = []
     imgs = list(_IMG_RE.finditer(html))
     for m in imgs:
-        attrs_text = m.group(1) or ""
-        attrs = {k.lower(): v for k, v in _ATTR_RE.findall(attrs_text)}
+        attrs = _parse_attrs(m.group(1) or "")
         alt = attrs.get("alt")
         src = attrs.get("src", "").strip()
         if alt is None or not alt.strip():

@@ -66,7 +66,14 @@ import os
 import re
 from typing import Any
 
-_PLACEHOLDER_HOST_RE = re.compile(r"^https?://placehold\.co/", re.IGNORECASE)
+# Shared HTML primitives (one definition; aliased to this module's historical
+# private names — tests import _PLACEHOLDER_HOST_RE / _walk_html from here).
+from mr_roboto._html_common import (
+    PLACEHOLDER_HOST_RE as _PLACEHOLDER_HOST_RE,
+    coerce_result_dict as _coerce_swap_result,
+    walk_html as _walk_html,
+)
+
 _ABSOLUTE_URL_RE = re.compile(r"^(?:https?:)?//|^[a-z][a-z0-9+.\-]*:",
                               re.IGNORECASE)
 _DATA_URI_RE = re.compile(r"^data:", re.IGNORECASE)
@@ -79,35 +86,9 @@ _SWAP_REF_RE = re.compile(r"^(?:\.\./)*assets/[^/\\]+\.png$", re.IGNORECASE)
 
 _LEDGER_STATUSES = ("prompts_pending", "images_pending", "done")
 
-
-def _coerce_swap_result(swap_result: Any) -> dict:
-    """The swap step's result is a JSON STRING in production. Accept both
-    a dict (tests / direct calls) and a JSON string (production posthook
-    payload); decode the string FIRST before any isinstance check on the
-    decoded value."""
-    if swap_result is None:
-        return {}
-    if isinstance(swap_result, dict):
-        return swap_result
-    if isinstance(swap_result, str):
-        try:
-            decoded = json.loads(swap_result)
-            return decoded if isinstance(decoded, dict) else {}
-        except Exception:
-            return {}
-    return {}
-
-
-def _walk_html(workspace_path: str) -> list[str]:
-    root = os.path.join(workspace_path, ".web")
-    if not os.path.isdir(root):
-        return []
-    out = []
-    for dirpath, _dirs, filenames in os.walk(root):
-        for name in filenames:
-            if name.lower().endswith(".html"):
-                out.append(os.path.join(dirpath, name))
-    return sorted(out)
+# _coerce_swap_result and _walk_html are the shared
+# mr_roboto._html_common.coerce_result_dict / walk_html (imported above) —
+# one definition each across the swap chain + its verifiers.
 
 
 def _is_rewritten_asset_ref(src: str) -> bool:

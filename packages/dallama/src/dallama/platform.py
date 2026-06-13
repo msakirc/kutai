@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 _IS_WINDOWS = platform.system() == "Windows"
 
 
+def read_stderr_tail(stderr_path: str, lines: int = 10) -> str:
+    """Last *lines* lines of the stderr log at *stderr_path*.
+
+    Returns ``""`` when the path is empty/missing/unreadable. Shared by every
+    backend launcher (DaLLaMa's LlamaServer + clair_obscur's ImageServer) so
+    crash-diagnostics tail logic lives in one place.
+    """
+    if not stderr_path:
+        return ""
+    try:
+        with open(stderr_path, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+        return "\n".join(content.splitlines()[-lines:])
+    except Exception:
+        return ""
+
+
 def _create_job_object() -> Optional[int]:
     """Create a Windows Job Object with KILL_ON_JOB_CLOSE.
 
@@ -102,11 +119,19 @@ class PlatformHelper:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    def create_process(self, cmd: list[str], stderr_path: str) -> subprocess.Popen:
+    def create_process(
+        self,
+        cmd: list[str],
+        stderr_path: str,
+        cwd: str | None = None,
+    ) -> subprocess.Popen:
         """Launch *cmd* as a subprocess, redirecting stderr to *stderr_path*.
 
         On Windows the process is created with ``CREATE_NO_WINDOW`` and
-        assigned to the Job Object so it dies when the parent dies.
+        assigned to the Job Object so it dies when the parent dies. *cwd*,
+        when given, is the directory the child launches FROM (Popen cwd) —
+        needed by backends whose entrypoint resolves against cwd (e.g.
+        ComfyUI's ``main.py``); ``None`` inherits the parent's cwd.
 
         The open stderr file handle is stored on the returned ``Popen``
         object as ``_dallama_stderr`` so callers can close it later.
@@ -118,6 +143,7 @@ class PlatformHelper:
             stdout=subprocess.DEVNULL,
             stderr=stderr_fh,
             creationflags=creation_flags,
+            cwd=cwd,
         )
         # Attach handle so callers (or graceful_stop) can close it
         proc._dallama_stderr = stderr_fh  # type: ignore[attr-defined]

@@ -14,7 +14,6 @@ def _cfg(tmp_path, *, backend="comfyui", working_dir="", idle=60):
     return ClairObscurConfig(
         backend=backend, host="127.0.0.1", port=8188,
         base_url="http://127.0.0.1:8188",
-        model="sdxl-turbo", weights_dir=str(tmp_path),
         exe_path=str(exe), working_dir=working_dir,
         idle_release_seconds=idle,
     )
@@ -37,7 +36,7 @@ async def test_concurrent_start_spawns_one_process(monkeypatch, tmp_path):
         await asyncio.sleep(0.05)  # widen the cold-start window
         s._pid = 12345
 
-    async def _fake_health():
+    async def _fake_health(*_a):
         return True
 
     monkeypatch.setattr(s, "_launch_process", _fake_launch)
@@ -71,7 +70,7 @@ async def test_stop_serializes_with_start(monkeypatch, tmp_path):
         await asyncio.sleep(0.05)
         s._pid = 777
 
-    async def _fake_health():
+    async def _fake_health(*_a):
         return True
 
     killed = {"pid": None}
@@ -137,7 +136,7 @@ async def test_health_wait_aborts_fast_when_process_dies(monkeypatch, tmp_path):
         s._pid = 99
         s._proc = _DeadProc()
 
-    async def _fake_health():
+    async def _fake_health(*_a):
         return False
 
     monkeypatch.setattr(s, "_launch_process", _fake_launch)
@@ -157,12 +156,29 @@ async def test_health_wait_aborts_fast_when_process_dies(monkeypatch, tmp_path):
 
 
 # ── (c) Popen cwd semantics ──────────────────────────────────────────────
+#
+# _launch_process reuses dallama's PlatformHelper.create_process(cmd,
+# stderr_path, cwd) — so the cwd assertions capture at THAT seam (the helper
+# owns the actual Popen + Job Object now).
 
 class _FakeProc:
     pid = 4242
+    _dallama_stderr = None
 
     def poll(self):
         return None
+
+
+def _capture_create_process(server, captured):
+    """Replace the server's PlatformHelper.create_process with a capturing
+    stub that records (cmd, stderr_path, cwd) and returns a fake proc."""
+    def _fake_create(cmd, stderr_path, cwd=None):
+        captured["cmd"] = cmd
+        captured["stderr_path"] = stderr_path
+        captured["cwd"] = cwd
+        return _FakeProc()
+
+    server._platform.create_process = _fake_create
 
 
 @pytest.mark.asyncio
@@ -170,15 +186,7 @@ async def test_launch_passes_cwd_when_working_dir_set(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAIR_OBSCUR_LOG_DIR", str(tmp_path / "logs"))
     s = ImageServer(_cfg(tmp_path, working_dir=str(tmp_path)))
     captured = {}
-
-    def _fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured.update(kwargs)
-        return _FakeProc()
-
-    monkeypatch.setattr("clair_obscur.server.subprocess.Popen", _fake_popen)
-    monkeypatch.setattr("clair_obscur.server._assign_to_job",
-                        lambda job, pid: None)
+    _capture_create_process(s, captured)
     await s._launch_process()
     assert captured["cwd"] == str(tmp_path)
     assert s._pid == 4242
@@ -195,14 +203,7 @@ async def test_comfyui_without_working_dir_warns_and_passes_no_cwd(
     monkeypatch.setenv("CLAIR_OBSCUR_LOG_DIR", str(tmp_path / "logs"))
     s = ImageServer(_cfg(tmp_path, backend="comfyui", working_dir=""))
     captured = {}
-
-    def _fake_popen(cmd, **kwargs):
-        captured.update(kwargs)
-        return _FakeProc()
-
-    monkeypatch.setattr("clair_obscur.server.subprocess.Popen", _fake_popen)
-    monkeypatch.setattr("clair_obscur.server._assign_to_job",
-                        lambda job, pid: None)
+    _capture_create_process(s, captured)
     with caplog.at_level(logging.WARNING, logger="clair_obscur.server"):
         await s._launch_process()
     assert captured["cwd"] is None
@@ -218,14 +219,7 @@ async def test_a1111_without_working_dir_defaults_to_exe_dir(
     monkeypatch.setenv("CLAIR_OBSCUR_LOG_DIR", str(tmp_path / "logs"))
     s = ImageServer(_cfg(tmp_path, backend="a1111", working_dir=""))
     captured = {}
-
-    def _fake_popen(cmd, **kwargs):
-        captured.update(kwargs)
-        return _FakeProc()
-
-    monkeypatch.setattr("clair_obscur.server.subprocess.Popen", _fake_popen)
-    monkeypatch.setattr("clair_obscur.server._assign_to_job",
-                        lambda job, pid: None)
+    _capture_create_process(s, captured)
     await s._launch_process()
     assert captured["cwd"] == str(tmp_path)
 

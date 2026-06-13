@@ -10,7 +10,6 @@ def _cfg(tmp_path, idle=60):
     return ClairObscurConfig(
         backend="comfyui", host="127.0.0.1", port=8188,
         base_url="http://127.0.0.1:8188",
-        model="sdxl-turbo", weights_dir=str(tmp_path),
         exe_path=str(exe), idle_release_seconds=idle,
     )
 
@@ -27,7 +26,7 @@ async def test_start_polls_health_until_ready(monkeypatch, tmp_path):
     calls = {"n": 0}
 
     async def _fake_launch(): s._pid = 12345
-    async def _fake_health():
+    async def _fake_health(*_a):
         calls["n"] += 1
         return calls["n"] >= 3
     monkeypatch.setattr(s, "_launch_process", _fake_launch)
@@ -61,7 +60,7 @@ async def test_start_is_idempotent_and_clears_release_hint(monkeypatch, tmp_path
 async def test_start_times_out_when_health_never_up(monkeypatch, tmp_path):
     s = ImageServer(_cfg(tmp_path))
     async def _fake_launch(): s._pid = 99
-    async def _fake_health(): return False
+    async def _fake_health(*_a): return False
     monkeypatch.setattr(s, "_launch_process", _fake_launch)
     monkeypatch.setattr(s, "_health_probe", _fake_health)
     monkeypatch.setattr(s, "_acquire_lock", lambda: None)

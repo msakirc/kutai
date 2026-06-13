@@ -11,7 +11,6 @@ def _cfg(tmp_path, idle=0.2):
     return ClairObscurConfig(
         backend="comfyui", host="127.0.0.1", port=8188,
         base_url="http://127.0.0.1:8188",
-        model="sdxl-turbo", weights_dir=str(tmp_path),
         exe_path=str(exe), idle_release_seconds=idle,
     )
 

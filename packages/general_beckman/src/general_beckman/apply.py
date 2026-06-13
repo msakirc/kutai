@@ -1452,6 +1452,7 @@ async def _apply_request_posthook_locked(task: dict, a: RequestPostHook) -> None
     if (
         a.kind == "grade"
         or a.kind == "code_review"
+        or a.kind == "critic_gate"          # SP6 — admitted critic child
         or a.kind.startswith("summary:")
         or a.kind in _REWRITE_POSTHOOK_KINDS
     ):
@@ -1888,6 +1889,29 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         cont_state = {"source_task_id": source_id, "kind": "self_reflect",
                       "attempt": attempt, "exclusions": [], "mission_id": mission_id}
         built = spec
+
+    elif kind == "critic_gate":
+        # SP6 — admitted critic child. action_name + payload come from the
+        # source step context (set by the workflow step that declared
+        # post_hooks:["critic_gate"]).
+        from mr_roboto.critic_gate import _build_critic_spec, _redact_payload, _hash_payload
+        action_name = str(
+            source_ctx.get("critic_action_name")
+            or source_ctx.get("step_id")
+            or "unknown"
+        )
+        raw_payload = source_ctx.get("critic_target_payload")
+        redacted = _redact_payload(raw_payload)
+        built = _build_critic_spec(action_name, redacted)
+        on_complete = "posthook.critic.resume"
+        on_error = "posthook.critic.resume_err"
+        cont_state = {
+            "source_task_id": source_id,
+            "kind": "critic_gate",
+            "action_name": action_name,
+            "payload_hash": _hash_payload(redacted),
+            "mission_id": source.get("mission_id"),
+        }
 
     else:
         raise ValueError(f"_enqueue_posthook_llm_child: unsupported kind {kind!r}")
@@ -2386,26 +2410,7 @@ def _posthook_agent_and_payload(
                 "artifacts": artifacts,
             },
         })
-    if a.kind == "critic_gate":
-        # Z1 T5C (B4) — standalone critic-gate post-hook. action_name +
-        # target_payload come from source_ctx so any step that declares
-        # `post_hooks: ["critic_gate"]` can pass the payload the critic
-        # should judge. mission_id flows through the source row.
-        return ("mechanical", {
-            "source_task_id": a.source_task_id,
-            "posthook_kind": "critic_gate",
-            "executor": "mechanical",
-            "payload": {
-                "action": "critic_gate",
-                "action_name": str(
-                    source_ctx.get("critic_action_name")
-                    or source_ctx.get("step_id")
-                    or "unknown"
-                ),
-                "target_payload": source_ctx.get("critic_target_payload"),
-                "mission_id": source.get("mission_id"),
-            },
-        })
+    # critic_gate is now an admitted posthook LLM child (SP6) — handled by the LLM-child route above.
     if a.kind == "integration_review":
         # Z3 T2C — cross-file consistency review after multi-file expansion.
         # The mechanical pre-check (extract_signatures) is run async in

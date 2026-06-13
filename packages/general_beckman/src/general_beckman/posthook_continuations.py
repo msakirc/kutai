@@ -422,6 +422,55 @@ async def _self_reflect_resume_err(child_task_id: int, result: dict, state: dict
     await _advance_posthook_chain(source_task_id)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# SP6 — critic_gate posthook resume (admitted LLM child, fail-closed).
+# critic_gate ∈ _Z1_MECHANICAL_KINDS → _apply_posthook_verdict_locked routes a
+# passed=False verdict to single-shot DLQ. Handler only builds the verdict.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def _persist_critic_log(state: dict, verdict: str, reasons: list) -> None:
+    from mr_roboto.critic_gate import _persist
+    await _persist(
+        state.get("mission_id"),
+        str(state.get("action_name") or "unknown"),
+        verdict,
+        list(reasons or []),
+        str(state.get("payload_hash") or ""),
+    )
+
+
+def _make_critic_verdict(source_task_id, passed: bool, reasons: list):
+    from general_beckman.result_router import PostHookVerdict
+    return PostHookVerdict(
+        source_task_id=source_task_id, kind="critic_gate",
+        passed=passed, raw={"reasons": list(reasons or [])},
+    )
+
+
+async def _critic_resume(child_task_id: int, result: dict, state: dict) -> None:
+    from mr_roboto.critic_gate import _parse_verdict
+    source_task_id = state.get("source_task_id")
+    parsed = _parse_verdict(_extract_content(result))
+    passed = parsed["verdict"] != "veto"
+    await _persist_critic_log(state, parsed["verdict"], parsed.get("reasons") or [])
+    await _apply_posthook_verdict(
+        {"id": child_task_id},
+        _make_critic_verdict(source_task_id, passed, parsed.get("reasons") or []),
+    )
+
+
+async def _critic_resume_err(child_task_id: int, result: dict, state: dict) -> None:
+    source_task_id = state.get("source_task_id")
+    err = (result or {}).get("error", "unknown")
+    reasons = [f"critic verdict unavailable (producer error: {str(err)[:120]}) — fail-closed"]
+    await _persist_critic_log(state, "veto", reasons)
+    await _apply_posthook_verdict(
+        {"id": child_task_id},
+        _make_critic_verdict(source_task_id, False, reasons),
+    )
+
+
 def register_continuations() -> None:
     """Register SP3 post-hook CPS handlers. Idempotent."""
     try:
@@ -437,6 +486,9 @@ def register_continuations() -> None:
         register_resume("posthook.constrained_emit.resume_err", _constrained_emit_resume_err)
         register_resume("posthook.self_reflect.resume", _self_reflect_resume)
         register_resume("posthook.self_reflect.resume_err", _self_reflect_resume_err)
+        # SP6 — critic_gate admitted LLM child (fail-closed).
+        register_resume("posthook.critic.resume", _critic_resume)
+        register_resume("posthook.critic.resume_err", _critic_resume_err)
     except Exception as exc:  # noqa: BLE001
         logger.debug("posthook continuation registration deferred", error=str(exc))
 

@@ -212,3 +212,64 @@ async def test_git_commit_pass2_empty_hash_regate(monkeypatch, tmp_path):
     new_ctx = json.loads(repend[-1].kwargs["context"])
     assert new_ctx["critic_regate_n"] == 1
     assert "critic_verdict" not in new_ctx
+
+
+@pytest.mark.asyncio
+async def test_notify_user_pass1_parks(monkeypatch):
+    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
+    enq = AsyncMock(return_value=1234)
+    upd = AsyncMock()
+    send = AsyncMock()
+    monkeypatch.setattr("mr_roboto.enqueue", enq, raising=False)
+    monkeypatch.setattr("mr_roboto.update_task", upd, raising=False)
+    monkeypatch.setattr("mr_roboto.notify_user.notify_user", send, raising=False)
+    task = {"id": 60, "mission_id": 2, "context": json.dumps({}),
+            "payload": {"action": "notify_user", "message": "hi founder"}}
+    action = await mr_roboto.run(task)
+    assert action.status == "needs_clarification"
+    assert enq.await_count == 1
+    send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_user_pass2_pass_sends(monkeypatch):
+    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
+    send = AsyncMock(return_value={"sent": True})
+    monkeypatch.setattr("mr_roboto.notify_user.notify_user", send, raising=False)
+    ctx = {"critic_verdict": {"verdict": "pass", "reasons": [], "payload_hash": ""}}
+    task = {"id": 60, "mission_id": 2, "context": json.dumps(ctx),
+            "payload": {"action": "notify_user", "message": "hi founder"}}
+    action = await mr_roboto.run(task)
+    assert action.status == "completed"
+    send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_notify_user_pass2_veto_drops(monkeypatch):
+    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
+    send = AsyncMock()
+    monkeypatch.setattr("mr_roboto.notify_user.notify_user", send, raising=False)
+    ctx = {"critic_verdict": {"verdict": "veto", "reasons": ["leaks PII"], "payload_hash": ""}}
+    task = {"id": 60, "mission_id": 2, "context": json.dumps(ctx),
+            "payload": {"action": "notify_user", "message": "ssn 123"}}
+    action = await mr_roboto.run(task)
+    assert action.status == "failed"
+    send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_user_routine_alert_bypasses_gate(monkeypatch):
+    """B2 carve-out: notify_user with NO mission_id is a routine alert — send
+    directly, never enqueue a critic child, never park. A flaky critic must
+    never silence a health/VRAM/cron alert."""
+    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)  # gate ON globally
+    enq = AsyncMock()
+    send = AsyncMock(return_value={"sent": True})
+    monkeypatch.setattr("mr_roboto.enqueue", enq, raising=False)
+    monkeypatch.setattr("mr_roboto.notify_user.notify_user", send, raising=False)
+    task = {"id": 61, "context": json.dumps({}),   # NO mission_id
+            "payload": {"action": "notify_user", "message": "VRAM at 95%"}}
+    action = await mr_roboto.run(task)
+    assert action.status == "completed"
+    send.assert_awaited_once()
+    enq.assert_not_called()

@@ -2199,48 +2199,74 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "notify_user":
-        # Z1 Tier 5C (B4) — Critic gate pre-hook on `notify_user`.
-        # Send is irreversible (user sees the message); gate the text
-        # before dispatch. Veto = drop the message and return failed.
+        # Z1 Tier 5C (B4) — Critic gate on `notify_user`, SP6 TWO-PASS self-park.
+        # Send is irreversible (user sees the message); gate the text before
+        # dispatch. Simpler than git_commit: no staging, no rollback, no drift
+        # guard — nothing is sent until pass 2.
+        # B2 carve-out: gate ONLY mission-scoped notify_user (autonomous agent
+        # comms). Routine alerts (no mission_id — VRAM/health, cron, reminders)
+        # bypass the gate entirely so a flaky critic can never silence a system
+        # health ping.
         from mr_roboto.notify_user import notify_user
         from mr_roboto.critic_gate import (
-            critic_gate as _critic_gate,
-            _opt_out as _critic_opt_out,
+            confirm_gate as _confirm_gate, _opt_out as _critic_opt_out,
+            _build_critic_spec, _redact_payload, _hash_payload,
         )
+        import json as _json
+
+        ctx = task.get("context") or {}
+        if isinstance(ctx, str):
+            try:
+                ctx = _json.loads(ctx)
+            except (ValueError, TypeError):
+                ctx = {}
+        ctx_verdict = ctx.get("critic_verdict") if isinstance(ctx, dict) else None
+        # B2 carve-out: gate ONLY mission-scoped notify_user (autonomous agent
+        # comms). Routine alerts (no mission_id) bypass entirely — never parked,
+        # never dropped, no critic latency.
         gate_enabled = (
             (not _critic_opt_out())
             and bool(payload.get("critic_gate", True))
+            and task.get("mission_id") is not None
         )
-        if gate_enabled:
-            text = payload.get("message") or payload.get("text") or ""
+        text = payload.get("message") or payload.get("text") or ""
+
+        if gate_enabled and ctx_verdict is None:
+            # PASS 1 — enqueue admitted critic child, park. Nothing sent yet.
             try:
-                # Gate the MESSAGE CONTENT only. The critic judges (a) spec
-                # break, (b) founder fury, (c) secret/PII leak — all properties
-                # of the text. chat_id (the recipient) is irrelevant to those,
-                # and a null chat_id is the NORMAL case (notify_user defaults it
-                # to the admin chat). Passing it in only baited the critic into
-                # spurious "chat_id is null → will fail" validity-vetoes that
-                # DLQ'd valid notifications (task #261969, 2026-06-02).
-                gate_result = await _critic_gate(
-                    "notify_user",
-                    {"message": text},
-                    mission_id=task.get("mission_id"),
+                redacted = _redact_payload({"message": text})
+                spec = _build_critic_spec("notify_user", redacted)
+                mid = task.get("mission_id")
+                if mid is not None:
+                    spec["mission_id"] = mid
+                await enqueue(
+                    spec, parent_id=task.get("id"),
+                    on_complete="mr_roboto.critic.verdict_done",
+                    on_error="mr_roboto.critic.verdict_err",
+                    cont_state={"gated_task_id": task.get("id"),
+                                "action_name": "notify_user",
+                                "mission_id": mid,
+                                "payload_hash": _hash_payload(redacted)},
                 )
+                await update_task(int(task["id"]), status="waiting_human")
+                return Action(status="needs_clarification",
+                              result={"awaiting_critic": True, "action": "notify_user"})
             except Exception as e:
                 from src.infra.logging_config import get_logger as _gl
-                _gl("mr_roboto.critic_gate").warning(
-                    f"notify_user critic gate failed open: {e}"
-                )
-                gate_result = None
-            if gate_result and gate_result.get("verdict") == "veto":
-                return Action(
-                    status="failed",
-                    error=(
-                        "critic_gate vetoed notify_user: "
-                        f"{gate_result.get('reasons')}"
-                    ),
-                    result={"critic": gate_result, "sent": False},
-                )
+                _gl("mr_roboto.critic_gate").warning(f"notify_user gate park failed: {e}")
+                return Action(status="failed",
+                              error=f"critic gate could not be scheduled: {e}")
+
+        if gate_enabled and ctx_verdict is not None:
+            # PASS 2 — confirm (LLM-free). No drift guard: nothing staged.
+            gate_result = await _confirm_gate("notify_user", {"message": text},
+                                              mission_id=task.get("mission_id"),
+                                              persisted_verdict=ctx_verdict)
+            if gate_result.get("verdict") == "veto":
+                return Action(status="failed",
+                              error=f"critic_gate vetoed notify_user: {gate_result.get('reasons')}",
+                              result={"critic": gate_result, "sent": False})
+
         try:
             res = await notify_user(task)
             return Action(status="completed", result=res)

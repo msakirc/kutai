@@ -325,9 +325,16 @@ async def test_router_git_commit_critic_opt_out_skips_gate(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_router_notify_user_critic_pass_sends(monkeypatch):
+    # SP6 T4: notify_user is now a TWO-PASS self-park gated ONLY when
+    # mission-scoped. A mission task with a persisted PASS verdict (pass 2)
+    # → LLM-free confirm_gate passes → message sent.
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
+    import json as _json
+    ctx = {"critic_verdict": {"verdict": "pass", "reasons": [], "payload_hash": ""}}
     task = {
         "id": 7,
+        "mission_id": 1,
+        "context": _json.dumps(ctx),
         "payload": {
             "action": "notify_user",
             "chat_id": 222,
@@ -336,10 +343,6 @@ async def test_router_notify_user_critic_pass_sends(monkeypatch):
     }
     fake_tg = AsyncMock()
     with patch(
-        "mr_roboto.critic_gate.critic_gate",
-        new_callable=AsyncMock,
-        return_value={"verdict": "pass", "reasons": []},
-    ), patch(
         "mr_roboto.notify_user.get_telegram", return_value=fake_tg
     ):
         action = await mr_roboto.run(task)
@@ -349,9 +352,18 @@ async def test_router_notify_user_critic_pass_sends(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_router_notify_user_critic_veto_drops(monkeypatch):
+    # SP6 T4: pass-2 with a persisted VETO verdict on a mission-scoped task →
+    # LLM-free confirm_gate vetoes → failed, message NOT sent. (No drift guard
+    # / no `git reset` — notify_user stages nothing; it just doesn't send.)
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
+    import json as _json
+    ctx = {"critic_verdict": {"verdict": "veto",
+                              "reasons": ["leaks credential"],
+                              "payload_hash": ""}}
     task = {
         "id": 7,
+        "mission_id": 1,
+        "context": _json.dumps(ctx),
         "payload": {
             "action": "notify_user",
             "chat_id": 222,
@@ -360,13 +372,6 @@ async def test_router_notify_user_critic_veto_drops(monkeypatch):
     }
     fake_tg = AsyncMock()
     with patch(
-        "mr_roboto.critic_gate.critic_gate",
-        new_callable=AsyncMock,
-        return_value={
-            "verdict": "veto",
-            "reasons": ["leaks credential"],
-        },
-    ), patch(
         "mr_roboto.notify_user.get_telegram", return_value=fake_tg
     ):
         action = await mr_roboto.run(task)

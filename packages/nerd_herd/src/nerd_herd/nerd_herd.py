@@ -84,6 +84,13 @@ class NerdHerd:
     def gpu_state(self) -> GPUState:
         return self._gpu.gpu_state()
 
+    def invalidate_gpu_cache(self) -> None:
+        """Drop the GPU collector's cached poll so the NEXT gpu_state() reads
+        live VRAM. Used right after freeing VRAM (e.g. unloading the LLM before
+        a local image gen) so the first poll reflects the freed memory instead
+        of the stale pre-shutdown value."""
+        self._gpu.invalidate_cache()
+
     def get_vram_budget_mb(self) -> int:
         return self._load.get_vram_budget_mb()
 

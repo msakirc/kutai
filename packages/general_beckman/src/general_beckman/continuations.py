@@ -38,7 +38,13 @@ register = register_resume
 
 async def dispatch_on_complete(name: str, task_id: int, result: dict,
                                state: dict | None = None) -> None:
-    """Look up and invoke the named handler (3-arg). Swallows handler errors."""
+    """Look up and invoke the named handler (3-arg).
+
+    A handler exception is contained (never propagates to the caller), but
+    the continuation row is UN-CLAIMED (fired→pending, TTL-bounded) so the
+    periodic reconcile retries it instead of silently losing the
+    continuation — see _unclaim_after_crash.
+    """
     handler = _HANDLERS.get(name)
     if handler is None:
         _log.warning("dispatch: no handler registered", name=name, task_id=task_id)
@@ -48,6 +54,45 @@ async def dispatch_on_complete(name: str, task_id: int, result: dict,
     except Exception as exc:  # noqa: BLE001
         _log.error("continuation handler raised", name=name, task_id=task_id,
                    error=str(exc))
+        await _unclaim_after_crash(task_id, name)
+
+
+async def _unclaim_after_crash(child_task_id: int, name: str) -> None:
+    """Un-claim a continuation row (fired→pending) after its handler crashed.
+
+    The claim happens BEFORE handler dispatch (CAS in claim_for_fire), so a
+    crashing handler used to consume the row — the continuation was lost and
+    e.g. the swap-chain ledger stalled forever. Flipping the row back to
+    'pending' lets reconcile_continuations (startup + periodic) reconstruct
+    the result from tasks.result and retry the handler.
+
+    TTL-bounded: only rows still inside CONTINUATION_TTL_SECONDS (by
+    created_at) are un-claimed. A handler that crashes on every retry is
+    re-driven by reconcile only until the TTL, after which the row expires
+    through the normal on_error/expire path; if THAT on_error dispatch
+    crashes too, it is past the TTL by definition and stays consumed — no
+    infinite crash→un-claim→re-fire loop. Legacy dispatches with no row
+    match zero rows and no-op.
+    """
+    try:
+        from src.infra.db import get_db
+        db = await get_db()
+        upd = await db.execute(
+            "UPDATE continuations SET status='pending' "
+            "WHERE child_task_id=? AND status='fired' "
+            "AND datetime(created_at, '+' || ? || ' seconds') >= datetime('now')",
+            (child_task_id, CONTINUATION_TTL_SECONDS),
+        )
+        await db.commit()
+        if upd.rowcount == 1:
+            _log.warning(
+                "continuation un-claimed after handler crash — "
+                "reconcile will retry",
+                child_task_id=child_task_id, handler=name,
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.error("continuation un-claim failed", child_task_id=child_task_id,
+                   handler=name, error=str(exc))
 
 
 async def claim_for_fire(child_task_id: int) -> dict | None:
@@ -154,6 +199,56 @@ async def fire_for_task(child_task_id: int, result: dict, raw_status: str) -> bo
         if name:
             asyncio.create_task(dispatch_on_complete(name, child_task_id, result, state))
     return True
+
+
+def _result_from_persisted(status: str, raw) -> dict:
+    """Reconstruct a handler ``result`` dict from the persisted tasks.result.
+
+    Top-level JSON decode only (same contract as reconcile): handlers that
+    need nested decoding do it themselves. ``status`` is always present.
+    """
+    res: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            res = dict(parsed) if isinstance(parsed, dict) else {"result": parsed}
+        except Exception:  # noqa: BLE001
+            res = {"result": raw}
+    res.setdefault("status", status)
+    return res
+
+
+async def fire_if_terminal(child_task_id: int) -> bool:
+    """Fire the pending continuation for a task IF its DB status is terminal.
+
+    Chokepoint for verdict-completion paths: a source task whose terminal
+    transition happens during ANOTHER task's on_task_finished (grade/review
+    verdict apply, post-hook chain drain, post-hook DLQ cascade) never gets
+    its own on_task_finished — without this, its continuation row stayed
+    'pending' until the reconcile TTL (up to an hour late). The apply layer
+    calls this after any write that may have made a source terminal.
+
+    Cheap when there is nothing to do (one indexed SELECT bails when no
+    pending row exists); the CAS inside fire_for_task keeps it idempotent
+    against the on_task_finished hook and reconcile.
+    """
+    from src.infra.db import get_db
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT 1 FROM continuations WHERE child_task_id=? AND status='pending'",
+        (child_task_id,),
+    )
+    if await cur.fetchone() is None:
+        return False
+    tcur = await db.execute(
+        "SELECT status, result FROM tasks WHERE id=?", (child_task_id,),
+    )
+    trow = await tcur.fetchone()
+    if trow is None or trow[0] not in ("completed", "failed"):
+        return False
+    return await fire_for_task(
+        child_task_id, _result_from_persisted(trow[0], trow[1]), trow[0],
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -278,14 +373,7 @@ async def reconcile_continuations(ttl_seconds: int = CONTINUATION_TTL_SECONDS) -
             tstatus, tresult = trow[0], trow[1]
 
             if tstatus in ("completed", "failed"):
-                res: dict = {}
-                if tresult:
-                    try:
-                        parsed = json.loads(tresult) if isinstance(tresult, str) else tresult
-                        res = dict(parsed) if isinstance(parsed, dict) else {"result": parsed}
-                    except Exception:
-                        res = {"result": tresult}
-                res.setdefault("status", tstatus)
+                res = _result_from_persisted(tstatus, tresult)
                 await fire_for_task(cid, res, tstatus)
                 continue
 

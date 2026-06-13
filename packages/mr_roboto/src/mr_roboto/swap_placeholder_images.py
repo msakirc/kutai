@@ -47,10 +47,19 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from src.infra.logging_config import get_logger
+
+# Shared HTML primitives (one definition; aliased to the historical private
+# names this module exported — tests import them from here).
+from mr_roboto._html_common import (
+    IMG_RE as _IMG_RE,
+    PLACEHOLDER_HOST_RE as _PLACEHOLDER_HOST_RE,
+    coerce_result_dict as _coerce_result_dict,
+    parse_attrs as _parse_attrs,
+    walk_html as _list_html_files,
+)
 
 logger = get_logger("mr_roboto.swap_placeholder_images")
 
@@ -65,18 +74,24 @@ ON_IMAGE_ERR = "mr_roboto.swap_images.image_err"
 
 # ── Placeholder detection ──────────────────────────────────────────────
 
-_PLACEHOLDER_HOST_RE = re.compile(r"^https?://placehold\.co/", re.IGNORECASE)
-_IMG_RE = re.compile(r"<img\b([^>]*?)/?>", re.IGNORECASE | re.DOTALL)
-_ATTR_RE = re.compile(r'(\b[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"([^"]*)"')
 _DIM_RE = re.compile(r"/(\d{2,4})x(\d{2,4})", re.IGNORECASE)
 
 
-def _parse_attrs(tag_inner: str) -> dict[str, str]:
-    return {k.lower(): v for k, v in _ATTR_RE.findall(tag_inner)}
+def _slug_from_path(html_path: str, web_root: str) -> str:
+    """Placeholder-id slug from the path RELATIVE to the .web root.
 
-
-def _slug_from_path(html_path: str) -> str:
-    return Path(html_path).stem
+    The walk is recursive, so .web/index.html and .web/screens/index.html
+    can coexist — a stem-derived slug would collide ("index__0" twice: the
+    second placeholder never gets an image and both files get rewritten to
+    the same asset). Flat files keep the old slug (relpath of a top-level
+    file is just the name → "home.html" → "home"); subdir files prefix
+    their dirs ("screens/index.html" → "screens__index"). Separators/dots
+    sanitize to filesystem-safe chars — the pid is used as a flat filename
+    (assets/<pid>.png)."""
+    rel = os.path.relpath(html_path, web_root)
+    stem = os.path.splitext(rel)[0]
+    stem = stem.replace("\\", "/").replace("/", "__")
+    return re.sub(r"[^A-Za-z0-9_\-]+", "_", stem)
 
 
 def _section_from_alt(alt: str) -> str:
@@ -92,13 +107,13 @@ def _section_from_alt(alt: str) -> str:
     return "feature"
 
 
-def _scan_placeholders(html_path: str) -> list[dict[str, Any]]:
+def _scan_placeholders(html_path: str, web_root: str) -> list[dict[str, Any]]:
     try:
         with open(html_path, encoding="utf-8") as fh:
             html = fh.read()
     except OSError:
         return []
-    slug = _slug_from_path(html_path)
+    slug = _slug_from_path(html_path, web_root)
     out: list[dict[str, Any]] = []
     occ = 0
     for m in _IMG_RE.finditer(html):
@@ -115,6 +130,9 @@ def _scan_placeholders(html_path: str) -> list[dict[str, Any]]:
             "section": _section_from_alt(alt),
             "original_src": src,
             "tag_span": (m.start(), m.end()),
+            # Full matched tag text — _finalize verifies html[start:end]
+            # still equals this before splicing (stale-span guard).
+            "tag_text": m.group(0),
             "html_path": html_path,
         })
         occ += 1
@@ -131,20 +149,6 @@ def _assets_dir(workspace_path: str) -> str:
     p = os.path.join(workspace_path, ".web", "assets")
     os.makedirs(p, exist_ok=True)
     return p
-
-
-def _list_html_files(workspace_path: str) -> list[str]:
-    """v2 fix: recursive walk of <ws>/.web/**/*.html (Plan 3 v1 was flat
-    and missed subdirectory screens)."""
-    root = _web_root(workspace_path)
-    if not os.path.isdir(root):
-        return []
-    out = []
-    for dirpath, _dirs, filenames in os.walk(root):
-        for name in filenames:
-            if name.lower().endswith(".html"):
-                out.append(os.path.join(dirpath, name))
-    return sorted(out)
 
 
 # ── Chain ledger (durable chain state on disk; cont_state stays SMALL) ─
@@ -180,25 +184,8 @@ def _save_ledger(workspace_path: str, ledger: dict) -> None:
 
 
 # ── Tolerant child-result parsing (CPS handlers receive plain dicts) ───
-
-def _coerce_result_dict(result: Any) -> dict:
-    """A continuation handler's ``result`` should arrive as a dict, but be
-    defensive: a JSON-string body (restart-reconcile decodes only the TOP
-    level; tests may fabricate strings) coerces via json.loads FIRST before
-    any isinstance check on the decoded value. Adapted from the deleted
-    ``_parse_task_result`` (TaskResult is gone — SP5)."""
-    if result is None:
-        return {}
-    if isinstance(result, dict):
-        return result
-    if isinstance(result, str):
-        try:
-            decoded = json.loads(result)
-            return decoded if isinstance(decoded, dict) else {}
-        except Exception:
-            return {}
-    return {}
-
+# _coerce_result_dict is the shared mr_roboto._html_common.coerce_result_dict
+# (imported above) — one definition for this module + the verify posthook.
 
 def _extract_prompts(result: Any) -> dict[str, str]:
     """Pull the placeholder_id -> prompt map out of a prompt_writer child
@@ -271,6 +258,10 @@ async def swap_placeholder_images(
       - chain started:
         {ok: True, queued: True, chain: "started", placeholder_count,
          html_files_seen}
+      - chain already mid-flight (re-pend / restart re-run / manual retry —
+        reentrancy guard; nothing overwritten, nothing enqueued):
+        {ok: True, chain: "in_flight", placeholder_count (from the existing
+         ledger), html_files_seen}
       - prompt_writer enqueue raised (graceful degrade — all placeholders keep
         their placehold.co URLs):
         the chain:"none" shape with skipped_count=N and the error recorded.
@@ -290,9 +281,28 @@ async def swap_placeholder_images(
             "chain": "none",
         }
 
+    # Reentrancy guard: a re-pend / restart re-run / manual retry of 5.35
+    # while the chain is mid-flight must NOT overwrite the ledger or enqueue
+    # a duplicate prompt_writer chain. status "done" does not block — a
+    # finished chain may be re-kicked (e.g. regenerated HTML).
+    existing = _load_ledger(workspace_path)
+    if existing and existing.get("status") in (
+        "prompts_pending", "images_pending",
+    ):
+        logger.info(
+            "swap chain already in flight (status=%s, ws=%s) — kickoff no-op",
+            existing.get("status"), workspace_path,
+        )
+        return {
+            "ok": True, "chain": "in_flight",
+            "placeholder_count": len(existing.get("placeholders") or []),
+            "html_files_seen": len(html_files),
+        }
+
     all_placeholders: list[dict[str, Any]] = []
+    web_root = _web_root(workspace_path)
     for h in html_files:
-        all_placeholders.extend(_scan_placeholders(h))
+        all_placeholders.extend(_scan_placeholders(h, web_root))
 
     if not all_placeholders:
         return {
@@ -328,19 +338,20 @@ async def swap_placeholder_images(
             cont_state=state,
         )
     except Exception as exc:
+        # Graceful degrade through the NORMAL chain tail: mark every
+        # placeholder skipped and run _finalize, so this status=="done"
+        # ledger carries the same schema (replaced/skipped/errors/
+        # html_files_changed/shape_check) as every other finalized ledger —
+        # no second hand-rolled "done" shape.
         logger.warning("prompt_writer enqueue raised: %s", exc)
         err = f"prompt_writer enqueue raised: {exc}"
-        for ph in all_placeholders:
-            ledger["results"][ph["placeholder_id"]] = {
-                "status": "skipped", "error": err,
-            }
-        ledger["status"] = "done"
-        ledger["errors"] = [err]
-        _save_ledger(workspace_path, ledger)
+        _degrade_all(ledger, err)
+        await _finalize(workspace_path, ledger)
         return {
             "ok": True, "replaced_count": 0,
             "skipped_count": len(all_placeholders),
-            "html_files_seen": len(html_files), "html_files_changed": 0,
+            "html_files_seen": len(html_files),
+            "html_files_changed": int(ledger.get("html_files_changed") or 0),
             "errors": [err], "chain": "none",
         }
 
@@ -429,6 +440,13 @@ def _build_image_spec(
         "priority": 5,
         "mission_id": mission_id,
         "context": {
+            # FIX 2.3 — agent_type 'image' is NOT in beckman's
+            # _NO_POSTHOOKS_AGENT_TYPES, so without this opt-out the child
+            # got the default LLM grade posthook on an image-generation
+            # result (pointless judge of a file path), parked 'ungraded',
+            # and the image_done continuation only fired via the verdict
+            # path instead of the child's own terminal.
+            "requires_grading": False,
             "image_call": {
                 "raw_dispatch": True,
                 "prompt": prompt,
@@ -444,17 +462,31 @@ def _build_image_spec(
 
 # ── Continuation handlers ──────────────────────────────────────────────
 
+def _open_chain(event: str, state: dict) -> tuple[str, str, dict | None]:
+    """Common handler open: workspace (+pid) from cont_state → load the chain
+    ledger → WARN when it is missing (caller no-ops on ledger=None)."""
+    workspace_path = state.get("workspace_path") or ""
+    pid = state.get("pid") or ""
+    ledger = _load_ledger(workspace_path)
+    if ledger is None:
+        logger.warning(
+            "swap chain: %s fired but ledger missing (ws=%s, pid=%s)",
+            event, workspace_path, pid,
+        )
+    return workspace_path, pid, ledger
+
+
+def _result_error(result: Any, default: str) -> str:
+    """Error string out of an on_error continuation result (tolerant shape)."""
+    return str(_coerce_result_dict(result).get("error") or default)
+
+
 async def _on_prompts_done(task_id: int, result: dict, state: dict) -> None:
     """Continuation: the prompt_writer child reached TRUE terminal (post
     constrained_emit/grade posthooks). Store the prompt map and start the
     sequential image chain; no usable prompts → finalize-with-degrade."""
-    workspace_path = state.get("workspace_path") or ""
-    ledger = _load_ledger(workspace_path)
+    workspace_path, _pid, ledger = _open_chain("prompts_done", state)
     if ledger is None:
-        logger.warning(
-            "swap chain: prompts_done fired but ledger missing (ws=%s)",
-            workspace_path,
-        )
         return
     prompt_map = _extract_prompts(result)
     if not prompt_map:
@@ -475,15 +507,10 @@ async def _on_prompts_err(task_id: int, result: dict, state: dict) -> None:
     """on_error continuation: prompt_writer child failed (or its continuation
     TTL-expired). Whole chain degrades — every placeholder keeps its
     placehold.co URL."""
-    workspace_path = state.get("workspace_path") or ""
-    ledger = _load_ledger(workspace_path)
+    workspace_path, _pid, ledger = _open_chain("prompts_err", state)
     if ledger is None:
-        logger.warning(
-            "swap chain: prompts_err fired but ledger missing (ws=%s)",
-            workspace_path,
-        )
         return
-    err = str(_coerce_result_dict(result).get("error") or "prompt_writer task failed")
+    err = _result_error(result, "prompt_writer task failed")
     logger.warning("swap chain: prompt_writer child failed: %s", err)
     _degrade_all(ledger, f"prompt_writer failed: {err}")
     await _finalize(workspace_path, ledger)
@@ -499,14 +526,8 @@ def _degrade_all(ledger: dict, error: str) -> None:
 async def _on_image_done(task_id: int, result: dict, state: dict) -> None:
     """Continuation: one image child finished. Rename to the stable
     ``<pid>.png``, record, advance the chain."""
-    workspace_path = state.get("workspace_path") or ""
-    pid = state.get("pid") or ""
-    ledger = _load_ledger(workspace_path)
+    workspace_path, pid, ledger = _open_chain("image_done", state)
     if ledger is None:
-        logger.warning(
-            "swap chain: image_done fired but ledger missing (ws=%s, pid=%s)",
-            workspace_path, pid,
-        )
         return
     path = _extract_image_path(result)
     if path and os.path.isfile(path):
@@ -519,28 +540,22 @@ async def _on_image_done(task_id: int, result: dict, state: dict) -> None:
         entry = {"status": "error",
                  "error": f"image task for {pid} returned no usable path"}
     ledger.setdefault("results", {})[pid] = entry
-    _save_ledger(workspace_path, ledger)
+    # _advance re-saves the ledger on every path (enqueue → save+return;
+    # nothing left → _finalize saves), so no save here.
     await _advance(workspace_path, ledger, state)
 
 
 async def _on_image_err(task_id: int, result: dict, state: dict) -> None:
     """on_error continuation: one image child failed — record and advance.
     Graceful degrade: that placeholder keeps its placehold.co URL."""
-    workspace_path = state.get("workspace_path") or ""
-    pid = state.get("pid") or ""
-    ledger = _load_ledger(workspace_path)
+    workspace_path, pid, ledger = _open_chain("image_err", state)
     if ledger is None:
-        logger.warning(
-            "swap chain: image_err fired but ledger missing (ws=%s, pid=%s)",
-            workspace_path, pid,
-        )
         return
-    err = str(_coerce_result_dict(result).get("error") or "image task failed")
+    err = _result_error(result, "image task failed")
     logger.info("swap chain: image child for %s failed: %s", pid, err)
     ledger.setdefault("results", {})[pid] = {
         "status": "error", "error": f"image gen failed for {pid}: {err}",
     }
-    _save_ledger(workspace_path, ledger)
     await _advance(workspace_path, ledger, state)
 
 
@@ -588,12 +603,17 @@ def register_continuations() -> None:
     by general_beckman.continuations.register_startup_handlers)."""
     try:
         from general_beckman.continuations import register_resume
-        register_resume(ON_PROMPTS_DONE, _on_prompts_done)
-        register_resume(ON_PROMPTS_ERR, _on_prompts_err)
-        register_resume(ON_IMAGE_DONE, _on_image_done)
-        register_resume(ON_IMAGE_ERR, _on_image_err)
-    except Exception as exc:  # noqa: BLE001
+    except ImportError as exc:
+        # Import-ordering only: general_beckman not yet importable at our
+        # import time. Beckman re-runs register_startup_handlers later, so
+        # deferring here is benign. A genuine registration bug below is NOT
+        # swallowed — it must surface.
         logger.debug("swap chain continuation registration deferred: %s", exc)
+        return
+    register_resume(ON_PROMPTS_DONE, _on_prompts_done)
+    register_resume(ON_PROMPTS_ERR, _on_prompts_err)
+    register_resume(ON_IMAGE_DONE, _on_image_done)
+    register_resume(ON_IMAGE_ERR, _on_image_err)
 
 
 # Register at import so the handlers are present for restart reconcile.
@@ -663,13 +683,24 @@ async def _finalize(workspace_path: str, ledger: dict) -> None:
     """Apply ALL HTML rewrites from the ledger in one pass, run the deep
     shape check, write the summary into the ledger.
 
-    The rewrites use scan-time tag spans, which is safe because the HTML is
-    never rewritten between scan and finalize — all rewrites happen exactly
-    once, HERE. Per-placeholder failure keeps the placehold.co URL (graceful
-    degrade). No Telegram notify."""
+    The rewrites use scan-time tag spans. Each span is verified against the
+    recorded scan-time tag text before splicing (the HTML could have been
+    rewritten between scan and finalize — e.g. a regenerated screen); a
+    stale span is skipped with the error recorded, keeping the placehold.co
+    URL (graceful degrade). Idempotent: a ledger already finalized
+    (status=done) is left untouched — a second finalize would re-splice the
+    stale scan-time spans into the already-rewritten HTML. No Telegram
+    notify."""
+    if ledger.get("status") == "done":
+        logger.info(
+            "swap chain: finalize skipped — ledger already done (ws=%s)",
+            workspace_path,
+        )
+        return
+
     assets_dir = _assets_dir(workspace_path)
     results = ledger.setdefault("results", {})
-    rewrites_per_file: dict[str, dict[tuple[int, int], str]] = {}
+    candidates_per_file: dict[str, dict[tuple[int, int], dict]] = {}
     errors: list[str] = []
     replaced = 0
     skipped = 0
@@ -688,14 +719,42 @@ async def _finalize(workspace_path: str, ledger: dict) -> None:
             asset_abs = os.path.join(assets_dir, entry["asset"])
             html_dir = os.path.dirname(ph["html_path"])
             new_src = os.path.relpath(asset_abs, html_dir).replace(os.sep, "/")
-            rewrites_per_file.setdefault(ph["html_path"], {})[
+            candidates_per_file.setdefault(ph["html_path"], {})[
                 tuple(ph["tag_span"])
-            ] = new_src
-            replaced += 1
+            ] = {"src": new_src, "tag_text": ph.get("tag_text"), "pid": pid}
         else:
             skipped += 1
             if entry.get("error"):
                 errors.append(str(entry["error"]))
+
+    # Splice validation: only spans whose scan-time tag text still sits at
+    # the recorded offsets may be spliced — anything else would corrupt the
+    # HTML. Stale spans degrade to skipped (placehold.co URL survives).
+    rewrites_per_file: dict[str, dict[tuple[int, int], str]] = {}
+    for path, candidates in candidates_per_file.items():
+        try:
+            with open(path, encoding="utf-8") as fh:
+                current_html: str | None = fh.read()
+        except OSError:
+            current_html = None
+        for span, cand in candidates.items():
+            tag_text = cand.get("tag_text")
+            pid = cand["pid"]
+            if (
+                current_html is not None
+                and isinstance(tag_text, str)
+                and current_html[span[0]:span[1]] != tag_text
+            ):
+                err = (
+                    f"stale span for {pid}: HTML changed between scan and "
+                    f"finalize — splice skipped"
+                )
+                results[pid] = {"status": "skipped", "error": err}
+                errors.append(err)
+                skipped += 1
+                continue
+            rewrites_per_file.setdefault(path, {})[span] = cand["src"]
+            replaced += 1
 
     files_changed = 0
     for path, rewrites in rewrites_per_file.items():
@@ -709,11 +768,14 @@ async def _finalize(workspace_path: str, ledger: dict) -> None:
     shape_errors: list[str] = []
     surviving = 0
     broken_refs: list[str] = []
+    agent_ref_warnings: list[str] = []
     try:
         from mr_roboto.verify_swap_placeholder_images_shape import (
             _scan_html, _walk_html,
         )
-        surviving, broken_refs = _scan_html(_walk_html(workspace_path))
+        surviving, broken_refs, agent_ref_warnings = _scan_html(
+            _walk_html(workspace_path)
+        )
         if broken_refs:
             shape_errors.append(f"broken asset ref: {broken_refs[0]}")
         if surviving != skipped:
@@ -733,6 +795,9 @@ async def _finalize(workspace_path: str, ledger: dict) -> None:
         "ok": not shape_errors,
         "surviving_placeholders": surviving,
         "broken_asset_refs": broken_refs,
+        # Agent-authored relative refs missing on disk (the swap never wrote
+        # them) — observability only, never a shape failure.
+        "agent_ref_warnings": agent_ref_warnings,
     }
     _save_ledger(workspace_path, ledger)
 

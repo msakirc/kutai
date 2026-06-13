@@ -2,18 +2,19 @@
 
 The handover sequence for a LOCAL image pick must be, in order:
     unload (get_local_manager().shutdown())
-      → poll free VRAM (nerd_herd._get_singleton().snapshot())
+      → poll free VRAM (nerd_herd.gpu_vram_free_mb())
       → clair_obscur.start()
       → nerd_herd.record_swap()
       → paintress.generate()
 all INSIDE the single existing ``heartbeat.keepalive()`` span so the 300s
 no-progress watchdog stays satisfied through the 30-60s cold-start window.
 
-NOTE on the snapshot test seam: the implementation reads the SYNC in-process
-singleton ``nerd_herd._get_singleton().snapshot()`` (a live GPU read), NOT the
-async ``nerd_herd.refresh_snapshot()`` nor the cached module ``nerd_herd.snapshot()``.
-So these tests monkeypatch ``nerd_herd._get_singleton`` to return a stub whose
-``.snapshot()`` yields a ``vram_available_mb`` that lets the poll pass.
+NOTE on the VRAM-poll test seam: the implementation reads the cheap
+``nerd_herd.gpu_vram_free_mb(invalidate=...)`` helper (a 2s-cached GPU read off
+the in-process singleton's GPU collector; invalidate=True on the first read
+forces a fresh poll post-shutdown), NOT a full ``snapshot()``. So these tests
+monkeypatch ``nerd_herd.gpu_vram_free_mb`` to return free-MB values that let
+the poll pass.
 """
 import pytest
 
@@ -39,14 +40,11 @@ async def test_local_image_handover_ordering(monkeypatch, tmp_path):
 
     poll_calls = {"n": 0}
 
-    class _Singleton:
-        def snapshot(self):
-            poll_calls["n"] += 1
-            # First snapshot: VRAM still low; second: high enough.
-            class _S:
-                vram_available_mb = 1000 if poll_calls["n"] == 1 else 7000
-            return _S()
-    monkeypatch.setattr("nerd_herd._get_singleton", lambda: _Singleton())
+    def _free_vram(*, invalidate=False):
+        poll_calls["n"] += 1
+        # First read: VRAM still low; second: high enough.
+        return 1000 if poll_calls["n"] == 1 else 7000
+    monkeypatch.setattr("nerd_herd.gpu_vram_free_mb", _free_vram)
 
     swaps = []
     monkeypatch.setattr("nerd_herd.record_swap",
@@ -115,13 +113,10 @@ async def test_warm_batch_skips_eviction_but_keeps_server_warm(monkeypatch, tmp_
 
     poll_calls = {"n": 0}
 
-    class _Singleton:
-        def snapshot(self):
-            poll_calls["n"] += 1
-            class _S:
-                vram_available_mb = 7000
-            return _S()
-    monkeypatch.setattr("nerd_herd._get_singleton", lambda: _Singleton())
+    def _free_vram(*, invalidate=False):
+        poll_calls["n"] += 1
+        return 7000
+    monkeypatch.setattr("nerd_herd.gpu_vram_free_mb", _free_vram)
     monkeypatch.setattr("nerd_herd.record_swap",
                         lambda name="": touched.__setitem__("swap", True))
 
@@ -174,12 +169,8 @@ async def test_keepalive_wraps_long_handover(monkeypatch, tmp_path):
     monkeypatch.setattr("src.models.local_model_manager.get_local_manager",
                         lambda: _Mgr())
 
-    class _Singleton:
-        def snapshot(self):
-            class _S:
-                vram_available_mb = 7000
-            return _S()
-    monkeypatch.setattr("nerd_herd._get_singleton", lambda: _Singleton())
+    monkeypatch.setattr("nerd_herd.gpu_vram_free_mb",
+                        lambda *, invalidate=False: 7000)
     monkeypatch.setattr("nerd_herd.record_swap", lambda name="": None)
     monkeypatch.setattr("clair_obscur.status", lambda: {"resident": False})
 
@@ -225,12 +216,8 @@ async def test_clair_obscur_start_failure_preserves_availability_category(monkey
     monkeypatch.setattr("src.models.local_model_manager.get_local_manager",
                         lambda: _Mgr())
 
-    class _Singleton:
-        def snapshot(self):
-            class _S:
-                vram_available_mb = 7000
-            return _S()
-    monkeypatch.setattr("nerd_herd._get_singleton", lambda: _Singleton())
+    monkeypatch.setattr("nerd_herd.gpu_vram_free_mb",
+                        lambda *, invalidate=False: 7000)
 
     touched = {"swap": False, "generate": False}
     monkeypatch.setattr("nerd_herd.record_swap",

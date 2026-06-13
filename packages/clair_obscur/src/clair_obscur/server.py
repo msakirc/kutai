@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
-import sys
 import time
 
 import httpx
@@ -34,7 +33,19 @@ except Exception:  # pragma: no cover - standalone fallback
 
     logger = logging.getLogger("clair_obscur.server")
 
-_IS_WINDOWS = sys.platform == "win32"
+
+def _platform_helper():
+    """A dallama ``PlatformHelper`` (Job Object + CREATE_NO_WINDOW + stderr
+    redirect + cwd-aware Popen, all in one place). Falls back to ``None`` when
+    dallama isn't importable — the caller then has no process launcher and
+    raises, which start() surfaces as a launch failure."""
+    try:
+        from dallama.platform import PlatformHelper
+
+        return PlatformHelper()
+    except Exception as exc:
+        logger.debug("dallama PlatformHelper unavailable: %s", exc)
+        return None
 
 
 def _log_dir() -> str:
@@ -51,47 +62,11 @@ def _log_dir() -> str:
 _LOCK_PATH = os.path.join(_log_dir(), "image_server.lock")
 
 
-def _create_job_object():
-    """Return a Windows Job Object handle (KILL_ON_JOB_CLOSE) or None.
-
-    Reuses dallama's helper when importable, otherwise None (no Job Object →
-    boot orphan-reconcile is the only net). Non-Windows always returns None.
-    """
-    if not _IS_WINDOWS:
-        return None
-    try:
-        from dallama.platform import _create_job_object as _dallama_job
-
-        return _dallama_job()
-    except Exception as exc:
-        logger.debug("Job Object setup unavailable: %s", exc)
-        return None
-
-
-def _assign_to_job(job_handle, pid: int) -> None:
-    """Assign *pid* to *job_handle* (no-op when handle/pid missing)."""
-    if job_handle is None or not _IS_WINDOWS:
-        return
-    try:
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        h_process = kernel32.OpenProcess(0x1F0FFF, False, pid)  # PROCESS_ALL_ACCESS
-        if h_process:
-            ok = kernel32.AssignProcessToJobObject(job_handle, h_process)
-            kernel32.CloseHandle(h_process)
-            if ok:
-                logger.debug("PID %s assigned to Job Object", pid)
-            else:
-                logger.warning("Failed to assign PID %s to Job Object", pid)
-    except Exception as exc:
-        logger.debug("Job assignment failed: %s", exc)
-
-
 class ImageServer:
     def __init__(self, config: ClairObscurConfig):
         self._config = config
         self._pid: int | None = None
+        self._proc: subprocess.Popen | None = None
         self._resident: bool = False
         self._release_hint_at: float | None = None
         self._idle_task: asyncio.Task | None = None
@@ -99,7 +74,14 @@ class ImageServer:
         self._health_poll_interval: float = 1.0
         self._stderr_path: str = ""
         self._stderr_fh = None
-        self._job_object = _create_job_object()
+        # Shared dallama launcher (Job Object + flags + stderr + cwd). One per
+        # server; reused on every (re)start.
+        self._platform = _platform_helper()
+        # Serializes start()/stop(): without it, concurrent start() calls
+        # (cloud-failover storm; beckman lane cap 4) race through the
+        # cold-start window — B's _reconcile_orphan kills A's just-launched
+        # backend and both mutate _pid/_stderr_fh.
+        self._lock = asyncio.Lock()
 
     # ───────── Public API ─────────
     def available(self) -> bool:
@@ -116,6 +98,13 @@ class ImageServer:
         }
 
     async def start(self) -> str:
+        """Serialized on self._lock: a concurrent caller waits, then hits the
+        resident-guard and returns the base_url — never a second launch, never
+        an orphan-reconcile against a live cold-starting backend."""
+        async with self._lock:
+            return await self._start_locked()
+
+    async def _start_locked(self) -> str:
         if self._resident and self._pid is not None:
             # Idempotent + clears any pending release hint so the backstop
             # window resets for the new image task.
@@ -127,20 +116,42 @@ class ImageServer:
         logger.info("%s backend launched (pid=%s)", self._config.backend, self._pid)
         self._acquire_lock()
         deadline = time.time() + self._health_timeout_seconds
-        while time.time() < deadline:
-            if await self._health_probe():
-                self._resident = True
-                self._release_hint_at = None
-                logger.info(
-                    "%s backend healthy at %s (pid=%s)",
-                    self._config.backend, self._config.base_url, self._pid,
-                )
-                self._notify_nerd_herd_resident(
-                    vram_mb=self._estimated_resident_vram_mb()
-                )
-                self._arm_idle_backstop()
-                return self._config.base_url
-            await asyncio.sleep(self._health_poll_interval)
+        # One httpx client for the whole poll loop (was one per probe — a
+        # fresh connection pool spun up and torn down every second).
+        async with httpx.AsyncClient(timeout=2.0) as health_client:
+            while time.time() < deadline:
+                # Child died during the health wait → abort NOW (mirror
+                # dallama's _wait_for_healthy is_alive check), don't burn the
+                # full timeout.
+                proc = self._proc
+                if proc is not None and proc.poll() is not None:
+                    tail = self._read_stderr_tail(30)
+                    logger.error(
+                        "%s backend (pid=%s) exited during startup (rc=%s). "
+                        "Last stderr:\n%s",
+                        self._config.backend, self._pid, proc.returncode, tail,
+                    )
+                    self._pid = None
+                    self._proc = None
+                    self._close_stderr()
+                    self._release_lock()
+                    raise RuntimeError(
+                        f"clair_obscur {self._config.backend} exited during "
+                        f"startup (rc={proc.returncode})"
+                    )
+                if await self._health_probe(health_client):
+                    self._resident = True
+                    self._release_hint_at = None
+                    logger.info(
+                        "%s backend healthy at %s (pid=%s)",
+                        self._config.backend, self._config.base_url, self._pid,
+                    )
+                    self._notify_nerd_herd_resident(
+                        vram_mb=self._estimated_resident_vram_mb()
+                    )
+                    self._arm_idle_backstop()
+                    return self._config.base_url
+                await asyncio.sleep(self._health_poll_interval)
         # Health never came up → tear down + surface TimeoutError.
         tail = self._read_stderr_tail(30)
         logger.error(
@@ -150,9 +161,12 @@ class ImageServer:
         )
         if self._pid is not None:
             try:
-                self._kill_own_pid(self._pid)
+                # psutil terminate+wait is blocking (up to ~2s) — off-thread it
+                # so the event loop keeps turning during teardown.
+                await asyncio.to_thread(self._kill_own_pid, self._pid)
             finally:
                 self._pid = None
+        self._proc = None
         self._close_stderr()
         self._release_lock()
         raise TimeoutError(
@@ -162,7 +176,16 @@ class ImageServer:
 
     async def stop(self) -> None:
         """Forced/emergency stop. Normal lane switches go through
-        record_release_hint() so the backstop handles release after idle."""
+        record_release_hint() so the backstop handles release after idle.
+
+        Takes the same lock as start() (it mutates the same state). The idle
+        backstop watcher calls this public stop() from its own task — the
+        lock serializes it against any in-flight start(); cleanup paths that
+        already HOLD the lock must call _stop_locked() instead."""
+        async with self._lock:
+            await self._stop_locked()
+
+    async def _stop_locked(self) -> None:
         task = self._idle_task
         self._idle_task = None
         if task is not None and not task.done():
@@ -177,11 +200,13 @@ class ImageServer:
                     pass
         pid = self._pid
         self._pid = None
+        self._proc = None
         self._resident = False
         self._release_hint_at = None
         if pid is not None:
             logger.info("Stopping %s backend (pid=%s)", self._config.backend, pid)
-            self._kill_own_pid(pid)
+            # Blocking psutil terminate+wait — off-thread (see _start_locked).
+            await asyncio.to_thread(self._kill_own_pid, pid)
         self._close_stderr()
         self._release_lock()
         self._notify_nerd_herd_resident(vram_mb=0)
@@ -198,15 +223,13 @@ class ImageServer:
         <port>`. A1111: `webui-user.bat` / `launch.py --api --listen --port
         <port>`. PID captured for our lock.
 
-        On Windows the process is created with CREATE_NO_WINDOW and assigned to
-        the Job Object so it dies when KutAI dies. stderr is redirected to
-        logs/image_server.stderr.log for crash diagnostics."""
+        Reuses dallama's ``PlatformHelper.create_process`` — same Job Object
+        (KILL_ON_JOB_CLOSE), CREATE_NO_WINDOW and stderr-redirect discipline as
+        llama-server, plus the cwd the ComfyUI checkout needs. The blocking
+        Popen + file-open is run off the event loop via ``asyncio.to_thread``.
+        stderr → logs/image_server.stderr.log for crash diagnostics."""
         cmd = self._build_launch_cmd()
-        creationflags = 0
-        if _IS_WINDOWS:
-            # CREATE_NO_WINDOW (matches dallama) — no console pop-up; the Job
-            # Object handles parent-death cleanup, not the process group.
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        cwd = self._resolve_cwd()
 
         log_dir = _log_dir()
         try:
@@ -214,20 +237,47 @@ class ImageServer:
         except Exception:
             pass
         self._stderr_path = os.path.join(log_dir, "image_server.stderr.log")
-        try:
-            self._stderr_fh = open(self._stderr_path, "w", encoding="utf-8")
-            stderr_target = self._stderr_fh
-        except Exception as exc:
-            logger.warning("Could not open stderr log %s: %s", self._stderr_path, exc)
-            self._stderr_fh = None
-            stderr_target = subprocess.DEVNULL
 
-        proc = subprocess.Popen(  # noqa: S603 — caller-supplied exe
-            cmd, creationflags=creationflags,
-            stdout=subprocess.DEVNULL, stderr=stderr_target,
+        helper = self._platform
+        if helper is None:
+            raise RuntimeError(
+                "clair_obscur: dallama PlatformHelper unavailable — cannot "
+                "launch the image backend"
+            )
+        # create_process opens the stderr file, applies the platform flags,
+        # spawns, and assigns the child to the Job Object — all blocking, so
+        # off-thread it.
+        proc = await asyncio.to_thread(
+            helper.create_process, cmd, self._stderr_path, cwd,
         )
+        self._proc = proc
         self._pid = proc.pid
-        _assign_to_job(self._job_object, proc.pid)
+        # Keep the handle on the historical attr so _close_stderr stays simple.
+        self._stderr_fh = getattr(proc, "_dallama_stderr", None)
+
+    def _resolve_cwd(self) -> str | None:
+        """Directory the backend launches FROM (Popen cwd).
+
+        - comfyui: cmd is ``<python> -u main.py ...`` — main.py resolves
+          against cwd, so the ComfyUI checkout dir is REQUIRED. Only
+          working_dir (env CLAIR_OBSCUR_DIR) can supply it (the python exe
+          may live in any venv — its dirname is NOT the checkout). Unset →
+          WARNING + cwd None (launch resolves main.py against the
+          orchestrator cwd and will likely crash at startup).
+        - a1111: the launcher (webui-user.bat / launch.py) lives inside the
+          webui checkout — default to its own directory when working_dir is
+          unset."""
+        cfg = self._config
+        if cfg.working_dir:
+            return cfg.working_dir
+        if cfg.backend == "comfyui":
+            logger.warning(
+                "CLAIR_OBSCUR_DIR not set — ComfyUI launch cmd references "
+                "main.py relative to cwd; without the checkout dir the "
+                "backend will likely fail to start"
+            )
+            return None
+        return os.path.dirname(cfg.exe_path) or None
 
     def _build_launch_cmd(self) -> list[str]:
         cfg = self._config
@@ -238,9 +288,14 @@ class ImageServer:
         return [cfg.exe_path, "--api", "--listen",
                 "--port", str(cfg.port), "--nowebui"]
 
-    async def _health_probe(self) -> bool:
+    async def _health_probe(self, client: "httpx.AsyncClient | None" = None) -> bool:
+        """One health GET. Reuses *client* (the per-start pooled client) when
+        given; falls back to a throwaway client for standalone/direct calls."""
         url = self._health_url()
         try:
+            if client is not None:
+                resp = await client.get(url)
+                return 200 <= resp.status_code < 500
             async with httpx.AsyncClient(timeout=2.0) as c:
                 resp = await c.get(url)
                 return 200 <= resp.status_code < 500
@@ -253,13 +308,13 @@ class ImageServer:
         return f"{self._config.base_url}/sdapi/v1/sd-models"
 
     def _read_stderr_tail(self, lines: int = 20) -> str:
-        """Read the last *lines* lines of the stderr log. Empty on any failure."""
-        if not self._stderr_path:
-            return ""
+        """Last *lines* lines of the stderr log (crash diagnostics). Delegates
+        to the shared ``dallama.platform.read_stderr_tail`` (empty on any
+        failure / when dallama is unavailable)."""
         try:
-            with open(self._stderr_path, "r", encoding="utf-8", errors="replace") as fh:
-                content = fh.read()
-            return "\n".join(content.splitlines()[-lines:])
+            from dallama.platform import read_stderr_tail
+
+            return read_stderr_tail(self._stderr_path, lines)
         except Exception:
             return ""
 

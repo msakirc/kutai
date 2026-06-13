@@ -10,7 +10,6 @@ def _cfg(tmp_path):
     return ClairObscurConfig(
         backend="comfyui", host="127.0.0.1", port=8188,
         base_url="http://127.0.0.1:8188",
-        model="sdxl-turbo", weights_dir=str(tmp_path),
         exe_path=str(exe), idle_release_seconds=60,
     )
 
@@ -23,7 +22,7 @@ async def test_start_pushes_resident_true(monkeypatch, tmp_path):
     s = ImageServer(_cfg(tmp_path))
 
     async def _fake_launch(): s._pid = 111
-    async def _fake_health(): return True
+    async def _fake_health(*_a): return True
     monkeypatch.setattr(s, "_launch_process", _fake_launch)
     monkeypatch.setattr(s, "_health_probe", _fake_health)
     monkeypatch.setattr(s, "_acquire_lock", lambda: None)

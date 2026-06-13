@@ -54,6 +54,35 @@ def test_swap_step_artifact_schema_matches_canonical_constant():
     assert schema == PROMPT_WRITER_ARTIFACT_SCHEMA
 
 
+def test_swap_step_declares_no_produces():
+    """FIX 1.1 (2026-06-12): 5.35 is a CPS KICKOFF — it completes immediately
+    and the assets land minutes later via the async chain. A ``produces``
+    declaration on the kickoff is semantically wrong AND unpassable: the
+    expander auto-wires the grounding posthook (auto_wire_triggers=["*"],
+    severity blocker) for ANY produces, the mechanical kickoff has no
+    tool_calls, and check_grounding's disk fallback is ``isfile()`` — false
+    for a directory forever → grounding FAIL → up to 15 re-pends (each
+    duplicating the CPS chain) → DLQ blocks 5.35.verify + 5.40."""
+    s = next(x for x in _steps() if x["id"] == "5.35")
+    assert "produces" not in s
+
+
+def test_no_mechanical_step_declares_directory_produces():
+    """A mechanical step with a directory-shaped produces entry (trailing
+    "/") is always-fail by construction: mechanical executors record no
+    write_file tool_calls, and the grounding disk fallback (``isfile``) can
+    never be true for a directory. Agent steps (e.g. 5.30a/b) are out of
+    scope — their write_file audit log can satisfy grounding."""
+    for s in _steps():
+        if s.get("agent") != "mechanical" and s.get("executor") != "mechanical":
+            continue
+        for entry in s.get("produces") or []:
+            assert not str(entry).endswith("/"), (
+                f"step {s['id']}: mechanical step declares directory-shaped "
+                f"produces entry {entry!r} — unpassable grounding blocker"
+            )
+
+
 def test_verify_step_shape():
     s = next(x for x in _steps() if x["id"] == "5.35.verify")
     assert s["agent"] == "mechanical"

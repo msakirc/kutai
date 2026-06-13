@@ -71,21 +71,78 @@ def _get_singleton() -> NerdHerd:
     return _singleton
 
 
+def gpu_vram_free_mb(*, invalidate: bool = False) -> int:
+    """Cheap free-VRAM read off the in-process singleton's GPU collector
+    (2s-cached — does NOT rebuild a full SystemSnapshot). Pass
+    ``invalidate=True`` to force a fresh poll first (e.g. immediately after
+    freeing VRAM). Returns 0 when no GPU is available."""
+    nh = _get_singleton()
+    if invalidate:
+        nh.invalidate_gpu_cache()
+    gpu = nh.gpu_state()
+    if not getattr(gpu, "available", False):
+        return 0
+    return int(getattr(gpu, "vram_free_mb", 0) or 0)
+
+
 def record_swap(model_name: str = "") -> None:
-    """Record that a model swap occurred. Called by dispatcher after ensure_local_model."""
+    """Record that a model swap occurred. Called by dispatcher after ensure_local_model.
+
+    MIRROR pattern: fans out to BOTH the in-process singleton AND the default
+    NerdHerdClient's local swap budget. The text selector's hard gate reads
+    ``client.recent_swap_count()`` and ranking stickiness reads
+    ``snapshot.recent_swap_count`` off the client's snapshot — without the
+    mirror, both read 0 forever in prod (NerdHerd runs as a sidecar; the
+    sidecar has no swap write path).
+    """
     _get_singleton().record_swap(model_name)
+    try:
+        from nerd_herd.client import get_default
+        client = get_default()
+        if client is not None:
+            client.record_swap(model_name)
+    except Exception:
+        pass  # best-effort mirror — singleton write already landed
 
 
 def record_image_server_state(*, resident: bool, vram_mb: int) -> None:
     """Record clair_obscur (local image-server) residency. Called by
     clair_obscur on start/stop. Read by fatih_hoca.image_select via the
-    snapshot."""
+    snapshot.
+
+    MIRROR pattern: also stores on the default NerdHerdClient, which
+    overlays the values onto sidecar-parsed snapshots (no transport
+    delivers them to the sidecar, so parsed values were permanently
+    False/0). fatih_hoca's image path reads the singleton directly via
+    _effective_snapshot and stays correct either way; the mirror makes
+    the client snapshot truthful for other consumers.
+    """
     _get_singleton().push_image_server_state(resident=resident, vram_mb=vram_mb)
+    try:
+        from nerd_herd.client import get_default
+        client = get_default()
+        if client is not None:
+            client.set_local_image_server_state(resident=resident, vram_mb=vram_mb)
+    except Exception:
+        pass  # best-effort mirror — singleton write already landed
 
 
 def push_queue_profile(profile: QueueProfile) -> None:
-    """Store the latest queue profile. Called by Beckman on queue-change events."""
+    """Store the latest queue profile. Called by Beckman on queue-change events.
+
+    MIRROR pattern: also stores the profile on the default NerdHerdClient,
+    which overlays it onto sidecar-parsed snapshots. Without the mirror the
+    text selector (which reads snapshots through the client) saw
+    queue_profile=None forever — the sidecar has no queue_profile transport.
+    """
     _get_singleton().push_queue_profile(profile)
+    try:
+        from nerd_herd.client import get_default
+        client = get_default()
+        if client is not None:
+            client.set_local_queue_profile(profile)
+    except Exception:
+        pass  # best-effort mirror — singleton write already landed
 
 
 def snapshot() -> SystemSnapshot:

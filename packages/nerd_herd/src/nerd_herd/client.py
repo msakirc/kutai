@@ -63,6 +63,19 @@ class NerdHerdClient:
         # cadence without an extra RPC hop.
         from nerd_herd.swap_budget import SwapBudget
         self._swap_budget = SwapBudget()
+        # Locally-known queue profile (MIRROR pattern): beckman pushes
+        # in-process via module-level push_queue_profile, which fans out
+        # here. No transport delivers it to the sidecar, so the parsed
+        # snapshot's queue_profile is None today — the local value is
+        # overlaid in _overlay_local (local wins when set).
+        self._local_queue_profile: QueueProfile | None = None
+        # Locally-known image-server residency (MIRROR pattern): clair_obscur
+        # writes via module-level record_image_server_state, which fans out
+        # here. None = never written this process (parsed sidecar values pass
+        # through); a (resident, vram_mb) tuple = written — overlay wins even
+        # for falsy stop-state (False, 0), so a stale parsed True can't
+        # resurrect a stopped server.
+        self._local_image_server: tuple[bool, int] | None = None
 
     # ------------------------------------------------------------------
     # Swap event stream (sync passthroughs — data only, policy in hoca)
@@ -72,6 +85,23 @@ class NerdHerdClient:
 
     def record_swap(self, model_name: str = "") -> None:
         self._swap_budget.record_swap()
+
+    def set_local_queue_profile(self, profile: QueueProfile | None) -> None:
+        """Store the in-process queue profile for snapshot overlay.
+
+        Called by module-level nerd_herd.push_queue_profile (MIRROR
+        pattern) — keeps one write call site per producer (beckman).
+        """
+        self._local_queue_profile = profile
+
+    def set_local_image_server_state(self, *, resident: bool, vram_mb: int) -> None:
+        """Store in-process image-server residency for snapshot overlay.
+
+        Called by module-level nerd_herd.record_image_server_state (MIRROR
+        pattern). Setting it marks the value as "written this process" —
+        the overlay then wins over parsed sidecar values, falsy included.
+        """
+        self._local_image_server = (bool(resident), int(vram_mb or 0))
 
     # ------------------------------------------------------------------
     # Session management
@@ -264,9 +294,62 @@ class NerdHerdClient:
     def snapshot(self) -> SystemSnapshot:
         """Return the last cached SystemSnapshot (sync, for Fatih Hoca).
 
-        Call refresh_snapshot() periodically to keep this fresh.
+        Call refresh_snapshot() periodically to keep this fresh. Locally
+        known state (swap budget — see _overlay_local) is overlaid on the
+        sidecar-parsed cache so read seams stay truthful without new
+        transport.
         """
-        return self._cached_snapshot
+        return self._overlay_local(self._cached_snapshot)
+
+    def _overlay_local(self, snap: SystemSnapshot) -> SystemSnapshot:
+        """Overlay locally-known values onto a (sidecar-)parsed snapshot.
+
+        MIRROR pattern (2026-06-12): prod writers call the module-level
+        nerd_herd write APIs, which fan out to the singleton AND this
+        client's local state. The sidecar never receives those writes
+        (no transport), so its parsed snapshot reads 0/None/False for
+        them; the overlay makes the client snapshot truthful.
+
+        - recent_swap_count: max(parsed, local budget) — ranking's
+          anti-flap stickiness reads this; max() keeps a genuine
+          (future-transport) sidecar value authoritative when higher.
+        - queue_profile: local value wins when set (parsed is always
+          None today — no transport); parsed kept when local unset.
+        - image_server_resident/vram_mb: local value wins once written
+          this process (even falsy — a stopped server must read False);
+          parsed values pass through when never written, so a future
+          sidecar transport isn't clobbered.
+
+        Never mutates *snap* (the cached snapshot stays pure-parsed);
+        returns a shallow copy only when an overlay actually applies.
+        Tolerates bare instances built via __new__ in tests (getattr
+        fallbacks).
+        """
+        import dataclasses
+
+        changes: dict[str, Any] = {}
+
+        budget = getattr(self, "_swap_budget", None)
+        if budget is not None:
+            local_swaps = budget.recent_count()
+            if local_swaps > snap.recent_swap_count:
+                changes["recent_swap_count"] = local_swaps
+
+        local_qp = getattr(self, "_local_queue_profile", None)
+        if local_qp is not None:
+            changes["queue_profile"] = local_qp
+
+        local_img = getattr(self, "_local_image_server", None)
+        if local_img is not None:
+            resident, vram_mb = local_img
+            if (resident != snap.image_server_resident
+                    or vram_mb != snap.image_server_vram_mb):
+                changes["image_server_resident"] = resident
+                changes["image_server_vram_mb"] = vram_mb
+
+        if not changes:
+            return snap
+        return dataclasses.replace(snap, **changes)
 
     async def refresh_snapshot(self) -> SystemSnapshot:
         """Fetch a fresh SystemSnapshot from the sidecar and cache it.
@@ -278,7 +361,7 @@ class NerdHerdClient:
         data = await self._get_json("/api/snapshot", default=None)
         if isinstance(data, dict):
             self._cached_snapshot = self._parse_snapshot(data)
-            return self._cached_snapshot
+            return self._overlay_local(self._cached_snapshot)
 
         # Fallback: build snapshot from existing endpoints
         state = await self._get_state()
@@ -304,7 +387,7 @@ class NerdHerdClient:
             # sidecar that predates them), so they take dataclass defaults.
             load_mode=str(state.get("load_mode", "full")),
         )
-        return self._cached_snapshot
+        return self._overlay_local(self._cached_snapshot)
 
     def _parse_snapshot(self, data: dict) -> SystemSnapshot:
         """Parse a SystemSnapshot from the /api/snapshot JSON response."""

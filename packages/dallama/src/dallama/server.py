@@ -194,19 +194,14 @@ class ServerProcess:
         return self.process is not None and self.process.poll() is None
 
     def read_stderr_tail(self, lines: int = 10) -> str:
-        """Read the last *lines* lines of the stderr log file.
+        """Last *lines* lines of the stderr log (crash diagnostics).
 
-        Returns an empty string if the file does not exist or cannot be read.
+        Delegates to the shared ``dallama.platform.read_stderr_tail`` so the
+        tail logic has one home.
         """
-        if not self._stderr_path:
-            return ""
-        try:
-            with open(self._stderr_path, "r", encoding="utf-8", errors="replace") as fh:
-                content = fh.read()
-            all_lines = content.splitlines()
-            return "\n".join(all_lines[-lines:])
-        except Exception:
-            return ""
+        from .platform import read_stderr_tail as _read_tail
+
+        return _read_tail(self._stderr_path, lines)
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 

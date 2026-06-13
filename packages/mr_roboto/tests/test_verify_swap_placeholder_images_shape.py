@@ -244,7 +244,8 @@ _HTML_PENDING = (
 )
 
 
-def _write_ledger(tmp_path, *, n=2, status="prompts_pending"):
+def _write_ledger(tmp_path, *, n=2, status="prompts_pending",
+                  shape_check=None, errors=None, replaced=None):
     ledger = {
         "mission_id": 1,
         "status": status,
@@ -255,6 +256,12 @@ def _write_ledger(tmp_path, *, n=2, status="prompts_pending"):
         "prompt_map": {},
         "results": {},
     }
+    if shape_check is not None:
+        ledger["shape_check"] = shape_check
+    if errors is not None:
+        ledger["errors"] = errors
+    if replaced is not None:
+        ledger["replaced"] = replaced
     # Ledger lives OUTSIDE the served .web root (it carries prompts/paths/
     # exception strings; .web is tunnel-served + gh-pages-published).
     state_dir = tmp_path / ".swap_state"
@@ -289,6 +296,35 @@ def test_chain_started_accepts_done_ledger(tmp_path):
         swap_result={"ok": True, "chain": "started", "placeholder_count": 2},
     )
     assert res["ok"] is True
+
+
+def test_chain_in_flight_accepted_like_started(tmp_path):
+    """FIX 1.2d: a re-run kickoff that found the chain mid-flight returns
+    chain='in_flight' (no overwrite, no duplicate enqueue). The verifier
+    must validate it like 'started' — ledger exists, count matches, sane
+    status — NOT fall through to the legacy surviving==skipped branch
+    (which would fail every mid-flight re-run)."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=2, status="images_pending")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "in_flight",
+                     "placeholder_count": 2, "html_files_seen": 1},
+    )
+    assert res["ok"] is True
+    assert res["surviving_placeholders"] == 2
+
+
+def test_chain_in_flight_fails_when_ledger_missing(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path),
+        swap_result={"ok": True, "chain": "in_flight", "placeholder_count": 2},
+    )
+    assert res["ok"] is False
+    assert "ledger" in (res.get("error") or "").lower()
 
 
 def test_chain_started_fails_when_ledger_missing(tmp_path):
@@ -389,3 +425,199 @@ def test_live_empty_swap_result_passes_with_only_surviving_placeholders(tmp_path
     assert res["ok"] is True
     assert res["surviving_placeholders"] == 2
     assert res["broken_asset_refs"] == []
+
+
+# ── FIX 4.1(b): layer-1 scoped to swap-written refs ─────────────────────
+
+def test_agent_authored_missing_ref_is_warning_not_failure(tmp_path):
+    """An agent-authored relative ref (img/logo.png) the swap never touched
+    must NOT fail the gate even when missing on disk — it becomes a WARNING
+    note in the result. Only swap-plausible refs (assets/<x>.png) hard-fail."""
+    html = (
+        "<!DOCTYPE html><html><body>"
+        '<img src="img/logo.png" alt="logo">'
+        "</body></html>"
+    )
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(html, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is True
+    assert res["broken_asset_refs"] == []
+    assert any("img/logo.png" in w for w in res["warnings"])
+
+
+def test_non_png_assets_ref_is_warning_not_failure(tmp_path):
+    """assets/photo.jpg does not match the swap's <pid>.png pattern — the
+    swap never writes non-PNG assets, so a missing one is agent-authored →
+    warning, not failure."""
+    html = (
+        "<!DOCTYPE html><html><body>"
+        '<img src="assets/photo.jpg" alt="photo">'
+        "</body></html>"
+    )
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(html, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is True
+    assert res["broken_asset_refs"] == []
+    assert any("assets/photo.jpg" in w for w in res["warnings"])
+
+
+def test_agent_ref_existing_on_disk_produces_no_warning(tmp_path):
+    """An agent-authored ref that EXISTS is fine — no warning noise."""
+    html = (
+        "<!DOCTYPE html><html><body>"
+        '<img src="img/logo.png" alt="logo">'
+        "</body></html>"
+    )
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "img").mkdir()
+    (web / "img" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
+    (web / "home.html").write_text(html, encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is True
+    # No agent-ref warning (the live no-ledger note is unrelated).
+    assert not any("img/logo.png" in w for w in res["warnings"])
+
+
+def test_dotdot_assets_png_missing_still_fails(tmp_path):
+    """../assets/<pid>.png is the swap's subdir-screen shape — missing on
+    disk must still hard-fail layer 1."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    (web / "screens" / "onboarding.html").write_text(
+        '<html><body><img src="../assets/onboarding__0.png" alt="u"></body></html>',
+        encoding="utf-8",
+    )
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is False
+    assert "broken asset ref" in (res.get("error") or "").lower()
+
+
+# ── FIX 4.1(a): live path (empty swap_result) reads the ledger itself ───
+
+def test_live_no_ledger_passes_with_note(tmp_path):
+    """Live + no ledger: the kickoff may have found nothing to swap — pass,
+    but record a note so the verdict is auditable."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text("<html><body>no img</body></html>",
+                                   encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is True
+    assert any("ledger" in w.lower() for w in res["warnings"])
+
+
+def test_live_ledger_mid_flight_passes(tmp_path):
+    """Live + ledger mid-flight: surviving placehold.co URLs are expected —
+    tolerant pass (the chain is still generating)."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=2, status="images_pending")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is True
+    assert res["surviving_placeholders"] == 2
+
+
+def test_live_ledger_bad_status_fails(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=2, status="exploded")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is False
+    assert "status" in (res.get("error") or "").lower()
+
+
+def test_live_ledger_no_placeholders_fails(tmp_path):
+    """A ledger is only ever written with a non-empty placeholder list — an
+    empty one is corrupt state."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(tmp_path, n=0, status="prompts_pending")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is False
+    assert "placeholder" in (res.get("error") or "").lower()
+
+
+def test_live_ledger_unreadable_fails(tmp_path):
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    state_dir = tmp_path / ".swap_state"
+    state_dir.mkdir()
+    (state_dir / "swap_chain.json").write_text("not json {", encoding="utf-8")
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is False
+    assert "ledger" in (res.get("error") or "").lower()
+
+
+def test_live_ledger_done_shape_check_ok_passes(tmp_path):
+    """Live post-finalize: ledger done + recorded shape_check ok → pass."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_REWRITTEN, encoding="utf-8")
+    (web / "assets").mkdir()
+    for n in ("home__0.png", "home__1.png", "home__2.png"):
+        (web / "assets" / n).write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
+    _write_ledger(
+        tmp_path, n=3, status="done", replaced=3,
+        shape_check={"ok": True, "surviving_placeholders": 0,
+                     "broken_asset_refs": []},
+    )
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is True
+    assert res["expected_replaced"] == 3
+
+
+def test_live_ledger_done_shape_check_failed_fails(tmp_path):
+    """ENFORCEMENT: finalize's deep shape check finally has a consumer —
+    when verify runs post-finalize and the recorded shape_check failed, the
+    gate FAILS and surfaces the recorded errors."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(
+        tmp_path, n=2, status="done", replaced=2,
+        shape_check={"ok": False, "surviving_placeholders": 2,
+                     "broken_asset_refs": []},
+        errors=["inconsistent: surviving placeholders=2 but skipped=0"],
+    )
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is False
+    assert "shape check" in (res.get("error") or "").lower()
+    assert "inconsistent" in (res.get("error") or "").lower()
+
+
+def test_live_ledger_done_without_shape_check_passes_with_note(tmp_path):
+    """The degraded kickoff (prompt_writer enqueue raised) writes status=done
+    WITHOUT a shape_check — tolerate (placehold.co survives by design), but
+    record a note."""
+    web = tmp_path / ".web"; web.mkdir()
+    (web / "home.html").write_text(_HTML_PENDING, encoding="utf-8")
+    _write_ledger(
+        tmp_path, n=2, status="done",
+        errors=["prompt_writer enqueue raised: x"],
+    )
+    res = verify_swap_placeholder_images_shape(
+        workspace_path=str(tmp_path), swap_result={},
+    )
+    assert res["ok"] is True
+    assert any("shape_check" in w for w in res["warnings"])

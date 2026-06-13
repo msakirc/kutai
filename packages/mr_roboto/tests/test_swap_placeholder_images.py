@@ -64,7 +64,7 @@ _PROMPTS_3 = {
 def test_scan_finds_three(tmp_path):
     p = tmp_path / "home.html"
     p.write_text(_HTML, encoding="utf-8")
-    hits = _scan_placeholders(str(p))
+    hits = _scan_placeholders(str(p), str(tmp_path))
     assert len(hits) == 3
     ids = {h["placeholder_id"] for h in hits}
     assert ids == {"home__0", "home__1", "home__2"}
@@ -73,13 +73,35 @@ def test_scan_finds_three(tmp_path):
 
 
 def test_scan_handles_missing(tmp_path):
-    assert _scan_placeholders(str(tmp_path / "missing.html")) == []
+    assert _scan_placeholders(str(tmp_path / "missing.html"),
+                              str(tmp_path)) == []
 
 
 def test_scan_handles_no_placeholders(tmp_path):
     p = tmp_path / "empty.html"
     p.write_text("<html><body>no images</body></html>", encoding="utf-8")
-    assert _scan_placeholders(str(p)) == []
+    assert _scan_placeholders(str(p), str(tmp_path)) == []
+
+
+def test_scan_distinct_pids_for_same_stem_in_subdirs(tmp_path):
+    """FIX 1.3: the recursive walk can yield .web/index.html AND
+    .web/screens/index.html — a stem-derived slug gives BOTH the pid
+    'index__0' (second placeholder never gets an image; both files get
+    rewritten to the same asset). The slug derives from the path RELATIVE
+    to the .web root; the flat-file slug is unchanged."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    html = ('<html><body>'
+            '<img src="https://placehold.co/64x64/000/FFF?text=h" alt="hero">'
+            '</body></html>')
+    (web / "index.html").write_text(html, encoding="utf-8")
+    (web / "screens" / "index.html").write_text(html, encoding="utf-8")
+
+    root_hits = _scan_placeholders(str(web / "index.html"), str(web))
+    sub_hits = _scan_placeholders(
+        str(web / "screens" / "index.html"), str(web))
+    assert root_hits[0]["placeholder_id"] == "index__0"
+    assert sub_hits[0]["placeholder_id"] == "screens__index__0"
 
 
 def test_list_html_recursive(tmp_path):
@@ -136,6 +158,34 @@ def test_extract_image_path():
     assert _extract_image_path({"result": json.dumps({"path": "/x/y.png"})}) == \
         "/x/y.png"
     assert _extract_image_path({"status": "completed"}) is None
+
+
+def _image_spec():
+    from mr_roboto.swap_placeholder_images import _build_image_spec
+    return _build_image_spec(
+        placeholder={"placeholder_id": "home__0", "alt": "hero",
+                     "width": 512, "height": 512, "section": "hero"},
+        prompt="coral barista scene", out_dir="/ws/assets/img", mission_id=7,
+    )
+
+
+def test_image_child_spec_opts_out_of_grading():
+    """FIX 2.3 — a swap image child must NOT get the default grade posthook.
+
+    agent_type='image' is not in beckman's _NO_POSTHOOKS_AGENT_TYPES, so
+    without an explicit requires_grading=False the child got an LLM grader
+    on an image-generation result (pointless), parked 'ungraded', and its
+    image_done continuation only fired through the verdict path."""
+    assert _image_spec()["context"]["requires_grading"] is False
+
+
+def test_image_child_gets_no_posthooks_from_beckman():
+    """Integration: beckman's determine_posthooks must return NO kinds for
+    the swap image child spec (no grade, no emit, no extras)."""
+    from general_beckman.posthooks import determine_posthooks
+    spec = _image_spec()
+    task = {"agent_type": spec["agent_type"]}
+    assert determine_posthooks(task, spec["context"], {}) == []
 
 
 # -- test driver ----------------------------------------------------------
@@ -295,6 +345,57 @@ async def test_kickoff_enqueue_raises_degrades(ws, monkeypatch):
     ledger = _load_ledger(str(ws))
     assert ledger["status"] == "done"
     assert all(v["status"] == "skipped" for v in ledger["results"].values())
+
+
+# -- kickoff reentrancy (FIX 1.2a) ------------------------------------------
+
+@pytest.mark.asyncio
+async def test_kickoff_refuses_overwrite_while_prompts_pending(ws, cap):
+    """Re-pends / restart re-runs / manual retries of 5.35 must be harmless:
+    a second kickoff while the chain is mid-flight must NOT overwrite the
+    ledger or enqueue a duplicate prompt_writer chain."""
+    await swap_placeholder_images(mission_id=42)
+    assert len(cap.calls) == 1
+    ledger_before = _load_ledger(str(ws))
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["ok"] is True
+    assert res["chain"] == "in_flight"
+    assert res["placeholder_count"] == 3
+    assert len(cap.calls) == 1  # NO second prompt_writer
+    assert _load_ledger(str(ws)) == ledger_before  # untouched
+
+
+@pytest.mark.asyncio
+async def test_kickoff_refuses_overwrite_while_images_pending(ws, cap):
+    await swap_placeholder_images(mission_id=42)
+    cap.calls.clear()
+    ledger = _load_ledger(str(ws))
+    ledger["status"] = "images_pending"
+    _save_ledger(str(ws), ledger)
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["chain"] == "in_flight"
+    assert res["placeholder_count"] == 3
+    assert cap.calls == []
+    assert _load_ledger(str(ws))["status"] == "images_pending"
+
+
+@pytest.mark.asyncio
+async def test_kickoff_proceeds_when_previous_chain_done(ws, cap):
+    """A finished chain does not block a fresh kickoff (e.g. regenerated
+    HTML with new placeholders): the ledger is rebuilt and a new
+    prompt_writer child is enqueued."""
+    await swap_placeholder_images(mission_id=42)
+    cap.calls.clear()
+    ledger = _load_ledger(str(ws))
+    ledger["status"] = "done"
+    _save_ledger(str(ws), ledger)
+
+    res = await swap_placeholder_images(mission_id=42)
+    assert res["chain"] == "started"
+    assert len(cap.calls) == 1
+    assert _load_ledger(str(ws))["status"] == "prompts_pending"
 
 
 # -- prompts_done / prompts_err handlers -----------------------------------
@@ -471,6 +572,74 @@ async def test_finalize_rewrites_html(ws, cap):
     _ = state  # silence unused
 
 
+@pytest.mark.asyncio
+async def test_double_finalize_is_noop(ws, cap):
+    """FIX 1.2b: finalize must be idempotent. A second _finalize on a
+    status=done ledger must NOT re-splice the (now stale) scan-time spans
+    into the already-rewritten HTML."""
+    await _drive_chain(ws, cap)
+    html_after = (ws / ".web" / "home.html").read_text(encoding="utf-8")
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+
+    await _finalize(str(ws), ledger)
+
+    assert (ws / ".web" / "home.html").read_text(encoding="utf-8") == html_after
+    assert _load_ledger(str(ws)) == ledger
+
+
+@pytest.mark.asyncio
+async def test_stale_span_skipped_not_spliced(ws, cap):
+    """FIX 1.2c: if the HTML changed between scan and finalize, splicing the
+    recorded spans would corrupt the file. Each span is verified against the
+    recorded tag text; mismatches are skipped (placehold.co URL survives —
+    graceful degrade) with the error recorded in the ledger."""
+    state = await _kickoff(ws, cap)
+    await _on_prompts_done(101, dict(_PROMPTS_3), state)
+
+    # Mutate the HTML mid-flight: lengthen the SECOND placeholder's tag.
+    # home__0 (before the edit) keeps a valid span; home__1's own tag text
+    # changed; home__2's span shifted.
+    p = ws / ".web" / "home.html"
+    html = p.read_text(encoding="utf-8")
+    p.write_text(html.replace("text=feat", "text=feature"), encoding="utf-8")
+
+    # Drive the image children to done as usual.
+    guard = 0
+    while cap.calls:
+        guard += 1
+        assert guard < 10
+        call = cap.calls.pop(0)
+        ic = call["spec"]["context"]["image_call"]
+        raw = os.path.join(ic["out_dir"], f"{ic['filename_hint']}_raw.png")
+        _write_real_png(raw, ic["width"], ic["height"])
+        await _on_image_done(
+            call["id"], {"path": raw, "content": raw},
+            _roundtrip(call["kwargs"]["cont_state"]),
+        )
+
+    rewritten = p.read_text(encoding="utf-8")
+    # home__0: valid span → spliced.
+    assert rewritten.count('src="assets/home__0.png"') == 1
+    # home__1 + home__2: stale spans → NOT spliced, placehold.co survives.
+    assert rewritten.count("placehold.co") == 2
+    assert 'src="assets/home__1.png"' not in rewritten
+    assert 'src="assets/home__2.png"' not in rewritten
+    # No corrupt splice: the document structure is intact.
+    assert rewritten.count("<img") == 4
+    assert "/assets/already_real.png" in rewritten
+
+    ledger = _load_ledger(str(ws))
+    assert ledger["status"] == "done"
+    assert ledger["replaced"] == 1
+    assert ledger["skipped"] == 2
+    assert ledger["results"]["home__1"]["status"] == "skipped"
+    assert ledger["results"]["home__2"]["status"] == "skipped"
+    stale_errors = [e for e in ledger["errors"] if "stale span" in e]
+    assert any("home__1" in e for e in stale_errors)
+    assert any("home__2" in e for e in stale_errors)
+
+
 # -- full chain --------------------------------------------------------------
 
 async def _drive_chain(ws, cap, *, fail_pids=frozenset(), prompts=None):
@@ -554,23 +723,73 @@ async def test_full_chain_subdir_html_gets_relative_dotdot_ref(
     monkeypatch.setattr(
         "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
     )
+    # FIX 1.3: subdir pids are relpath-derived → "screens__onboarding__0".
     prompts = {
         "prompts": [
             {"placeholder_id": "home__0", "prompt": "coral barista"},
-            {"placeholder_id": "onboarding__0", "prompt": "teal portrait"},
+            {"placeholder_id": "screens__onboarding__0",
+             "prompt": "teal portrait"},
         ],
     }
     await _drive_chain(tmp_path, cap, prompts=prompts)
 
     assets = web / "assets"
     pngs = sorted(p.name for p in assets.glob("*.png"))
-    assert pngs == ["home__0.png", "onboarding__0.png"]
+    assert pngs == ["home__0.png", "screens__onboarding__0.png"]
 
     home = (web / "home.html").read_text(encoding="utf-8")
     assert 'src="assets/home__0.png"' in home
     onboarding = (web / "screens" / "onboarding.html").read_text(encoding="utf-8")
-    assert 'src="../assets/onboarding__0.png"' in onboarding
-    assert 'src="assets/onboarding__0.png"' not in onboarding
+    assert 'src="../assets/screens__onboarding__0.png"' in onboarding
+    assert 'src="assets/screens__onboarding__0.png"' not in onboarding
+
+
+@pytest.mark.asyncio
+async def test_full_chain_same_stem_files_get_distinct_assets(
+    monkeypatch, tmp_path, cap,
+):
+    """FIX 1.3 end-to-end: .web/index.html + .web/screens/index.html (same
+    stem) must get DISTINCT pids, DISTINCT images and correct per-file
+    rewrites — not collapse onto one shared asset."""
+    web = tmp_path / ".web"
+    (web / "screens").mkdir(parents=True)
+    (web / "index.html").write_text(
+        '<html><body>'
+        '<img src="https://placehold.co/390x220/E07A5F/FFF?text=hero" alt="hero">'
+        '</body></html>',
+        encoding="utf-8",
+    )
+    (web / "screens" / "index.html").write_text(
+        '<html><body>'
+        '<img src="https://placehold.co/64x64/264653/FFF?text=u" alt="user portrait">'
+        '</body></html>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "src.tools.workspace.get_mission_workspace", lambda mid: str(tmp_path)
+    )
+    prompts = {
+        "prompts": [
+            {"placeholder_id": "index__0", "prompt": "coral hero"},
+            {"placeholder_id": "screens__index__0", "prompt": "teal portrait"},
+        ],
+    }
+    await _drive_chain(tmp_path, cap, prompts=prompts)
+
+    pngs = sorted(p.name for p in (web / "assets").glob("*.png"))
+    assert pngs == ["index__0.png", "screens__index__0.png"]
+
+    root = (web / "index.html").read_text(encoding="utf-8")
+    assert 'src="assets/index__0.png"' in root
+    sub = (web / "screens" / "index.html").read_text(encoding="utf-8")
+    assert 'src="../assets/screens__index__0.png"' in sub
+    assert "index__0.png\"" not in sub.replace("screens__index__0.png", "")
+
+    ledger = _load_ledger(str(tmp_path))
+    assert ledger["status"] == "done"
+    assert ledger["replaced"] == 2
+    assert ledger["skipped"] == 0
+    assert ledger["shape_check"]["ok"] is True
 
 
 @pytest.mark.asyncio

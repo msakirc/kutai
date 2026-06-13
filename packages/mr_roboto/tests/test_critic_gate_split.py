@@ -196,3 +196,43 @@ def test_critic_gate_no_longer_imports_dispatcher():
             func = node.func
             if isinstance(func, ast.Attribute) and func.attr == "request":
                 raise AssertionError("critic_gate must not call .request(...)")
+
+
+# ─── SP6 Task 1: confirm_gate fail-CLOSED ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_confirm_gate_fail_closed_on_missing_verdict(monkeypatch):
+    """Gate ENABLED + no usable verdict → VETO (fail-closed), not pass."""
+    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)  # gate on
+    res = await cg.confirm_gate("git_commit", {"x": 1}, persisted_verdict=None)
+    assert res["verdict"] == "veto"
+    assert res["bypassed"] is False
+
+
+@pytest.mark.asyncio
+async def test_confirm_gate_fail_closed_on_garbage_verdict(monkeypatch):
+    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
+    res = await cg.confirm_gate("git_commit", {"x": 1},
+                                persisted_verdict={"verdict": "banana"})
+    assert res["verdict"] == "veto"
+
+
+@pytest.mark.asyncio
+async def test_confirm_gate_optout_still_passes_without_verdict(monkeypatch):
+    monkeypatch.setenv("KUTAI_CRITIC_GATE", "off")
+    res = await cg.confirm_gate("git_commit", {"x": 1}, persisted_verdict=None)
+    assert res["verdict"] == "pass"
+    assert res["bypassed"] is True
+
+
+@pytest.mark.asyncio
+async def test_confirm_gate_honours_real_verdict(monkeypatch):
+    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
+    pv = {"verdict": "veto", "reasons": ["leaks a secret"]}
+    res = await cg.confirm_gate("git_commit", {"x": 1}, persisted_verdict=pv)
+    assert res["verdict"] == "veto"
+    assert res["reasons"] == ["leaks a secret"]
+    pv2 = {"verdict": "pass", "reasons": []}
+    res2 = await cg.confirm_gate("git_commit", {"x": 1}, persisted_verdict=pv2)
+    assert res2["verdict"] == "pass"

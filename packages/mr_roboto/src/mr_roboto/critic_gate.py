@@ -292,11 +292,12 @@ async def confirm_gate(
 
     Resolution order:
       1. ``KUTAI_CRITIC_GATE=off`` → pass + ``bypassed=True`` (records a row).
+         This is the ONLY pass-without-verdict path.
       2. A ``persisted_verdict`` carrying ``verdict in {"pass","veto"}`` →
          honour it.
-      3. No usable verdict (producer never ran / failed) → default-pass.
-         Never block work on a missing verdict — fail-open, matching the
-         legacy "broken critic never blocks" contract.
+      3. No usable verdict (producer never ran / failed / garbage) →
+         VETO (fail-CLOSED, SP6). A broken critic must block the irreversible
+         action; ``KUTAI_CRITIC_GATE=off`` is the only bypass.
 
     Returns the same dict shape as :func:`produce_verdict`.
     """
@@ -324,10 +325,14 @@ async def confirm_gate(
             reasons = [str(raw_reasons)]
 
     if verdict not in {"pass", "veto"}:
-        # Missing/garbage verdict → fail-open.
+        # SP6: gate is ENABLED (opt-out handled above) but no usable verdict
+        # is present (producer never ran / failed / garbage). FAIL-CLOSED — a
+        # broken critic must BLOCK the irreversible action, never wave it
+        # through. KUTAI_CRITIC_GATE=off (rule 1) is the only pass-without-
+        # verdict path.
         return {
-            "verdict": "pass",
-            "reasons": reasons or ["no critic verdict available — default-passing"],
+            "verdict": "veto",
+            "reasons": reasons or ["no critic verdict available — fail-closed"],
             "bypassed": False,
             "payload_hash": payload_hash,
         }

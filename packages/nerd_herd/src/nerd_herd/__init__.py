@@ -71,6 +71,20 @@ def _get_singleton() -> NerdHerd:
     return _singleton
 
 
+def gpu_vram_free_mb(*, invalidate: bool = False) -> int:
+    """Cheap free-VRAM read off the in-process singleton's GPU collector
+    (2s-cached — does NOT rebuild a full SystemSnapshot). Pass
+    ``invalidate=True`` to force a fresh poll first (e.g. immediately after
+    freeing VRAM). Returns 0 when no GPU is available."""
+    nh = _get_singleton()
+    if invalidate:
+        nh.invalidate_gpu_cache()
+    gpu = nh.gpu_state()
+    if not getattr(gpu, "available", False):
+        return 0
+    return int(getattr(gpu, "vram_free_mb", 0) or 0)
+
+
 def record_swap(model_name: str = "") -> None:
     """Record that a model swap occurred. Called by dispatcher after ensure_local_model.
 

@@ -936,9 +936,16 @@ async def next_task(lane: str | None = None):
         # the in-memory top-level key AND persist into context — on_task_finished
         # reloads the DB row, where only the persisted context survives.
         try:
-            _provider = getattr(getattr(pick, "model", None), "provider", "") or ""
+            _pick_model = getattr(pick, "model", None)
+            _provider = getattr(_pick_model, "provider", "") or ""
+            _is_local = bool(getattr(_pick_model, "is_local", False))
             task["preselected_pick_provider"] = _provider
-            if (task.get("kind") or "").lower() == "image":
+            # The persisted context stamp is ONLY read by _is_local_image_task
+            # (warm-batch release hook), which acts solely on local clair_obscur
+            # picks. A cloud-image pick never starts a local server, so its
+            # persisted stamp is dead weight — skip the DB round-trip for it.
+            _stamp_local = _is_local or _provider == "clair_obscur"
+            if (task.get("kind") or "").lower() == "image" and _stamp_local:
                 import json as _json_p
                 _ctx_raw_p = task.get("context") or "{}"
                 _ctx_p = (

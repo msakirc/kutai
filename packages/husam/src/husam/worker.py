@@ -96,6 +96,15 @@ async def _run_image(task: dict, image_call: dict) -> dict:
         est_tokens=0,
     )
 
+    async def _record(success: bool, error_category: str) -> None:
+        """Pick-telemetry write — same pick/task/category/agent/difficulty on
+        every outcome; only success + error_category vary."""
+        await disp._record_pick(
+            pick=pick, task="image", category=CallCategory.IMAGE,
+            success=success, error_category=error_category,
+            agent_type=agent_type, difficulty=difficulty,
+        )
+
     started = _time.time()
     result = None
     try:
@@ -145,16 +154,20 @@ async def _run_image(task: dict, image_call: dict) -> dict:
                             import nerd_herd
                             deadline = _time.time() + 30.0
                             needed = int(getattr(pick.model, "vram_mb", 0) or 0)
+                            # Cheap free-VRAM read (gpu_state, 2s-cached) instead
+                            # of rebuilding a full SystemSnapshot (presence +
+                            # contention + queue) every 0.5s. invalidate=True on
+                            # the FIRST read forces a fresh poll so the VRAM the
+                            # shutdown() above freed is reflected immediately;
+                            # subsequent reads ride the 2s cache (poll at 2s to
+                            # match), so NVML isn't hammered.
+                            first = True
                             while _time.time() < deadline:
-                                # Live in-process singleton snapshot: vram_available_mb
-                                # is a live GPU read, so it reflects VRAM freed by the
-                                # shutdown() above. NOT module-level refresh_snapshot()
-                                # (async coroutine in this context) nor snapshot()
-                                # (client cache).
-                                snap = nerd_herd._get_singleton().snapshot()
-                                if int(getattr(snap, "vram_available_mb", 0) or 0) >= needed:
+                                free = nerd_herd.gpu_vram_free_mb(invalidate=first)
+                                first = False
+                                if free >= needed:
                                     break
-                                await asyncio.sleep(0.5)
+                                await asyncio.sleep(2.0)
                         except Exception as _e:
                             from src.infra.logging_config import get_logger
                             get_logger("husam.image").warning(
@@ -193,20 +206,14 @@ async def _run_image(task: dict, image_call: dict) -> dict:
             # genuinely-uncategorized exceptions become "raw_exception".
             err_cat = getattr(exc, "error_category", None) if isinstance(exc, ModelCallFailed) else None
             if err_cat:
-                await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
-                                        success=False, error_category=err_cat,
-                                        agent_type=agent_type, difficulty=difficulty)
+                await _record(False, err_cat)
                 raise
-            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
-                                    success=False, error_category="raw_exception",
-                                    agent_type=agent_type, difficulty=difficulty)
+            await _record(False, "raw_exception")
             raise ModelCallFailed(call_id=getattr(model, "name", "image"),
                                   last_error=f"{exc.__class__.__name__}:{exc}",
                                   error_category="raw_exception")
         if result.error is None:
-            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
-                                    success=True, error_category="",
-                                    agent_type=agent_type, difficulty=difficulty)
+            await _record(True, "")
         else:
             # FIX 5: unknown_provider is a permanent misconfig (no provider by
             # that name), but "fatal" is NOT a category beckman's decide_retry /
@@ -217,9 +224,7 @@ async def _run_image(task: dict, image_call: dict) -> dict:
             # "availability" (a recognized TRANSIENT_CATEGORIES member) for both
             # arms. The retry ladder DLQs it predictably; the category is honest.
             err_cat = "availability"
-            await disp._record_pick(pick=pick, task="image", category=CallCategory.IMAGE,
-                                    success=False, error_category=err_cat,
-                                    agent_type=agent_type, difficulty=difficulty)
+            await _record(False, err_cat)
             raise ModelCallFailed(call_id=getattr(model, "name", "image"),
                                   last_error=result.error, error_category=err_cat)
     finally:

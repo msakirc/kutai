@@ -1654,26 +1654,40 @@ async def block_mission(mission_id: int) -> bool:
     return True
 
 
-async def unblock_mission(mission_id: int) -> bool:
+async def unblock_mission(
+    mission_id: int, *, require_actions_clear: bool = False
+) -> bool:
     """Flip mission from ``blocked_on_founder_action`` back to ``active``.
 
     Also resets tasks parked in ``blocked_on_founder_action`` back to
     ``pending`` so the next pump tick re-evaluates them.  Returns ``True``
-    if the flip happened.  Does NOT check whether pending founder-actions are
-    cleared — caller is responsible for that gate.
+    if the flip happened.
+
+    By default does NOT check whether pending founder-actions are cleared —
+    caller is responsible for that gate.  When ``require_actions_clear`` is
+    True the flip goes through an atomic guarded UPDATE that re-checks the
+    founder_action count inside the same statement, closing the TOCTOU
+    window between a caller's count check and this flip (every ``await`` on
+    the shared single-pump loop yields).
     """
     from src.infra.logging_config import get_logger as _get_logger
     _logger = _get_logger("beckman.unblock_mission")
 
-    from src.infra.db import get_mission, update_mission_fields as _update_fields
-    mission = await get_mission(mission_id)
-    if not mission:
-        return False
+    if require_actions_clear:
+        from src.infra.db import conditional_unblock_mission as _cond_unblock
+        if not await _cond_unblock(mission_id):
+            return False
+    else:
+        from src.infra.db import get_mission, update_mission_fields as _update_fields
+        mission = await get_mission(mission_id)
+        if not mission:
+            return False
 
-    if mission.get("lifecycle_state") != "blocked_on_founder_action":
-        return False
+        if mission.get("lifecycle_state") != "blocked_on_founder_action":
+            return False
 
-    await _update_fields(mission_id, lifecycle_state="active")
+        await _update_fields(mission_id, lifecycle_state="active")
+
     # Reset tasks that beckman parked in blocked_on_founder_action for this
     # mission back to pending so the pump re-evaluates them.
     from src.infra.db import reset_blocked_on_founder_tasks as _reset_founder_tasks

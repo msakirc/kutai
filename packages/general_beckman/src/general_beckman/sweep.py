@@ -57,7 +57,7 @@ async def sweep_queue() -> None:
     # ceiling on legitimate long calls. (Handoff item N — observed
     # mission 46 task 4040 got flipped mid-iteration 2026-04-26.)
     cursor = await db.execute(
-        """SELECT id, title, worker_attempts, infra_resets, max_worker_attempts FROM tasks
+        """SELECT id, title, worker_attempts, infra_resets, max_worker_attempts, context FROM tasks
            WHERE status = 'processing'
            AND started_at < datetime('now', '-5 minutes')"""
     )
@@ -81,10 +81,14 @@ async def sweep_queue() -> None:
         # Infra-stuck and per-call availability are the same class of
         # problem — "environment failed, wait and retry". Reuse the
         # availability ladder (60 → 120 → ... 7200s cap, terminal at
-        # >=7200s) via compute_retry_timing. infra_resets carries the
-        # doubling state as seconds-of-last-delay (keeps column reuse;
-        # value is last delay, not a count).
-        last_delay = int(task.get("infra_resets") or 0)
+        # >=7200s) via compute_retry_timing. The doubling state lives in
+        # context['last_avail_delay'] (seconds of last delay), NOT in the
+        # infra_resets column: infra_resets stays a pure reset COUNT
+        # (startup recoveries + in-flight infra failures), and storing the
+        # ladder in context lets accelerate_retries — which zeroes
+        # last_avail_delay — actually reset the backoff for stuck rows.
+        ctx = parse_context(task)
+        last_delay = int(ctx.get("last_avail_delay") or 0)
         decision = compute_retry_timing(
             failure_type="availability",
             last_avail_delay=last_delay,
@@ -104,6 +108,7 @@ async def sweep_queue() -> None:
             )
         else:
             new_delay = decision.delay_seconds
+            ctx["last_avail_delay"] = new_delay
             next_retry = to_db(utc_now() + timedelta(seconds=new_delay))
             logger.warning(
                 f"[Sweep] Task #{task['id']} stuck in processing, "
@@ -111,9 +116,9 @@ async def sweep_queue() -> None:
             )
             await db.execute(
                 "UPDATE tasks SET status = 'pending', "
-                "infra_resets = ?, retry_reason = 'availability', "
+                "context = ?, retry_reason = 'availability', "
                 "next_retry_at = ? WHERE id = ?",
-                (new_delay, next_retry, task["id"])
+                (json.dumps(ctx), next_retry, task["id"])
             )
     if stuck:
         await db.commit()

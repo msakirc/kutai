@@ -459,26 +459,23 @@ async def unblock_mission_if_clear(mission_id: int) -> bool:
     pending/in_progress actions remain, flip it back to ``active``.
 
     Returns True if the flip happened.  Delegates the actual write to
-    ``general_beckman.unblock_mission`` (which also resets blocked tasks to
-    pending); this function retains the guard check (founder_actions count).
+    ``general_beckman.unblock_mission`` with ``require_actions_clear=True``,
+    which re-checks the founder_action count inside the same atomic UPDATE
+    that flips lifecycle_state.  That closes the TOCTOU window a separate
+    count-check-then-flip would leave open: on the shared single-pump event
+    loop every ``await`` yields, so a founder_action inserted between a check
+    here and the flip in beckman could otherwise unblock a still-pending
+    mission.  The lifecycle_state pre-check below is only a cheap early-out;
+    correctness rests on the atomic flip.
     """
-    from src.infra.db import get_db, get_mission
+    from src.infra.db import get_mission
     mission = await get_mission(mission_id)
     if not mission:
         return False
     if mission.get("lifecycle_state") != _BLOCKED_LITERAL:
         return False
-    db = await get_db()
-    cur = await db.execute(
-        "SELECT COUNT(*) FROM founder_actions WHERE mission_id = ? "
-        "AND status IN ('pending', 'in_progress')",
-        (mission_id,),
-    )
-    pending = int((await cur.fetchone())[0])
-    if pending > 0:
-        return False
     from general_beckman import unblock_mission as _bk_unblock
-    return await _bk_unblock(mission_id)
+    return await _bk_unblock(mission_id, require_actions_clear=True)
 
 
 async def sweep_unblock_all() -> int:

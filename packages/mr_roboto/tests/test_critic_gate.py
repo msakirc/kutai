@@ -74,6 +74,46 @@ def test_parse_verdict_unknown_verdict_normalises_to_pass():
     assert out["verdict"] == "pass"
 
 
+# ─── Unit: parse_verdict_strict (SP6 gate-side, FAIL-CLOSED) ──────────────
+# Surface A (and Tasks 3-4 surface B) stamp the verdict via this helper.
+# Unlike _parse_verdict, garbage/empty/non-enum MUST veto.
+
+
+def test_parse_verdict_strict_good_pass():
+    from mr_roboto.critic_gate import parse_verdict_strict
+    out = parse_verdict_strict('{"verdict": "pass", "reasons": []}')
+    assert out["verdict"] == "pass"
+
+
+def test_parse_verdict_strict_good_veto_keeps_reasons():
+    from mr_roboto.critic_gate import parse_verdict_strict
+    out = parse_verdict_strict('{"verdict": "veto", "reasons": ["leaks a token"]}')
+    assert out["verdict"] == "veto"
+    assert out["reasons"] == ["leaks a token"]
+
+
+def test_parse_verdict_strict_fenced_json():
+    from mr_roboto.critic_gate import parse_verdict_strict
+    out = parse_verdict_strict('```json\n{"verdict": "veto", "reasons": ["x"]}\n```')
+    assert out["verdict"] == "veto"
+
+
+@pytest.mark.parametrize("raw", [
+    "",
+    "   ",
+    "not json at all",
+    '{"foo": 1}',                              # no verdict key
+    '{"verdict": "maybe"}',                    # non-enum verdict
+    '["verdict", "pass"]',                     # not an object
+    '{"verdict": "pass"',                      # truncated / unparseable
+])
+def test_parse_verdict_strict_fails_closed(raw):
+    from mr_roboto.critic_gate import parse_verdict_strict
+    assert parse_verdict_strict(raw)["verdict"] == "veto", (
+        f"strict parse must veto on {raw!r} (fail-closed)"
+    )
+
+
 # ─── Unit: opt-out ───────────────────────────────────────────────────────
 
 

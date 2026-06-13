@@ -442,17 +442,31 @@ async def _persist_critic_log(state: dict, verdict: str, reasons: list) -> None:
 
 def _make_critic_verdict(source_task_id, passed: bool, reasons: list):
     from general_beckman.result_router import PostHookVerdict
+    reasons = list(reasons or [])
+    raw = {"reasons": reasons}
+    # FIX 2 — the blocker DLQ writer (_apply_z1_mechanical_verdict) builds the
+    # founder-visible error_detail from raw.get("error"), never raw["reasons"].
+    # Surface the veto reason under "error" so it survives into the DLQ row.
+    if not passed and reasons:
+        raw["error"] = "critic veto: " + "; ".join(reasons)
     return PostHookVerdict(
         source_task_id=source_task_id, kind="critic_gate",
-        passed=passed, raw={"reasons": list(reasons or [])},
+        passed=passed, raw=raw,
     )
 
 
 async def _critic_resume(child_task_id: int, result: dict, state: dict) -> None:
-    from mr_roboto.critic_gate import _parse_verdict
+    # FIX 1 — fail-CLOSED on garbage. parse_verdict_strict returns a VETO for
+    # any output that is not an explicit {"verdict": "pass"|"veto"} object, so a
+    # broken/garbage critic BLOCKS the irreversible action (does NOT default
+    # pass like the producer-side _parse_verdict).
+    from mr_roboto.critic_gate import parse_verdict_strict
     source_task_id = state.get("source_task_id")
-    parsed = _parse_verdict(_extract_content(result))
+    parsed = parse_verdict_strict(_extract_content(result))
     passed = parsed["verdict"] != "veto"
+    if not passed:
+        logger.warning("critic veto — failing source",
+                       source_id=source_task_id, reasons=parsed.get("reasons"))
     await _persist_critic_log(state, parsed["verdict"], parsed.get("reasons") or [])
     await _apply_posthook_verdict(
         {"id": child_task_id},
@@ -464,6 +478,8 @@ async def _critic_resume_err(child_task_id: int, result: dict, state: dict) -> N
     source_task_id = state.get("source_task_id")
     err = (result or {}).get("error", "unknown")
     reasons = [f"critic verdict unavailable (producer error: {str(err)[:120]}) — fail-closed"]
+    logger.warning("critic child failed terminally — failing source (fail-closed)",
+                   source_id=source_task_id, reasons=reasons)
     await _persist_critic_log(state, "veto", reasons)
     await _apply_posthook_verdict(
         {"id": child_task_id},

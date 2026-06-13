@@ -143,6 +143,11 @@ async def test_veto_resume_dlqs_the_source(tmp_path, monkeypatch):
         assert "critic_gate" in (src.get("error") or ""), (
             f"DLQ error should name critic_gate, got {src.get('error')!r}"
         )
+        # I1 end-to-end guard (SP6 T2 FIX 2): the founder-visible DLQ error
+        # column must carry the actual veto REASON, not just the kind prefix.
+        assert "leaks a token" in (src.get("error") or ""), (
+            f"veto reason must reach the DLQ error column, got {src.get('error')!r}"
+        )
     finally:
         await _close_db()
 

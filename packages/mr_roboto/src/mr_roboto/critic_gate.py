@@ -148,6 +148,42 @@ def _parse_verdict(raw: str) -> dict:
     return {"verdict": verdict, "reasons": reasons}
 
 
+def parse_verdict_strict(raw: str) -> dict:
+    """Gate-side verdict parse: FAIL-CLOSED.
+
+    Unlike _parse_verdict (producer-side, defaults garbage→pass), this returns
+    a VETO whenever the critic output is not an explicitly parseable
+    {"verdict": "pass"|"veto"} object. Used by the admitted-gate resume
+    handlers (SP6) so a broken/garbage critic BLOCKS the irreversible action.
+    Surface B (git_commit/notify_user, SP6 Tasks 3-4) reuses the SAME helper.
+    Returns {"verdict": "pass"|"veto", "reasons": [...]}.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return {"verdict": "veto", "reasons": ["empty critic verdict — fail-closed"]}
+    # Reuse the same fence/object extraction _parse_verdict does, but REQUIRE a
+    # clean parse with an explicit enum verdict; anything else → veto.
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        text = m.group(1)
+    obj_m = re.search(r"\{.*\}", text, re.DOTALL)
+    if obj_m:
+        text = obj_m.group(0)
+    try:
+        obj = json.loads(text)
+    except Exception:
+        return {"verdict": "veto", "reasons": ["unparseable critic verdict — fail-closed"]}
+    if not isinstance(obj, dict):
+        return {"verdict": "veto", "reasons": ["critic verdict not an object — fail-closed"]}
+    v = str(obj.get("verdict", "")).strip().lower()
+    if v not in {"pass", "veto"}:
+        return {"verdict": "veto", "reasons": ["critic verdict not pass/veto — fail-closed"]}
+    reasons = obj.get("reasons") or []
+    if not isinstance(reasons, list):
+        reasons = [str(reasons)]
+    return {"verdict": v, "reasons": [str(r) for r in reasons]}
+
+
 async def _persist(
     mission_id: int | None,
     action_name: str,

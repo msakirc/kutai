@@ -1,0 +1,3 @@
+key: vision
+system: ""
+user_template: "{question}"

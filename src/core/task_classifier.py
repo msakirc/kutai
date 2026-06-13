@@ -54,60 +54,11 @@ class TaskClassification:
 
 
 # ─── LLM Classification Prompt ────────────────────────────────────────────
-
-CLASSIFIER_PROMPT = """You are a task classifier for an AI agent system. Classify this task.
-Respond ONLY with valid JSON, no markdown.
-
-AGENT PICK/REJECT RULES (read carefully — overlapping types have explicit tie-breakers):
-
-CODING CLUSTER:
-- "coder": Pick for ad-hoc multi-file builds, standalone projects, "build a X", "create a project", "make a small app", writing new code with no existing spec. Has git_commit + run_code. NOT when there's an existing ARCHITECTURE.md or a detailed spec file — that's "implementer".
-- "implementer": Pick for "implement <file>", "write the X module per spec", ONE file following an existing ARCHITECTURE.md or detailed spec. No git, no run. NOT for greenfield builds or vague requests.
-- "fixer": Pick when description references "fix", "bug", "feedback", "test failure", "review found", "error", "crash", debugging driven by review or test output. NOT for new features.
-- "test_generator": Pick for "write tests", "add tests for X", "generate pytest", edge case identification. NOT for running tests.
-
-REVIEW CLUSTER:
-- "reviewer": Pick for general code/content quality review, "review this PR", "check for issues", critique, structured review. NOT for numeric scoring.
-- "integration_reviewer": Pick for cross-file / cross-module consistency checks — "check integration", "verify signatures match", "cross-module consistency", "caller callee alignment", "migration model alignment", "interface contract", "type contract across modules", "check boundary". NOT for single-file reviews.
-
-RESEARCH & ANALYSIS CLUSTER:
-- "researcher": Pick for general web-search synthesis, "research X", "find information about", "look up", non-shopping topics. NOT for structured data analysis.
-- "analyst": Pick for structured data/feasibility/contract/risk analysis on non-shopping topics — "analyze", "feasibility study", "risk assessment", "structured report", "fee structure". NOT for simple Q&A.
-
-SHOPPING CLUSTER:
-- "shopping_advisor": Pick for Turkish market product queries, "find me a X under Y TL", price checks, deal finding, purchase advice, product comparisons. Bare product nouns (laptop, buzdolabı, kahve makinesi, ayakkabı) count as shopping. NOT for general research.
-- "shopping_clarifier": Pick for one-turn clarification of vague shopping intent — typically called when user invokes /shop with no clear product. NOT for actual product search.
-- "product_researcher": Pick for deep multi-vendor product research, "research X product in detail", thorough spec comparison across many sources. NOT for quick price checks.
-- "deal_analyst": Pick for analyzing existing deal/discount data — "analyze this deal", "is this a good price", "compare these offers". NOT for finding new products.
-
-CONTENT CREATION CLUSTER:
-- "writer": Pick for prose, docs, markdown — "write blog post", "write docs", "draft an article", "write an email". NOT for code.
-- "summarizer": Pick for condensing long content — "summarize", "TLDR", "shorten", "key points", "condense". NOT for creating new content.
-
-PLANNING & DESIGN CLUSTER:
-- "planner": Pick for decomposing missions into ordered subtasks — "plan", "break down", "decompose", "roadmap", "step ordering". NOT for system design.
-- "architect": Pick for system design and ARCHITECTURE.md creation — "design the X module", "design the auth system", "system layout", "architecture", "API design". NOT for implementation.
-
-UTILITIES:
-- "assistant": Pick for general Q&A, conversation, simple factual questions — "what is", "what's the capital of", "explain", "define". Pick when no other type clearly fits and no execution is needed.
-- "executor": Pick for tool-execution fallback — file operations, deploy, run, install, when no specific role fits but tools are needed.
-- "visual_reviewer": Pick ONLY when image/screenshot analysis is explicitly required — "analyze this screenshot", "review this UI image", "look at this diagram".
-
-Determine:
-- agent_type: best matching type from above rules
-- difficulty (1-10): 1-3 trivial, 4-6 moderate, 7-8 complex, 9-10 critical
-- needs_tools: does this need to execute actions (files, shell, search)?
-- needs_vision: does this need to look at images/screenshots?
-- needs_thinking: does this need deep multi-step reasoning?
-- local_only: personal/sensitive data that shouldn't go to cloud?
-- priority: "critical" | "high" | "normal" | "low" | "background"
-- search_depth: "deep" | "standard" | "quick" | "none"
-
-BIAS: Most tasks need difficulty 4-6. Default needs_tools=false, local_only=false.
-
-Task: {task_description}
-
-Respond as: {{"agent_type": "coder", "difficulty": 6, "needs_tools": true, "needs_vision": false, "needs_thinking": false, "local_only": false, "priority": "normal", "search_depth": "none"}}"""
+# The classifier system prompt now lives in the Foundry rubric
+# (packages/finch/src/finch/rubrics/classifier.yaml). It is rendered via
+# finch.build_messages("classifier", {"task_description": ...}) in
+# classify_task below. The inline CLASSIFIER_PROMPT constant was deleted in the
+# finch merge — the rubric text was verified char-exact against it.
 
 
 PRIORITY_MAP = {
@@ -256,11 +207,16 @@ async def classify_task(
     can call ``_classify_by_keywords`` directly. ``parse_classification`` is the
     pure mapping used by the resume handler.
     """
+    # The classifier prompt is a Foundry rubric. build_messages returns
+    # [system, user]; the legacy classifier sends ONE user message carrying the
+    # full prompt — preserve that structure by taking the rendered user content.
+    from finch import build_messages
+    classifier_prompt = build_messages(
+        "classifier", {"task_description": f"{title}: {description[:500]}"}
+    )[1]["content"]
     messages = [{
         "role": "user",
-        "content": CLASSIFIER_PROMPT.format(
-            task_description=f"{title}: {description[:500]}"
-        ),
+        "content": classifier_prompt,
     }]
     state = dict(cont_state or {})
     state.setdefault("title", title)

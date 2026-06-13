@@ -20,6 +20,11 @@ async def startup_recovery() -> None:
     result = await _recover()
     if result["interrupted"]:
         summary.append(f"Reset {result['interrupted']} interrupted task(s)")
+    if result.get("dead_lettered"):
+        summary.append(
+            f"Dead-lettered {result['dead_lettered']} poison task(s) "
+            "at infra-reset cap"
+        )
     if result["backoff_cleared"]:
         summary.append(f"Cleared backoff for {result['backoff_cleared']} task(s)")
 

@@ -206,6 +206,7 @@ class TestShoppingAgentRealLLM:
         on web availability and model quality.
         """
         from src.agents import get_agent
+        import coulson
 
         task_title = "Find best gaming GPU under 15000 TL"
         task_desc = "I need a GPU for 1080p gaming. Compare price/performance."
@@ -235,7 +236,7 @@ class TestShoppingAgentRealLLM:
                 "mission_id": None,
             }
 
-            result = await agent.execute(task)
+            result = await coulson.execute(agent, task)
             assert isinstance(result, dict)
 
             result_text = result.get("result", "") or ""
@@ -249,6 +250,7 @@ class TestShoppingAgentRealLLM:
         """Shopping result is readable text, not raw JSON or empty."""
         from src.core.task_classifier import _classify_by_keywords
         from src.agents import get_agent
+        import coulson
 
         async def _run():
             cls = _classify_by_keywords(
@@ -271,7 +273,7 @@ class TestShoppingAgentRealLLM:
                 "mission_id": None,
             }
 
-            result = await agent.execute(task)
+            result = await coulson.execute(agent, task)
             result_text = result.get("result", "") or ""
             # Should be non-trivially long (more than 20 chars)
             assert len(result_text) >= 20, (

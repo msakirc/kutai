@@ -1,70 +1,21 @@
 # agents/__init__.py
+from finch import PROFILE_REGISTRY, get_profile as _get_profile
 from .base import BaseAgent
-from .planner import PlannerAgent
-from .architect import ArchitectAgent
-from .coder import CoderAgent
-from .implementer import ImplementerAgent
-from .fixer import FixerAgent
-from .test_generator import TestGeneratorAgent
-from .reviewer import ReviewerAgent
-from .visual_reviewer import VisualReviewerAgent
-from .researcher import ResearcherAgent
-from .analyst import AnalystAgent
-from .writer import WriterAgent
-from .summarizer import SummarizerAgent
-from .assistant import AssistantAgent
-from .executor import ExecutorAgent
-from .shopping_advisor import ShoppingAdvisorAgent
-from .product_researcher import ProductResearcherAgent
-from .deal_analyst import DealAnalystAgent
-from .shopping_clarifier import ShoppingClarifierAgent
-from .shopping_grouper import ShoppingGrouperAgent
-from .shopping_labeler import ShoppingLabelerAgent
-from .shopping_synthesizer import ShoppingSynthesizerAgent
-from .integration_reviewer import IntegrationReviewerAgent
-from .adr_drift_judge import AdrDriftJudgeAgent
 from .oncall_agent import OncallAgent
-from .support_tier1 import SupportTier1Agent
-from .growth_digest_synthesizer import GrowthDigestSynthesizerAgent
-from .signal_classifier import SignalClassifierAgent
-from .query_planner import QueryPlannerAgent
-from .prior_art_synthesizer import PriorArtSynthesizerAgent
-from .prompt_writer import PromptWriterAgent
 
-AGENT_REGISTRY = {
-    "planner": PlannerAgent(),
-    "architect": ArchitectAgent(),
-    "coder": CoderAgent(),
-    "implementer": ImplementerAgent(),
-    "fixer": FixerAgent(),
-    "test_generator": TestGeneratorAgent(),
-    "reviewer": ReviewerAgent(),
-    "visual_reviewer": VisualReviewerAgent(),
-    "researcher": ResearcherAgent(),
-    "analyst": AnalystAgent(),
-    "writer": WriterAgent(),
-    "summarizer": SummarizerAgent(),
-    "assistant": AssistantAgent(),
-    "executor": ExecutorAgent(),
-    "shopping_advisor": ShoppingAdvisorAgent(),
-    "product_researcher": ProductResearcherAgent(),
-    "deal_analyst": DealAnalystAgent(),
-    "shopping_clarifier": ShoppingClarifierAgent(),
-    "shopping_grouper": ShoppingGrouperAgent(),
-    "shopping_labeler": ShoppingLabelerAgent(),
-    "shopping_synthesizer": ShoppingSynthesizerAgent(),
-    "integration_reviewer": IntegrationReviewerAgent(),
-    "adr_drift_judge": AdrDriftJudgeAgent(),
-    "oncall_agent": OncallAgent(),
-    "support_tier1": SupportTier1Agent(),
-    "growth_digest_synthesizer": GrowthDigestSynthesizerAgent(),
-    "signal_classifier": SignalClassifierAgent(),
-    "query_planner": QueryPlannerAgent(),
-    "prior_art_synthesizer": PriorArtSynthesizerAgent(),
-    "prompt_writer": PromptWriterAgent(),
-}
+# All 28 agents (incl. SP3/Z9/shopping-v3/image-gen-Plan3 additions) are
+# Foundry data profiles in PROFILE_REGISTRY. oncall_agent stays a class
+# carve-out (dynamic domain/whitelist prompt).
+AGENT_REGISTRY = {**PROFILE_REGISTRY, "oncall_agent": OncallAgent()}
 
 
-def get_agent(agent_type: str) -> BaseAgent:
-    """Get agent by type, fallback to executor."""
-    return AGENT_REGISTRY.get(agent_type, AGENT_REGISTRY["executor"])
+def get_agent(agent_type: str):
+    """Get agent/profile by type. Foundry data profiles take precedence;
+    oncall_agent carve-out instance is in AGENT_REGISTRY; executor is the
+    final default.
+
+    Returns a stable per-type singleton: Foundry's PROFILE_REGISTRY is built
+    once at Foundry import, and the OncallAgent instance is constructed once
+    at module import — identity holds across calls for both paths.
+    """
+    return AGENT_REGISTRY.get(agent_type) or AGENT_REGISTRY["executor"]

@@ -47,7 +47,7 @@ from .actions import validate_action, validate_tool_args, validate_task_output
 from .checkpoint import (
     safe_log_conversation, save_checkpoint, tool_idempotency_key,
 )
-from .context import build_system_prompt
+from .context import build_context, build_system_prompt
 from .dispatch_helpers import (
     pick_for_iter, record_pool_empty_forensics, result_to_response_dict,
 )
@@ -287,7 +287,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 )
     else:
         system_prompt = build_system_prompt(profile, task)
-        context = await profile._build_context(task)
+        context = await build_context(profile, task)
 
         logger.info(
             f"[Task #{task_id}] System prompt ({len(system_prompt)} chars):\n"
@@ -1647,6 +1647,14 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             )
             try:
                 from src.agents import get_agent as _get_agent
+                # Prompt Foundry: get_agent() returns a data Profile (no
+                # execute()) for every type except the oncall_agent carve-out.
+                # Drive it through the worker entrypoint instead of the old
+                # target_agent.execute() (which AttributeError'd on a Profile,
+                # was swallowed by the except below, and silently degraded
+                # every inter-agent ask_agent to an error string). Lazy import
+                # avoids the coulson/__init__ ← react circular import.
+                from coulson import execute as _coulson_execute
                 target_agent = _get_agent(target_type)
                 inline_task = {
                     "id": f"{task_id}_inline_{iteration}",
@@ -1656,7 +1664,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     "context": json.dumps({"tool_depth": 1}),
                 }
                 inline_result = await asyncio.wait_for(
-                    target_agent.execute(inline_task), timeout=300
+                    _coulson_execute(target_agent, inline_task), timeout=300
                 )
                 agent_answer = inline_result.get("result", "(no answer)")
                 agent_cost = inline_result.get("cost", 0)

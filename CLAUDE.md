@@ -64,7 +64,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - `src/infra/db.py` imports from `src/memory/` lazily (inside functions)
 - All agents inherit from `BaseAgent` in `src/agents/base.py`
 - Agent prompts must satisfy 3 invariants (`tests/agents/test_prompt_quality.py`): first line `You are ...`, body has must/always + don't/never, body contains `final_answer` + fenced ` ```json ` schema. New agents fail this test until polished.
-- Per-agent self-reflection blocks live in `packages/coulson/src/coulson/reflection.py::REFLECTION_BLOCKS`. Add an entry when wiring `enable_self_reflection = True` on a code-emitting agent.
+- Per-agent self-reflection blocks live in `packages/finch/src/finch/reflection_blocks.py::REFLECTION_BLOCKS` (source of truth). `packages/coulson/src/coulson/reflection.py` re-exports them for back-compat. Add new entries in finch, not coulson.
 - Use `get_logger("component.name")` from `src/infra/logging_config.py`
 
 ### Telegram Bot

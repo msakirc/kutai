@@ -467,19 +467,13 @@ async def _check_privacy_mismatch_llm(
     copy_excerpt = copy_text[:2000]
     policy_excerpt = privacy_policy[:3000]
 
-    prompt = (
-        "You are a legal-copy compliance reviewer. "
-        "Compare the MARKETING COPY below against the PRIVACY POLICY excerpt. "
-        "Identify any claim in the marketing copy that directly contradicts or "
-        "is materially inconsistent with what the privacy policy says about data "
-        "collection, usage, sharing, or retention.\n\n"
-        "Respond with ONLY a JSON object — no prose, no markdown fences:\n"
-        '{"contradicts": "yes"|"no"|"unclear", "citation": "<offending sentence or empty string>"}\n\n'
-        "MARKETING COPY:\n"
-        f"{copy_excerpt}\n\n"
-        "PRIVACY POLICY (excerpt):\n"
-        f"{policy_excerpt}"
-    )
+    from finch import build_messages
+    _msgs = build_messages("copy_compliance", {
+        "copy_excerpt": copy_excerpt,
+        "policy_excerpt": policy_excerpt,
+    })
+    # Original sends a single user message (no system) — preserve that structure.
+    user_msg = _msgs[1]
 
     spec = {
         "title": f"copy_compliance privacy check (source #{task_id})",
@@ -494,7 +488,7 @@ async def _check_privacy_mismatch_llm(
                 "task": "classifier",
                 "agent_type": "classifier",
                 "difficulty": 2,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [user_msg],
                 "failures": [],
                 "estimated_input_tokens": 800,
                 "estimated_output_tokens": 200,

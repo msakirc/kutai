@@ -16,9 +16,7 @@ import logging
 import pytest
 
 from src.agents.base import BaseAgent
-from src.agents.coder import CoderAgent
-from src.agents.researcher import ResearcherAgent
-from src.agents.shopping_advisor import ShoppingAdvisorAgent
+from src.agents import get_agent
 
 
 # ---------------------------------------------------------------------------
@@ -30,19 +28,19 @@ def test_base_default_is_fail_closed():
 
 
 def test_coder_is_fail_closed_with_threshold_3():
-    a = CoderAgent()
+    a = get_agent("coder")
     assert a.min_confidence == 3
     assert a.confidence_gate == "fail_closed"
 
 
 def test_shopping_advisor_is_fail_closed_with_threshold_3():
-    a = ShoppingAdvisorAgent()
+    a = get_agent("shopping_advisor")
     assert a.min_confidence == 3
     assert a.confidence_gate == "fail_closed"
 
 
 def test_researcher_is_warn_with_threshold_3():
-    a = ResearcherAgent()
+    a = get_agent("researcher")
     assert a.min_confidence == 3
     assert a.confidence_gate == "warn"
 

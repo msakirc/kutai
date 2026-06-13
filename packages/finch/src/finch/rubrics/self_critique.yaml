@@ -1,0 +1,22 @@
+key: self_critique
+system: ""
+user_template: |-
+  You are acting as your own critic ({agent_type} self-review).
+
+  Review the work you just completed for the following declared output paths:
+  {paths_block}
+
+  Work summary:
+  {diff_summary}
+
+  Check for:
+    1. Missing or empty files that were declared in the path list above
+    2. Obvious correctness errors visible from the summary alone
+    3. Incomplete implementations (stubs, TODOs, placeholder content)
+
+  Respond with ONLY a JSON block in this exact schema:
+  ```json
+  {"verdict": "clean"|"issues", "findings": [{"severity": "error"|"warning", "file": "<path>", "why": "<reason>"}]}
+  ```
+
+  Use "clean" when all declared paths look correct. Use "issues" and populate findings when there are real problems that need fixing. Return ONLY the JSON — no prose before or after it.

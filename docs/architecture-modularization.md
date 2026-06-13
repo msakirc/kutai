@@ -80,6 +80,7 @@ Agent needs LLM call
 | **fatih_hoca** | Model manager: scoring, selection, swap budget, failure adaptation | `packages/fatih_hoca/` | Stable v0.1.0 | nerd_herd |
 | **mr_roboto** | Mechanical dispatcher: non-LLM executors (workspace snapshot, git auto-commit, clarify, notify_user) | `packages/mr_roboto/` | Stable v0.1.0 | None |
 | **general_beckman** | Task master: queue, eligibility, lane classification, quota look-ahead, lifecycle drain, watchdog + scheduled-job ticks | `packages/general_beckman/` | New v0.1.0 (transitional — main-loop rewrite pending Task 13 follow-up) | nerd_herd, mr_roboto |
+| **finch** | Leaf package: prompt/profile content (27 YAML profiles), `build_messages` API, `REFLECTION_BLOCKS` (source of truth), `PromptStore` protocol | `packages/finch/` | New v0.1.0 — renamed from placeholder `prompt_foundry` 2026-06-10 | pyyaml |
 
 All packages: `packages/<name>/`, src layout, editable install via requirements.txt. Original module becomes a thin shim preserving all import paths.
 

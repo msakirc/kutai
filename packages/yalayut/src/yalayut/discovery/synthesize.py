@@ -90,15 +90,14 @@ async def llm_synthesize(raw_text: str, source_meta: dict) -> dict:
     from src.infra.logging_config import get_logger as _gl
     _log = _gl("yalayut.synthesize")
 
-    prompt = (
-        "You normalize a software-artifact description into a JSON manifest. "
-        "Return ONLY a JSON object with keys: intent_keywords (array of "
-        "lowercase strings), mechanizable (boolean), kind (one of "
-        "prompt_skill|shell_recipe|procedure|agent_config), install_cmd "
-        "(string or null), auth_env (string env-var name or null).\n\n"
-        f"Artifact name: {source_meta.get('name_original', '')}\n"
-        f"Description / README:\n{raw_text[:2000]}\n"
-    )
+    from finch import build_messages
+    _msgs = build_messages("yalayut_synth", {
+        "name_original": source_meta.get("name_original", ""),
+        "raw_text": raw_text[:2000],
+    })
+    # Original sends a single user message (no system) — preserve that structure.
+    user_msg = _msgs[1]
+
     try:
         import husam
         resp = await husam.run(
@@ -109,7 +108,7 @@ async def llm_synthesize(raw_text: str, source_meta: dict) -> dict:
                     "llm_call": {
                         "raw_dispatch": True,
                         "call_category": "overhead",
-                        "messages": [{"role": "user", "content": prompt}],
+                        "messages": [user_msg],
                         "response_format": {"type": "json_object"},
                         "model_hint": "sonnet",
                     },

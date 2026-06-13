@@ -13,43 +13,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.infra.logging_config import get_logger
+from finch import build_messages
 
 logger = get_logger("coulson.posthooks.code_review")
-
-
-CODE_REVIEW_SYSTEM = (
-    "You are a strict code reviewer. Inspect the emitted code below for "
-    "correctness, security, error handling, and completeness against the "
-    "task's stated requirements. Be concrete and actionable. Do not approve "
-    "code that is a stub, scaffold, or placeholder when real implementation "
-    "was requested. Reply ONLY in the requested format."
-)
-
-CODE_REVIEW_PROMPT = """Review this build-step output.
-
-Task: {title}
-Description: {description}
-Declared files (the agent claims to have produced these): {produces}
-Output:
-{response}
-
-Reply with EXACTLY this format, in this order:
-
-ISSUES:
-- <one concrete issue per bullet, including file path + line/symbol + suggested fix>
-- <another>
-- (use the literal word NONE if no issues found)
-
-VERDICT: PASS or FAIL
-
-Notes:
-- VERDICT must be FAIL if ANY of these are true: missing implementation,
-  hardcoded secret, SQL injection, missing auth check, broken imports,
-  syntax error, returning fake/placeholder data ("TODO", "abc123", "uuid"
-  literal in body), claimed file not actually written.
-- Otherwise VERDICT may be PASS even with low/medium issues; severity is
-  the source's retry feedback, not your verdict.
-"""
 
 
 @dataclass
@@ -126,15 +92,12 @@ def build_code_review_spec(source: dict, exclusions: list):
     # (src/core/grading.py). The description is the review contract and the
     # response is the artifact under review; lopping either makes the reviewer
     # judge a partial spec against a partial artifact and emit false verdicts.
-    messages = [
-        {"role": "system", "content": CODE_REVIEW_SYSTEM},
-        {"role": "user", "content": CODE_REVIEW_PROMPT.format(
-            title=str(source.get("title", "")),
-            description=str(source.get("description", "")),
-            produces=_json.dumps(produces),
-            response=str(result_text),
-        )},
-    ]
+    messages = build_messages("code_review", {
+        "title": str(source.get("title", "")),
+        "description": str(source.get("description", "")),
+        "produces": _json.dumps(produces),
+        "response": str(result_text),
+    })
     _suffix = f"{_time.monotonic_ns() % 1_000_000:06d}-{_uuid.uuid4().hex[:6]}"
     # Estimate from the ACTUAL prompt size so selection fits the context window.
     _prompt_chars = sum(len(m["content"]) for m in messages)

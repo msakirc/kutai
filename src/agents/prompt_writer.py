@@ -1,27 +1,25 @@
-"""Image-generation prompt writer (Plan 3).
+"""Image-generation prompt writer (Plan 3) — artifact schema + template loader.
 
-For a prototype with N placeholder <img> intents, emits one JSON envelope
-mapping each placeholder_id to an enriched diffusion prompt. Pure config —
-sys_prompt + tools, zero methods beyond get_system_prompt. Single-call.
+The agent itself is now a Foundry data profile
+(``packages/finch/src/finch/profiles/prompt_writer.yaml``); its system prompt
+and config live there and are resolved via ``get_agent("prompt_writer")``.
 
-Shape is enforced by:
-  (a) sys_prompt (this file) — instructs the LLM to emit the
-      ``result.prompts[]`` envelope described in ``get_system_prompt``.
-  (b) the constrained_emit POSTHOOK child — armed by beckman's
-      ``determine_posthooks`` (general_beckman) when it finds a
-      constrainable ``artifact_schema`` in the task context (i2p step 5.35
-      and the mr_roboto P3-B enqueue both set
-      ``artifact_schema=PROMPT_WRITER_ARTIFACT_SCHEMA``). Without that
-      schema the agent degrades gracefully: malformed JSON triggers normal
-      retry rather than a constrained re-emit.
+This module retains the two pieces of LOGIC that other code imports:
 
-``PROMPT_WRITER_ARTIFACT_SCHEMA`` is the single source of truth for the
-artifact shape; import and reuse it in both i2p step 5.35 and the mr_roboto
-P3-B enqueue spec rather than duplicating the dict inline.
+  • ``PROMPT_WRITER_ARTIFACT_SCHEMA`` — the single source of truth for the
+    emitted artifact shape ``{"_schema_version": "1", "prompts": [...]}``.
+    Imported + reused by i2p step 5.35 and the mr_roboto P3-B enqueue spec
+    (``packages/mr_roboto/src/mr_roboto/swap_placeholder_images.py``) rather
+    than duplicating the dict inline.
+  • ``load_diffusion_prompt_template`` — loads the optional few-shot template.
+
+Shape is enforced by the profile's system_prompt (a) plus the constrained_emit
+POSTHOOK child (b) — armed by beckman's ``determine_posthooks`` when it finds a
+constrainable ``artifact_schema`` in the task context. Without that schema the
+agent degrades gracefully: malformed JSON triggers normal retry.
 """
 import pathlib as _pathlib
 
-from .base import BaseAgent
 from ..infra.logging_config import get_logger
 
 logger = get_logger("agents.prompt_writer")
@@ -43,66 +41,6 @@ PROMPT_WRITER_ARTIFACT_SCHEMA: dict = {
         "_schema_version": "1",
     }
 }
-
-
-class PromptWriterAgent(BaseAgent):
-    name = "prompt_writer"
-    description = "Turns prototype placeholder intents into diffusion prompts"
-    default_tier = "cheap"
-    min_tier = "cheap"
-    max_iterations = 1
-    enable_self_reflection = False
-    allowed_tools = []
-
-    def get_system_prompt(self, task: dict) -> str:
-        return (
-            "You are a diffusion-prompt engineer for product UI mockups. "
-            "Given a list of placeholder <img> intents from a prototype, "
-            "you write ONE enriched diffusion prompt per placeholder so a "
-            "text-to-image model can produce the real asset.\n\n"
-            "## Context\n"
-            "- `design_tokens` — color palette + typography. Bias generated "
-            "images toward these colors.\n"
-            "- `brand_voice` — short paragraph describing voice/mood. Bias "
-            "subject choice and composition.\n"
-            "- `section_intent` — per-placeholder screen role (hero / "
-            "feature / avatar / product / background / icon). Drives "
-            "composition + framing.\n"
-            "- `placeholders` — list of `{placeholder_id, alt, width, "
-            "height, section}`. `alt` is the seed; enrich it with style + "
-            "composition + lighting + color cues.\n\n"
-            "## You must\n"
-            "- Always emit exactly one prompt per placeholder — every "
-            "`placeholder_id` in the input must appear in the output.\n"
-            "- Always echo the `placeholder_id` verbatim.\n"
-            "- Always keep prompts under 220 characters — diffusion "
-            "models truncate; the first words dominate.\n"
-            "- Always start each prompt with the subject (the `alt` "
-            "intent), then add style + composition + color cues.\n"
-            "- Always include at least one `design_tokens` color cue.\n\n"
-            "## You must never\n"
-            "- Don't invent new `placeholder_id` values not in the input.\n"
-            "- Don't return text outside the JSON envelope.\n"
-            "- Don't include negative prompts or model-specific tokens "
-            "(`<lora:...>`, `((emphasis))`).\n"
-            "- Never copy `alt` verbatim — enrich it.\n\n"
-            "## final_answer format\n"
-            "```json\n"
-            "{\n"
-            '  "action": "final_answer",\n'
-            '  "result": {\n'
-            '    "_schema_version": "1",\n'
-            '    "prompts": [\n'
-            "      {\n"
-            '        "placeholder_id": "<verbatim id from input>",\n'
-            '        "prompt": "<enriched diffusion prompt, <=220 chars>"\n'
-            "      }\n"
-            "    ]\n"
-            "  },\n"
-            '  "memories": {}\n'
-            "}\n"
-            "```\n"
-        )
 
 
 _DEFAULT_TEMPLATE_PATH = (

@@ -209,6 +209,44 @@ def test_message_contains_agent_type():
     assert "implementer" in msg
 
 
+def test_self_critique_foundry_char_exact():
+    """The migrated rubric (rubrics/self_critique.yaml via build_messages) must
+    reproduce the ORIGINAL frozen prompt string byte-for-byte. Locks the Phase 3
+    Task 12 Batch H migration: any drift in the YAML breaks this."""
+    diff_summary = "wrote user model and routes"
+    produces = ["src/models/user.py", "src/api/routes.py"]
+    agent_type = "coder"
+    paths_block = "\n".join(f"  - {p}" for p in produces)
+    expected = (
+        f"You are acting as your own critic ({agent_type} self-review).\n\n"
+        "Review the work you just completed for the following declared output "
+        "paths:\n"
+        f"{paths_block}\n\n"
+        f"Work summary:\n{diff_summary}\n\n"
+        "Check for:\n"
+        "  1. Missing or empty files that were declared in the path list above\n"
+        "  2. Obvious correctness errors visible from the summary alone\n"
+        "  3. Incomplete implementations (stubs, TODOs, placeholder content)\n\n"
+        "Respond with ONLY a JSON block in this exact schema:\n"
+        "```json\n"
+        '{"verdict": "clean"|"issues", "findings": ['
+        '{"severity": "error"|"warning", "file": "<path>", "why": "<reason>"}]}\n'
+        "```\n\n"
+        'Use "clean" when all declared paths look correct. Use "issues" and '
+        "populate findings when there are real problems that need fixing. "
+        "Return ONLY the JSON — no prose before or after it."
+    )
+    got = build_self_critique_message(diff_summary, produces, agent_type)
+    assert got == expected
+
+
+def test_self_critique_foundry_empty_summary_fallback():
+    """The '(no summary provided)' fallback (resolved in the builder, not the
+    rubric) must survive the migration."""
+    msg = build_self_critique_message("", ["src/foo.py"], "coder")
+    assert "Work summary:\n(no summary provided)" in msg
+
+
 def test_message_with_no_tool_calls_still_works():
     result = check_self_critique_sub_iter(
         _parsed_final(),

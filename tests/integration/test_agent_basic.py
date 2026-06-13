@@ -356,10 +356,11 @@ class TestAgentRealLLM:
         }
 
         async def _run():
+            import coulson
             agent = get_agent("assistant")
             if agent is None:
                 pytest.skip("assistant agent not registered")
-            result = await agent.execute(task)
+            result = await coulson.execute(agent, task)
             assert isinstance(result, dict)
             # Should have a result field
             result_text = result.get("result", "") or ""
@@ -387,10 +388,11 @@ class TestAgentRealLLM:
         }
 
         async def _run():
+            import coulson
             agent = get_agent("assistant")
             if agent is None:
                 pytest.skip("assistant agent not registered")
-            result = await agent.execute(task)
+            result = await coulson.execute(agent, task)
             assert isinstance(result, dict)
             # Must have at least one of: result, error, status
             assert any(k in result for k in ("result", "error", "status")), (

@@ -56,23 +56,25 @@ async def _dispatch_real_bridge(orch, task_row: dict):
     """Drive _dispatch up to (but not through) on_task_finished.
 
     Patches:
-      - the agent's .execute so no LLM runs (we only exercise the bridge);
+      - coulson.execute so no LLM runs (we only exercise the bridge). Task 5.5
+        relocated agent execution off ``profile.execute`` to
+        ``coulson.execute(get_agent(agent_type), task)``; the profile no longer
+        carries an ``.execute`` attribute, so the execution seam to mock is now
+        ``src.core.orchestrator.coulson.execute``.
       - on_task_finished so the test stops once the bridge has persisted;
       - inject_chain_context as an identity no-op (it never persists context
         and would otherwise read sibling rows from the DB).
     get_agent is NOT patched — the bridge must read the REAL profile class
-    attribute. We only patch the chosen agent's execute bound method.
+    attribute. We only patch the execution call, never the bridge.
     """
-    from src.agents import get_agent
-    real_profile = get_agent(task_row["agent_type"])
-
-    async def _fake_execute(_task):
+    async def _fake_execute(_profile, _task):
         return {"status": "completed", "result": "ok"}
 
     async def _identity_inject(t):
         return t
 
-    with patch.object(real_profile, "execute", new=AsyncMock(side_effect=_fake_execute)), \
+    with patch("src.core.orchestrator.coulson.execute",
+               new=AsyncMock(side_effect=_fake_execute)), \
          patch("general_beckman.on_task_finished", new_callable=AsyncMock), \
          patch("src.core.orchestrator.inject_chain_context",
                new_callable=AsyncMock, side_effect=_identity_inject), \

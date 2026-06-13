@@ -80,11 +80,15 @@ class TestAgentRegistry:
     ]
 
     def test_all_agents_registered(self):
-        """Every expected agent type is importable from AGENT_REGISTRY."""
-        from src.agents import AGENT_REGISTRY
+        """Every expected agent type is reachable via get_agent.
+
+        Migrated agents (e.g. summarizer) are served from the Prompt Foundry
+        and no longer live in the class AGENT_REGISTRY, so resolve through
+        get_agent (Foundry profile > class > executor)."""
+        from src.agents import get_agent
         for agent_type in self.EXPECTED_AGENTS:
-            assert agent_type in AGENT_REGISTRY, (
-                f"Agent '{agent_type}' missing from AGENT_REGISTRY"
+            assert get_agent(agent_type).name == agent_type, (
+                f"Agent '{agent_type}' not reachable via get_agent"
             )
 
     def test_get_agent_fallback_returns_executor(self):
@@ -755,7 +759,10 @@ class TestFullPipelineLLM:
 # test_llm_returns_parseable_json_for_classifier were deleted here — they
 # exercised the removed ``LLMDispatcher.request()`` shim directly. The
 # canonical LLM path is now ``beckman.enqueue()``; classifier JSON parsing is
-# covered by the task_classifier unit tests.
+# covered by the task_classifier unit tests. (This branch's build_messages
+# retarget for the classifier test is moot — the whole test goes away with
+# the request() shim; the live classifier seam is exercised via build_messages
+# in finch/coulson unit tests.)
 
 
 # ---------------------------------------------------------------------------

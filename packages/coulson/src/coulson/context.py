@@ -1262,3 +1262,45 @@ async def build_user_context(
         logger.debug(f"context-section telemetry failed: {_exc!r}")
 
     return "\n\n".join(parts), _injected_skills_tools
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# build_context — assembles the user message off the profile (Task 5.5)
+# ────────────────────────────────────────────────────────────────────────────
+
+async def build_context(profile, task: dict) -> str:
+    """Assemble the user message with task info and policy-gated context layers.
+
+    Moved off ``BaseAgent._build_context`` (Prompt Foundry Task 5.5) so a pure
+    data ``Profile`` (no ``_build_context`` method) dispatches cleanly. Calls the
+    local ``build_user_context`` and applies the skill-injection bug fix:
+    injected tools are added to a per-execution mutable copy of
+    ``profile.allowed_tools`` (via the existing ``_original_allowed_tools``
+    snapshot pattern) instead of mutating the shared class attribute.
+
+    NOTE: the dead ``self._get_context_window(loaded)`` branch from base.py was
+    dropped — that method never existed; the call was swallowed by the
+    try/except, so ``model_ctx`` always defaulted to 4096. Kept at 4096.
+    """
+    model_ctx = 4096
+
+    ctx_str, injected_skills = await build_user_context(
+        profile, task, model_ctx=model_ctx
+    )
+
+    # Apply skill-injection bug fix: mutate only the per-execution copy.
+    # If _original_allowed_tools is already set (tools_hint / _strip_set
+    # path already created a snapshot in execute()), profile.allowed_tools is
+    # already a mutable per-execution list — just append to it.
+    # If not yet set, create the snapshot first so execute()'s finally
+    # block can restore the original.
+    if injected_skills:
+        if not getattr(profile, "_tools_overridden", False):
+            profile._original_allowed_tools = profile.allowed_tools
+            profile._tools_overridden = True
+            profile.allowed_tools = list(profile.allowed_tools or [])
+        for tool in injected_skills:
+            if profile.allowed_tools is not None and tool not in profile.allowed_tools:
+                profile.allowed_tools.append(tool)
+
+    return ctx_str

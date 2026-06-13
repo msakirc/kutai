@@ -328,23 +328,6 @@ def _check_tone_signals_mechanical(
 # LLM tone pass
 # ---------------------------------------------------------------------------
 
-_TONE_SYSTEM = (
-    "You are a brand-voice tone reviewer. Score the provided text's tone match "
-    "against the stated voice profile on a scale of 0–10 (10 = perfect match). "
-    "Identify the 1–2 sections most misaligned with the voice. "
-    "Reply ONLY in JSON with exactly: "
-    '{"score": <int 0-10>, "flagged_sections": [{"excerpt": "...", "reason": "..."}]}'
-)
-
-_TONE_PROMPT = """Brand voice profile: {profile_name}
-Voice body guidance:
-{voice_body}
-
-Text to score:
-{text}
-
-Return JSON with score (0-10) and up to 2 flagged sections."""
-
 
 async def _run_llm_tone_pass(
     text: str,
@@ -371,17 +354,12 @@ async def _run_llm_tone_pass(
     truncated_text = text[:4000]
     truncated_body = (voice_body_md or "")[:800]
 
-    messages = [
-        {"role": "system", "content": _TONE_SYSTEM},
-        {
-            "role": "user",
-            "content": _TONE_PROMPT.format(
-                profile_name=voice_display_name,
-                voice_body=truncated_body,
-                text=truncated_text,
-            ),
-        },
-    ]
+    from finch import build_messages
+    messages = build_messages("brand_voice", {
+        "profile_name": voice_display_name,
+        "voice_body": truncated_body,
+        "text": truncated_text,
+    })
 
     _suffix = f"{time.monotonic_ns() % 1_000_000:06d}-{uuid.uuid4().hex[:6]}"
     spec = {

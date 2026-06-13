@@ -27,7 +27,6 @@ async def _setup(tmp_path, monkeypatch):
     db_mod._db_connection = None
     await db_mod.init_db()
     import src.founder_actions as fa
-    fa._reset_lifecycle_cache()
     return db_path, db_mod, fa
 
 

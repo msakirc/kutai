@@ -10,9 +10,11 @@ posthook_continuations.py, tests) working.
 
 from coulson.posthooks.grading import *  # noqa: F401,F403
 from coulson.posthooks.grading import (  # noqa: F401  explicit re-exports
-    GRADING_SYSTEM,
-    GRADING_PROMPT,
     GradeResult,
     parse_grade_response,
     build_grading_spec,
 )
+# NOTE: GRADING_SYSTEM / GRADING_PROMPT were removed when the grading prompt
+# migrated to Foundry rubrics (build_messages("grading", ...)). They are no
+# longer exported here. No production caller imported them; the spec is now
+# produced by build_grading_spec().

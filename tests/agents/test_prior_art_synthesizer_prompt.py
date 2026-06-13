@@ -1,8 +1,7 @@
-from src.agents import get_agent, AGENT_REGISTRY
+from src.agents import get_agent
 
 
 def test_synthesizer_registered():
-    assert "prior_art_synthesizer" in AGENT_REGISTRY
     assert get_agent("prior_art_synthesizer").name == "prior_art_synthesizer"
 
 

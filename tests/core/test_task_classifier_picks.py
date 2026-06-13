@@ -39,17 +39,19 @@ PICK_CASES = [
 @pytest.mark.asyncio
 async def test_classifier_picks_prompt_driven(desc: str, expected: str):
     """
-    Tests that the CLASSIFIER_PROMPT contains the right pick/reject rules by
+    Tests that the classifier rubric contains the right pick/reject rules by
     inspecting whether the prompt content mentions each expected agent with
     appropriate routing guidance.
 
     These tests do NOT make real LLM calls — they verify that the prompt
     structure correctly encodes pick/reject rules for all agents.
     """
-    from src.core.task_classifier import CLASSIFIER_PROMPT
-    # The prompt must mention the expected agent type
-    assert expected in CLASSIFIER_PROMPT, (
-        f"Agent '{expected}' not mentioned in CLASSIFIER_PROMPT"
+    from finch import build_messages
+    # Build a representative prompt and check the agent type is mentioned
+    msgs = build_messages("classifier", {"task_description": desc})
+    prompt_content = msgs[1]["content"]
+    assert expected in prompt_content, (
+        f"Agent '{expected}' not mentioned in classifier rubric"
     )
 
 

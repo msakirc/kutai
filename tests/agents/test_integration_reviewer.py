@@ -2,6 +2,7 @@
 import pytest
 
 from src.agents import get_agent, AGENT_REGISTRY
+from finch import PROFILE_REGISTRY
 from general_beckman.posthooks import _NO_POSTHOOKS_AGENT_TYPES
 from coulson.reflection import REFLECTION_BLOCKS
 
@@ -57,7 +58,7 @@ def test_prompt_cross_file_field(prompt):
 # ─── allowed_tools ────────────────────────────────────────────────────────
 
 def test_allowed_tools_exact(agent):
-    assert set(agent.allowed_tools) == {"read_file", "file_tree", "ast_signatures"}, (
+    assert set(agent.allowed_tools) == {"read_file", "file_tree", "ast_signatures", "inspect_layer"}, (
         f"Unexpected allowed_tools: {agent.allowed_tools}"
     )
 
@@ -95,31 +96,33 @@ def test_reflection_block_content():
 # ─── Registry ─────────────────────────────────────────────────────────────
 
 def test_registered_in_agent_registry():
-    assert "integration_reviewer" in AGENT_REGISTRY, (
-        "integration_reviewer not registered in AGENT_REGISTRY"
+    assert "integration_reviewer" in PROFILE_REGISTRY, (
+        "integration_reviewer not registered in PROFILE_REGISTRY"
     )
 
 
 def test_get_agent_returns_correct_type():
-    from src.agents.integration_reviewer import IntegrationReviewerAgent
+    from finch import Profile
     agent = get_agent("integration_reviewer")
-    assert isinstance(agent, IntegrationReviewerAgent)
+    assert isinstance(agent, Profile)
 
 
 # ─── Classifier coverage ─────────────────────────────────────────────────
 
 def test_classifier_contains_integration_reviewer_entry():
-    from src.core.task_classifier import CLASSIFIER_PROMPT
-    assert "integration_reviewer" in CLASSIFIER_PROMPT, (
+    from finch import build_messages
+    classifier_prompt = build_messages("classifier", {"task_description": "check cross-module signatures"})[1]["content"]
+    assert "integration_reviewer" in classifier_prompt, (
         "task_classifier CLASSIFIER_PROMPT must mention integration_reviewer"
     )
 
 
 def test_classifier_keywords_present():
-    from src.core.task_classifier import CLASSIFIER_PROMPT
+    from finch import build_messages
+    classifier_prompt = build_messages("classifier", {"task_description": "check cross-module signatures"})[1]["content"]
     keywords = ["cross-file", "cross-module", "signatures match", "boundary"]
     for kw in keywords:
-        assert kw in CLASSIFIER_PROMPT, (
+        assert kw in classifier_prompt, (
             f"Expected keyword '{kw}' in CLASSIFIER_PROMPT for integration_reviewer"
         )
 

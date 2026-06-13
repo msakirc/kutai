@@ -883,7 +883,11 @@ async def _run_dispatch(task: dict) -> Action:
             _target, cargo2 = await _capture()
             new_hash = _hash_payload(_redact_payload(cargo2))
             judged_hash = str(ctx_verdict.get("payload_hash") or "")
-            if judged_hash and new_hash != judged_hash:
+            # Fail-closed (SP6 T3): an empty/missing judged_hash means the
+            # persisted verdict carries no drift anchor while the gate is
+            # enabled. Treat that as drift (re-gate) rather than silently
+            # trusting it through to confirm_gate.
+            if not judged_hash or new_hash != judged_hash:
                 regate_n = int(ctx.get("critic_regate_n") or 0)
                 if regate_n >= 2:
                     if _target:

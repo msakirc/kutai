@@ -257,11 +257,16 @@ async def test_router_git_commit_pass2_veto_aborts(monkeypatch):
     blocks; auto_commit NEVER called, stage is reset."""
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
     import json as _json
+    # SP6 T3: empty payload_hash now fail-closes into re-gate; to exercise the
+    # confirm (veto-honoured) path this test intends, stub _hash_payload to a
+    # fixed value and give the context a matching anchor so the drift guard
+    # passes.
+    monkeypatch.setattr("mr_roboto.critic_gate._hash_payload", lambda p: "MATCH")
     ctx = {
         "critic_verdict": {
             "verdict": "veto",
             "reasons": ["commit message contains a leaked secret"],
-            "payload_hash": "",
+            "payload_hash": "MATCH",
         }
     }
     task = {

@@ -1,6 +1,8 @@
 """Mr. Roboto — mechanical dispatcher: non-LLM task executors."""
 from __future__ import annotations
 
+from general_beckman import enqueue, update_task  # SP6: module-level so two-pass executors + tests resolve them
+
 from mr_roboto.actions import Action
 from mr_roboto.reversibility import (
     Reversibility,
@@ -808,72 +810,101 @@ async def _run_dispatch(task: dict) -> Action:
         return Action(status="completed", result=snap)
 
     if action == "git_commit":
-        # Z1 Tier 5C (B4) — Critic gate post-hook on `git_commit`.
-        # Pattern: pre-stage, capture the planned commit message + staged
-        # diff, gate-check; on veto unstage and return failed; on pass
-        # let auto_commit perform the real commit.
-        from mr_roboto.critic_gate import critic_gate as _critic_gate, _opt_out as _critic_opt_out
-        from src.tools.workspace import get_mission_workspace_relative
-        from src.tools.git_ops import _run_git, ensure_git_repo
-
-        gate_enabled = (
-            (not _critic_opt_out())
-            and bool(payload.get("critic_gate", True))
+        # Z1 Tier 5C (B4) — Critic gate on `git_commit`, SP6 TWO-PASS self-park.
+        # Pass 1: capture staged diff, enqueue an ADMITTED critic child, park
+        #   the gated task (waiting_human) and return needs_clarification — the
+        #   orchestrator leaves the row parked (mechanical + needs_clarification
+        #   skips on_task_finished). The CPS resume handler stamps the verdict
+        #   back into context['critic_verdict'] and re-pends.
+        # Pass 2: re-gate guard (drift) → LLM-FREE confirm_gate → commit/veto.
+        from mr_roboto.critic_gate import (
+            confirm_gate as _confirm_gate, _opt_out as _critic_opt_out,
+            _build_critic_spec, _redact_payload, _hash_payload,
         )
-        gate_result: dict | None = None
-        if gate_enabled:
-            try:
-                mid = task.get("mission_id")
-                repo_path = (
-                    get_mission_workspace_relative(mid) if mid else ""
-                )
-                await ensure_git_repo(repo_path)
-                # Stage everything so we can read the staged diff.
-                from src.tools.git_ops import _resolve_repo
-                target = _resolve_repo(repo_path) or ""
-                if target:
-                    await _run_git(["add", "-A"], cwd=target)
-                    _, diff_out, _ = await _run_git(
-                        ["diff", "--cached", "--stat"], cwd=target
-                    )
-                    _, diff_full, _ = await _run_git(
-                        ["diff", "--cached"], cwd=target
-                    )
-                else:
-                    diff_out = ""
-                    diff_full = ""
-                planned_msg = (
-                    f"Task #{task.get('id')}: "
-                    f"{(task.get('title') or 'untitled')[:60]}"
-                )
-                gate_result = await _critic_gate(
-                    "git_commit",
-                    {
-                        "commit_message": planned_msg,
-                        "diff_stat": (diff_out or "")[:2000],
-                        "diff_excerpt": (diff_full or "")[:4000],
-                    },
-                    mission_id=task.get("mission_id"),
-                )
-                if gate_result.get("verdict") == "veto":
-                    # Roll back the stage so the next attempt starts clean.
-                    if target:
-                        await _run_git(["reset"], cwd=target)
-                    return Action(
-                        status="failed",
-                        error=(
-                            "critic_gate vetoed git_commit: "
-                            f"{gate_result.get('reasons')}"
-                        ),
-                        result={"critic": gate_result},
-                    )
-            except Exception as e:
-                # Never block work on a broken gate — log and continue.
-                from src.infra.logging_config import get_logger as _gl
-                _gl("mr_roboto.critic_gate").warning(
-                    f"git_commit critic gate failed open: {e}"
-                )
+        from src.tools.workspace import get_mission_workspace_relative
+        from src.tools.git_ops import _run_git, ensure_git_repo, _resolve_repo
+        import json as _json
 
+        ctx = task.get("context") or {}
+        if isinstance(ctx, str):
+            try:
+                ctx = _json.loads(ctx)
+            except (ValueError, TypeError):
+                ctx = {}
+        ctx_verdict = ctx.get("critic_verdict") if isinstance(ctx, dict) else None
+        gate_enabled = (not _critic_opt_out()) and bool(payload.get("critic_gate", True))
+
+        async def _capture():
+            mid = task.get("mission_id")
+            repo_path = get_mission_workspace_relative(mid) if mid else ""
+            await ensure_git_repo(repo_path)
+            target = _resolve_repo(repo_path) or ""
+            diff_stat = diff_full = ""
+            if target:
+                await _run_git(["add", "-A"], cwd=target)
+                _, diff_stat, _ = await _run_git(["diff", "--cached", "--stat"], cwd=target)
+                _, diff_full, _ = await _run_git(["diff", "--cached"], cwd=target)
+            planned = f"Task #{task.get('id')}: {(task.get('title') or 'untitled')[:60]}"
+            cargo = {"commit_message": planned,
+                     "diff_stat": (diff_stat or "")[:2000],
+                     "diff_excerpt": (diff_full or "")[:4000]}
+            return target, cargo
+
+        gate_result: dict | None = None
+        if gate_enabled and ctx_verdict is None:
+            # PASS 1 — capture, enqueue admitted critic child, park.
+            try:
+                _target, cargo = await _capture()
+                redacted = _redact_payload(cargo)
+                spec = _build_critic_spec("git_commit", redacted)
+                mid = task.get("mission_id")
+                if mid is not None:
+                    spec["mission_id"] = mid
+                await enqueue(
+                    spec, parent_id=task.get("id"),
+                    on_complete="mr_roboto.critic.verdict_done",
+                    on_error="mr_roboto.critic.verdict_err",
+                    cont_state={"gated_task_id": task.get("id"),
+                                "action_name": "git_commit",
+                                "mission_id": mid,
+                                "payload_hash": _hash_payload(redacted)},
+                )
+                await update_task(int(task["id"]), status="waiting_human")
+                return Action(status="needs_clarification",
+                              result={"awaiting_critic": True, "action": "git_commit"})
+            except Exception as e:
+                from src.infra.logging_config import get_logger as _gl
+                _gl("mr_roboto.critic_gate").warning(f"git_commit gate park failed: {e}")
+                return Action(status="failed",
+                              error=f"critic gate could not be scheduled: {e}")
+
+        if gate_enabled and ctx_verdict is not None:
+            # PASS 2 — drift guard then confirm (LLM-free).
+            _target, cargo2 = await _capture()
+            new_hash = _hash_payload(_redact_payload(cargo2))
+            judged_hash = str(ctx_verdict.get("payload_hash") or "")
+            if judged_hash and new_hash != judged_hash:
+                regate_n = int(ctx.get("critic_regate_n") or 0)
+                if regate_n >= 2:
+                    if _target:
+                        await _run_git(["reset"], cwd=_target)
+                    return Action(status="failed",
+                                  error="critic re-gate exhausted (tree kept changing)")
+                ctx.pop("critic_verdict", None)
+                ctx["critic_regate_n"] = regate_n + 1
+                await update_task(int(task["id"]), context=_json.dumps(ctx), status="pending")
+                return Action(status="needs_clarification", result={"regate": ctx["critic_regate_n"]})
+            gate_result = await _confirm_gate("git_commit", cargo2,
+                                              mission_id=task.get("mission_id"),
+                                              persisted_verdict=ctx_verdict)
+            if gate_result.get("verdict") == "veto":
+                if _target:
+                    await _run_git(["reset"], cwd=_target)
+                return Action(status="failed",
+                              error=f"critic_gate vetoed git_commit: {gate_result.get('reasons')}",
+                              result={"critic": gate_result})
+
+        # pass-through (gate disabled OR pass-2 approved): real commit.
         commit_info = await auto_commit(task, payload.get("result") or {})
         if gate_result is not None:
             (commit_info or {}).setdefault("critic", gate_result)

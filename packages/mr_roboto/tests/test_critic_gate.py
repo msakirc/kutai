@@ -214,25 +214,22 @@ async def test_critic_gate_redacts_payload_before_sending(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_router_git_commit_critic_pass_proceeds(monkeypatch):
-    """Critic pass → auto_commit runs as before."""
+async def test_router_git_commit_pass1_parks_no_commit(monkeypatch):
+    """SP6 two-pass: first entry (no persisted verdict) enqueues an admitted
+    critic child + parks the gated task; auto_commit must NOT run yet."""
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
     task = {
         "id": 5,
         "mission_id": 1,
         "title": "x",
+        "context": "{}",
         "payload": {"action": "git_commit"},
     }
-    with patch(
-        "mr_roboto.critic_gate.critic_gate",
-        new_callable=AsyncMock,
-        return_value={
-            "verdict": "pass",
-            "reasons": [],
-            "bypassed": False,
-            "payload_hash": "abc",
-        },
-    ) as mock_gate, patch(
+    enq = AsyncMock(return_value=1234)
+    upd = AsyncMock()
+    with patch("mr_roboto.enqueue", enq), patch(
+        "mr_roboto.update_task", upd
+    ), patch(
         "mr_roboto.auto_commit",
         new_callable=AsyncMock,
         return_value={"committed": True, "empty": False, "message": "x"},
@@ -246,32 +243,35 @@ async def test_router_git_commit_critic_pass_proceeds(monkeypatch):
         "src.tools.git_ops._resolve_repo", return_value="/tmp/repo"
     ):
         action = await mr_roboto.run(task)
-    assert action.status == "completed"
-    mock_gate.assert_awaited_once()
-    mock_commit.assert_awaited_once()
+    assert action.status == "needs_clarification"
+    enq.assert_awaited_once()
+    assert any(
+        c.kwargs.get("status") == "waiting_human" for c in upd.await_args_list
+    )
+    mock_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_router_git_commit_critic_veto_aborts(monkeypatch):
-    """Critic veto → auto_commit is NEVER called, stage is reset."""
+async def test_router_git_commit_pass2_veto_aborts(monkeypatch):
+    """SP6 two-pass: pass-2 (persisted veto in context) → LLM-free confirm_gate
+    blocks; auto_commit NEVER called, stage is reset."""
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
+    import json as _json
+    ctx = {
+        "critic_verdict": {
+            "verdict": "veto",
+            "reasons": ["commit message contains a leaked secret"],
+            "payload_hash": "",
+        }
+    }
     task = {
         "id": 5,
         "mission_id": 1,
         "title": "leak token",
+        "context": _json.dumps(ctx),
         "payload": {"action": "git_commit"},
     }
-    veto_result = {
-        "verdict": "veto",
-        "reasons": ["commit message contains a leaked secret"],
-        "bypassed": False,
-        "payload_hash": "abc",
-    }
     with patch(
-        "mr_roboto.critic_gate.critic_gate",
-        new_callable=AsyncMock,
-        return_value=veto_result,
-    ), patch(
         "mr_roboto.auto_commit", new_callable=AsyncMock
     ) as mock_commit, patch(
         "src.tools.git_ops._run_git",

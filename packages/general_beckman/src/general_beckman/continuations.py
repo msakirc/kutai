@@ -288,6 +288,7 @@ _HANDLER_MODULES: list[str] = [
     # Image-gen Plan 3 — placeholder-swap chain (prompts_done/err,
     # image_done/err); migrated off await_inline 2026-06-11:
     "mr_roboto.swap_placeholder_images",
+    "mr_roboto.critic_continuations",  # SP6 — surface-B critic two-pass resumes
 ]
 
 

@@ -161,23 +161,23 @@ async def _persist(
     except Exception:
         return
     try:
-        async with get_db() as db:  # type: ignore[misc]
-            await db.execute(
-                """
-                INSERT INTO critic_log
-                    (mission_id, action_name, verdict, reasons_json,
-                     redacted_payload_hash)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    int(mission_id) if mission_id is not None else 0,
-                    action_name,
-                    verdict,
-                    json.dumps(reasons, ensure_ascii=False),
-                    payload_hash,
-                ),
-            )
-            await db.commit()
+        db = await get_db()
+        await db.execute(
+            """
+            INSERT INTO critic_log
+                (mission_id, action_name, verdict, reasons_json,
+                 redacted_payload_hash)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                int(mission_id) if mission_id is not None else 0,
+                action_name,
+                verdict,
+                json.dumps(reasons, ensure_ascii=False),
+                payload_hash,
+            ),
+        )
+        await db.commit()
     except Exception as e:  # pragma: no cover
         logger.debug(f"critic_log persist skipped: {e}")
 

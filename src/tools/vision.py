@@ -80,6 +80,10 @@ async def analyze_image(filepaths: "list[str] | str", question: str = "Describe 
                 },
             },
         }
+        # NOTE (SP6): this direct husam.run is the sanctioned shape-(a) exception
+        # — vision is a mid-ReAct DYNAMIC tool call that cannot be pre-scheduled
+        # as an admitted task (unlike the critic gate, which is now admitted +
+        # fail-closed, SP6). Migrating this needs CPS-for-tools (future). Ruling-#1.
         # husam.run is the non-agentic single-call worker (select→execute→map);
         # it returns the legacy response dict and RAISES on failure (caught by
         # the outer except below). No pump, no await_inline — vision is a

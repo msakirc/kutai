@@ -258,65 +258,10 @@ class TestAgentResponseParsing:
 # ---------------------------------------------------------------------------
 # Agent max_iterations enforcement (mocked model)
 # ---------------------------------------------------------------------------
-
-@pytest.mark.integration
-class TestAgentMaxIterations:
-    """Test that agents respect max_iterations without real LLM calls."""
-
-    def test_max_iterations_respected(self, temp_db):
-        """Agent stops after max_iterations even without a final_answer."""
-        from src.agents.base import BaseAgent
-
-        # Create a minimal task
-        task = {
-            "id": 1,
-            "title": "Loop forever",
-            "description": "This task never ends",
-            "agent_type": "executor",
-            "context": "{}",
-            "depends_on": "[]",
-            "mission_id": None,
-        }
-
-        # Each call returns a tool_call (no final_answer — forces max iterations)
-        mock_response = {
-            "content": json.dumps({
-                "action": "tool_call",
-                "tool": "shell",
-                "args": {"command": "echo hello"},
-            })
-        }
-
-        async def _run():
-            agent = BaseAgent()
-            agent.max_iterations = 3
-            agent.allowed_tools = ["shell"]
-
-            mock_request = AsyncMock(return_value=mock_response)
-
-            async def mock_execute_tool(name, args, task_id=None, mission_id=None):
-                return "tool output"
-
-            with patch("src.core.llm_dispatcher.LLMDispatcher.request", new=mock_request), \
-                 patch("src.agents.base.execute_tool", mock_execute_tool), \
-                 patch("src.agents.base.log_conversation", AsyncMock()), \
-                 patch("src.agents.base.store_memory", AsyncMock()), \
-                 patch("src.agents.base.record_model_call", AsyncMock()), \
-                 patch("src.agents.base.record_cost", AsyncMock()), \
-                 patch("src.agents.base.update_task", AsyncMock()), \
-                 patch("src.agents.base.save_task_checkpoint", AsyncMock()), \
-                 patch("src.agents.base.clear_task_checkpoint", AsyncMock()), \
-                 patch("src.agents.base.load_task_checkpoint", AsyncMock(return_value=None)), \
-                 patch("src.agents.base.recall_memory", AsyncMock(return_value=[])), \
-                 patch("src.agents.base.get_completed_dependency_results", AsyncMock(return_value={})):
-                result = await agent.execute(task)
-
-            # Agent should have stopped — result must be a dict
-            assert isinstance(result, dict)
-            # Should not have run more iterations than the max
-            assert mock_request.call_count <= agent.max_iterations + 2  # +2 for format retries
-
-        run_async(_run())
+# DELETED (SP6 T6): TestAgentMaxIterations::test_max_iterations_respected
+# patched LLMDispatcher.request (deleted SP5) and src.agents.base.execute_tool
+# (deleted Runtime Phase A). Both symbols no longer exist so the test failed
+# at patch-time. Max-iterations behaviour is now covered by coulson tests.
 
 
 # ---------------------------------------------------------------------------

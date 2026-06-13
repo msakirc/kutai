@@ -107,46 +107,15 @@ class TestMessageClassification(unittest.TestCase):
 
 
 # ── 3. LLM-Based Message Classification ──────────────────────────────────
+# DELETED (SP6 T6): TestLLMClassification (3 tests: test_llm_returns_mission_workflow,
+# test_llm_returns_task, test_llm_failure_falls_to_keywords) patched
+# LLMDispatcher.request which was deleted in SP5. The CPS classifier contract
+# is covered by TestTaskClassification below. test_extract_json_with_think_tags
+# is kept as a standalone class since _extract_json is a live utility.
 
 
-class TestLLMClassification(unittest.IsolatedAsyncioTestCase):
-    """Verify _classify_user_message LLM path and fallback."""
-
-    def _make_interface(self):
-        """Create a minimal TelegramInterface without calling __init__."""
-        obj = object.__new__(TelegramInterface)
-        obj._pending_clarifications = {}
-        return obj
-
-    @patch("src.core.llm_dispatcher.LLMDispatcher.request", new_callable=AsyncMock)
-    async def test_llm_returns_mission_workflow(self, mock_call):
-        mock_call.return_value = {
-            "content": '{"type": "mission", "confidence": 0.95, "workflow": "i2p"}'
-        }
-        iface = self._make_interface()
-        result = await iface._classify_user_message(
-            "build me an app that allows users to share shoplists"
-        )
-        self.assertEqual(result["type"], "mission")
-        self.assertEqual(result.get("workflow"), "i2p")
-
-    @patch("src.core.llm_dispatcher.LLMDispatcher.request", new_callable=AsyncMock)
-    async def test_llm_returns_task(self, mock_call):
-        mock_call.return_value = {
-            "content": '{"type": "task", "confidence": 0.85}'
-        }
-        iface = self._make_interface()
-        result = await iface._classify_user_message("fix the login page CSS")
-        self.assertEqual(result["type"], "task")
-        self.assertNotIn("workflow", result)
-
-    @patch("src.core.llm_dispatcher.LLMDispatcher.request", new_callable=AsyncMock)
-    async def test_llm_failure_falls_to_keywords(self, mock_call):
-        mock_call.side_effect = RuntimeError("model unavailable")
-        iface = self._make_interface()
-        result = await iface._classify_user_message("what is Docker?")
-        # Keyword fallback should still classify correctly
-        self.assertEqual(result["type"], "question")
+class TestExtractJson(unittest.TestCase):
+    """Test the _extract_json utility (strips think-tags before JSON parse)."""
 
     def test_extract_json_with_think_tags(self):
         raw = '<think>reasoning about the task</think>{"type":"task"}'

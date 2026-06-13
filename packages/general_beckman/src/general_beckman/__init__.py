@@ -1307,33 +1307,15 @@ async def on_task_finished(task_id, result: dict = None) -> None:
         _db_status = _live.get("status") or ""
 
         if _db_status in ("completed", "failed"):
-            from general_beckman.continuations import (
-                fire_for_task, dispatch_on_complete,
-            )
+            from general_beckman.continuations import fire_for_task
             _fired = await fire_for_task(
                 task_id, dict(_agent_result_snapshot), _db_status
             )
-            # Legacy straggler shim (removable post-SP5): a pre-upgrade task
-            # carried on_complete in context.beckman, not the continuations
-            # table. Fire only when (a) the table has no row for this child
-            # (so we know this is a legacy task, NOT a row left pending by
-            # T12's handler-presence pre-check or already 'fired' by a
-            # prior call).
-            if not _fired:
-                from src.infra.db import get_db as _get_db_legacy
-                _ldb = await _get_db_legacy()
-                _lcur = await _ldb.execute(
-                    "SELECT 1 FROM continuations WHERE child_task_id=?", (task_id,)
-                )
-                if await _lcur.fetchone() is None:
-                    _legacy = (task_ctx.get("beckman") or {}).get("on_complete")
-                    if _legacy:
-                        asyncio.create_task(
-                            dispatch_on_complete(
-                                _legacy, task_id,
-                                dict(_agent_result_snapshot), {},
-                            )
-                        )
+            # Legacy straggler shim (context.beckman.on_complete) DELETED SP6 T6:
+            # no current code writes on_complete into task context — all callers
+            # use the durable continuations table (via enqueue on_complete= arg).
+            # The shim's guard (SELECT 1 FROM continuations WHERE child_task_id=?)
+            # would never find the context key live so it was dead code.
 
         # next_task_spec fire-and-forget chain (unchanged behavior: fires on
         # any on_task_finished invocation; not the durable substrate).

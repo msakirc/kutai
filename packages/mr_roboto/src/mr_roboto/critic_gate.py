@@ -249,7 +249,7 @@ async def confirm_gate(
          VETO (fail-CLOSED, SP6). A broken critic must block the irreversible
          action; ``KUTAI_CRITIC_GATE=off`` is the only bypass.
 
-    Returns the same dict shape as :func:`produce_verdict`.
+    Returns a dict: {verdict, reasons, bypassed, payload_hash}.
     """
     redacted = _redact_payload(payload)
     payload_hash = _hash_payload(redacted)

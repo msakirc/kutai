@@ -458,8 +458,8 @@ def _make_critic_verdict(source_task_id, passed: bool, reasons: list):
 async def _critic_resume(child_task_id: int, result: dict, state: dict) -> None:
     # FIX 1 — fail-CLOSED on garbage. parse_verdict_strict returns a VETO for
     # any output that is not an explicit {"verdict": "pass"|"veto"} object, so a
-    # broken/garbage critic BLOCKS the irreversible action (does NOT default
-    # pass like the producer-side _parse_verdict).
+    # broken/garbage critic BLOCKS the irreversible action (fail-closed; there
+    # is no default-pass path — a garbage or missing verdict is always a veto).
     from mr_roboto.critic_gate import parse_verdict_strict
     source_task_id = state.get("source_task_id")
     parsed = parse_verdict_strict(_extract_content(result))

@@ -80,11 +80,12 @@ async def test_mechanical_gate_opt_out_passes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mechanical_gate_missing_verdict_default_passes(monkeypatch):
-    """No persisted verdict (producer never ran / failed) → default-pass.
+async def test_mechanical_gate_missing_verdict_fails_closed(monkeypatch):
+    """No persisted verdict (producer never ran / failed) → veto (fail-closed).
 
-    Never block work on a missing verdict — fail-open, matching the legacy
-    'broken critic never blocks' contract.
+    SP6 T1: the gate is fail-CLOSED. A missing verdict is not safe to pass;
+    the only way to bypass without a real verdict is KUTAI_CRITIC_GATE=off.
+    The gate must still make no LLM/dispatcher call — it is purely mechanical.
     """
     monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
     monkeypatch.setattr(
@@ -95,7 +96,8 @@ async def test_mechanical_gate_missing_verdict_default_passes(monkeypatch):
         verdict = await cg.confirm_gate(
             action_name="git_commit", payload={"x": 1}, persisted_verdict=None
         )
-    assert verdict["verdict"] == "pass"
+    assert verdict["verdict"] == "veto"
+    assert verdict["bypassed"] is False
 
 
 # ─── Producer: routes through husam, persists ────────────────────────────

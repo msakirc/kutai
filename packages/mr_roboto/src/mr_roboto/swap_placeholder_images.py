@@ -603,12 +603,17 @@ def register_continuations() -> None:
     by general_beckman.continuations.register_startup_handlers)."""
     try:
         from general_beckman.continuations import register_resume
-        register_resume(ON_PROMPTS_DONE, _on_prompts_done)
-        register_resume(ON_PROMPTS_ERR, _on_prompts_err)
-        register_resume(ON_IMAGE_DONE, _on_image_done)
-        register_resume(ON_IMAGE_ERR, _on_image_err)
-    except Exception as exc:  # noqa: BLE001
+    except ImportError as exc:
+        # Import-ordering only: general_beckman not yet importable at our
+        # import time. Beckman re-runs register_startup_handlers later, so
+        # deferring here is benign. A genuine registration bug below is NOT
+        # swallowed — it must surface.
         logger.debug("swap chain continuation registration deferred: %s", exc)
+        return
+    register_resume(ON_PROMPTS_DONE, _on_prompts_done)
+    register_resume(ON_PROMPTS_ERR, _on_prompts_err)
+    register_resume(ON_IMAGE_DONE, _on_image_done)
+    register_resume(ON_IMAGE_ERR, _on_image_err)
 
 
 # Register at import so the handlers are present for restart reconcile.

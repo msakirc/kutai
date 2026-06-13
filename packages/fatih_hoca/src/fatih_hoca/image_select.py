@@ -136,14 +136,15 @@ def _provider_available(m: ImageModelInfo, hf_available: bool | None) -> bool:
     return False
 
 
-def _eviction_cost(m: ImageModelInfo, snap=None) -> float:
+def _eviction_cost(m: ImageModelInfo, snap) -> float:
     """Real eviction cost (Plan 2). Cloud providers always score 0.
 
-    Reads the snapshot ONCE per ``select_image`` call (passed in via ``snap``);
-    falls back to ``_effective_snapshot()`` for direct/legacy callers."""
+    The snapshot is read ONCE per ``select_image`` call and passed in — both
+    the live caller and the direct test caller always supply it (the old
+    snap=None → _effective_snapshot() fallback had no remaining callers)."""
     if not getattr(m, "is_local", False):
         return 0.0
-    s = snap if snap is not None else _effective_snapshot()
+    s = snap
     if getattr(s, "image_server_resident", False):
         return 0.0
     in_flight = len(getattr(s, "in_flight_calls", []) or [])

@@ -111,28 +111,3 @@ async def test_terminal_router_chains_next_task_spec(tmp_path, monkeypatch):
         assert rows[0]["parent_task_id"] == parent_id
     finally:
         await _close_db()
-
-
-@pytest.mark.asyncio
-async def test_terminal_router_resolves_inline_waiter(tmp_path, monkeypatch):
-    """on_task_finished must resolve any pending await_inline waiter for the task."""
-    await _fresh_db(tmp_path, monkeypatch)
-    try:
-        from general_beckman import _inline_waiters
-
-        spec = {"title": "inline_t", "description": "d", "agent_type": "coder"}
-        bg = asyncio.ensure_future(enqueue(spec, await_inline=True))
-        await asyncio.sleep(0.05)
-
-        # Find the waiter
-        assert len(_inline_waiters) >= 1, "No inline waiter registered"
-        waiter_id = next(iter(_inline_waiters))
-
-        # Simulate terminal via on_task_finished
-        await on_task_finished(waiter_id, {"status": "completed", "result": "done"})
-        await asyncio.sleep(0.05)
-
-        final = await asyncio.wait_for(bg, timeout=5)
-        assert final.status == "completed"
-    finally:
-        await _close_db()

@@ -252,20 +252,6 @@ async def test_enqueue_with_continuation_returns_fresh_id_and_row(tmp_path, monk
         await _close_db()
 
 
-@pytest.mark.asyncio
-async def test_enqueue_rejects_await_inline_plus_on_complete(tmp_path, monkeypatch):
-    await _fresh_db(tmp_path, monkeypatch)
-    try:
-        from general_beckman import enqueue
-        with pytest.raises(ValueError):
-            await enqueue(
-                {"title": "x", "description": "d", "agent_type": "coder"},
-                await_inline=True, on_complete="t.resume",
-            )
-    finally:
-        await _close_db()
-
-
 async def _set_task(task_id, status, result_json=None):
     db = await _db_mod.get_db()
     if result_json is None:

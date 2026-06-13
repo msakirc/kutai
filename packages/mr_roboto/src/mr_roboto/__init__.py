@@ -1015,26 +1015,7 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="completed", result=commit_info or {})
         return Action(status="completed", result=commit_info or {})
 
-    if action == "critic_gate":
-        # Z1 Tier 5C (B4) — standalone critic-gate invocation. Useful
-        # for non-mr_roboto actions (e.g. pre-deploy gates) and for
-        # explicit workflow steps. Returns failed when verdict=veto.
-        from mr_roboto.critic_gate import critic_gate as _standalone_critic
-        try:
-            res = await _standalone_critic(
-                action_name=str(payload.get("action_name") or "unknown"),
-                payload=payload.get("target_payload"),
-                mission_id=task.get("mission_id") or payload.get("mission_id"),
-            )
-            if res.get("verdict") == "veto":
-                return Action(
-                    status="failed",
-                    error=f"critic_gate veto: {res.get('reasons')}",
-                    result=res,
-                )
-            return Action(status="completed", result=res)
-        except Exception as e:
-            return Action(status="failed", error=str(e))
+    # critic_gate is now an admitted posthook LLM child (SP6 T2) — no standalone mechanical action.
 
     if action == "check_grounding":
         # Layer 2 of G: declarative match between source task's tool_calls

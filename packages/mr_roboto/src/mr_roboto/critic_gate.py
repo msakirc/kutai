@@ -2,24 +2,25 @@
 
 Z1 Tier 5C. Wrapped as a post-hook on `git_commit` and `notify_user`.
 
-SP3b Task 8 — split into PRODUCER + mechanical CONFIRM gate
------------------------------------------------------------
+SP6 — admitted producer + mechanical CONFIRM gate
+-------------------------------------------------
 A mechanical must NEVER call the dispatcher directly (memory
-``feedback_no_direct_dispatcher``). The gate is therefore split:
+``feedback_no_direct_dispatcher``). The gate is split into a producer that is
+an admitted LLM child and a mechanical confirm step:
 
-- :func:`produce_verdict` — the verdict PRODUCER. An admitted single-call
-  unit: it builds the critic prompt and runs it through ``husam.run`` (the
-  non-agentic single-call worker), which does select→execute→map. husam is
-  the admitted worker path; the producer never imports/instantiates the
-  dispatcher. The parsed verdict is persisted via :func:`_persist`.
-- :func:`confirm_gate` — the mechanical CONFIRM gate. It makes NO LLM call
-  and imports NO dispatcher. Given a persisted verdict (or the opt-out), it
-  returns pass/block. Mechanical executors call this.
+- :func:`_build_critic_spec` — builds the raw_dispatch OVERHEAD spec for the
+  verdict producer. Beckman admits this spec as a single-call LLM child (SP6
+  T2 posthook path); the verdict it returns is persisted via :func:`_persist`.
+- :func:`parse_verdict_strict` — the FAIL-CLOSED gate-side parser. Any critic
+  output that is not an explicitly parseable {"verdict": "pass"|"veto"} object
+  becomes a VETO. This is the only verdict parser in the surviving surface.
+- :func:`confirm_gate` — the mechanical CONFIRM gate and the only public gate.
+  It makes NO LLM call and imports NO dispatcher. Given a persisted verdict
+  (or the ``KUTAI_CRITIC_GATE=off`` opt-out), it returns pass/block.
 
-The public :func:`critic_gate` is kept as a thin orchestrator (opt-out →
-``produce_verdict``); the inline ``git_commit``/``notify_user`` mechanical
-sites still call it, but the LLM hop now travels through husam, not the
-dispatcher.
+The old inline ``produce_verdict`` (husam.run inline) and the thin
+``critic_gate`` orchestrator were deleted in SP6 T5 — the LLM hop now travels
+through Beckman's admitted-child path, never inline husam.
 
 Prompt: "About to perform <action_name> with payload <redacted_payload>.
 Would this action: (a) break the locked spec, (b) cause founder fury,
@@ -121,48 +122,20 @@ _PROMPT_TEMPLATE = (
 )
 
 
-def _parse_verdict(raw: str) -> dict:
-    """Best-effort JSON extraction. Defaults to pass on garbage."""
-    if not raw:
-        return {"verdict": "pass", "reasons": ["empty critic response"]}
-    text = raw.strip()
-    # Strip ```json fences if present
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence:
-        text = fence.group(1)
-    # First {...} block
-    obj_match = re.search(r"\{.*\}", text, re.DOTALL)
-    if obj_match:
-        text = obj_match.group(0)
-    try:
-        obj = json.loads(text)
-    except Exception:
-        return {"verdict": "pass", "reasons": [f"unparseable critic response: {raw[:200]}"]}
-    verdict = str(obj.get("verdict", "pass")).strip().lower()
-    if verdict not in {"pass", "veto"}:
-        verdict = "pass"
-    reasons = obj.get("reasons") or []
-    if not isinstance(reasons, list):
-        reasons = [str(reasons)]
-    reasons = [str(r) for r in reasons]
-    return {"verdict": verdict, "reasons": reasons}
-
-
 def parse_verdict_strict(raw: str) -> dict:
     """Gate-side verdict parse: FAIL-CLOSED.
 
-    Unlike _parse_verdict (producer-side, defaults garbage→pass), this returns
-    a VETO whenever the critic output is not an explicitly parseable
-    {"verdict": "pass"|"veto"} object. Used by the admitted-gate resume
-    handlers (SP6) so a broken/garbage critic BLOCKS the irreversible action.
-    Surface B (git_commit/notify_user, SP6 Tasks 3-4) reuses the SAME helper.
-    Returns {"verdict": "pass"|"veto", "reasons": [...]}.
+    This returns a VETO whenever the critic output is not an explicitly
+    parseable {"verdict": "pass"|"veto"} object. Used by the admitted-gate
+    resume handlers (SP6) so a broken/garbage critic BLOCKS the irreversible
+    action. Surface B (git_commit/notify_user, SP6 Tasks 3-4) reuses the SAME
+    helper. Returns {"verdict": "pass"|"veto", "reasons": [...]}.
     """
     text = (raw or "").strip()
     if not text:
         return {"verdict": "veto", "reasons": ["empty critic verdict — fail-closed"]}
-    # Reuse the same fence/object extraction _parse_verdict does, but REQUIRE a
-    # clean parse with an explicit enum verdict; anything else → veto.
+    # Fence/object extraction, but REQUIRE a clean parse with an explicit enum
+    # verdict; anything else → veto.
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if m:
         text = m.group(1)
@@ -219,7 +192,7 @@ async def _persist(
 
 
 def _build_critic_spec(action_name: str, redacted: Any) -> dict:
-    """Build the raw_dispatch OVERHEAD spec for ``husam.run``.
+    """Build the raw_dispatch OVERHEAD spec for the admitted verdict producer.
 
     Mirrors the ``constrained_emit`` / ``self_reflect`` post-hook child specs
     (apply.py ~1423) — a single non-agentic LLM call on the overhead lane. The
@@ -253,65 +226,6 @@ def _build_critic_spec(action_name: str, redacted: Any) -> dict:
             "prefer_speed": True,
         }},
     }
-
-
-async def produce_verdict(
-    action_name: str,
-    payload: Any,
-    *,
-    mission_id: int | None = None,
-) -> dict:
-    """Verdict PRODUCER — run the critic prompt through the admitted worker.
-
-    Routes through ``husam.run`` (the non-agentic single-call worker) — NEVER
-    ``LLMDispatcher().request(...)`` — so a mechanical never calls the
-    dispatcher directly (``feedback_no_direct_dispatcher``). husam handles
-    select→execute→map internally and returns the legacy response dict.
-
-    Persists one ``critic_log`` row with the parsed verdict and returns::
-
-        {"verdict": "pass" | "veto", "reasons": [...],
-         "bypassed": False, "payload_hash": str, "raw": str}
-
-    Never raises — on any producer error returns a default-pass with an
-    explanatory reason (never block work on a broken critic).
-    """
-    redacted = _redact_payload(payload)
-    payload_hash = _hash_payload(redacted)
-
-    raw_text = ""
-    try:
-        import husam
-        spec = _build_critic_spec(action_name, redacted)
-        if mission_id is not None:
-            spec["mission_id"] = mission_id
-        resp = await husam.run(spec)
-        # Response is the legacy dict with a `content` key.
-        if isinstance(resp, dict):
-            raw_text = str(resp.get("content") or resp.get("text") or "")
-        else:
-            raw_text = str(resp)
-    except Exception as e:
-        logger.warning(f"critic_gate producer call failed: {e}; default-passing")
-        result = {
-            "verdict": "pass",
-            "reasons": [f"critic call failed: {e}"],
-            "bypassed": False,
-            "payload_hash": payload_hash,
-        }
-        await _persist(mission_id, action_name, "pass", result["reasons"], payload_hash)
-        return result
-
-    parsed = _parse_verdict(raw_text)
-    result = {
-        "verdict": parsed["verdict"],
-        "reasons": parsed["reasons"],
-        "bypassed": False,
-        "payload_hash": payload_hash,
-        "raw": raw_text[:400],
-    }
-    await _persist(mission_id, action_name, parsed["verdict"], parsed["reasons"], payload_hash)
-    return result
 
 
 async def confirm_gate(
@@ -379,44 +293,3 @@ async def confirm_gate(
         "bypassed": False,
         "payload_hash": payload_hash,
     }
-
-
-async def critic_gate(
-    action_name: str,
-    payload: Any,
-    *,
-    mission_id: int | None = None,
-) -> dict:
-    """Run the critic gate against an action+payload (thin orchestrator).
-
-    Kept stable for the inline ``git_commit`` / ``notify_user`` mechanical
-    sites and the standalone ``critic_gate`` action. The opt-out short-circuit
-    lives here; otherwise it delegates to the PRODUCER (:func:`produce_verdict`),
-    which routes the LLM hop through ``husam`` rather than the dispatcher.
-
-    Returns dict::
-
-        {
-          "verdict": "pass" | "veto",
-          "reasons": [str, ...],
-          "bypassed": bool,         # True if KUTAI_CRITIC_GATE=off
-          "payload_hash": str,
-        }
-
-    Never raises — on any internal error returns a default-pass with an
-    explanatory reason. Persists one ``critic_log`` row per call (unless
-    persistence itself fails, which is logged at debug).
-    """
-    if _opt_out():
-        redacted = _redact_payload(payload)
-        payload_hash = _hash_payload(redacted)
-        result = {
-            "verdict": "pass",
-            "reasons": ["KUTAI_CRITIC_GATE=off — gate bypassed"],
-            "bypassed": True,
-            "payload_hash": payload_hash,
-        }
-        await _persist(mission_id, action_name, "pass", result["reasons"], payload_hash)
-        return result
-
-    return await produce_verdict(action_name, payload, mission_id=mission_id)

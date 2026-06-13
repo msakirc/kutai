@@ -1,13 +1,14 @@
-"""SP3b Task 8 — critic_gate split tests.
+"""critic_gate split tests (SP3b Task 8 + SP6).
 
-The MECHANICAL confirm gate must make NO dispatcher call. The verdict
-PRODUCER routes through the admitted single-call worker (husam), never
-``LLMDispatcher().request(...)`` directly, and persists the verdict.
+The MECHANICAL confirm gate must make NO dispatcher call. The inline
+``produce_verdict`` producer was deleted in SP6 T5 — the verdict now travels
+through Beckman's admitted-child path built by ``_build_critic_spec``.
 
-These tests pin the new shape:
+These tests pin the surviving shape:
   * ``confirm_gate(...)``  — mechanical, LLM-free, reads a persisted verdict.
-  * ``produce_verdict(...)`` — admitted producer, goes through husam.run,
-    persists via ``_persist``.
+  * ``_build_critic_spec(...)`` — redacts secrets, builds a raw_dispatch
+    overhead spec for the admitted critic child.
+  * the module never imports/uses LLMDispatcher.
 """
 from __future__ import annotations
 
@@ -100,72 +101,26 @@ async def test_mechanical_gate_missing_verdict_fails_closed(monkeypatch):
     assert verdict["bypassed"] is False
 
 
-# ─── Producer: routes through husam, persists ────────────────────────────
+# ─── Critic-child spec build: redaction + admitted-overhead shape ────────
+# (The inline ``produce_verdict`` producer was deleted in SP6 T5; the verdict
+#  now travels via Beckman's admitted-child path. The spec builder is the
+#  surviving seam — pin its redaction + raw_dispatch/overhead shape here.)
 
 
-@pytest.mark.asyncio
-async def test_producer_persists_verdict(monkeypatch):
-    """produce_verdict goes through husam.run (NOT dispatcher.request) and
-    persists the parsed verdict."""
-    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
-    captured = {}
-
-    async def _fake_husam_run(spec):
-        captured["spec"] = spec
-        return {"content": '{"verdict": "veto", "reasons": ["leaks API key"]}'}
-
-    persist_mock = AsyncMock()
-    with patch("husam.run", _fake_husam_run), patch(_PERSIST_PATCH, persist_mock):
-        result = await cg.produce_verdict(
-            "git_commit",
-            {"commit_message": "leak", "diff": "+sk-abc"},
-            mission_id=42,
-        )
-    assert result["verdict"] == "veto"
-    assert "leaks API key" in result["reasons"][0]
-    # Persisted with the parsed verdict.
-    persist_mock.assert_awaited_once()
-    pa = persist_mock.await_args
-    assert pa.args[2] == "veto"  # (mission_id, action_name, verdict, reasons, hash)
-    # The producer built a raw_dispatch overhead spec for husam.
-    llm = captured["spec"]["context"]["llm_call"]
+def test_build_critic_spec_redacts_and_is_overhead():
+    spec = cg._build_critic_spec(
+        "notify_user",
+        cg._redact_payload(
+            {"message": "your api_key=sk-1234567890abcdef1234567890abcdef"}
+        ),
+    )
+    llm = spec["context"]["llm_call"]
+    sent = str(llm["messages"])
+    assert "sk-1234567890abcdef1234567890abcdef" not in sent
+    assert "REDACTED" in sent
     assert llm["raw_dispatch"] is True
     assert llm["call_category"] == "overhead"
     assert llm["agent_type"] == "critic"
-
-
-@pytest.mark.asyncio
-async def test_producer_redacts_before_husam(monkeypatch):
-    """Secrets must not appear in the messages handed to husam."""
-    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
-    captured = {}
-
-    async def _fake_husam_run(spec):
-        captured["spec"] = spec
-        return {"content": '{"verdict": "pass", "reasons": []}'}
-
-    with patch("husam.run", _fake_husam_run), patch(_PERSIST_PATCH, new_callable=AsyncMock):
-        await cg.produce_verdict(
-            "notify_user",
-            {"message": "your api_key=sk-1234567890abcdef1234567890abcdef"},
-        )
-    sent = str(captured["spec"]["context"]["llm_call"]["messages"])
-    assert "sk-1234567890abcdef1234567890abcdef" not in sent
-    assert "REDACTED" in sent
-
-
-@pytest.mark.asyncio
-async def test_producer_husam_failure_default_passes(monkeypatch):
-    """When husam raises, default-pass — never block on a broken critic."""
-    monkeypatch.delenv("KUTAI_CRITIC_GATE", raising=False)
-
-    async def _boom(spec):
-        raise RuntimeError("model down")
-
-    with patch("husam.run", _boom), patch(_PERSIST_PATCH, new_callable=AsyncMock):
-        result = await cg.produce_verdict("git_commit", {"x": 1})
-    assert result["verdict"] == "pass"
-    assert any("model down" in r for r in result["reasons"])
 
 
 def test_critic_gate_no_longer_imports_dispatcher():

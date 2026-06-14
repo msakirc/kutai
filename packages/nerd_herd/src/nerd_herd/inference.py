@@ -81,14 +81,14 @@ class InferenceCollector:
         self._consec_fetch_fail = 0
         self._stray_warned = False
 
-    def _should_warn_stray(self) -> bool:
-        """Increment the consecutive-failure counter; return True exactly once
-        when metrics have failed ``_STRAY_WARN_AFTER`` times in a row."""
-        self._consec_fetch_fail += 1
-        if self._consec_fetch_fail >= self._STRAY_WARN_AFTER and not self._stray_warned:
-            self._stray_warned = True
-            return True
-        return False
+    def _stray_warn_pending(self) -> bool:
+        """True if the failure threshold is reached and we have not warned yet.
+
+        Side-effect-free: the one-shot latch (``_stray_warned``) is set by the
+        caller only when the warning is actually emitted, so a transient
+        process-probe miss at the threshold cannot permanently suppress it.
+        """
+        return self._consec_fetch_fail >= self._STRAY_WARN_AFTER and not self._stray_warned
 
     @staticmethod
     def _llama_server_running() -> bool:
@@ -111,7 +111,9 @@ class InferenceCollector:
             return False
 
     def _handle_fetch_failure(self, reason: str) -> None:
-        if self._should_warn_stray() and self._llama_server_running():
+        self._consec_fetch_fail += 1
+        if self._stray_warn_pending() and self._llama_server_running():
+            self._stray_warned = True
             logger.warning(
                 "llama-server metrics unreachable but a llama-server process IS "
                 "running — likely a stray on the wrong port (not a VRAM leak); "

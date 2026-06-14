@@ -289,11 +289,16 @@ class PlatformHelper:
         if not pids:
             return 0
 
-        keeper: int | None = None
+        # A failed port probe must NOT be read as "nothing on keep_port" — that
+        # would kill a healthy server on keep_port (never-kill rule). Abort.
         try:
-            keeper = self._pid_on_port(keep_port)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("kill_stray_servers: port probe failed: %s", exc)
+            keeper: int | None = self._pid_on_port(keep_port)
+        except Exception as exc:
+            logger.warning(
+                "kill_stray_servers: port probe failed (%s) — refusing to kill "
+                "blindly", exc,
+            )
+            return 0
 
         killed = 0
         for pid in pids:

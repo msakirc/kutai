@@ -43,3 +43,20 @@ def test_no_servers_kills_none(monkeypatch):
     n = ph.kill_stray_servers(8081)
     assert killed == []
     assert n == 0
+
+
+def test_probe_failure_kills_nothing(monkeypatch):
+    """A failed port probe must NOT be treated as 'no keeper' — killing
+    blindly would take down a healthy server on keep_port (never-kill rule)."""
+    ph = PlatformHelper()
+    killed = []
+    monkeypatch.setattr(ph, "_llama_server_pids", lambda *a, **k: {100, 200})
+
+    def _boom(port):
+        raise OSError("netstat timeout under load")
+
+    monkeypatch.setattr(ph, "_pid_on_port", _boom)
+    monkeypatch.setattr(ph, "_kill_pid", lambda pid: killed.append(pid))
+    n = ph.kill_stray_servers(8081)
+    assert killed == []
+    assert n == 0

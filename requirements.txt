@@ -97,6 +97,7 @@ uvicorn>=0.27.0    # ASGI server for the webhook listener
 yazbunu @ git+https://github.com/msakirc/yazbunu.git
 
 # Local packages
+-e ./packages/db
 -e ./packages/vecihi
 -e ./packages/yasar_usta
 -e ./packages/dallama

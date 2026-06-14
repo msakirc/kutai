@@ -36,7 +36,7 @@ async def run(payload: dict) -> dict:
     if event_id is None:
         return {"status": "error", "error": "event_id is required"}
 
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
 
@@ -83,7 +83,7 @@ async def is_marketing_frozen(product_id: str) -> bool:
     if not product_id:
         return False
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         async with db.execute(
@@ -112,7 +112,7 @@ async def resume_marketing_freeze(product_id: str) -> dict:
     if not product_id:
         return {"status": "error", "error": "product_id is required"}
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         cursor = await db.execute(

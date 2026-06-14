@@ -165,7 +165,7 @@ async def _collect_feature_usage(
     feeds the distinct-user reach; missing user ids count toward volume but
     not reach.
     """
-    from src.infra.db import get_growth_events
+    from dabidabi import get_growth_events
 
     features: dict[str, dict] = {}
     try:
@@ -216,7 +216,7 @@ async def _augment_from_recipe_pins(
     can never be flagged. Best-effort; the table may be absent.
     """
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         cur = await db.execute(
@@ -276,7 +276,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     the mission before writing the fresh ranking, so ``/sunset`` only ever
     shows the latest scoring. Always returns a dict — never raises.
     """
-    from src.infra.db import get_growth_events
+    from dabidabi import get_growth_events
     from general_beckman import record_growth_event, supersede_growth_event
 
     payload = task.get("payload") or {}

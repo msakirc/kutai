@@ -308,7 +308,7 @@ class QuotaPlanner:
 
         # Wake sleeping tasks — quota restored means cloud capacity available
         try:
-            from src.infra.db import schedule_accelerate_retries
+            from dabidabi import schedule_accelerate_retries
             schedule_accelerate_retries("quota_restored")
         except Exception:
             pass

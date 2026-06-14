@@ -11,9 +11,9 @@ from __future__ import annotations
 import json
 from collections import Counter
 
-from src.infra.db import get_db
+from dabidabi import get_db
 from src.infra.logging_config import get_logger
-from src.infra.times import utc_now, to_db
+from dabidabi.times import utc_now, to_db
 
 logger = get_logger("yalayut.policy_observer")
 

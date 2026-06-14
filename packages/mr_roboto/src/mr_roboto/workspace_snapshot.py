@@ -3,7 +3,7 @@
 Ported from src/core/mechanical/workspace_snapshot.py during Phase 2a.
 """
 
-from src.infra.db import save_workspace_snapshot
+from dabidabi import save_workspace_snapshot
 from src.tools.git_ops import get_commit_sha, get_current_branch
 from src.tools.workspace import compute_workspace_hashes
 from src.infra.logging_config import get_logger

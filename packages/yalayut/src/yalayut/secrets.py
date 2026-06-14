@@ -47,7 +47,7 @@ def _fernet():
 
 async def _db_upsert_secret(key_name: str, encrypted_value: bytes) -> None:
     """Upsert one encrypted secret row. Patched in tests."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -62,7 +62,7 @@ async def _db_upsert_secret(key_name: str, encrypted_value: bytes) -> None:
 
 async def _db_fetch_secret(key_name: str) -> bytes | None:
     """Fetch one encrypted secret blob. Patched in tests."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
     cur = await db.execute(

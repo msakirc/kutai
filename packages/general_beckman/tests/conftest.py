@@ -199,8 +199,9 @@ def _ast_db_write_imports(filepath, text, guarded_names):
         if not isinstance(node, ast.ImportFrom):
             continue
         module = node.module or ""
-        # Absolute: from src.infra.db import ...
-        is_abs = module == "src.infra.db"
+        # Absolute: from dabidabi import ... (the engine package) or the
+        # legacy from src.infra.db import ... (sys.modules alias to it).
+        is_abs = module in ("dabidabi", "src.infra.db")
         # Relative: from ..infra.db import ... (any level)
         is_rel = node.level > 0 and module == "infra.db"
         if not (is_abs or is_rel):

@@ -162,7 +162,7 @@ async def run(payload: dict) -> dict:
     affected_components: list[str] = []
     existing_summary = ""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT severity, affected_components_json, customer_impact_summary "

@@ -205,8 +205,11 @@ def test_no_raw_insert_growth_event_callers(repo_source_texts):
     call_re = re.compile(r"insert_growth_event")
     defn_re = re.compile(r"^\s*(async\s+)?def\s+insert_growth_event")
 
-    # Allowed files (the definition site + the beckman delegate).
+    # Allowed files (the definition site + the beckman delegate). The engine
+    # (insert_growth_event's definition) moved into the `dabidabi` package;
+    # src/infra/db.py is now a sys.modules alias to it.
     allowed = {
+        (root / "packages" / "db" / "src" / "dabidabi" / "__init__.py").resolve(),
         (root / "src" / "infra" / "db.py").resolve(),
         (root / "packages" / "general_beckman" / "src" / "general_beckman" / "__init__.py").resolve(),
     }

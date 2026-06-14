@@ -22,7 +22,7 @@ async def record_usage(
 ) -> None:
     """Write yalayut_usage rows for one flash() call. Never raises."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         for app in exposed:
             await db.execute(

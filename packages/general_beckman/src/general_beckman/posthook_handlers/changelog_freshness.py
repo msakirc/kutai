@@ -31,7 +31,7 @@ logger = get_logger("beckman.posthooks.changelog_freshness")
 async def _has_changelog_entry_for_mission(mission_id: int) -> bool:
     """Return True if any changelog_entries row references this mission_id."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT entry_id FROM changelog_entries "
@@ -57,7 +57,7 @@ async def _get_mission_info(mission_id: int) -> dict | None:
     passed via the task context by the caller (workflow or posthook wiring).
     """
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT id, title, status FROM missions WHERE id=?",

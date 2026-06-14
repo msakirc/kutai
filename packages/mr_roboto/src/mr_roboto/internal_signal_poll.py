@@ -50,7 +50,7 @@ async def _fetch_negative_tickets(
     The sentiment column uses 'negative' (not 'neg') matching the Z8 schema.
     """
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cutoff = (
             datetime.now(timezone.utc) - timedelta(hours=window_hours)
@@ -89,7 +89,7 @@ async def _ingest_internal_mention(
 ) -> bool:
     """Insert a synthetic mention row for the ticket (INSERT OR IGNORE)."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         source_id = f"ticket:{ticket_id}"
         await db.execute(
@@ -109,7 +109,7 @@ async def _ingest_internal_mention(
 async def _check_cluster_threshold(product_id: str, window_hours: int) -> bool:
     """Return True if >=3 internal_signal neg mentions in window."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cutoff = (
             datetime.now(timezone.utc) - timedelta(hours=window_hours)

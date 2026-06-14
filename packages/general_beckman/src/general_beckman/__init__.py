@@ -94,7 +94,7 @@ async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: flo
     """Post threshold notify to mission thread."""
     import json as _json
     from src.infra.logging_config import get_logger
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     logger = get_logger(__name__)
 
@@ -143,7 +143,7 @@ async def record_growth_event(
     Delegates storage to ``src.infra.db.insert_growth_event``; db.py keeps
     the SQL, beckman is the sole external entry point.
     """
-    from src.infra.db import insert_growth_event
+    from dabidabi import insert_growth_event
     return await insert_growth_event(
         mission_id=mission_id, kind=kind, properties=properties, segment=segment
     )
@@ -166,7 +166,7 @@ async def supersede_growth_event(
 
     Returns the count of rows updated.
     """
-    from src.infra.db import supersede_growth_events as _supersede
+    from dabidabi import supersede_growth_events as _supersede
     return await _supersede(mission_id=mission_id, kind=kind)
 
 
@@ -176,7 +176,7 @@ async def update_growth_event_properties(event_id: int, properties: dict) -> Non
     Thin delegate to ``src.infra.db.update_growth_event_properties``; beckman
     is the sanctioned entry point so callers never bypass this ownership layer.
     """
-    from src.infra.db import update_growth_event_properties as _impl
+    from dabidabi import update_growth_event_properties as _impl
     await _impl(event_id=event_id, properties=properties)
 
 
@@ -309,7 +309,7 @@ def _capacity_snapshot():
 
 async def _claim_task(task_id: int) -> bool:
     """Claim a single task by id via the existing DB claim primitive."""
-    from src.infra.db import claim_task
+    from dabidabi import claim_task
     return await claim_task(task_id)
 
 
@@ -328,7 +328,7 @@ async def _ceiling_ok(task: dict, log) -> bool:
     new_est = float(task.get("estimated_cost_usd") or 0.0)
 
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT cost_ceiling_usd, spent_usd FROM missions WHERE id = ?",
@@ -469,7 +469,7 @@ async def _mark_admission_failed(task: dict, status: str, error: str) -> None:
         await _dlq_write(task, error=error, category="availability",
                          attempts=int(task.get("worker_attempts") or 0) + 1)
     else:  # paused
-        from src.infra.db import update_task
+        from dabidabi import update_task
         await update_task(task["id"], status=status, error=error[:500])
 
 
@@ -516,7 +516,7 @@ async def next_task(lane: str | None = None):
     _cap: int | None = None
     _inflight: int | None = None
     try:
-        from src.infra.db import get_db as _get_db
+        from dabidabi import get_db as _get_db
         _conn = await _get_db()
         _cap = await cap_for(lane)
         _inflight = await count_in_flight(_conn, lane)
@@ -743,7 +743,7 @@ async def next_task(lane: str | None = None):
                 _z6 = await check_z6_admission(task, int(_mid))
                 if not _z6.admit:
                     try:
-                        from src.infra.db import update_task as _ut
+                        from dabidabi import update_task as _ut
                         await _ut(
                             int(task["id"]),
                             status="blocked_on_founder_action",
@@ -956,7 +956,7 @@ async def next_task(lane: str | None = None):
                     _ctx_p["preselected_pick_provider"] = _provider
                     task["context"] = _json_p.dumps(_ctx_p)
                     try:
-                        from src.infra.db import update_task as _ut_p
+                        from dabidabi import update_task as _ut_p
                         await _ut_p(int(task["id"]), context=task["context"])
                     except Exception as _e:
                         _log.debug(
@@ -970,7 +970,7 @@ async def next_task(lane: str | None = None):
         # avg cost for (model, agent_type) or falls back to per-kind
         # defaults. Best-effort — never blocks admission.
         try:
-            from src.infra.db import estimate_task_cost, set_task_estimated_cost
+            from dabidabi import estimate_task_cost, set_task_estimated_cost
             _kind = task.get("agent_type")
             _model_id = pick.model.name if pick and getattr(pick, "model", None) else None
             _est = await estimate_task_cost(_model_id, _kind)
@@ -1102,7 +1102,7 @@ async def on_task_finished(task_id, result: dict = None) -> None:
         _cost = float(_task_dict.get("cost_usd") or 0.0)
         if _mid is not None and _cost > 0:
             import json as _json
-            from src.infra.db import get_db as _get_db
+            from dabidabi import get_db as _get_db
             _db = await _get_db()
             await _db.execute(
                 "UPDATE missions SET spent_usd = COALESCE(spent_usd, 0) + ? WHERE id = ?",
@@ -1140,7 +1140,7 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     from general_beckman.rewrite import rewrite_actions
     from general_beckman.apply import apply_actions
     from general_beckman.task_context import parse_context
-    from src.infra.db import get_task
+    from dabidabi import get_task
     from src.infra.logging_config import get_logger
 
     log = get_logger("beckman.on_task_finished")
@@ -1153,7 +1153,7 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     # Z10 T2A: stamp actual_cost_usd from accumulated model_call_tokens.
     # Run before route_result so downstream readers see the final number.
     try:
-        from src.infra.db import finalize_task_actual_cost
+        from dabidabi import finalize_task_actual_cost
         await finalize_task_actual_cost(task_id)
     except Exception as _e:
         log.debug("finalize_task_actual_cost skipped", task_id=task_id, error=str(_e))
@@ -1161,7 +1161,7 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     # ── Z0: spent_usd accumulation + threshold notifies ───────────────────
     # Production path: cost comes from result dict.
     import json as _json
-    from src.infra.db import get_db as _get_db
+    from dabidabi import get_db as _get_db
     _mid = task.get("mission_id")
     _cost = float((result or {}).get("cost_usd") or 0.0)
     if _mid is not None and _cost > 0:
@@ -1246,7 +1246,7 @@ async def on_task_finished(task_id, result: dict = None) -> None:
                 )
     if _ctx_changed:
         try:
-            from src.infra.db import update_task as _ut
+            from dabidabi import update_task as _ut
             import json as _json
             await _ut(task_id, context=_json.dumps(task_ctx))
             # Refresh local task dict so downstream route_result
@@ -1302,7 +1302,7 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     # receive the captured _agent_result_snapshot so post-hook flips can't
     # corrupt the payload the handler sees.
     try:
-        from src.infra.db import get_task as _get_task
+        from dabidabi import get_task as _get_task
         _live = await _get_task(task_id) or {}
         _db_status = _live.get("status") or ""
 
@@ -1426,7 +1426,7 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     # row is already "completed" and the needs_clarification ping would
     # wrongly re-alarm the user.
     if status in ("completed", "needs_clarification", "failed"):
-        from src.infra.db import get_task as _get_task
+        from dabidabi import get_task as _get_task
         live = await _get_task(task["id"])
         live_status = (live or {}).get("status", "")
         # Silent when DB already shows the step done from a different
@@ -1491,7 +1491,7 @@ async def enqueue(
         This is a fire-and-forget chain (NOT the durable substrate).
     """
     import json as _json
-    from src.infra.db import add_task
+    from dabidabi import add_task
     from general_beckman.queue_profile_push import build_and_push
     from general_beckman.lanes import pick_lane
 
@@ -1569,7 +1569,7 @@ async def add_mission(
     Thin delegate to ``src.infra.db.add_mission``; beckman is the single
     sanctioned external entry point for mission creation.
     """
-    from src.infra.db import add_mission as _add_mission
+    from dabidabi import add_mission as _add_mission
     return await _add_mission(
         title=title,
         description=description,
@@ -1590,7 +1590,7 @@ async def update_mission(mission_id: int, **kwargs) -> None:
     columns in ``src.infra.db._MISSION_COLUMNS``; unknown columns raise
     ``ValueError``.
     """
-    from src.infra.db import update_mission as _update_mission
+    from dabidabi import update_mission as _update_mission
     await _update_mission(mission_id, **kwargs)
 
 
@@ -1602,7 +1602,7 @@ async def update_mission_fields(mission_id: int, **fields) -> None:
     arbitrary identifiers.  Use for fields not covered by ``update_mission``
     (Telegram integration, preview_url, budget columns, etc.).
     """
-    from src.infra.db import update_mission_fields as _update_fields
+    from dabidabi import update_mission_fields as _update_fields
     await _update_fields(mission_id, **fields)
 
 
@@ -1618,7 +1618,7 @@ async def block_mission(mission_id: int) -> bool:
     from src.infra.logging_config import get_logger as _get_logger
     _logger = _get_logger("beckman.block_mission")
 
-    from src.infra.db import get_mission, update_mission_fields as _update_fields
+    from dabidabi import get_mission, update_mission_fields as _update_fields
     mission = await get_mission(mission_id)
     if not mission:
         return False
@@ -1656,11 +1656,11 @@ async def unblock_mission(
     _logger = _get_logger("beckman.unblock_mission")
 
     if require_actions_clear:
-        from src.infra.db import conditional_unblock_mission as _cond_unblock
+        from dabidabi import conditional_unblock_mission as _cond_unblock
         if not await _cond_unblock(mission_id):
             return False
     else:
-        from src.infra.db import get_mission, update_mission_fields as _update_fields
+        from dabidabi import get_mission, update_mission_fields as _update_fields
         mission = await get_mission(mission_id)
         if not mission:
             return False
@@ -1672,7 +1672,7 @@ async def unblock_mission(
 
     # Reset tasks that beckman parked in blocked_on_founder_action for this
     # mission back to pending so the pump re-evaluates them.
-    from src.infra.db import reset_blocked_on_founder_tasks as _reset_founder_tasks
+    from dabidabi import reset_blocked_on_founder_tasks as _reset_founder_tasks
     await _reset_founder_tasks(mission_id)
     _logger.info(
         "mission unblocked — no pending actions",
@@ -1687,7 +1687,7 @@ async def purge_all_missions() -> None:
     Thin delegate to ``src.infra.db.purge_all_missions``; both admin-reset
     callbacks use this so the exact table list is maintained in one place.
     """
-    from src.infra.db import purge_all_missions as _purge
+    from dabidabi import purge_all_missions as _purge
     await _purge()
 
 
@@ -1696,7 +1696,7 @@ async def purge_all() -> None:
 
     Thin delegate to ``src.infra.db.purge_all``.
     """
-    from src.infra.db import purge_all as _purge_all
+    from dabidabi import purge_all as _purge_all
     await _purge_all()
 
 
@@ -1706,7 +1706,7 @@ async def increment_mission_rework_loops(mission_id: int) -> int:
     Thin delegate to ``src.infra.db.increment_mission_rework_loops``; beckman
     is the sanctioned external entry point for rework-loop telemetry.
     """
-    from src.infra.db import increment_mission_rework_loops as _incr
+    from dabidabi import increment_mission_rework_loops as _incr
     return await _incr(mission_id)
 
 
@@ -1725,13 +1725,13 @@ async def add_task(title: str, description: str, **kwargs) -> int:
     context, kind, runner, needs_real_tools, reversibility, lane, on_complete,
     on_error, cont_state, etc.).
     """
-    from src.infra.db import add_task as _add_task
+    from dabidabi import add_task as _add_task
     return await _add_task(title=title, description=description, **kwargs)
 
 
 async def update_task(task_id, **kwargs):
     """Thin delegate to src.infra.db.update_task; beckman is the single sanctioned write-owner of the tasks table."""
-    from src.infra.db import update_task as _update_task
+    from dabidabi import update_task as _update_task
     return await _update_task(task_id, **kwargs)
 
 
@@ -1739,7 +1739,7 @@ async def update_task_by_context_field(
     mission_id: int, field: str, value: str, **kwargs
 ):
     """Thin delegate to src.infra.db.update_task_by_context_field; beckman is the single sanctioned write-owner of the tasks table."""
-    from src.infra.db import update_task_by_context_field as _update_task_by_context_field
+    from dabidabi import update_task_by_context_field as _update_task_by_context_field
     return await _update_task_by_context_field(mission_id, field, value, **kwargs)
 
 
@@ -1751,7 +1751,7 @@ async def add_subtasks(
     parent_result: str | None = None,
 ) -> list:
     """Thin delegate to src.infra.db.add_subtasks_atomically; beckman is the single sanctioned write-owner of the tasks table."""
-    from src.infra.db import add_subtasks_atomically as _add_subtasks_atomically
+    from dabidabi import add_subtasks_atomically as _add_subtasks_atomically
     return await _add_subtasks_atomically(
         parent_task_id=parent_task_id,
         subtasks=subtasks,
@@ -1763,31 +1763,31 @@ async def add_subtasks(
 
 async def propagate_skips(mission_id: int) -> int:
     """Thin delegate to src.infra.db.propagate_skips; beckman is the single sanctioned write-owner of the tasks table."""
-    from src.infra.db import propagate_skips as _propagate_skips
+    from dabidabi import propagate_skips as _propagate_skips
     return await _propagate_skips(mission_id)
 
 
 async def cancel_task(task_id: int) -> bool:
     """Thin delegate to src.infra.db.cancel_task; beckman is the single sanctioned write-owner of the tasks table."""
-    from src.infra.db import cancel_task as _cancel_task
+    from dabidabi import cancel_task as _cancel_task
     return await _cancel_task(task_id)
 
 
 async def reprioritize_task(task_id: int, new_priority: int) -> bool:
     """Thin delegate to src.infra.db.reprioritize_task; beckman is the single sanctioned write-owner of the tasks table."""
-    from src.infra.db import reprioritize_task as _reprioritize_task
+    from dabidabi import reprioritize_task as _reprioritize_task
     return await _reprioritize_task(task_id, new_priority)
 
 
 async def save_task_checkpoint(task_id: int, state: dict) -> None:
     """Thin delegate to src.infra.db.save_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
-    from src.infra.db import save_task_checkpoint as _save_task_checkpoint
+    from dabidabi import save_task_checkpoint as _save_task_checkpoint
     return await _save_task_checkpoint(task_id, state)
 
 
 async def clear_task_checkpoint(task_id: int) -> None:
     """Thin delegate to src.infra.db.clear_task_checkpoint; beckman is the single sanctioned write-owner of the tasks table."""
-    from src.infra.db import clear_task_checkpoint as _clear_task_checkpoint
+    from dabidabi import clear_task_checkpoint as _clear_task_checkpoint
     return await _clear_task_checkpoint(task_id)
 
 
@@ -1797,7 +1797,7 @@ async def reset_failed_tasks() -> int:
     Delegate to src.infra.db.reset_failed_tasks; beckman is the sole
     sanctioned write-owner of the tasks table.
     """
-    from src.infra.db import reset_failed_tasks as _impl
+    from dabidabi import reset_failed_tasks as _impl
     return await _impl()
 
 
@@ -1807,7 +1807,7 @@ async def reset_stuck_tasks() -> int:
     Delegate to src.infra.db.reset_stuck_tasks; beckman is the sole
     sanctioned write-owner of the tasks table.
     """
-    from src.infra.db import reset_stuck_tasks as _impl
+    from dabidabi import reset_stuck_tasks as _impl
     return await _impl()
 
 
@@ -1818,7 +1818,7 @@ async def reset_blocked_tasks() -> int:
     Delegate to src.infra.db.reset_blocked_tasks; beckman is the sole
     sanctioned write-owner of the tasks table.
     """
-    from src.infra.db import reset_blocked_tasks as _impl
+    from dabidabi import reset_blocked_tasks as _impl
     return await _impl()
 
 
@@ -1828,7 +1828,7 @@ async def cancel_pending_tasks(mission_id: int) -> int:
     Delegate to src.infra.db.cancel_pending_tasks; beckman is the sole
     sanctioned write-owner of the tasks table.
     """
-    from src.infra.db import cancel_pending_tasks as _impl
+    from dabidabi import cancel_pending_tasks as _impl
     return await _impl(mission_id)
 
 
@@ -1842,7 +1842,7 @@ async def reset_workflow_step(
     Delegate to src.infra.db.reset_workflow_step; beckman is the sole
     sanctioned write-owner of the tasks table.
     """
-    from src.infra.db import reset_workflow_step as _impl
+    from dabidabi import reset_workflow_step as _impl
     return await _impl(mission_id, step_id, confirm_task_id)
 
 
@@ -1856,7 +1856,7 @@ async def recover_startup_tasks() -> dict:
     Delegate to src.infra.db.recover_startup_tasks; beckman is the sole
     sanctioned write-owner of the tasks table.
     """
-    from src.infra.db import recover_startup_tasks as _impl
+    from dabidabi import recover_startup_tasks as _impl
     return await _impl()
 
 
@@ -1867,7 +1867,7 @@ async def reset_cascade_failed_dependents(task_id: int) -> int:
     Delegate to src.infra.db.reset_cascade_failed_dependents; beckman is the
     sole sanctioned write-owner of the tasks table.
     """
-    from src.infra.db import reset_cascade_failed_dependents as _impl
+    from dabidabi import reset_cascade_failed_dependents as _impl
     return await _impl(task_id)
 
 
@@ -1879,7 +1879,7 @@ async def on_model_swap(old_model: str | None, new_model: str | None) -> None:
     flowing through next_task().
     """
     try:
-        from src.infra.db import accelerate_retries
+        from dabidabi import accelerate_retries
         await accelerate_retries("model_swap")
     except Exception as e:
         from src.infra.logging_config import get_logger

@@ -464,8 +464,8 @@ async def seed_internal_cadences() -> None:
         return
 
     from datetime import timedelta
-    from src.infra.db import get_db  # lazy to avoid circular import at module load
-    from src.infra.times import utc_now, to_db
+    from dabidabi import get_db  # lazy to avoid circular import at module load
+    from dabidabi.times import utc_now, to_db
 
     async with _seed_lock:
         # Re-check inside the lock: another coroutine may have finished seeding

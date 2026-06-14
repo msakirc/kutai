@@ -116,7 +116,7 @@ async def run_outreach_send(
             "reason": "outreach is disabled (OUTREACH_ENABLED not set to 1)",
         }
 
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
 
     # ── Gate 2: Suppression check ───────────────────────────────────────────

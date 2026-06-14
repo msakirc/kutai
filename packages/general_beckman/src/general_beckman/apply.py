@@ -22,7 +22,7 @@ from datetime import timedelta
 from typing import Iterable
 
 from src.infra.logging_config import get_logger
-from src.infra.times import to_db, utc_now
+from dabidabi.times import to_db, utc_now
 
 from general_beckman.result_router import (
     Action, Complete, SpawnSubtasks, RequestClarification, RequestReview,
@@ -142,7 +142,7 @@ async def _record_and_resolve_confidence(
     different aggregation cadence. See docs/handoff/
     2026-05-18-z0-and-backlog-handoff.md §2c.
     """
-    from src.infra.db import (
+    from dabidabi import (
         record_confidence_claim, resolve_confidence_outcome,
     )
     claim_id = await record_confidence_claim(task_id)
@@ -205,7 +205,7 @@ async def _apply_one(task: dict, a: Action) -> None:
 
 async def _apply_complete(task: dict, a) -> None:
     """Handles both Complete and CompleteWithReusedAnswer."""
-    from src.infra.db import update_task
+    from dabidabi import update_task
     # result_router accepts dict/list as a non-empty result (some agents
     # return structured payloads e.g. {"formatted_text": "..."}). The
     # tasks.result column is TEXT — sqlite InterfaceError fires when a
@@ -278,7 +278,7 @@ async def _apply_subtasks(task: dict, a: SpawnSubtasks) -> None:
     whole batch, dropping write-lock contention on bursty mission
     advances.
     """
-    from src.infra.db import add_subtasks_atomically
+    from dabidabi import add_subtasks_atomically
     subtasks = [
         {
             "title": sub.get("title", ""),
@@ -300,7 +300,7 @@ async def _apply_subtasks(task: dict, a: SpawnSubtasks) -> None:
 
 
 async def _apply_clarify(task: dict, a: RequestClarification) -> None:
-    from src.infra.db import add_task, update_task
+    from dabidabi import add_task, update_task
     # Model sometimes signals needs_clarification without a usable
     # question (returned empty string or missing field). Spawning a
     # clarify task with empty payload DLQs the whole step, confusing
@@ -314,7 +314,7 @@ async def _apply_clarify(task: dict, a: RequestClarification) -> None:
             "question (task_id=%s)", a.task_id,
         )
         # Route to DLQ instead of silent fail so user can see + /retry.
-        from src.infra.db import get_task as _get
+        from dabidabi import get_task as _get
         src = await _get(a.task_id)
         if src:
             await _dlq_write(
@@ -341,7 +341,7 @@ async def _apply_clarify(task: dict, a: RequestClarification) -> None:
 
 
 async def _apply_review(task: dict, a: RequestReview) -> None:
-    from src.infra.db import add_task, get_db, update_task
+    from dabidabi import add_task, get_db, update_task
     # A MECHANICAL post-hook task that returned needs_review (e.g.
     # find_similar_missions: prior missions matched) has already done its job:
     # mr_roboto enqueued the founder Continue/Branch/Abort notice and rewrite
@@ -479,7 +479,7 @@ async def _apply_failed(task: dict, a: Failed) -> None:
 
 
 async def _apply_mission_advance(task: dict, a: MissionAdvance) -> None:
-    from src.infra.db import add_task
+    from dabidabi import add_task
     # Pass the completed task's result dict (a.raw) through to the
     # workflow_advance executor — post_execute_workflow_step needs it
     # to extract output_value and persist artifacts. Omitting it made
@@ -501,7 +501,7 @@ async def _apply_mission_advance(task: dict, a: MissionAdvance) -> None:
 
 async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     """Shared retry/DLQ path for Failed and Exhausted."""
-    from src.infra.db import get_task as _get_task, update_task
+    from dabidabi import get_task as _get_task, update_task
     # Refetch after post_execute_workflow_step — the hook writes
     # _schema_error and _prev_output into the DB context so the next
     # attempt knows what to fix. on_task_finished keeps a snapshot
@@ -638,7 +638,7 @@ async def _maybe_emit_lesson_from_posthook_fail(
     """
     try:
         from src.infra.mission_lessons import upsert_mission_lesson
-        from src.infra.db import get_db
+        from dabidabi import get_db
         import json as _json
 
         mission_id = source.get("mission_id")
@@ -683,7 +683,7 @@ async def _maybe_emit_lesson_from_posthook_fail(
 
 
 async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) -> None:
-    from src.infra.db import add_task, update_task
+    from dabidabi import add_task, update_task
     from src.infra.dead_letter import quarantine_task
     await update_task(
         task["id"], status="failed",
@@ -1011,7 +1011,7 @@ async def _posthook_dlq_cascade(task: dict, error: str) -> None:
       stands. If the pending list drains to empty, flip source to completed.
     """
     import json as _json
-    from src.infra.db import get_task, update_task
+    from dabidabi import get_task, update_task
 
     ctx_raw = task.get("context") or "{}"
     try:
@@ -1376,7 +1376,7 @@ async def _apply_request_posthook(task: dict, a: RequestPostHook) -> None:
 
 async def _apply_request_posthook_locked(task: dict, a: RequestPostHook) -> None:
     import json as _json
-    from src.infra.db import add_task, get_task, update_task
+    from dabidabi import add_task, get_task, update_task
 
     source = await get_task(a.source_task_id)
     if source is None:
@@ -1505,7 +1505,7 @@ async def _advance_posthook_chain(source_task_id: int) -> None:
 
 async def _advance_posthook_chain_locked(source_task_id: int) -> None:
     import json as _json
-    from src.infra.db import get_task, update_task
+    from dabidabi import get_task, update_task
 
     while True:
         source = await get_task(source_task_id)
@@ -1578,7 +1578,7 @@ async def reconcile_stranded_posthook_chains() -> int:
     Returns the number of chains re-driven (for logging / tests).
     """
     import json as _json
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
 
@@ -1656,7 +1656,7 @@ async def _complete_source_if_no_pending(source_task_id: int, ctx: dict) -> None
     the source is no longer 'ungraded'.
     """
     import json as _json
-    from src.infra.db import get_task, update_task
+    from dabidabi import get_task, update_task
 
     fresh = await get_task(source_task_id)
     if fresh is None or fresh.get("status") != "ungraded":
@@ -2793,7 +2793,7 @@ async def _apply_grounding_verdict(
     failure, not a model-quality verdict.
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     if verdict.passed:
         new_pending = [k for k in pending if k != "grounding"]
@@ -2811,7 +2811,7 @@ async def _apply_grounding_verdict(
             await _spawn_workflow_advance_if_mission(source, verdict.raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -2930,7 +2930,7 @@ async def _apply_verify_artifacts_verdict(
     files are an agent-behaviour failure, not a model-quality one.
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     if verdict.passed:
         new_pending = [k for k in pending if k != "verify_artifacts"]
@@ -2948,7 +2948,7 @@ async def _apply_verify_artifacts_verdict(
             await _spawn_workflow_advance_if_mission(source, verdict.raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -3051,7 +3051,7 @@ async def _apply_code_review_verdict(
     coder model with the issues list as steering.
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     if verdict.passed:
         new_pending = [k for k in pending if k != "code_review"]
@@ -3069,7 +3069,7 @@ async def _apply_code_review_verdict(
             await _spawn_workflow_advance_if_mission(source, verdict.raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -3201,7 +3201,7 @@ async def _apply_test_run_verdict(
 ) -> None:
     """Apply a test_run post-hook verdict back to the source task."""
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     if verdict.passed:
         new_pending = [k for k in pending if k != "test_run"]
@@ -3223,7 +3223,7 @@ async def _apply_test_run_verdict(
             await _spawn_workflow_advance_if_mission(source, verdict.raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -3343,7 +3343,7 @@ async def _apply_semgrep_warning_verdict(
         symmetry with ``_posthook_dlq_cascade``).
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     raw = verdict.raw or {}
     findings = raw.get("findings") or []
@@ -3394,7 +3394,7 @@ async def _apply_semgrep_warning_verdict(
         await _spawn_workflow_advance_if_mission(source, verdict.raw)
         try:
             from general_beckman import _send_step_progress
-            from src.infra.db import get_task
+            from dabidabi import get_task
             fresh = await get_task(verdict.source_task_id)
             if fresh:
                 await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -3432,7 +3432,7 @@ async def _apply_semgrep_blocker_verdict(
         Findings with severity >= threshold cause a retry.
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     raw = verdict.raw or {}
     findings = raw.get("findings") or []
@@ -3475,7 +3475,7 @@ async def _apply_semgrep_blocker_verdict(
             await _spawn_workflow_advance_if_mission(source, verdict.raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -3532,7 +3532,7 @@ async def _apply_semgrep_blocker_verdict(
             await _spawn_workflow_advance_if_mission(source, verdict.raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -3705,7 +3705,7 @@ async def _apply_type_sync_verdict(
     No drift → advance.
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     raw = verdict.raw or {}
     skipped = bool(raw.get("skipped"))
@@ -3740,7 +3740,7 @@ async def _apply_type_sync_verdict(
                 await _spawn_workflow_advance_if_mission(source, verdict.raw)
                 try:
                     from general_beckman import _send_step_progress
-                    from src.infra.db import get_task
+                    from dabidabi import get_task
                     fresh = await get_task(verdict.source_task_id)
                     if fresh:
                         await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -3836,7 +3836,7 @@ async def _apply_type_sync_verdict(
         await _spawn_workflow_advance_if_mission(source, verdict.raw)
         try:
             from general_beckman import _send_step_progress
-            from src.infra.db import get_task
+            from dabidabi import get_task
             fresh = await get_task(verdict.source_task_id)
             if fresh:
                 await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -3855,7 +3855,7 @@ async def _apply_migration_apply_verdict(
     block. Skipped (testcontainers absent) → pass through.
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     raw = verdict.raw or {}
     skipped = bool(raw.get("skipped"))
@@ -3893,7 +3893,7 @@ async def _apply_migration_apply_verdict(
             await _spawn_workflow_advance_if_mission(source, verdict.raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -4029,7 +4029,7 @@ async def _apply_z1_mechanical_verdict(
     surface the issue; the source step itself shouldn't block.
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     kind = verdict.kind
 
@@ -4049,7 +4049,7 @@ async def _apply_z1_mechanical_verdict(
             await _spawn_workflow_advance_if_mission(source, verdict.raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", verdict.raw or {})
@@ -4086,7 +4086,7 @@ async def _apply_z1_mechanical_verdict(
                 pass
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", raw)
@@ -4208,7 +4208,7 @@ async def _load_mission_workflow(mission_id: int) -> dict | None:
     parses the JSON via the engine loader. Used by the reviewer-failure router
     (build_producer_index needs the steps' input/output_artifacts)."""
     try:
-        from src.infra.db import get_workflow_checkpoint
+        from dabidabi import get_workflow_checkpoint
         from src.workflows.engine.loader import load_workflow
         checkpoint = await get_workflow_checkpoint(int(mission_id))
         if not checkpoint or not checkpoint.get("workflow_name"):
@@ -4251,7 +4251,7 @@ async def _apply_review_verdict(
                reviewer task (drain the pending kind first).
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     raw = verdict.raw or {}
     verdict_class = str(raw.get("verdict_class") or "").lower()
@@ -4399,7 +4399,7 @@ async def _apply_review_verdict(
             await _spawn_workflow_advance_if_mission(source, raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", raw)
@@ -4438,7 +4438,7 @@ async def _apply_simple_blocker_verdict(
     Fail: retry source with feedback; DLQ on attempts exhausted (bonus path honored).
     """
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     raw = verdict.raw or {}
     skipped = bool(raw.get("skipped"))
@@ -4460,7 +4460,7 @@ async def _apply_simple_blocker_verdict(
             await _spawn_workflow_advance_if_mission(source, raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", raw)
@@ -4548,7 +4548,7 @@ async def _apply_mobile_smoke_verdict(
 ) -> None:
     """Apply a mobile_smoke (Maestro flow) post-hook verdict to the source."""
     import json as _json
-    from src.infra.db import update_task
+    from dabidabi import update_task
 
     raw = verdict.raw or {}
 
@@ -4571,7 +4571,7 @@ async def _apply_mobile_smoke_verdict(
             await _spawn_workflow_advance_if_mission(source, raw)
             try:
                 from general_beckman import _send_step_progress
-                from src.infra.db import get_task
+                from dabidabi import get_task
                 fresh = await get_task(verdict.source_task_id)
                 if fresh:
                     await _send_step_progress(fresh, "completed", raw)
@@ -4676,7 +4676,7 @@ async def _maybe_spawn_adr_drift_judge(
         return False
 
     import json as _json
-    from src.infra.db import add_task
+    from dabidabi import add_task
 
     workspace_path = ctx.get("workspace_path") or ""
     produced = list(ctx.get("produces") or [])
@@ -4749,7 +4749,7 @@ async def _maybe_spawn_integration_bisect(
         return False
 
     import json as _json
-    from src.infra.db import add_task
+    from dabidabi import add_task
 
     workspace_path = ctx.get("workspace_path") or ""
     if not workspace_path:
@@ -4814,7 +4814,7 @@ async def _apply_posthook_verdict(task: dict, a: PostHookVerdict) -> None:
 
 async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None:
     import json as _json
-    from src.infra.db import get_task, update_task, add_task
+    from dabidabi import get_task, update_task, add_task
     from src.workflows.engine.artifacts import ArtifactStore
 
     source = await get_task(a.source_task_id)
@@ -5230,7 +5230,7 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
     if a.kind in ("briefing_compose", "audit_completeness_check"):
         # Warning severity: soft-drop pending kind and advance source.
         import json as _json
-        from src.infra.db import update_task as _update_task
+        from dabidabi import update_task as _update_task
         new_pending = [k for k in pending if k != a.kind]
         ctx["_pending_posthooks"] = new_pending
         if not a.passed:
@@ -5288,7 +5288,7 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
     # but never blocks the source outreach/send task from completing.
     if a.kind == "outreach_deliverability_check":
         import json as _json
-        from src.infra.db import update_task as _update_task
+        from dabidabi import update_task as _update_task
         new_pending = [k for k in pending if k != a.kind]
         ctx["_pending_posthooks"] = new_pending
         if not a.passed:
@@ -5315,7 +5315,7 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
     # Always soft-drops the kind from pending and advances the source task.
     if a.kind == "documentation_gap_detect":
         import json as _json
-        from src.infra.db import update_task as _update_task
+        from dabidabi import update_task as _update_task
         new_pending = [k for k in pending if k != a.kind]
         ctx["_pending_posthooks"] = new_pending
         if not new_pending:
@@ -5483,7 +5483,7 @@ async def _spawn_workflow_advance_if_mission(source: dict, raw: object) -> None:
     Without this, the final step passes grading but the mission never
     transitions out of 'active' — user sees step pings, never the result.
     """
-    from src.infra.db import add_task
+    from dabidabi import add_task
 
     mission_id = source.get("mission_id")
     if mission_id is None:

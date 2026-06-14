@@ -123,7 +123,7 @@ async def _enqueue_grade_child(source_task_id: int, *, exclusions: list, attempt
     trivial/degenerate (build_grading_spec returns a GradeResult).
     """
     from general_beckman.apply import _enqueue_posthook_llm_child
-    from src.infra.db import get_task
+    from dabidabi import get_task
 
     source = await get_task(source_task_id)
     if source is None:

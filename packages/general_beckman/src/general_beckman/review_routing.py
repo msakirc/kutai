@@ -42,7 +42,7 @@ async def _repend_producer(mission_id: int, step_id: str, feedback: str) -> bool
     re-pend in ``apply.py`` (``_stamp_retry_feedback`` is the single place that
     guarantees per-attempt invariants for every quality re-pend).
     """
-    from src.infra.db import get_task_by_workflow_step, update_task
+    from dabidabi import get_task_by_workflow_step, update_task
     from general_beckman.apply import _stamp_retry_feedback
 
     row = await get_task_by_workflow_step(
@@ -122,7 +122,7 @@ async def _resolve_founder_chat_id(mission_id: int | None) -> int | None:
     except Exception as exc:  # noqa: BLE001
         logger.debug("founder-halt chat_id (blackboard) lookup failed: %s", exc)
     try:
-        from src.infra.db import get_db as _get_db
+        from dabidabi import get_db as _get_db
         _db = await _get_db()
         _cur = await _db.execute(
             "SELECT context FROM missions WHERE id = ?", (mission_id,),
@@ -166,7 +166,7 @@ async def _escalate_to_founder(
     #    is down. update_task failure is logged but never raised.
     try:
         if reviewer_task_id is not None:
-            from src.infra.db import update_task
+            from dabidabi import update_task
             await update_task(int(reviewer_task_id), status="waiting_human")
     except Exception as exc:  # noqa: BLE001 — escalation must never raise
         logger.warning(

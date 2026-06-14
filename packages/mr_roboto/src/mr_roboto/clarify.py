@@ -123,7 +123,7 @@ async def _resolve_chat_id(task: dict, mission_id: int | None) -> int | None:
         return task.get("chat_id")
     if mission_id is not None:
         try:
-            from src.infra.db import get_db as _get_db
+            from dabidabi import get_db as _get_db
             import json as _json2
             _db = await _get_db()
             _cur = await _db.execute(
@@ -298,7 +298,7 @@ async def clarify(task: dict) -> dict:
         if chat_id is None:
             # Tertiary: some seed paths still use missions.context.
             try:
-                from src.infra.db import get_db as _get_db
+                from dabidabi import get_db as _get_db
                 _db = await _get_db()
                 _cur = await _db.execute(
                     "SELECT context FROM missions WHERE id = ?", (mission_id,),
@@ -352,7 +352,7 @@ async def clarify(task: dict) -> dict:
             chat_id = task.get("chat_id")
         if chat_id is None and mission_id_v is not None:
             try:
-                from src.infra.db import get_db as _get_db
+                from dabidabi import get_db as _get_db
                 import json as _json2
                 _db = await _get_db()
                 _cur = await _db.execute(

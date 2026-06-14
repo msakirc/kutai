@@ -109,7 +109,7 @@ async def _existing_titles_for_credential_paste() -> set[str]:
     """Return titles of pending/in_progress credential_paste actions
     so we can de-duplicate per service."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
     except ImportError:
         return set()
     db = await get_db()
@@ -139,7 +139,7 @@ async def credential_rotation_reminder(
     Returns ``{ok, scanned, due, emitted, skipped_duplicate}``.
     """
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
     except ImportError:
         return {
             "ok": False,

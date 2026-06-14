@@ -193,7 +193,7 @@ async def log_external_send(
         ``task_id``). A confirmation-gated publish whose ``external_comms_log``
         row has the same ``task_id`` is considered audited.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
 
     content_hash, content_md = _encode_content(content)
@@ -240,7 +240,7 @@ async def log_external_send(
 
 async def revoke_send(log_id: int, reason: str) -> bool:
     """Mark a logged send as revoked (soft-delete). Returns False if not found."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     revoked_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cur = await db.execute(
@@ -268,7 +268,7 @@ async def search_sends(
     Returns list of dicts (log_id, sent_at, channel, recipient,
     content_hash, source_mission_id, reversibility, revoked_at).
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
 
     clauses: list[str] = []
@@ -341,7 +341,7 @@ async def pending_audit_gaps(window_minutes: int = 5) -> list[dict[str, Any]]:
     derived by LEFT JOINing ``tasks`` on ``action_confirmations.task_id =
     tasks.id``.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
 
     # action_confirmations holds external-publish confirmation requests.

@@ -110,7 +110,7 @@ async def requirements_for(
     try:
         _mid = task.get("mission_id")
         if _mid is not None:
-            from src.infra.db import get_mission_quality_mode
+            from dabidabi import get_mission_quality_mode
             reqs.quality_mode = await get_mission_quality_mode(int(_mid))
     except Exception:
         # leave default "balanced"
@@ -176,7 +176,7 @@ async def requirements_for(
             step_id = task_ctx.get("workflow_step_id")
             mission_id = task.get("mission_id")
             if step_id and mission_id:
-                from src.infra.db import get_db
+                from dabidabi import get_db
                 _db = await get_db()
                 _cur = await _db.execute(
                     "SELECT context FROM missions WHERE id = ?", (mission_id,),

@@ -7,7 +7,7 @@ name = "hallederiz_kadir"
 version = "0.1.0"
 description = "LLM call execution hub — litellm, streaming, retries, quality"
 requires-python = ">=3.10"
-dependencies = ["litellm>=1.40.0"]
+dependencies = ["litellm>=1.40.0", "dabidabi"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -59,7 +59,7 @@ async def _check_site_load(product_id: str, **kwargs) -> dict:
         from mr_roboto.http_check import http_check
         # Best-effort: check that the product's public URL responds 200.
         # If product_url is not configured, degrade to warning.
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT metadata_json FROM missions WHERE id = ("
@@ -86,7 +86,7 @@ async def _check_site_load(product_id: str, **kwargs) -> dict:
 async def _check_payment_e2e(product_id: str, **kwargs) -> dict:
     """(b) Payment flow E2E test green within last 24h."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT COUNT(*) FROM stripe_payment_test_log "
@@ -105,7 +105,7 @@ async def _check_payment_e2e(product_id: str, **kwargs) -> dict:
 async def _check_support_faq(product_id: str, **kwargs) -> dict:
     """(c) support_tier1 has launch FAQ indexed."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT COUNT(*) FROM support_docs "
@@ -122,7 +122,7 @@ async def _check_support_faq(product_id: str, **kwargs) -> dict:
 async def _check_copy_compliance(product_id: str, **kwargs) -> dict:
     """(d) A6 copy_compliance pass on all channel drafts."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         # Look for any copy_compliance failure in the recent launch drafts
         async with db.execute(
@@ -141,7 +141,7 @@ async def _check_copy_compliance(product_id: str, **kwargs) -> dict:
 async def _check_press_kit(product_id: str, **kwargs) -> dict:
     """(e) A4 press kit published with permanent URL."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT kit_id, published_url FROM press_kits "
@@ -161,7 +161,7 @@ async def _check_press_kit(product_id: str, **kwargs) -> dict:
 async def _check_status_page(product_id: str, **kwargs) -> dict:
     """(f) B3 status page exists."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         # Check that at least one incident or status record exists
         # (B3 creates at least one seed record when set up)

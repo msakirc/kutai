@@ -1,8 +1,8 @@
 """Task queue: eligibility + priority boost + paused-pattern filter."""
 from __future__ import annotations
 
-from src.infra.db import get_ready_tasks, claim_task, update_task
-from src.infra.times import from_db, utc_now
+from dabidabi import get_ready_tasks, claim_task, update_task
+from dabidabi.times import from_db, utc_now
 
 from general_beckman.admission import compute_urgency
 from general_beckman.paused_patterns import is_paused

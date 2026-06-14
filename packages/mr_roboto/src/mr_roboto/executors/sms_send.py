@@ -39,7 +39,7 @@ _TWILIO_USD_PER_SMS: float = 0.0079
 async def _today_sms_count() -> int:
     """Best-effort count of sms_send events recorded today. Fail-open → 0."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT COUNT(*) FROM registry_events "
@@ -55,7 +55,7 @@ async def _record_sms_send(mission_id: int | None, payload: dict, status: str) -
     """Best-effort write to registry_events for cap tracking + ops_log."""
     try:
         import json as _json
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         await db.execute(
             "INSERT INTO registry_events "

@@ -222,7 +222,7 @@ async def run(task: dict) -> dict:
     itself always re-extracts the prediction so a re-run picks up an
     edited spec.
     """
-    from src.infra.db import (
+    from dabidabi import (
         get_mission,
         insert_hypothesis,
     )

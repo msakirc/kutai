@@ -45,7 +45,7 @@ class McpManager:
         """Upsert one yalayut_mcp_processes row."""
         from datetime import datetime
 
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -81,7 +81,7 @@ class McpManager:
                          artifact_id=artifact_id, err=str(e))
 
     async def _load_process(self, artifact_id: int) -> dict[str, Any] | None:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         try:
@@ -279,7 +279,7 @@ class McpManager:
                                     consecutive_probe_fails=entry.get("fails", 0))
 
     async def _mark_artifact_disabled(self, artifact_id: int) -> None:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         await db.execute(
@@ -314,7 +314,7 @@ class McpManager:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 pass
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         try:
             db = await get_db()

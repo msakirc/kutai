@@ -34,7 +34,7 @@ async def attention_check(
       - missions.founder_attention_budget_minutes (INTEGER, NULL = unbounded)
       - founder_attention_log.minutes_debited (per-debit log)
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
 
     # Budget
@@ -90,7 +90,7 @@ async def attention_debit(
     minutes_debited: int,
 ) -> dict[str, Any]:
     """Record a debit row. Returns ``{"ok": True, "id": rowid}`` on success."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cur = await db.execute(

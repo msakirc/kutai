@@ -92,7 +92,7 @@ async def _write_gap_row(
 ) -> int | None:
     """Write a docs_gap_log row. Returns the new gap_id or None on failure."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "INSERT INTO docs_gap_log "

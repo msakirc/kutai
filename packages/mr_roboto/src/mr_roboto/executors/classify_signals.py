@@ -58,7 +58,7 @@ def _recipe_domains() -> list[str]:
 
 async def _classified_external_ids() -> set[str]:
     """external_ids that already have a classified_signal row (dedup guard)."""
-    from src.infra.db import get_growth_events
+    from dabidabi import get_growth_events
 
     rows = await get_growth_events(kind="classified_signal")
     out: set[str] = set()
@@ -77,7 +77,7 @@ async def run(task: dict) -> dict:
     without touching Beckman.
     """
     import general_beckman
-    from src.infra.db import get_growth_events
+    from dabidabi import get_growth_events
 
     payload = task.get("payload") or {}
     mission_id = task.get("mission_id") or payload.get("mission_id")
@@ -156,7 +156,7 @@ async def _on_classifier_complete(task_id: int, result: dict, state: dict | None
     Called by Beckman's ``dispatch_on_complete`` when the classifier agent
     task reaches a terminal state. Errors are swallowed by the dispatcher.
     """
-    from src.infra.db import get_growth_events, get_task
+    from dabidabi import get_growth_events, get_task
     from general_beckman import record_growth_event
 
     res = (result or {}).get("result")

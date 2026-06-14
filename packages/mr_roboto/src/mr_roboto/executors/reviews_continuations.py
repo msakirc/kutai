@@ -45,7 +45,7 @@ def _extract_content(result: dict) -> str:
 # ── classify sink ───────────────────────────────────────────────────────────
 
 async def _persist_classification(review_id, sentiment, theme_tag) -> None:
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     await db.execute(
         "UPDATE external_reviews SET sentiment=?, theme_tag=? WHERE review_id=?",

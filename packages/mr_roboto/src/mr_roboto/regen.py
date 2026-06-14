@@ -202,7 +202,7 @@ async def _record_regen_log(
 ) -> int | None:
     """Insert a row into ``regen_log``. Returns the row id or None on error."""
     try:
-        from src.infra.db import get_db  # type: ignore
+        from dabidabi import get_db  # type: ignore
     except Exception:
         logger.debug("regen_log: db module unavailable; skipping persistence")
         return None

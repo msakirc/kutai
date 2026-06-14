@@ -170,7 +170,7 @@ async def _north_star_and_model(mission_id) -> tuple[float, str]:
     relevance = 0.5
     business_model = "b2c"
     try:
-        from src.infra.db import get_mission
+        from dabidabi import get_mission
 
         mission = await get_mission(mission_id)
         if not mission:
@@ -221,7 +221,7 @@ async def run(task: dict) -> dict:
     mission before writing the fresh ranking, so re-running at each digest
     cycle rewrites rather than accumulates.
     """
-    from src.infra.db import get_growth_events
+    from dabidabi import get_growth_events
     from general_beckman import record_growth_event, supersede_growth_event
 
     payload = task.get("payload") or {}

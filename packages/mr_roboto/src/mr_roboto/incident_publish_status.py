@@ -30,8 +30,8 @@ async def run(payload: dict) -> dict:
       {"status": "ok", "update_id": int}
     """
     import json as _json
-    from src.infra.db import get_db
-    from src.infra.times import db_now
+    from dabidabi import get_db
+    from dabidabi.times import db_now
 
     incident_id = payload.get("incident_id")
     product_id = payload.get("product_id") or ""

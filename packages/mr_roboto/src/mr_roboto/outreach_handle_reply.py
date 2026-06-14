@@ -129,7 +129,7 @@ async def run_outreach_handle_reply(
     Or:
       {"status": "error", "error": <str>}
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
 
     # Verify send_id exists and belongs to product_id

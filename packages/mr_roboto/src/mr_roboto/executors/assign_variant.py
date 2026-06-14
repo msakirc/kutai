@@ -86,7 +86,7 @@ async def _mission_context(mission_id: int | None) -> dict:
     if mission_id is None:
         return {}
     try:
-        from src.infra.db import get_mission
+        from dabidabi import get_mission
 
         row = await get_mission(mission_id)
         if not row:
@@ -207,7 +207,7 @@ async def _resolve_hypothesis_id(
     if mission_id is None:
         return None
     try:
-        from src.infra.db import get_pending_hypotheses
+        from dabidabi import get_pending_hypotheses
 
         pending = await get_pending_hypotheses(mission_id) or []
         if pending:
@@ -219,7 +219,7 @@ async def _resolve_hypothesis_id(
 
 async def run(task: dict[str, Any]) -> dict[str, Any]:
     """Assign A/B variants for one mission. Never raises."""
-    from src.infra.db import insert_variant
+    from dabidabi import insert_variant
     from general_beckman import record_growth_event
 
     ctx = _parse_context(task)

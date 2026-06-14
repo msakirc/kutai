@@ -37,7 +37,7 @@ from typing import Callable
 from fatih_hoca import requirements_for
 from fatih_hoca.requirements import ModelRequirements
 from src.app.config import MAX_TOOL_OUTPUT_LENGTH
-from src.infra.db import (
+from dabidabi import (
     load_task_checkpoint, record_model_call, record_cost, store_memory,
 )
 from src.infra.logging_config import get_logger
@@ -335,7 +335,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
     # Mission-level setting; balanced (default) leaves machinery alone.
     if mission_id is not None:
         try:
-            from src.infra.db import get_mission_quality_mode
+            from dabidabi import get_mission_quality_mode
             from src.infra.cost_wiring import quality_mode_profile
             _qmode = await get_mission_quality_mode(int(mission_id))
             _qprof = quality_mode_profile(_qmode)
@@ -394,7 +394,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
         # ── Check if task was cancelled while running ──
         if iteration > 0 and iteration % 2 == 0:
             try:
-                from src.infra.db import get_task as _get_task
+                from dabidabi import get_task as _get_task
                 _current = await _get_task(task_id)
                 if _current and _current.get("status") == "cancelled":
                     logger.info(f"[Task #{task_id}] Cancelled by user, aborting")
@@ -1033,7 +1033,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 and task.get("id") is not None
             ):
                 try:
-                    from src.infra.db import set_task_confidence
+                    from dabidabi import set_task_confidence
                     await set_task_confidence(
                         int(task["id"]), numeric=float(confidence),
                     )

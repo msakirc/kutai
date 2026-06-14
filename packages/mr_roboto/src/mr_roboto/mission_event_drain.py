@@ -25,7 +25,7 @@ logger = get_logger("mr_roboto.mission_event_drain")
 
 async def _drain_confirmations() -> int:
     """Post mission_events for any action_confirmations awaiting wire-up."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
     # task_id → mission_id lookup is best-effort; if the task row is missing
@@ -86,7 +86,7 @@ async def _drain_budget_alerts() -> int:
     Ceiling pulled live from cost_budgets via get_mission_cost_breakdown.
     """
     try:
-        from src.infra.db import (
+        from dabidabi import (
             get_pending_cost_alerts,
             mark_cost_alert_drained,
         )
@@ -158,7 +158,7 @@ async def _mission_id_for_task(task_id: int | None) -> int:
     if task_id is None:
         return 0
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT mission_id FROM tasks WHERE id = ?", (int(task_id),),

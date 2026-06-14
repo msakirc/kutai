@@ -32,7 +32,7 @@ async def _remaining_budget(mission_id: int | None) -> float | None:
     """
     if mission_id is None:
         return None
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     cur = await db.execute(
         "SELECT cost_ceiling_usd, spent_usd FROM missions WHERE id = ?",
@@ -232,7 +232,7 @@ async def _run_image(task: dict, image_call: dict) -> dict:
 
     duration_ms = int((_time.time() - started) * 1000)
     try:
-        from src.infra.db import record_call_tokens, record_call_cost
+        from dabidabi import record_call_tokens, record_call_cost
         await record_call_tokens(
             task_id=task_id, agent_type=agent_type,
             workflow_step_id=image_call.get("workflow_step_id"),

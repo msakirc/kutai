@@ -186,7 +186,7 @@ async def run_tuning_cycle() -> dict[str, Any]:
 
     Returns a report dict.
     """
-    from src.infra.db import get_model_stats
+    from dabidabi import get_model_stats
     from src.models.model_registry import get_registry
 
     global _last_run_ts
@@ -371,7 +371,7 @@ async def get_prometheus_lines_async() -> list[str]:
     lines = get_prometheus_lines()
 
     try:
-        from src.infra.db import get_model_stats
+        from dabidabi import get_model_stats
         stats = await get_model_stats()
 
         if stats:

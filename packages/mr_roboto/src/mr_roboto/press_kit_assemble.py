@@ -61,7 +61,7 @@ def audience_stub(audience: str, spec_text: str) -> str:
 async def _get_latest_version(product_id: str) -> int:
     """Return the highest version number already stored for product_id, or 0."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT MAX(version) FROM press_kits WHERE product_id = ?",

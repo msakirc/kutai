@@ -249,7 +249,7 @@ async def _safety_guard_check(task: dict) -> Action | None:
     mission_id = task.get("mission_id")
     if mission_id is not None:
         try:
-            from src.infra.db import get_db
+            from dabidabi import get_db
             import json as _json
             db = await get_db()
             cur = await db.execute(
@@ -624,7 +624,7 @@ async def _log_action_event(
 ) -> None:
     """Best-effort audit-log writer. Never raises into the dispatch path."""
     try:
-        from src.infra.db import record_action_event
+        from dabidabi import record_action_event
         # Strip well-known noisy fields from the payload snapshot so the
         # audit row stays compact and JSON-serializable.
         snap = {
@@ -940,7 +940,7 @@ async def _run_dispatch(task: dict) -> Action:
                         if line.strip()
                     ]
                     if changed:
-                        from src.infra.db import record_artifact_write
+                        from dabidabi import record_artifact_write
                         retry_n = int(payload.get("retry_n") or 0)
                         model_id = (
                             payload.get("model_id")
@@ -3221,7 +3221,7 @@ async def _run_dispatch(task: dict) -> Action:
             )
             # Record provenance for demo.mp4 so it surfaces in artifact lineage.
             try:
-                from src.infra.db import record_artifact_write
+                from dabidabi import record_artifact_write
                 await record_artifact_write(
                     path=res.get("video_path") or "",
                     task_id=task.get("id"),
@@ -3736,7 +3736,7 @@ async def _run_dispatch(task: dict) -> Action:
                 _mod = importlib.import_module(
                     "general_beckman.posthook_handlers.audit_completeness_check"
                 )
-                from src.infra.db import get_task as _get_task
+                from dabidabi import get_task as _get_task
                 _src_id = int(payload.get("source_task_id"))
                 _src = await _get_task(_src_id)
                 _src_task = dict(_src) if _src else {}
@@ -3803,7 +3803,7 @@ async def _run_dispatch(task: dict) -> Action:
             source_task: dict = {}
             if source_task_id:
                 try:
-                    from src.infra.db import get_task as _get_task
+                    from dabidabi import get_task as _get_task
                     _src = await _get_task(int(source_task_id))
                     if _src:
                         source_task = dict(_src)
@@ -3924,7 +3924,7 @@ async def _run_dispatch(task: dict) -> Action:
             # Cron tick — no specific product. Z7 #7: product_id now defaults
             # to mission_id, so sweep every distinct product. Without this the
             # cron ran for the literal "default" which matches no mission.
-            from src.infra.db import get_db
+            from dabidabi import get_db
             _db = await get_db()
             _cur = await _db.execute(
                 "SELECT DISTINCT product_id FROM missions "
@@ -3959,7 +3959,7 @@ async def _run_dispatch(task: dict) -> Action:
             source_task: dict = {}
             if source_task_id:
                 try:
-                    from src.infra.db import get_task as _get_task
+                    from dabidabi import get_task as _get_task
                     source_task = await _get_task(source_task_id) or {}
                 except Exception:
                     pass
@@ -4301,7 +4301,7 @@ async def _run_dispatch(task: dict) -> Action:
             source_task: dict = {}
             if source_task_id:
                 try:
-                    from src.infra.db import get_task as _get_task
+                    from dabidabi import get_task as _get_task
                     _src = await _get_task(int(source_task_id))
                     if _src:
                         source_task = dict(_src)
@@ -4398,7 +4398,7 @@ async def _run_dispatch(task: dict) -> Action:
             source_task: dict = {}
             if source_task_id:
                 try:
-                    from src.infra.db import get_task as _get_task
+                    from dabidabi import get_task as _get_task
                     _src = await _get_task(int(source_task_id))
                     if _src:
                         source_task = dict(_src)
@@ -4444,7 +4444,7 @@ async def _run_dispatch(task: dict) -> Action:
             source_task: dict = {}
             if source_task_id:
                 try:
-                    from src.infra.db import get_task as _get_task
+                    from dabidabi import get_task as _get_task
                     _src = await _get_task(int(source_task_id))
                     if _src:
                         source_task = dict(_src)
@@ -4665,7 +4665,7 @@ async def _run_dispatch(task: dict) -> Action:
             source_task: dict = {}
             if source_task_id:
                 try:
-                    from src.infra.db import get_task as _get_task
+                    from dabidabi import get_task as _get_task
                     _src = await _get_task(int(source_task_id))
                     if _src:
                         source_task = dict(_src)

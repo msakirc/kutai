@@ -119,7 +119,7 @@ async def _git_log_since_last_entry(
             since_date: str | None = None
             if since_entry_id is not None:
                 try:
-                    from src.infra.db import get_db
+                    from dabidabi import get_db
                     db = await get_db()
                     cur = await db.execute(
                         "SELECT released_at FROM changelog_entries WHERE entry_id=?",
@@ -132,7 +132,7 @@ async def _git_log_since_last_entry(
                     pass
             else:
                 try:
-                    from src.infra.db import get_db
+                    from dabidabi import get_db
                     db = await get_db()
                     cur = await db.execute(
                         "SELECT released_at FROM changelog_entries "
@@ -295,9 +295,9 @@ async def run(payload: dict) -> dict:
 
     # 6. Write draft row to changelog_entries
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
-        from src.infra.times import db_now
+        from dabidabi.times import db_now
         now_str = db_now()
 
         cur = await db.execute(

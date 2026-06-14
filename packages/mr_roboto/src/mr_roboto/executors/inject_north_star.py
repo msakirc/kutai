@@ -86,7 +86,7 @@ async def inject_north_star(mission_id: int) -> dict:
 
     # ── 2. Read existing mission context ─────────────────────────────────
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         async with db.execute(

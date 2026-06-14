@@ -13,7 +13,7 @@ import dataclasses
 import hashlib
 import json
 
-from src.infra.db import log_conversation
+from dabidabi import log_conversation
 from src.infra.logging_config import get_logger
 
 logger = get_logger("runtime.checkpoint")

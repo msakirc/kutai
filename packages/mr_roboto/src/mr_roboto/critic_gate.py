@@ -166,7 +166,7 @@ async def _persist(
 ) -> None:
     """Write a critic_log row. Best-effort; never raises."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
     except Exception:
         return
     try:

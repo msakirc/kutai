@@ -87,7 +87,7 @@ Updates sent to customers during this incident:
 
 async def _fetch_incident(incident_id: int, product_id: str) -> dict | None:
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT incident_id, product_id, opened_at, resolved_at, severity, "
@@ -115,7 +115,7 @@ async def _fetch_incident(incident_id: int, product_id: str) -> dict | None:
 
 async def _fetch_updates(incident_id: int, product_id: str) -> list[dict]:
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT posted_at, status_kind, body_md "
@@ -208,7 +208,7 @@ async def run(payload: dict) -> dict:
     Returns:
       {"status": "ok", "artifact_path": str, "founder_action_id": int|None}
     """
-    from src.infra.times import db_now
+    from dabidabi.times import db_now
 
     incident_id = payload.get("incident_id")
     product_id = payload.get("product_id") or ""

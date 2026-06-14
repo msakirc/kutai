@@ -136,7 +136,7 @@ async def _e2e_specs_present(workspace_root: str) -> bool:
 async def _mission_demo_scenario_path(mission_id: int) -> str | None:
     """Read ``missions.demo_scenario_path`` for the mission (None when unset)."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT demo_scenario_path FROM missions WHERE id = ?",
@@ -200,7 +200,7 @@ async def _resolve_scenario_path(
 async def _mission_demo_required(mission_id: int) -> bool:
     """Read ``missions.demo_required`` for the mission (default True)."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT demo_required FROM missions WHERE id = ?", (int(mission_id),),

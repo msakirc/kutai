@@ -104,7 +104,7 @@ async def query(task_ctx: dict, top_k: int = _DEFAULT_TOP_K) -> list[Artifact]:
     multilingual-e5-base utility (lazy import — keeps yalayut import-light and
     avoids a hard dep at module load).
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     from src.memory.embeddings import get_embedding
 
     ctx = TaskContext.from_task(task_ctx)

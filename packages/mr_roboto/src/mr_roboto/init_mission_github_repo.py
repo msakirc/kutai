@@ -562,7 +562,7 @@ async def set_repo_visibility(
     # Need the repo URL — pull from DB or recompute.
     repo_url: str | None = None
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT github_repo_url FROM missions WHERE id = ?",

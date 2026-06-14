@@ -57,7 +57,7 @@ async def validate_target_segment(mission_id: int) -> dict:
            "warned": bool, "unknown_value": bool, "mission_id": int}``
     """
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         async with db.execute(

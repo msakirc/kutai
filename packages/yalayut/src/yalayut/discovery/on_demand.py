@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import inspect
 
-from src.infra.db import get_db
+from dabidabi import get_db
 from src.infra.logging_config import get_logger
 from yalayut.discovery import demand as _demand
 

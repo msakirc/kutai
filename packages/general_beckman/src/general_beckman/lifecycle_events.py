@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from src.infra.db import get_db
+from dabidabi import get_db
 
 logger = logging.getLogger(__name__)
 

@@ -40,6 +40,16 @@ class DaLLaMa:
         self._idle_task = asyncio.create_task(self._idle_unloader.run())
         logger.info("DaLLaMa started (port %d)", self._config.port)
 
+    def reconcile_strays(self) -> int:
+        """Kill any llama-server NOT on the configured port (frees VRAM).
+
+        Preserves a healthy server already serving on ``config.port``. Safe to
+        call at boot before any model is loaded — complements the lazy
+        kill-all inside :meth:`start`, which the 2026-06-14 incident never
+        reached because no local model was requested that session.
+        """
+        return self._platform.kill_stray_servers(self._config.port)
+
     async def stop(self):
         for task in (self._watchdog_task, self._idle_task):
             if task is not None:

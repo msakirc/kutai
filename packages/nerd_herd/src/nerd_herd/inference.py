@@ -47,6 +47,12 @@ class InferenceCollector:
         # 0.0 means never seen (no inference yet or currently in-flight).
         self._idle_since_ts: float = 0.0
 
+        # Wrong-port stray detection (2026-06-14): warn once after N
+        # consecutive metric-fetch failures so a silent blackout becomes a
+        # loud, actionable signal instead of "no model loaded".
+        self._consec_fetch_fail: int = 0
+        self._stray_warned: bool = False
+
     async def start(self) -> None:
         self._poll_task = asyncio.create_task(self._poll_loop())
 
@@ -69,6 +75,53 @@ class InferenceCollector:
                 logger.debug("Inference poll error", error=str(e))
             await asyncio.sleep(self._poll_interval)
 
+    _STRAY_WARN_AFTER = 3
+
+    def _note_fetch_success(self) -> None:
+        self._consec_fetch_fail = 0
+        self._stray_warned = False
+
+    def _should_warn_stray(self) -> bool:
+        """Increment the consecutive-failure counter; return True exactly once
+        when metrics have failed ``_STRAY_WARN_AFTER`` times in a row."""
+        self._consec_fetch_fail += 1
+        if self._consec_fetch_fail >= self._STRAY_WARN_AFTER and not self._stray_warned:
+            self._stray_warned = True
+            return True
+        return False
+
+    @staticmethod
+    def _llama_server_running() -> bool:
+        """True if any llama-server process exists (regardless of port)."""
+        import subprocess
+        import sys
+        try:
+            if sys.platform == "win32":
+                out = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/NH"],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout
+                return "llama-server.exe" in out.lower()
+            out = subprocess.run(
+                ["pgrep", "-f", "llama-server"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            return bool(out.strip())
+        except Exception:
+            return False
+
+    def _handle_fetch_failure(self, reason: str) -> None:
+        if self._should_warn_stray() and self._llama_server_running():
+            logger.warning(
+                "llama-server metrics unreachable but a llama-server process IS "
+                "running — likely a stray on the wrong port (not a VRAM leak); "
+                "reconcile needed",
+                url=self._url,
+                consecutive_failures=self._consec_fetch_fail,
+            )
+        else:
+            logger.debug("llama-server metrics fetch failed", error=reason)
+
     async def _fetch_and_record(self) -> None:
         import aiohttp
         try:
@@ -78,11 +131,13 @@ class InferenceCollector:
                     timeout=aiohttp.ClientTimeout(total=3),
                 ) as resp:
                     if resp.status != 200:
+                        self._handle_fetch_failure(f"HTTP {resp.status}")
                         return
                     text = await resp.text()
                     self._parse_and_record(text)
+                    self._note_fetch_success()
         except Exception as e:
-            logger.debug("llama-server metrics fetch failed", error=str(e))
+            self._handle_fetch_failure(str(e))
 
     def _parse_and_record(self, text: str, ts: float | None = None) -> None:
         if ts is None:

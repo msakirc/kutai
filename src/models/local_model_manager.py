@@ -71,7 +71,9 @@ class LocalModelManager:
     def __init__(self) -> None:
         from dallama import DaLLaMa, DaLLaMaConfig
 
-        port = int(os.environ.get("LLAMA_SERVER_PORT", "8080"))
+        from src.infra.llama_endpoint import resolve_llama_port
+
+        port = resolve_llama_port()
         llama_path = os.environ.get("LLAMA_SERVER_PATH", "llama-server")
         log_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs"
@@ -118,6 +120,16 @@ class LocalModelManager:
         Called by the orchestrator/run.py after the sidecar connects.
         """
         self._nerd_herd = nerd_herd
+
+    def reconcile_strays(self) -> int:
+        """Kill any llama-server NOT on our configured port (frees VRAM).
+
+        Called once at orchestrator boot so a wrong-port orphan from a prior
+        run is cleared even when this session loads no local model (the lazy
+        kill inside DaLLaMa.start() would otherwise never run). Preserves a
+        healthy server already on our port.
+        """
+        return self._dallama.reconcile_strays()
 
     def _push_to_nerd_herd(self, model_name: str | None) -> None:
         """Push current LocalModelState to the NerdHerd sidecar (fire-and-forget)."""

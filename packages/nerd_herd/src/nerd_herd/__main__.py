@@ -25,8 +25,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=9881, help="Metrics HTTP port (default: 9881)")
     parser.add_argument(
         "--llama-url",
-        default=f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}",
-        help="llama-server base URL (default: env LLAMA_SERVER_PORT, else 8080)",
+        default=None,
+        help="llama-server base URL (default: built from LLAMA_SERVER_PORT env)",
     )
     parser.add_argument("--pid-file", default=None, help="Write PID to this file after startup")
     parser.add_argument(
@@ -107,8 +107,39 @@ async def _persist_mode(db_path: str, mode: str, auto_managed: bool) -> None:
         pass
 
 
+def _resolve_llama_url(explicit: str | None) -> str:
+    """Resolve the llama-server URL, failing loud rather than defaulting to 8080.
+
+    The silent ``LLAMA_SERVER_PORT`` -> 8080 fallback caused the 2026-06-14
+    split-brain orphan. If no URL is given and the env is unset, load .env once
+    and, if still unset, refuse to start.
+    """
+    if explicit:
+        return explicit
+    raw = os.environ.get("LLAMA_SERVER_PORT")
+    if raw is None:
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv()
+        except Exception:
+            pass
+        raw = os.environ.get("LLAMA_SERVER_PORT")
+    if raw is None:
+        raise SystemExit(
+            "nerd_herd: --llama-url not given and LLAMA_SERVER_PORT unset — "
+            "refusing to default to 8080 (wrong-port orphan guard)."
+        )
+    try:
+        port = int(raw)
+    except ValueError:
+        raise SystemExit(f"nerd_herd: LLAMA_SERVER_PORT={raw!r} is not a valid port.")
+    return f"http://127.0.0.1:{port}"
+
+
 async def _main() -> None:
     args = _parse_args()
+    args.llama_url = _resolve_llama_url(args.llama_url)
 
     # Allow the project root to be injected so imports resolve when running
     # outside the installed package (e.g. during development).

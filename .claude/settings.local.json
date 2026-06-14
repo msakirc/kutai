@@ -1,4 +1,5 @@
 {
+  "worktree": { "baseRef": "head" },
   "permissions": {
     "allow": [
       "Bash(grep -n \"error_recovery\\\\|error recovery\" /c/Users/sakir/Dropbox/Workspaces/kutay/plans/*.md)",

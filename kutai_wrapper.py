@@ -97,8 +97,38 @@ def _kill_stale_orchestrators() -> None:
         print(f"[Yasar Usta] Stale orchestrator cleanup error: {e}")
 
 
+def _reconcile_stray_llama() -> None:
+    """Kill any llama-server NOT on the configured port (frees VRAM).
+
+    Singleton hardening for the 2026-06-14 wrong-port orphan: a llama-server
+    spawned by a dead/stale process on the wrong port (e.g. :8080 when the
+    stack expects :8081) sits invisible to every port-specific check, blocking
+    VRAM. This clears such strays at supervisor boot while preserving a
+    healthy server already on the configured port. Fail-soft: the supervisor
+    must never crash on cleanup (unlike the orchestrator, which fails loud).
+    """
+    raw = os.environ.get("LLAMA_SERVER_PORT")
+    if raw is None:
+        print("[Yasar Usta] LLAMA_SERVER_PORT unset — skipping stray-llama reconcile")
+        return
+    try:
+        port = int(raw)
+    except ValueError:
+        print(f"[Yasar Usta] LLAMA_SERVER_PORT={raw!r} invalid — skipping reconcile")
+        return
+    try:
+        from dallama.platform import PlatformHelper
+
+        n = PlatformHelper().kill_stray_servers(port)
+        if n:
+            print(f"[Yasar Usta] Reconciled {n} stray llama-server(s) not on port {port}")
+    except Exception as e:
+        print(f"[Yasar Usta] Stray-llama reconcile error: {e}")
+
+
 # ── Startup cleanup ──
 _kill_stale_orchestrators()
+_reconcile_stray_llama()
 
 venv_python = _find_python()
 
@@ -140,9 +170,11 @@ config = GuardConfig(
         ),
         SidecarConfig(
             name="nerd_herd",
+            # No --llama-url: nerd_herd resolves it from LLAMA_SERVER_PORT
+            # (inherited from load_dotenv above) and fails loud if unset,
+            # instead of silently defaulting to :8080 (2026-06-14 orphan guard).
             command=[venv_python, "-m", "nerd_herd",
                      "--port", "9881",
-                     "--llama-url", f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}",
                      "--pid-file", str(PROJECT_ROOT / "logs" / "nerd_herd.pid"),
                      "--db-path", os.getenv("DB_PATH", str(PROJECT_ROOT / "data" / "kutai.db"))],
             health_url="http://127.0.0.1:9881/health",

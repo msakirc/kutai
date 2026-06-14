@@ -269,7 +269,107 @@ class PlatformHelper:
         except Exception as exc:
             logger.debug("kill_orphans(%s) failed: %s", executable_name, exc)
 
+    def kill_stray_servers(self, keep_port: int, executable_name: str = "llama-server") -> int:
+        """Kill every llama-server EXCEPT the one (if any) listening on *keep_port*.
+
+        Port-aware counterpart to :meth:`kill_orphans`. Preserves a healthy
+        server already serving on the configured port (honoring the
+        "never kill the good llama-server" rule) while clearing wrong-port
+        orphans that occupy VRAM — the 2026-06-14 incident, where a stray on
+        :8080 sat invisible to every port-specific check while the stack
+        expected :8081.
+
+        Returns the number of processes killed. Never raises.
+        """
+        try:
+            pids = self._llama_server_pids(executable_name)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("kill_stray_servers: enumerate failed: %s", exc)
+            return 0
+        if not pids:
+            return 0
+
+        keeper: int | None = None
+        try:
+            keeper = self._pid_on_port(keep_port)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("kill_stray_servers: port probe failed: %s", exc)
+
+        killed = 0
+        for pid in pids:
+            if keeper is not None and pid == keeper:
+                continue
+            try:
+                self._kill_pid(pid)
+                killed += 1
+                logger.warning(
+                    "Killed stray llama-server pid=%s (not on port %d)", pid, keep_port
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("kill_stray_servers: kill pid=%s failed: %s", pid, exc)
+        if keeper is not None:
+            logger.info("Preserved llama-server pid=%s on port %d", keeper, keep_port)
+        return killed
+
     # ── Internal helpers ────────────────────────────────────────────────────
+
+    def _llama_server_pids(self, executable_name: str = "llama-server") -> set[int]:
+        """Return PIDs of running llama-server processes."""
+        if _IS_WINDOWS:
+            exe = executable_name if executable_name.endswith(".exe") else f"{executable_name}.exe"
+            out = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            pids: set[int] = set()
+            for line in out.splitlines():
+                line = line.strip()
+                if not line.startswith('"'):
+                    continue
+                parts = [p.strip('"') for p in line.split('","')]
+                if len(parts) >= 2 and parts[0].lower() == exe.lower():
+                    try:
+                        pids.add(int(parts[1]))
+                    except ValueError:
+                        pass
+            return pids
+        out = subprocess.run(
+            ["pgrep", "-f", executable_name],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        return {int(x) for x in out.split() if x.strip().isdigit()}
+
+    def _pid_on_port(self, port: int) -> int | None:
+        """Return the PID listening on *port*, or None."""
+        needle = f":{port}"
+        if _IS_WINDOWS:
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[3].upper() == "LISTENING" and parts[1].endswith(needle):
+                    try:
+                        return int(parts[4])
+                    except ValueError:
+                        pass
+            return None
+        out = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        for x in out.split():
+            if x.strip().isdigit():
+                return int(x)
+        return None
+
+    def _kill_pid(self, pid: int) -> None:
+        """Force-kill a single PID."""
+        if _IS_WINDOWS:
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
+        else:
+            subprocess.run(["kill", "-9", str(pid)], capture_output=True, timeout=10)
 
     def _assign_to_job(self, process: subprocess.Popen) -> None:
         """Assign *process* to the Windows Job Object (no-op on non-Windows)."""

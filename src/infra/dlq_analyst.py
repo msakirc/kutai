@@ -139,9 +139,11 @@ class DLQAnalyst:
         """Ping llama-server /health endpoint."""
         try:
             start = time.time()
+            from src.infra.llama_endpoint import resolve_llama_url
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}/health",
+                    resolve_llama_url("/health"),
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     elapsed = round(time.time() - start, 1)

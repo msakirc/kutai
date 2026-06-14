@@ -577,8 +577,17 @@ async def main():
     # Wire NerdHerd client into LocalModelManager so _on_ready can push state
     try:
         from src.models.local_model_manager import get_local_manager
-        get_local_manager().set_nerd_herd(_nerd_herd)
+        _lmm = get_local_manager()
+        _lmm.set_nerd_herd(_nerd_herd)
         _log.debug("LocalModelManager wired to NerdHerd client")
+        # Boot reconcile: clear any wrong-port llama-server orphan from a prior
+        # run (the 2026-06-14 incident). Preserves a healthy server on our port.
+        try:
+            _n_killed = _lmm.reconcile_strays()
+            if _n_killed:
+                _log.warning("Reconciled stray llama-server(s) at boot", killed=_n_killed)
+        except Exception as exc:
+            _log.debug("Stray llama-server reconcile failed (non-critical)", error=str(exc))
     except Exception as exc:
         _log.debug("Could not wire NerdHerd to LocalModelManager", error=str(exc))
 

@@ -1,15 +1,43 @@
 # db.py
 import asyncio
+import os
 import aiosqlite
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
-from src.app.config import DB_PATH
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.infra.times import utc_now, db_now, to_db, DB_FMT
 
 logger = get_logger("infra.db")
+
+# ─── DB path resolution ───────────────────────────────────────────────────────
+# Self-contained DB_PATH resolution (no longer imported from src.app.config) so
+# this module can move into a standalone package without reaching back into the
+# app tree. Mirrors config.py's contract exactly:
+#   * load .env BEFORE reading os.getenv — the safety net for standalone scripts
+#     (e.g. `python -c "from src.infra.db import get_db"`) that never import
+#     config; without it DB_PATH silently forked to the default and writes
+#     ghosted (caught 2026-04-25). load_dotenv is a no-op once env vars are set,
+#     so the wrapper's existing load is unaffected.
+#   * require an ABSOLUTE path to prevent forked databases.
+#   * fall back to <project_root>/data/kutai.db.
+# DB_PATH stays a reassignable module global on purpose: test fixtures
+# monkeypatch ``db.DB_PATH`` directly (monkeypatch.setenv alone no-ops once the
+# module is imported — see docs/handoff/2026-05-04). configure() is the
+# supported runtime override (app startup / standalone embed).
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=False)
+except ImportError:  # python-dotenv absent in minimal envs
+    pass
+
+DB_PATH = os.getenv("DB_PATH") or os.path.join(_PROJECT_ROOT, "data", "kutai.db")
+if not os.path.isabs(DB_PATH):
+    raise RuntimeError(
+        f"DB_PATH must be absolute to prevent forked databases; got {DB_PATH!r}"
+    )
 
 # ─── Connection Pool (singleton) ────────────────────────────────────────────
 # Instead of opening/closing a connection on every DB call, we maintain a
@@ -27,6 +55,23 @@ _db_connection: aiosqlite.Connection | None = None
 # kutai.db because test_beckman_writes_selected_model_to_task changed
 # DB_PATH but get_db handed back the cached production connection.
 _db_connection_path: str | None = None
+
+
+def configure(db_path: str) -> None:
+    """Override the active DB path at runtime (app startup / standalone embed).
+
+    The engine reads DB_PATH from env by default; this is the explicit
+    injection seam for embedders that don't use env vars. Resets the cached
+    connection so the next get_db() reopens against the new path.
+    """
+    global DB_PATH, _db_connection, _db_connection_path
+    if not os.path.isabs(db_path):
+        raise RuntimeError(f"DB_PATH must be absolute; got {db_path!r}")
+    DB_PATH = db_path
+    _db_connection = None
+    _db_connection_path = None
+
+
 # Global lock guarding explicit BEGIN/COMMIT regions. aiosqlite serialises
 # individual SQL statements via its worker thread, but transactions span
 # multiple awaits — if coroutine A is between its BEGIN and COMMIT, any

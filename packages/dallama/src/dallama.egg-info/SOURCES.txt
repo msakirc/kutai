@@ -17,6 +17,8 @@ tests/test_config.py
 tests/test_dallama.py
 tests/test_metrics.py
 tests/test_platform.py
+tests/test_platform_stray.py
+tests/test_reconcile_strays.py
 tests/test_server.py
 tests/test_swap.py
 tests/test_watchdog.py

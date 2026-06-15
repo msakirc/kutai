@@ -61,29 +61,23 @@ async def write_pick_log_row(
     # joining the int success column with the string error_category.
     outcome = "success" if success else (error_category or "failed")
     try:
-        from src.infra.db import get_db
-        db = await get_db()
-        await db.execute(
-            "INSERT INTO model_pick_log "
-            "(task_name, agent_type, difficulty, picked_model, picked_score, "
-            " call_category, candidates_json, snapshot_summary, success, "
-            " error_category, provider, outcome, task_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                task_name,
-                agent_type or None,
-                difficulty,
-                picked_model,
-                picked_score,
-                category,
-                "[]",
-                snapshot_summary,
-                1 if success else 0,
-                error_category,
-                provider,
-                outcome,
-                task_id,
-            ),
+        # Delegate the raw INSERT to fatih_hoca (owns model-registry SQL).
+        # This public entry point stays callable/patchable by callers/tests.
+        from fatih_hoca.db import insert_pick_log_row
+        await insert_pick_log_row(
+            task_name=task_name,
+            agent_type=agent_type or None,
+            difficulty=difficulty,
+            picked_model=picked_model,
+            picked_score=picked_score,
+            category=category,
+            candidates_json="[]",
+            snapshot_summary=snapshot_summary,
+            success=success,
+            error_category=error_category,
+            provider=provider,
+            outcome=outcome,
+            task_id=task_id,
         )
     except Exception as e:  # noqa: BLE001 — telemetry must never propagate
         logger.warning("pick_log write failed: %s", e)

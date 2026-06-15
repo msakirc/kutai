@@ -34,6 +34,22 @@ def test_update_model_stats_is_gone():
 
 
 @pytest.mark.asyncio
+async def test_get_pick_summary(tmp_path):
+    dabidabi.configure(str(tmp_path / "ps.db"))
+    await dabidabi.init_db()
+    db = await dabidabi.get_db()
+    for m in ("m1", "m1", "m2"):
+        await db.execute(
+            "INSERT INTO model_pick_log (task_name, picked_model, picked_score, candidates_json) "
+            "VALUES ('t', ?, 0.8, '[]')", (m,))
+    await db.commit()
+    rows = await fdb.get_pick_summary(since_days=7)
+    by_model = {r["picked_model"]: r for r in rows}
+    assert by_model["m1"]["picks"] == 2
+    await dabidabi.close_db()
+
+
+@pytest.mark.asyncio
 async def test_dabidabi_shim_still_works(tmp_path):
     # back-compat: `from dabidabi import record_model_call` must still function (delegates to fatih)
     dabidabi.configure(str(tmp_path / "shim.db"))

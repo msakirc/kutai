@@ -226,5 +226,79 @@ async def get_recent_picks(limit: int = 100, since_days: int | None = None):
 
 async def get_model_stats_rows():
     db = await get_db()
-    cur = await db.execute("SELECT model, total_calls, success_rate FROM model_stats")
+    cur = await db.execute(
+        "SELECT model, total_calls, success_rate, avg_cost FROM model_stats")
     return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_pick_summary(since_days: int = 7, group_by_task: bool = False):
+    """Aggregate model_pick_log picks over the last ``since_days``.
+
+    Returns rows with ``picked_model``, ``picks``, ``avg_score`` (+
+    ``task_name`` when ``group_by_task``). ``avg_score`` is rounded to 2dp.
+    """
+    db = await get_db()
+    if group_by_task:
+        cur = await db.execute(
+            "SELECT task_name, picked_model, COUNT(*) AS picks, "
+            "ROUND(AVG(picked_score), 2) AS avg_score FROM model_pick_log "
+            "WHERE timestamp > datetime('now', ?) "
+            "GROUP BY task_name, picked_model ORDER BY task_name, picks DESC",
+            (f"-{since_days} days",))
+    else:
+        cur = await db.execute(
+            "SELECT picked_model, COUNT(*) AS picks, "
+            "ROUND(AVG(picked_score), 2) AS avg_score "
+            "FROM model_pick_log WHERE timestamp > datetime('now', ?) "
+            "GROUP BY picked_model ORDER BY picks DESC",
+            (f"-{since_days} days",))
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def insert_pick_log_row(
+    *,
+    task_name: str,
+    agent_type: str | None,
+    difficulty: int | None,
+    picked_model: str,
+    picked_score: float,
+    category: str,
+    candidates_json: str,
+    snapshot_summary: str,
+    success: bool,
+    error_category: str,
+    provider: str,
+    outcome: str,
+    task_id: int | None,
+) -> None:
+    """Owns the raw ``INSERT INTO model_pick_log`` SQL.
+
+    ``src.infra.pick_log.write_pick_log_row`` delegates here so the SQL
+    string lives with the rest of the model-registry reads/writes. Caller
+    (pick_log) keeps the fire-and-forget try/except + logging. Does NOT
+    commit — preserves the original write_pick_log_row behavior (no explicit
+    commit; relies on the singleton connection's later commit/WAL flush).
+    """
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO model_pick_log "
+        "(task_name, agent_type, difficulty, picked_model, picked_score, "
+        " call_category, candidates_json, snapshot_summary, success, "
+        " error_category, provider, outcome, task_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            task_name,
+            agent_type,
+            difficulty,
+            picked_model,
+            picked_score,
+            category,
+            candidates_json,
+            snapshot_summary,
+            1 if success else 0,
+            error_category,
+            provider,
+            outcome,
+            task_id,
+        ),
+    )

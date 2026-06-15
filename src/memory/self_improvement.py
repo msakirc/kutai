@@ -86,20 +86,21 @@ async def analyze_and_propose() -> list[dict]:
         pass
 
     # ── 3. Model performance degradation ──
+    # Reads canonical Schema A model_stats via fatih_hoca's read-API
+    # (get_model_stats_rows → model, total_calls, success_rate, avg_cost).
+    # The prior raw query used DEAD Schema-B columns (success/cost/
+    # recorded_at) wrapped in `except: pass` — it silently returned nothing.
     try:
-        cursor = await db.execute("""
-            SELECT model, COUNT(*) as calls,
-                   AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) as success_rate,
-                   AVG(cost) as avg_cost
-            FROM model_stats
-            WHERE recorded_at > ?
-            GROUP BY model
-            HAVING calls >= 10
-        """, (cutoff,))
-        rows = await cursor.fetchall()
-        for row in rows:
-            model, calls, success_rate, avg_cost = row
+        from fatih_hoca.db import get_model_stats_rows
+        stat_rows = await get_model_stats_rows()
+        for row in stat_rows:
+            calls = row.get("total_calls") or 0
+            if calls < 10:
+                continue
+            success_rate = row.get("success_rate") or 0.0
             if success_rate < 0.6:
+                model = row.get("model") or "?"
+                avg_cost = row.get("avg_cost") or 0.0
                 proposals.append({
                     "category": "model_health",
                     "title": f"Model '{model}' success rate dropped to {success_rate:.0%}",
@@ -111,8 +112,8 @@ async def analyze_and_propose() -> list[dict]:
                     "priority": 6,
                     "action": f"demote_model:{model}",
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Model performance analysis failed: {e}")
 
     # ── 4. Cost anomalies ──
     try:

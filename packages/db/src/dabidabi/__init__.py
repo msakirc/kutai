@@ -94,6 +94,23 @@ def configure(db_path: str) -> None:
 # BEGIN ... COMMIT block.
 _tx_lock: asyncio.Lock = asyncio.Lock()
 
+# Per-domain schema registration. Owner packages call register_schema() at
+# import time; init_db() runs each registered DDL callback after the engine's
+# own core schema. Keyed by name so a module imported twice registers once.
+_registered_schemas: "dict[str, callable]" = {}
+
+
+def register_schema(name: str, fn) -> None:
+    """Register an ``async fn(db)`` schema callback run by init_db()."""
+    _registered_schemas[name] = fn
+
+
+async def _run_registered_schemas(db) -> None:
+    for name, fn in list(_registered_schemas.items()):
+        await fn(db)
+        logger.info(f"Ran registered schema: {name}")
+    await db.commit()
+
 # ─── Z10 T3C: per-mission tx-lock shard ──────────────────────────────────────
 # Cross-mission interference (zone doc 10): the single global ``_tx_lock``
 # above means Mission A's slow INSERT blocks Mission B's add_task until the
@@ -4174,6 +4191,9 @@ async def init_db():
             logger.debug(f"Index {idx_name} creation skipped: {e}")
 
     await db.commit()
+
+    # Per-domain registered schemas (owner packages register their own DDL).
+    await _run_registered_schemas(db)
 
     # Yalayut tables (catalog, demand signals, sources, index, etc.)
     try:

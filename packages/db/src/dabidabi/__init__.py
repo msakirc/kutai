@@ -1,6 +1,5 @@
 # dabidabi/__init__.py — the DB engine (formerly src/infra/db.py)
 import asyncio
-import functools  # noqa: F401  used by _registry_shim metadata hygiene
 import os
 import aiosqlite
 import hashlib

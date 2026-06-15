@@ -101,7 +101,7 @@ async def _persist(
 ) -> None:
     """Insert a row into ``paraflow_diff_log``. Best-effort."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
     except Exception:
         return
     db = await get_db()

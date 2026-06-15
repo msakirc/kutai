@@ -90,7 +90,7 @@ async def _trust(table: str, id_col: str, ident: str | None) -> float:
     if not ident:
         return 1.0
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             f"SELECT trust_score FROM {table} WHERE {id_col} = ?", (ident,),

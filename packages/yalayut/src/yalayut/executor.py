@@ -45,7 +45,7 @@ async def _load_recipe_row(recipe_id: int) -> dict[str, Any] | None:
     """
     import yaml
 
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
     try:

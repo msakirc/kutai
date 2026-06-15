@@ -49,7 +49,7 @@ def _final_commit_sha(repo_path: str) -> str | None:
 async def _top_provenance(mission_id: int, limit: int = 5) -> list[dict[str, Any]]:
     """Return top-N most-written paths + their last writer model_id."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT path, COUNT(*) AS write_count, "
@@ -143,7 +143,7 @@ async def run(
                 video_bytes = f.read()
             # Try bot.send_video with thread routing manually — we can't
             # use post_to_mission_thread for binary uploads.
-            from src.infra.db import get_mission
+            from dabidabi import get_mission
             mission = await get_mission(int(mission_id))
             thread_id = (mission or {}).get("telegram_thread_id")
             caption = (

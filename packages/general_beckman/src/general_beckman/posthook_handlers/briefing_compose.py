@@ -39,7 +39,7 @@ MINUTES_PER_STEP: int = 3
 
 async def _count_completed_steps(mission_id: int) -> int:
     """Count completed (non-mechanical) tasks for this mission."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     cur = await db.execute(
         "SELECT COUNT(*) FROM tasks "
@@ -54,7 +54,7 @@ async def _count_completed_steps(mission_id: int) -> int:
 
 async def _get_cost_actual(mission_id: int) -> float:
     """Sum actual cost from model_call_tokens for this mission."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     try:
         cur = await db.execute(
@@ -77,7 +77,7 @@ async def _get_recovered_lessons(mission_id: int) -> list[dict]:
     ``mission_id == 42`` does not also match ``421``/``4210`` the way a
     naive ``LIKE '%"mission_id": 42%'`` substring match would.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     try:
         cur = await db.execute(
@@ -210,7 +210,7 @@ async def handle(task: dict, result: dict) -> dict:
     )
 
     # ── Write to DB ──────────────────────────────────────────────────────────
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     await db.execute(
         "INSERT INTO mission_briefings "

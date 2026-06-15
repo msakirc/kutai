@@ -177,7 +177,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
 
     Always returns a dict — never raises into the dispatcher.
     """
-    from src.infra.db import get_growth_events
+    from dabidabi import get_growth_events
     from general_beckman import record_growth_event, supersede_growth_event
 
     payload = task.get("payload") or {}

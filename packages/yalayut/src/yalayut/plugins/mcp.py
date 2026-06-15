@@ -100,7 +100,7 @@ def enforce_step_budget(
 
 async def _cache_mcp_tools(artifact_id: int, tools: list[dict[str, Any]]) -> None:
     """Persist discovered tool descriptions + schemas into yalayut_mcp_tools."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dabidabi"
+version = "0.1.0"
+description = "DB engine — aiosqlite connection lifecycle (WAL, per-mission tx-lock sharding), schema + migrations, and the shared query layer for KutAI"
+requires-python = ">=3.10"
+dependencies = [
+    "aiosqlite>=0.19.0",
+    "python-dotenv>=1.0.0",
+    "yazbunu>=0.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"

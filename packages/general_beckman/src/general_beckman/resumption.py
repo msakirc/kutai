@@ -36,7 +36,7 @@ async def find_resumable() -> list[ResumedMission]:
     Cursor JSON is parsed into a dict; an empty/NULL cursor returns
     ``{}`` so callers can always ``.get(...)``.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     out: list[ResumedMission] = []
     db = await get_db()
     cur = await db.execute(
@@ -67,7 +67,7 @@ async def update_cursor(mission_id: int, cursor: dict) -> None:
     last cron fire ts, "pages consumed" counters, etc. No schema is
     enforced — just JSON-encodable.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     await db.execute(
         "UPDATE missions SET cursor=? WHERE id=?",
@@ -82,7 +82,7 @@ async def revoke(mission_id: int) -> bool:
     Returns ``True`` if exactly one row transitioned; ``False`` otherwise
     (caller surfaces "not ongoing or not found" to the founder).
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     cur = await db.execute(
         "UPDATE missions SET lifecycle_state='revoked', "

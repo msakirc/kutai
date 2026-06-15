@@ -49,7 +49,7 @@ async def inject_lessons(
     # ── 1. Query top lessons (lazy import; T4A may not be on branch yet) ──
     lessons: list[dict] = []
     try:
-        from src.infra.db import top_mission_lessons  # type: ignore[attr-defined]
+        from dabidabi import top_mission_lessons  # type: ignore[attr-defined]
         lessons = await top_mission_lessons(stack=stack, domain=domain, limit=limit)
     except (ImportError, AttributeError):
         # T4A/T4B helper not yet merged — degrade gracefully.
@@ -67,7 +67,7 @@ async def inject_lessons(
 
     # ── 2. Read existing mission context ──
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         async with db.execute(
             "SELECT context FROM missions WHERE id = ?",

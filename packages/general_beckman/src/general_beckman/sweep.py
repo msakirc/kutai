@@ -18,7 +18,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from src.infra.logging_config import get_logger
-from src.infra.times import utc_now, db_now, to_db, from_db
+from dabidabi.times import utc_now, db_now, to_db, from_db
 from general_beckman.task_context import parse_context
 
 logger = get_logger("beckman.sweep")
@@ -26,7 +26,7 @@ logger = get_logger("beckman.sweep")
 
 async def _notify(message: str) -> None:
     """Insert a mechanical notify_user task instead of sending Telegram inline."""
-    from src.infra.db import add_task
+    from dabidabi import add_task
     from general_beckman.apply import _mechanical_context
     await add_task(
         title="Notify: stuck-task sweep",
@@ -40,7 +40,7 @@ async def _notify(message: str) -> None:
 async def sweep_queue() -> None:
     """Task-level recovery: stuck, ungraded, dep cascade, subtasks,
     overdue retry gates, waiting_human escalation, workflow timeouts."""
-    from src.infra.db import get_db, update_task
+    from dabidabi import get_db, update_task
 
     db = await get_db()
 

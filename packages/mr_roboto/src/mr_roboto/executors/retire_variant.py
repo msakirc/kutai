@@ -112,7 +112,7 @@ async def _flip_posthog_flag(
 
 async def run(task: dict[str, Any]) -> dict[str, Any]:
     """Retire an A/B experiment's variants. Never raises."""
-    from src.infra.db import (
+    from dabidabi import (
         get_variants,
         update_variant_status,
     )

@@ -101,7 +101,7 @@ async def _resolve_tech_stack(mission_id: int | None, payload: dict) -> list[str
 
     if mission_id is not None:
         try:
-            from src.infra.db import get_db
+            from dabidabi import get_db
             db = await get_db()
             async with db.execute(
                 "SELECT spec FROM missions WHERE id = ?", (int(mission_id),)

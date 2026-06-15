@@ -352,7 +352,7 @@ def _streaming_guard_sink(result) -> None:
     try:
         import asyncio as _aio
         from src.core.heartbeat import current_task_id as _ctid
-        from src.infra.db import record_streaming_guard_outcome
+        from dabidabi import record_streaming_guard_outcome
         loop = _aio.get_event_loop()
         if loop.is_running():
             loop.create_task(record_streaming_guard_outcome(
@@ -1243,7 +1243,7 @@ async def call(
         _t_step = _t_ctx.get("workflow_step_id") if isinstance(_t_ctx, dict) else None
         _t_phase = _t_ctx.get("workflow_phase") if isinstance(_t_ctx, dict) else None
 
-        from src.infra.db import record_call_tokens, record_call_cost
+        from dabidabi import record_call_tokens, record_call_cost
         await record_call_tokens(
             task_id=_t_id,
             agent_type=_t_agent,

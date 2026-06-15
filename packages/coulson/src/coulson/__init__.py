@@ -333,7 +333,7 @@ async def _refresh_workflow_step_config(task: dict, task_ctx: dict) -> None:
         _mid = task.get("mission_id")
         if not (_step_id and _mid):
             return
-        from src.infra.db import get_db
+        from dabidabi import get_db
         _db = await get_db()
         _cur = await _db.execute(
             "SELECT context FROM missions WHERE id = ?", (_mid,),

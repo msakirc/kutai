@@ -108,8 +108,8 @@ async def run(payload: dict) -> dict:
 
     # 1. Mark as published in DB
     try:
-        from src.infra.db import get_db
-        from src.infra.times import db_now
+        from dabidabi import get_db
+        from dabidabi.times import db_now
         db = await get_db()
         now_str = db_now()
         await db.execute(

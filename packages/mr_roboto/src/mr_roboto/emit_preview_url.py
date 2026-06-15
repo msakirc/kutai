@@ -395,7 +395,7 @@ async def _persist_to_db(
     url: str | None,
     exit_code: int | None,
 ) -> None:
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     await db.execute(
         "INSERT INTO preview_log (mission_id, action, url, exit_code) "
@@ -405,7 +405,7 @@ async def _persist_to_db(
     await db.commit()
     from general_beckman import update_mission_fields as _umf
     if action == "emit" and url:
-        from src.infra.times import db_now as _db_now
+        from dabidabi.times import db_now as _db_now
         await _umf(int(mission_id), preview_url=url, preview_started_at=_db_now())
     elif action == "kill":
         await _umf(int(mission_id), preview_url=None, preview_started_at=None)

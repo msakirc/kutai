@@ -56,7 +56,7 @@ async def _persist_kit(
 ) -> None:
     """Upsert a press_kits row with the published URLs."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         # Check if row already exists (re-publish)
         cur = await db.execute(

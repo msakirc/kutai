@@ -114,7 +114,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     Always returns a dict — never raises into the dispatcher.
     """
     try:
-        from src.infra.db import get_pending_hypotheses
+        from dabidabi import get_pending_hypotheses
 
         pending = await get_pending_hypotheses() or []
     except Exception as exc:  # noqa: BLE001

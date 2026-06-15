@@ -194,7 +194,7 @@ async def _reinforce_winning_model(
     Returns the reinforced model name, or None when it cannot be resolved.
     """
     try:
-        from src.infra.db import get_db, record_reinforce_nudge
+        from dabidabi import get_db, record_reinforce_nudge
 
         model: str | None = None
         provider = "local"
@@ -331,7 +331,7 @@ async def _evaluate_ab(
     if mission_id is None:
         return None
     try:
-        from src.infra.db import get_variants
+        from dabidabi import get_variants
         from src.growth.ab_result import evaluate_ab
         from general_beckman import record_growth_event
     except Exception as exc:  # noqa: BLE001
@@ -392,7 +392,7 @@ async def _evaluate_ab(
 async def run(task: dict[str, Any]) -> dict[str, Any]:
     """Compute + record a verdict for one hypothesis. Never raises."""
     from src.growth.verdict_stats import compute_verdict
-    from src.infra.db import (
+    from dabidabi import (
         get_pending_hypotheses,
         record_hypothesis_verdict,
     )

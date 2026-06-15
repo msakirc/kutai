@@ -7,7 +7,7 @@ name = "fatih_hoca"
 version = "0.1.0"
 description = "Model manager — scoring, selection, swap budget, failure adaptation"
 requires-python = ">=3.10"
-dependencies = ["nerd_herd"]
+dependencies = ["nerd_herd", "dabidabi"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

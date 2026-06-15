@@ -106,7 +106,7 @@ def _cosine(a: bytes, b: bytes) -> float:
 async def lookup_bind_cache(artifact, task_ctx: dict) -> dict | None:
     """Return cached bound args if a row matches ctx ≥ threshold, else None."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         target = await _embed_ctx(task_ctx)
         manifest_id = getattr(artifact, "artifact_id", None)
@@ -142,7 +142,7 @@ async def lookup_bind_cache(artifact, task_ctx: dict) -> dict | None:
 async def write_bind_cache(artifact, task_ctx: dict, bound_args: dict) -> None:
     """Persist a freshly-bound arg set for future cache hits."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         emb = await _embed_ctx(task_ctx)
         manifest_id = getattr(artifact, "artifact_id", None)

@@ -79,7 +79,7 @@ async def _existing_titles_for_legal_counsel() -> set[str]:
     """Return titles of pending/in_progress legal_counsel founder_actions
     so the executor can skip duplicates."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
     except ImportError:
         return set()
     db = await get_db()

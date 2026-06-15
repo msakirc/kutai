@@ -55,7 +55,7 @@ def _load_signoffs_sync(mission_id: int) -> set[str]:
     legacy file-exists path stays the safety net.
     """
     try:
-        from src.infra.db import get_founder_signoffs
+        from dabidabi import get_founder_signoffs
     except Exception:
         return set()
     try:

@@ -163,7 +163,7 @@ async def _pull_db_aggregates(mission_id: int | None, since: str) -> dict[str, A
 
     # growth_events (last 7d) ------------------------------------------------
     try:
-        from src.infra.db import get_growth_events
+        from dabidabi import get_growth_events
 
         rows = await get_growth_events(mission_id=mission_id, since=since)
         out["growth_events"] = rows or []
@@ -172,7 +172,7 @@ async def _pull_db_aggregates(mission_id: int | None, since: str) -> dict[str, A
 
     # pending hypotheses (verdict window may have closed) -------------------
     try:
-        from src.infra.db import get_pending_hypotheses
+        from dabidabi import get_pending_hypotheses
 
         out["pending_hypotheses"] = await get_pending_hypotheses(
             mission_id=mission_id
@@ -182,7 +182,7 @@ async def _pull_db_aggregates(mission_id: int | None, since: str) -> dict[str, A
 
     # raw aggregate SQL over shared tables ----------------------------------
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
 
@@ -310,7 +310,7 @@ async def _store_weekly_digest(task_id: int, result: dict, state: dict | None = 
     so the ``/digest`` Telegram command can surface the latest digest.
     """
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         from general_beckman import record_growth_event
 
         markdown = result.get("result")
@@ -560,7 +560,7 @@ async def _emit_investor_metrics(
     """
     if mission_id is None:
         return
-    from src.infra.db import get_db
+    from dabidabi import get_db
     from general_beckman import record_growth_event
     db = await get_db()
 

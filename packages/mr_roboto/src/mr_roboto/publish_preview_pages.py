@@ -237,7 +237,7 @@ async def publish_preview_pages(
 async def _persist_pages_to_db(mission_id: int, url: str) -> None:
     """Best-effort DB persist — log + swallow any error."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         await db.execute(
             "INSERT INTO preview_log (mission_id, action, url, exit_code) "
@@ -246,7 +246,7 @@ async def _persist_pages_to_db(mission_id: int, url: str) -> None:
         )
         await db.commit()
         from general_beckman import update_mission_fields as _umf
-        from src.infra.times import db_now as _db_now
+        from dabidabi.times import db_now as _db_now
         await _umf(int(mission_id), preview_url=url, preview_started_at=_db_now())
     except Exception as e:
         logger.debug(f"publish_preview_pages DB persist skipped: {e}")

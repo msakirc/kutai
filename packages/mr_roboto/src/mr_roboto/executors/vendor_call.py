@@ -100,7 +100,7 @@ async def _check_cost_cap(
     if not mission_id:
         return True, ""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         # Probe mission row for any plausible remaining-budget column.
         cur = await db.execute("PRAGMA table_info(missions)")

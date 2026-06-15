@@ -34,7 +34,7 @@ async def run_rollup(db_path: str | None = None) -> int:
     Refreshes the in-memory btable_cache. Returns count of rows written.
     """
     db_path = db_path or os.environ.get("DB_PATH", "kutai.db")
-    from src.infra.db import connect_aux
+    from dabidabi import connect_aux
     async with connect_aux(db_path, _label="btable_rollup_read") as db:
         # Streaming completion_tokens are reliable now that include_usage=True
         # is wired into the streaming accumulator (see hallederiz_kadir/caller.py).
@@ -66,7 +66,7 @@ async def run_rollup(db_path: str | None = None) -> int:
 
     rows_written = 0
     btable_dict: dict[tuple[str, str, str], dict] = {}
-    from src.infra.db import connect_aux
+    from dabidabi import connect_aux
     async with connect_aux(db_path, _label="btable_rollup_write") as db:
         for key, vals in grouped.items():
             in_sorted = sorted(vals["in"])

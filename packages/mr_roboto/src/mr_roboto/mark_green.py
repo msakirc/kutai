@@ -79,7 +79,7 @@ async def _capture_git_tag(
 
 async def _snapshot_db(mission_id: int, dst: str) -> str:
     """Dump mission-scoped rows to ``dst/db.json.gz``. Returns path."""
-    from src.infra.db import snapshot_mission_db_rows
+    from dabidabi import snapshot_mission_db_rows
     rows = await snapshot_mission_db_rows(mission_id)
     os.makedirs(dst, exist_ok=True)
     path = os.path.join(dst, "db.json.gz")
@@ -184,7 +184,7 @@ async def run(
         pass
 
     # 5. Ledger row
-    from src.infra.db import record_green_tag
+    from dabidabi import record_green_tag
     rowid = await record_green_tag(
         mission_id=mission_id,
         task_id=task_id,

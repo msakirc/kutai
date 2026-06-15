@@ -260,7 +260,7 @@ async def generate_intake_todo(task: dict) -> dict[str, Any]:
     try:
         from src.app.telegram_bot import get_telegram
         from src.collaboration.blackboard import read_blackboard
-        from src.infra.db import get_db as _get_db
+        from dabidabi import get_db as _get_db
         chat_id = None
         try:
             arts = await read_blackboard(int(mission_id), "artifacts")

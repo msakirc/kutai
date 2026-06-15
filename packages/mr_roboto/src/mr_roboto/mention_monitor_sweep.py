@@ -107,7 +107,7 @@ async def _compose_and_enqueue_digest(product_id: str, db) -> int:
 
 async def run(task: dict[str, Any]) -> dict[str, Any]:
     """Cron entry — poll every registered product, enqueue per-product digests."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
     from mr_roboto.mention_polls import poll_source
 
     db = await get_db()

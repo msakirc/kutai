@@ -7,7 +7,7 @@ name = "workflow_engine"
 version = "0.1.0"
 description = "KutAI workflow engine: recipe advance + artifact capture"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["dabidabi"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

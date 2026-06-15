@@ -811,9 +811,12 @@ def test_no_raw_tasks_sql_outside_db(repo_source_texts):
         re.IGNORECASE,
     )
 
-    # Allowed: src/infra/db.py (SQL owner) and all of general_beckman/src/
+    # Allowed: the DB engine (SQL owner) and all of general_beckman/src/
     # (beckman is the write-owner — its internal modules may write tasks SQL).
+    # The engine moved into the `dabidabi` package; src/infra/db.py is now a thin
+    # sys.modules alias to it (no SQL of its own, kept in the set harmlessly).
     allowed = {
+        (root / "packages" / "db" / "src" / "dabidabi" / "__init__.py").resolve(),
         (root / "src" / "infra" / "db.py").resolve(),
     }
     allowed_dirs = {

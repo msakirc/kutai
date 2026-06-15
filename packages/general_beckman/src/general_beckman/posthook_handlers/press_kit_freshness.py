@@ -41,7 +41,7 @@ STALE_DAYS: int = 90
 async def _get_latest_kit(product_id: str) -> dict | None:
     """Return the latest press_kit row for product_id, or None."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             "SELECT kit_id, product_id, version, manifest_json, created_at "
@@ -75,7 +75,7 @@ async def _get_spec_hash(product_id: str) -> str | None:
     result via monkeypatching.
     """
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         # Try product_specs table if it exists (Z7 future table)
         cur = await db.execute(

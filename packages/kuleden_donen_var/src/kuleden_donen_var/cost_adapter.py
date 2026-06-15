@@ -20,7 +20,7 @@ async def record_vendor_cost(
     keeps this as a re-export so vendor adapters (when 06 lands) hold a
     stable import path independent of db.py internals.
     """
-    from src.infra.db import record_vendor_cost as _impl
+    from dabidabi import record_vendor_cost as _impl
     await _impl(mission_id, vendor, usd, line_item)
 
 

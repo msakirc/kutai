@@ -93,7 +93,7 @@ async def run_deliverability_check(
       {"status": "paused", "issue": <str>, "bounce_rate": <float>, ...}
       {"status": "skip", "reason": <str>}
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
 
     # Count total sends for the list
@@ -199,7 +199,7 @@ async def run_deliverability_sweep() -> dict[str, Any]:
     deliverability subsystem was missing — without it the pause is never
     written in production.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     try:
         cur = await db.execute(
@@ -235,8 +235,8 @@ async def clear_pause(product_id: str, list_id: str) -> dict[str, str]:
       {"status": "cleared", "product_id": ..., "list_id": ...}
       {"status": "not_paused", "product_id": ..., "list_id": ...}
     """
-    from src.infra.db import get_db
-    from src.infra.times import db_now
+    from dabidabi import get_db
+    from dabidabi.times import db_now
 
     db = await get_db()
     cur = await db.execute(

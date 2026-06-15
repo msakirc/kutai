@@ -75,7 +75,7 @@ async def _unclaim_after_crash(child_task_id: int, name: str) -> None:
     match zero rows and no-op.
     """
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         upd = await db.execute(
             "UPDATE continuations SET status='pending' "
@@ -103,7 +103,7 @@ async def claim_for_fire(child_task_id: int) -> dict | None:
     Claim happens BEFORE handler dispatch so a re-entrant on_task_finished
     can never double-fire.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     upd = await db.execute(
         "UPDATE continuations SET status='fired' "
@@ -148,7 +148,7 @@ async def fire_for_task(child_task_id: int, result: dict, raw_status: str) -> bo
         return False
 
     # Peek at the handler names (no claim yet).
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     cur = await db.execute(
         "SELECT resume_name, on_error_name FROM continuations "
@@ -232,7 +232,7 @@ async def fire_if_terminal(child_task_id: int) -> bool:
     pending row exists); the CAS inside fire_for_task keeps it idempotent
     against the on_task_finished hook and reconcile.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     cur = await db.execute(
         "SELECT 1 FROM continuations WHERE child_task_id=? AND status='pending'",
@@ -358,7 +358,7 @@ async def reconcile_continuations(ttl_seconds: int = CONTINUATION_TTL_SECONDS) -
     decoding (e.g. raw_dispatch envelopes where content is itself a JSON
     string) must do that decoding inside the handler.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
     cur = await db.execute(
         "SELECT child_task_id FROM continuations WHERE status='pending'"

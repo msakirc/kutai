@@ -7,7 +7,7 @@ name = "intersect"
 version = "0.1.0"
 description = "Thin match+expose layer over the yalayut catalog"
 requires-python = ">=3.10"
-dependencies = ["yalayut"]
+dependencies = ["yalayut", "dabidabi"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

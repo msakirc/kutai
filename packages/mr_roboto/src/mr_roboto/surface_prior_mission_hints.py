@@ -209,7 +209,7 @@ async def _query_index(
 ) -> list[dict[str, Any]]:
     """Fetch matching rows from ``mission_artifacts_index``."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cur = await db.execute(
             """
@@ -320,7 +320,7 @@ async def index_mission_artifacts(
 
     indexed_paths: list[str] = []
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         for art_name, art_path in candidates:
             schema_version = _read_schema_version(art_path)

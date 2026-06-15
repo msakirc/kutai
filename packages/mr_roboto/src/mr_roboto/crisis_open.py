@@ -46,7 +46,7 @@ async def open_crisis_event(
 
     Returns the event dict.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
     cursor = await db.execute(
@@ -155,7 +155,7 @@ async def resolve_crisis_event(*, event_id: int, product_id: str) -> dict:
 
     Returns the updated event dict.
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
     await db.execute(

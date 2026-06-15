@@ -321,7 +321,7 @@ async def refresh_calibration_cache() -> int:
     """
     global _calibration_cache_loaded
     try:
-        from src.infra.db import calibration_matrix
+        from dabidabi import calibration_matrix
         rows = await calibration_matrix()
     except Exception:
         return 0
@@ -366,7 +366,7 @@ def _get_mission_lessons_cached(mission_id: int) -> list[dict]:
 
     async def _fetch() -> list[dict]:
         try:
-            from src.infra.db import get_db
+            from dabidabi import get_db
             db = await get_db()
             async with db.execute(
                 "SELECT context FROM missions WHERE id = ?",
@@ -486,7 +486,7 @@ async def fetch_deps(profile, task: dict, max_tokens: int) -> str:
     Non-workflow tasks: fall back to the legacy task-id path which
     dumps full upstream results.
     """
-    from src.infra.db import get_completed_dependency_results
+    from dabidabi import get_completed_dependency_results
 
     # ── Workflow-aware artifact-granular fetch ──
     _ctx = task.get("context") or {}
@@ -649,7 +649,7 @@ async def build_user_context(
         format_project_profile
     from src.memory.preferences import get_user_preferences, format_preferences
     from src.memory.rag import retrieve_context
-    from src.infra.db import recall_memory
+    from dabidabi import recall_memory
 
     parts: list[str] = []
 
@@ -1109,7 +1109,7 @@ async def build_user_context(
                 _wf_name = ""
                 if mission_id:
                     try:
-                        from src.infra.db import get_db
+                        from dabidabi import get_db
                         _db = await get_db()
                         async with _db.execute(
                             "SELECT workflow FROM missions WHERE id=?",

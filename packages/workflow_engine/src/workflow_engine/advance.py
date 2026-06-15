@@ -25,7 +25,7 @@ async def advance(mission_id: int, completed_task_id: int,
     )
     from src.workflows.engine.pipeline_artifacts import extract_pipeline_artifacts
     from src.tools.workspace import get_mission_workspace
-    from src.infra.db import get_task
+    from dabidabi import get_task
 
     out = AdvanceResult()
     task = await get_task(completed_task_id)
@@ -133,9 +133,9 @@ async def _maybe_complete_mission(mission_id: int, completed_task_id: int) -> No
     we also skip any pending workflow_advance mechanical rows on the same
     mission — they are bookkeeping, not work.)
     """
-    from src.infra.db import get_tasks_for_mission, get_mission
+    from dabidabi import get_tasks_for_mission, get_mission
     from general_beckman import update_mission
-    from src.infra.times import db_now
+    from dabidabi.times import db_now
     import json as _json
 
     mission = await get_mission(mission_id)

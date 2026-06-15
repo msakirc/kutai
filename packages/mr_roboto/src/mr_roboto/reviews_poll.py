@@ -246,7 +246,7 @@ async def _ingest_review(
     review: dict,
 ) -> bool:
     """Insert one review into external_reviews. Returns True if inserted, False if skipped (dup)."""
-    from src.infra.db import get_db
+    from dabidabi import get_db
     db = await get_db()
 
     try:

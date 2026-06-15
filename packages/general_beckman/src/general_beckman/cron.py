@@ -10,7 +10,7 @@ import json
 from datetime import timedelta
 
 from src.infra.logging_config import get_logger
-from src.infra.times import utc_now, to_db
+from dabidabi.times import utc_now, to_db
 
 from general_beckman.apply import _mechanical_context
 from general_beckman.cron_seed import seed_internal_cadences
@@ -25,7 +25,7 @@ async def fire_due() -> None:
     Called from beckman.next_task(). Idempotent per row via last_run/next_run
     advancement.
     """
-    from src.infra.db import get_due_scheduled_tasks
+    from dabidabi import get_due_scheduled_tasks
 
     await seed_internal_cadences()
     rows = await get_due_scheduled_tasks()
@@ -73,7 +73,7 @@ def _parse_payload(raw) -> dict:
 
 
 async def _insert_scheduled_task(row: dict, payload: dict) -> None:
-    from src.infra.db import add_task
+    from dabidabi import add_task
 
     executor = payload.get("_executor")
     if executor:
@@ -97,7 +97,7 @@ async def _insert_scheduled_task(row: dict, payload: dict) -> None:
 
 
 async def _advance_schedule(row: dict, now) -> None:
-    from src.infra.db import update_scheduled_task
+    from dabidabi import update_scheduled_task
 
     interval = row.get("interval_seconds")
     cron_expr = row.get("cron_expression")
@@ -134,7 +134,7 @@ async def _file_locks_sweep() -> None:
     pump.
     """
     try:
-        from src.infra.db import sweep_file_locks
+        from dabidabi import sweep_file_locks
         n = await sweep_file_locks()
         if n:
             logger.info("file_locks_sweep released orphans", count=n)
@@ -148,7 +148,7 @@ async def _mission_budget_alerts() -> None:
     Idempotent via UNIQUE(mission_id, threshold). T2B drains.
     """
     try:
-        from src.infra.db import check_and_write_mission_budget_alerts
+        from dabidabi import check_and_write_mission_budget_alerts
         n = await check_and_write_mission_budget_alerts()
         if n:
             logger.info("mission_budget_alerts wrote rows", count=n)
@@ -183,7 +183,7 @@ async def _confidence_calibration_recompute() -> None:
     without waiting for a process restart.
     """
     try:
-        from src.infra.db import recompute_reliability_scores
+        from dabidabi import recompute_reliability_scores
         n = await recompute_reliability_scores()
         logger.info("confidence_calibration_recompute wrote rows", rows=n)
         try:
@@ -205,7 +205,7 @@ async def _btable_rollup() -> None:
 
 
 async def _nerd_herd_health_alert() -> None:
-    from src.infra.db import add_task
+    from dabidabi import add_task
 
     try:
         import nerd_herd

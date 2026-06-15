@@ -76,7 +76,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
 
     # 1. Durable: append the schedule to missions.cursor['cron'] (idempotent).
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
 
         db = await get_db()
         cur = await db.execute(

@@ -45,7 +45,7 @@ def grading_perf_score(model_name: str) -> Optional[float]:
     if not path or not os.path.exists(path):
         return None
     try:
-        from src.infra.db import connect_aux_sync
+        from dabidabi import connect_aux_sync
         conn = connect_aux_sync(path)
         try:
             cur = conn.execute(
@@ -88,7 +88,7 @@ def reinforce_bonus(model_name: str) -> float:
     if not path or not os.path.exists(path):
         return 0.0
     try:
-        from src.infra.db import connect_aux_sync
+        from dabidabi import connect_aux_sync
         conn = connect_aux_sync(path)
         try:
             cur = conn.execute(

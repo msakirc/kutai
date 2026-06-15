@@ -160,7 +160,7 @@ async def _ingest_mention(
     - UNIQUE(source, source_id) conflict (INSERT OR IGNORE)
     - cross-source dedup on canonical_url within 24h
     """
-    from src.infra.db import get_db
+    from dabidabi import get_db
 
     db = await get_db()
 
@@ -270,7 +270,7 @@ async def _surface_founder_action(
 async def _check_crisis_threshold(product_id: str) -> bool:
     """Return True if >=3 neg-sentiment mentions with score>=4 arrived in the last 1h."""
     try:
-        from src.infra.db import get_db
+        from dabidabi import get_db
         db = await get_db()
         cutoff = (
             datetime.now(timezone.utc) - timedelta(hours=1)

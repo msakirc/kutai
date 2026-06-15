@@ -6366,75 +6366,7 @@ async def get_task_tree(mission_id: int) -> list[dict]:
 
 # --- Model Stats ---
 
-async def record_model_call(
-    model: str,
-    agent_type: str,
-    success: bool,
-    cost: float = 0.0,
-    latency: float = 0.0,
-    grade: float | None = None,
-) -> None:
-    """Record a model call for performance tracking.
-
-    Persists per-(model, agent_type) aggregates to the ``model_stats`` DB
-    table. Phase C.5 (2026-05-05): in-memory Prometheus counters are
-    emitted by ``hallederiz_kadir.caller`` directly — this function used
-    to ALSO emit them which inflated counters ~2.5× because every ReAct
-    iter passed through both paths. Audit:
-    ``docs/handoff/2026-05-04-record-model-call-audit.md``.
-    """
-    db = await get_db()
-
-    # Upsert: try to get existing row
-    cursor = await db.execute(
-        "SELECT * FROM model_stats WHERE model = ? AND agent_type = ?",
-        (model, agent_type)
-    )
-    existing = await cursor.fetchone()
-
-    if existing:
-        row = dict(existing)
-        total = row["total_calls"] + 1
-        successes = row["total_successes"] + (1 if success else 0)
-        cost_sum = row["total_cost_sum"] + cost
-        latency_sum = row["total_latency_sum"] + latency
-        grade_sum = row["total_grade_sum"] + (grade if grade else 0)
-
-        avg_cost = cost_sum / total if total > 0 else 0
-        avg_latency = latency_sum / total if total > 0 else 0
-        graded_calls = row["total_calls"]  # approximate
-        if grade is not None:
-            graded_calls += 1
-        avg_grade = grade_sum / graded_calls if graded_calls > 0 else 0
-        success_rate = successes / total if total > 0 else 0
-
-        await db.execute(
-            """UPDATE model_stats SET
-                   total_calls = ?, total_successes = ?,
-                   total_cost_sum = ?, total_latency_sum = ?,
-                   total_grade_sum = ?,
-                   avg_cost = ?, avg_latency = ?,
-                   avg_grade = ?, success_rate = ?,
-                   updated_at = datetime('now')
-               WHERE model = ? AND agent_type = ?""",
-            (total, successes, cost_sum, latency_sum, grade_sum,
-             avg_cost, avg_latency, avg_grade, success_rate,
-             model, agent_type)
-        )
-    else:
-        avg_grade = grade if grade else 0.0
-        await db.execute(
-            """INSERT INTO model_stats
-               (model, agent_type, total_calls, total_successes,
-                total_cost_sum, total_latency_sum, total_grade_sum,
-                avg_cost, avg_latency, avg_grade, success_rate)
-               VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (model, agent_type, 1 if success else 0,
-             cost, latency, grade if grade else 0,
-             cost, latency, avg_grade,
-             1.0 if success else 0.0)
-        )
-    await db.commit()
+# record_model_call moved to fatih_hoca.db (Phase B). Back-compat shim at EOF.
 
 
 async def record_call_tokens(
@@ -6473,44 +6405,8 @@ async def record_call_tokens(
     await db.commit()
 
 
-async def get_model_stats(
-    model: str | None = None,
-    agent_type: str | None = None,
-) -> list[dict]:
-    """Query model performance stats.
-
-    Filter by model and/or agent_type.  Returns all if no filters.
-    """
-    db = await get_db()
-    query = "SELECT * FROM model_stats WHERE 1=1"
-    params: list = []
-    if model:
-        query += " AND model = ?"
-        params.append(model)
-    if agent_type:
-        query += " AND agent_type = ?"
-        params.append(agent_type)
-    query += " ORDER BY avg_grade DESC, success_rate DESC"
-    cursor = await db.execute(query, params)
-    return [dict(row) for row in await cursor.fetchall()]
-
-
-async def get_model_performance_ranking(agent_type: str) -> list[dict]:
-    """Get models ranked by performance for a specific agent type.
-
-    Returns models sorted by: success_rate * avg_grade (composite score).
-    Only includes models with >= 3 calls for statistical significance.
-    """
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT model, avg_grade, avg_cost, avg_latency,
-                  success_rate, total_calls
-           FROM model_stats
-           WHERE agent_type = ? AND total_calls >= 3
-           ORDER BY (success_rate * avg_grade) DESC""",
-        (agent_type,)
-    )
-    return [dict(row) for row in await cursor.fetchall()]
+# get_model_stats + get_model_performance_ranking moved to fatih_hoca.db
+# (Phase B). Back-compat shims at EOF.
 
 
 # --- Cost Budget ---
@@ -6931,37 +6827,10 @@ async def get_workflow_checkpoint(mission_id: int) -> dict | None:
     return result
 
 
-async def update_model_stats(
-    model: str,
-    agent_type: str,
-    success: bool,
-    cost: float = 0.0,
-    latency_ms: float = 0.0,
-    grade: float = 0.0,
-) -> None:
-    """Record model performance stats for health monitoring."""
-    try:
-        db = await get_db()
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS model_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model TEXT NOT NULL,
-                agent_type TEXT NOT NULL,
-                success INTEGER NOT NULL,
-                cost REAL DEFAULT 0,
-                latency_ms REAL DEFAULT 0,
-                grade REAL DEFAULT 0,
-                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        await db.execute(
-            "INSERT INTO model_stats (model, agent_type, success, cost, latency_ms, grade) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (model, agent_type, int(success), cost, latency_ms, grade),
-        )
-        await db.commit()
-    except Exception:
-        pass  # best-effort
+# update_model_stats DELETED (Phase B): dead code — its inline "Schema B"
+# CREATE TABLE was shadowed by the live Schema A model_stats and its INSERT
+# was silently try/excepted. Real aggregation lives in
+# fatih_hoca.db.record_model_call.
 
 
 # ─── Web Source Quality Tracking ───────────────────────────────────────────
@@ -7668,47 +7537,8 @@ async def get_artifact_provenance(path: str) -> list[dict]:
     return [dict(zip(cols, r)) for r in rows]
 
 
-async def record_action_event(
-    verb: str,
-    reversibility: str,
-    mission_id: int | None,
-    task_id: int | None,
-    payload: dict | None,
-    status: str,
-) -> int:
-    """Append a per-action audit row to ``registry_events`` (scope='action').
-
-    The existing ``event`` column carries the verb (mirrors ``verb`` for
-    backward-compatible target/event scans); ``payload_json`` carries the
-    JSON-serialized payload + status. Returns the new row id.
-    """
-    db = await get_db()
-    try:
-        payload_json = json.dumps(
-            {"payload": payload or {}, "status": status},
-            default=str,
-        )
-    except Exception:
-        payload_json = json.dumps(
-            {"payload": str(payload), "status": status}
-        )
-    cur = await db.execute(
-        "INSERT INTO registry_events "
-        "(scope, target, event, payload_json, "
-        " mission_id, task_id, verb, reversibility) "
-        "VALUES ('action', ?, ?, ?, ?, ?, ?, ?)",
-        (
-            verb,
-            verb,
-            payload_json,
-            mission_id,
-            task_id,
-            verb,
-            reversibility,
-        ),
-    )
-    await db.commit()
-    return cur.lastrowid or 0
+# record_action_event moved to fatih_hoca.db (Phase B). Back-compat shim at
+# EOF; internal callers (e.g. record_vendor_cost) resolve it at call-time.
 
 
 async def request_confirmation(
@@ -8023,51 +7853,8 @@ async def supersede_growth_events(
 # dedicated ``model_pick_log`` row (call_category='reinforce', reinforce
 # column carries the +bonus) — fatih_hoca.grading.reinforce_bonus() reads
 # these rows and folds a time-decayed sum into the model's perf_score.
-REINFORCE_NUDGE: float = 0.05  # founder-decided: +0.05 per confirmed verdict
-
-
-async def record_reinforce_nudge(
-    model: str,
-    *,
-    task_name: str = "hypothesis_verdict",
-    amount: float = REINFORCE_NUDGE,
-    provider: str = "local",
-    hypothesis_id: int | None = None,
-) -> None:
-    """Write a confirmed-verdict reinforce nudge for ``model``.
-
-    Fire-and-forget telemetry — never raises into the caller. The row is a
-    ``model_pick_log`` entry tagged ``call_category='reinforce'`` with the
-    bonus stored in the ``reinforce`` column. Fatih Hoca's grading layer
-    sums these with a 50%-per-30-day decay so the influence fades.
-    """
-    if not model:
-        return
-    try:
-        db = await get_db()
-        snapshot = f"hypothesis_id={hypothesis_id}" if hypothesis_id else ""
-        await db.execute(
-            "INSERT INTO model_pick_log "
-            "(task_name, picked_model, picked_score, call_category, "
-            " candidates_json, snapshot_summary, success, provider, "
-            " outcome, reinforce) "
-            "VALUES (?, ?, ?, 'reinforce', '[]', ?, 1, ?, 'reinforce', ?)",
-            (
-                task_name,
-                model,
-                0.0,
-                snapshot,
-                provider,
-                float(amount),
-            ),
-        )
-        await db.commit()
-        logger.info(
-            "reinforce nudge recorded model=%s amount=%.3f hyp=%s",
-            model, amount, hypothesis_id,
-        )
-    except Exception as e:  # noqa: BLE001 — telemetry must never propagate
-        logger.warning("record_reinforce_nudge failed: %s", e)
+# REINFORCE_NUDGE + record_reinforce_nudge moved to fatih_hoca.db (Phase B).
+# Back-compat shim at EOF.
 
 
 async def insert_variant(
@@ -9125,3 +8912,18 @@ async def calibration_matrix() -> list[dict]:
     await cur.close()
     return [dict(zip(cols, r)) for r in rows]
 
+
+
+# ── Back-compat: registry helpers now live in fatih_hoca.db. Lazy shims ─────
+# delegate without an eager dabidabi->fatih_hoca import (which would cycle).
+def _registry_shim(_name):
+    async def _f(*a, **k):
+        from fatih_hoca import db as _fdb
+        return await getattr(_fdb, _name)(*a, **k)
+    _f.__name__ = _name
+    return _f
+
+
+for _n in ("record_model_call", "get_model_stats", "get_model_performance_ranking",
+           "record_reinforce_nudge", "record_action_event"):
+    globals()[_n] = _registry_shim(_n)

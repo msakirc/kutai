@@ -9,6 +9,7 @@ from fatih_hoca.capabilities import Cap, ALL_CAPABILITIES, TASK_PROFILES
 from fatih_hoca.ranking import ScoredModel
 from fatih_hoca.selector import Selector
 from fatih_hoca.urgency import mid_task_urgency  # noqa: F401
+from . import schema as _schema  # noqa: F401  registers registry DDL with dabidabi
 
 __all__ = [
     "init", "select", "is_servable", "all_models", "requirements_for",

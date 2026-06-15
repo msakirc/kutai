@@ -6,7 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SQL = re.compile(
-    r'(INSERT\s+INTO\s+(model_stats|model_pick_log|providers|models|registry_events)\b'
+    # INSERT INTO / INSERT OR IGNORE INTO / INSERT OR REPLACE INTO / REPLACE INTO
+    r'((?:INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?|REPLACE)\s+INTO\s+(model_stats|model_pick_log|providers|models|registry_events)\b'
     r'|UPDATE\s+(model_stats|model_pick_log|providers|models|registry_events)\s+SET'
     r'|DELETE\s+FROM\s+(model_stats|model_pick_log|providers|models|registry_events)\b)',
     re.IGNORECASE,

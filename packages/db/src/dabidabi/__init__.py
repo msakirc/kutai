@@ -5,6 +5,7 @@ import aiosqlite
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 
 from yazbunu import get_logger
 from dabidabi.times import utc_now, db_now, to_db, DB_FMT
@@ -97,10 +98,10 @@ _tx_lock: asyncio.Lock = asyncio.Lock()
 # Per-domain schema registration. Owner packages call register_schema() at
 # import time; init_db() runs each registered DDL callback after the engine's
 # own core schema. Keyed by name so a module imported twice registers once.
-_registered_schemas: "dict[str, callable]" = {}
+_registered_schemas: "dict[str, Callable[..., Awaitable[None]]]" = {}
 
 
-def register_schema(name: str, fn) -> None:
+def register_schema(name: str, fn: "Callable[..., Awaitable[None]]") -> None:
     """Register an ``async fn(db)`` schema callback run by init_db()."""
     _registered_schemas[name] = fn
 
@@ -108,7 +109,7 @@ def register_schema(name: str, fn) -> None:
 async def _run_registered_schemas(db) -> None:
     for name, fn in list(_registered_schemas.items()):
         await fn(db)
-        logger.info(f"Ran registered schema: {name}")
+        logger.debug(f"Ran registered schema: {name}")
     await db.commit()
 
 # ─── Z10 T3C: per-mission tx-lock shard ──────────────────────────────────────

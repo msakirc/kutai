@@ -130,6 +130,42 @@ class Selector:
         except Exception:
             pass
 
+        # ── Cloud availability overlay: in-process truth ─────────────────────
+        # Same staleness defect as the in_flight overlay above, on the cloud
+        # axis. The selector's nerd_herd is the sidecar NerdHerdClient, whose
+        # cached snapshot.cloud is sidecar-parsed and does NOT carry KDV's
+        # per-model daily_exhausted / rpm_cooldown flags: client._overlay_local
+        # mirrors swap/queue/image only, and configure_in_flight_push writes
+        # the in-process nerd_herd SINGLETON, not the client cache the selector
+        # reads. Net effect: a cloud model KDV already knows is daily-exhausted
+        # still passes eligibility here (mstate=None → gate skipped) and ranks
+        # un-penalized (avail_score never zeroed), gets picked, and the
+        # in-process pre_call refuses it post-admission — every retry cycle.
+        # Production triage 2026-06-15: gemini-2.5-flash / gemini-flash-latest
+        # re-picked for hours; "All models failed: Daily limit exhausted"
+        # surfaced on each ~15-min re-pend even though KDV had marked them dead.
+        # Rebuild snapshot.cloud from the in-process KDV (the SAME adapter
+        # Beckman uses for its admission overlay) so EVERY selector entry path
+        # (admission + retry recursion) sees fresh daily_exhausted /
+        # rpm_cooldown. Fail-open on import error (package-only test envs
+        # without the runtime KDV) and only overwrite when the rebuild yields
+        # data, so a missing KDV never blanks a populated sidecar snapshot.
+        try:
+            from src.core.router import get_kdv as _get_kdv
+            from kuleden_donen_var.nerd_herd_adapter import (
+                build_cloud_provider_state as _build_cloud,
+            )
+            _kdv = _get_kdv()
+            _fresh_cloud = {}
+            for _prov in list(_kdv._providers.keys()):
+                _cs = _build_cloud(_kdv, _prov)
+                if _cs is not None:
+                    _fresh_cloud[_prov] = _cs
+            if _fresh_cloud:
+                snapshot.cloud = _fresh_cloud
+        except Exception:
+            pass
+
         # ── Build requirements ───────────────────────────────────────────────
         # Floor needs_function_calling against the canonical agent profile.
         # llm_dispatcher derives this flag from `bool(tools)` on the request

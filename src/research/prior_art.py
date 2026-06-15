@@ -454,7 +454,10 @@ async def _default_web_search(
             _search_brave, _search_google_cse, _DDGS,
         )
     except Exception as e:  # pragma: no cover — import guard
-        logger.debug("web_search import failed: %s", e)
+        # WARNING, not debug: this tier IS the zero-candidate backstop. A
+        # broken import silently disables it and reintroduces the DLQ loop.
+        logger.warning("prior_art web-search backstop disabled (import "
+                       "failed): %s", e)
         return []
 
     # Relax to short keyword cores; web engines tolerate them and DDGS

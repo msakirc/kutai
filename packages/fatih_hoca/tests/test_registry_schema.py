@@ -52,3 +52,21 @@ async def test_model_pick_log_has_expected_columns(tmp_path):
               "urgency", "success", "error_category", "provider", "task_id"):
         assert c in cols
     await dabidabi.close_db()
+
+
+def test_ensure_registry_schema_sync_standalone(tmp_path):
+    import sqlite3
+    from fatih_hoca.schema import ensure_registry_schema_sync
+    conn = sqlite3.connect(str(tmp_path / "bare.db"))
+    try:
+        ensure_registry_schema_sync(conn)  # must not raise (regression: idx on task_id)
+        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        names = {r[0] for r in cur.fetchall()}
+        assert {"models", "providers", "registry_events", "model_stats", "model_pick_log"}.issubset(names)
+        # task_id index present + column exists
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(model_pick_log)").fetchall()}
+        assert "task_id" in cols
+        idxs = {r[1] for r in conn.execute("PRAGMA index_list(model_pick_log)").fetchall()}
+        assert "idx_pick_log_task_id" in idxs
+    finally:
+        conn.close()

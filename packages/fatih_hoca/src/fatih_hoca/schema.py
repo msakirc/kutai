@@ -49,7 +49,10 @@ REGISTRY_DDL = [
             urgency REAL,
             success INTEGER,
             error_category TEXT,
-            provider TEXT
+            provider TEXT,
+            outcome TEXT,
+            reinforce REAL,
+            task_id INTEGER
         )
     """,
     # model_pick_log indexes

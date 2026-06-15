@@ -1,5 +1,6 @@
 # dabidabi/__init__.py — the DB engine (formerly src/infra/db.py)
 import asyncio
+import functools  # noqa: F401  used by _registry_shim metadata hygiene
 import os
 import aiosqlite
 import hashlib
@@ -925,25 +926,8 @@ async def init_db():
         )
     """)
 
-    # Model performance stats (Phase 4)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS model_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model TEXT NOT NULL,
-            agent_type TEXT NOT NULL,
-            avg_grade REAL DEFAULT 0.0,
-            avg_cost REAL DEFAULT 0.0,
-            avg_latency REAL DEFAULT 0.0,
-            success_rate REAL DEFAULT 1.0,
-            total_calls INTEGER DEFAULT 0,
-            total_successes INTEGER DEFAULT 0,
-            total_grade_sum REAL DEFAULT 0.0,
-            total_cost_sum REAL DEFAULT 0.0,
-            total_latency_sum REAL DEFAULT 0.0,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(model, agent_type)
-        )
-    """)
+    # model_stats — registry domain; DDL now owned by fatih_hoca/schema.py
+    # (registered via dabidabi.register_schema, run in init_db's registration loop).
 
     # Per-call token telemetry (pool-pressure machinery)
     await db.execute("""
@@ -1246,64 +1230,10 @@ async def init_db():
         )
     """)
 
-    # Model pick telemetry (Phase 1 selection-intelligence plan)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS model_pick_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            task_name TEXT NOT NULL,
-            agent_type TEXT,
-            difficulty INTEGER,
-            call_category TEXT,
-            picked_model TEXT NOT NULL,
-            picked_score REAL NOT NULL,
-            picked_reasons TEXT,
-            candidates_json TEXT NOT NULL,
-            failures_json TEXT,
-            snapshot_summary TEXT,
-            pool TEXT,
-            urgency REAL,
-            success INTEGER,
-            error_category TEXT,
-            provider TEXT
-        )
-    """)
-    # Idempotent column add for pre-Phase-2c / pre-Task-5 / pre-Task-15 databases.
-    # ``reinforce`` (Z9 T4E) holds a confirmed-verdict score nudge — see
-    # record_reinforce_nudge() / fatih_hoca.grading.reinforce_bonus().
-    for col_name, col_type in (
-        ("pool", "TEXT"),
-        ("urgency", "REAL"),
-        ("success", "INTEGER"),
-        ("error_category", "TEXT"),
-        ("provider", "TEXT"),
-        ("outcome", "TEXT"),
-        ("reinforce", "REAL"),
-        ("task_id", "INTEGER"),
-    ):
-        try:
-            await db.execute(f"ALTER TABLE model_pick_log ADD COLUMN {col_name} {col_type}")
-        except Exception as e:
-            if "duplicate column" not in str(e).lower():
-                raise
-            # column already exists — expected on re-init
-    # Backfill legacy rows: pre-cloud era was 100% local picks. Idempotent —
-    # re-running just no-ops because no NULL rows remain.
-    await db.execute(
-        "UPDATE model_pick_log SET provider='local' WHERE provider IS NULL"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pick_log_provider ON model_pick_log(provider)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pick_log_task ON model_pick_log(task_name, timestamp DESC)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pick_log_model ON model_pick_log(picked_model, timestamp DESC)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pick_log_task_id ON model_pick_log(task_id)"
-    )
+    # model_pick_log — registry domain; CREATE + ALTERs + indexes now owned by
+    # fatih_hoca/schema.py (registered via dabidabi.register_schema). The
+    # legacy provider-backfill (UPDATE ... WHERE provider IS NULL) is dropped:
+    # fresh DBs get the column from the canonical CREATE, prod was backfilled.
     # ── Admission violations (Q1 forensics) ──────────────────────────────
     # Captures every "Beckman admitted, KDV/dispatcher rejected" event.
     # Three sites:
@@ -1369,60 +1299,12 @@ async def init_db():
         )
     """)
     # ── Provider/model registry ───────────────────────────────────────────
-    # Replaces the flat .dead_models.json file. Three concerns:
-    #   providers       — provider-level status (auth dead, key rotation hash)
-    #   models          — model-level status (404, cause, TTL expiry)
-    #   registry_events — append-only audit trail (mark_dead/revive/probe)
-    # Reads from packages/fatih_hoca/registry.py via src/infra/registry_store.
-    # Writes from caller (404/auth), discovery (revive), telegram (/revive),
-    # orchestrator boot probe.
-    #
-    # status='dead' AND (expires_at IS NULL OR expires_at > now) = effectively
-    # dead. Per-cause TTL stored explicitly on the row (not derived) so policy
-    # tweaks don't retroactively shift live entries.
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS providers (
-            name        TEXT PRIMARY KEY,
-            status      TEXT NOT NULL DEFAULT 'active',
-            cause       TEXT,
-            marked_at   TIMESTAMP,
-            revived_at  TIMESTAMP,
-            key_hash    TEXT
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS models (
-            litellm_name    TEXT PRIMARY KEY,
-            provider        TEXT NOT NULL,
-            status          TEXT NOT NULL DEFAULT 'active',
-            cause           TEXT,
-            marked_at       TIMESTAMP,
-            revived_at      TIMESTAMP,
-            expires_at      TIMESTAMP,
-            source          TEXT,
-            first_seen_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS registry_events (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            scope           TEXT NOT NULL,
-            target          TEXT NOT NULL,
-            event           TEXT NOT NULL,
-            cause           TEXT,
-            actor           TEXT,
-            payload_json    TEXT
-        )
-    """)
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_registry_events_target_ts "
-        "ON registry_events(target, timestamp DESC)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_models_status "
-        "ON models(status, provider)"
-    )
+    # providers / models / registry_events (+ their indexes) — registry domain.
+    # DDL now owned by fatih_hoca/schema.py (registered via
+    # dabidabi.register_schema; run in init_db's registration loop). The
+    # registry_events action-scope columns (mission_id/task_id/verb/
+    # reversibility) are folded into the canonical CREATE + REGISTRY_ALTERS
+    # there, so the old apply_migration here is gone too.
 
     # ── Z10 T1C: schema_migrations ledger ─────────────────────────────────
     # Records every DDL migration applied to this database. apply_migration()
@@ -1535,26 +1417,8 @@ async def init_db():
         ),
     )
 
-    # 3. registry_events: per-action audit columns
-    await apply_migration(
-        version="2026-05-10-registry-events-action-scope",
-        sql=(
-            "ALTER TABLE registry_events ADD COLUMN mission_id INTEGER;\n"
-            "ALTER TABLE registry_events ADD COLUMN task_id INTEGER;\n"
-            "ALTER TABLE registry_events ADD COLUMN verb TEXT;\n"
-            "ALTER TABLE registry_events ADD COLUMN reversibility TEXT;\n"
-        ),
-        reversal_sql=(
-            "ALTER TABLE registry_events DROP COLUMN mission_id;\n"
-            "ALTER TABLE registry_events DROP COLUMN task_id;\n"
-            "ALTER TABLE registry_events DROP COLUMN verb;\n"
-            "ALTER TABLE registry_events DROP COLUMN reversibility;\n"
-        ),
-        description=(
-            "T1C provenance: registry_events extended for scope='action' "
-            "audit rows (mission_id/task_id/verb/reversibility)"
-        ),
-    )
+    # 3. registry_events per-action audit columns — registry domain; folded
+    #    into fatih_hoca/schema.py canonical CREATE + REGISTRY_ALTERS.
 
     # 4. action_confirmations table + index
     await apply_migration(
@@ -8920,7 +8784,12 @@ def _registry_shim(_name):
     async def _f(*a, **k):
         from fatih_hoca import db as _fdb
         return await getattr(_fdb, _name)(*a, **k)
+    # functools.wraps can't be used here: the delegate (fatih_hoca.db.<name>)
+    # is resolved lazily inside _f, so it isn't available at factory time.
+    # Set introspection metadata directly instead.
     _f.__name__ = _name
+    _f.__qualname__ = _name
+    _f.__doc__ = f"Back-compat shim delegating to fatih_hoca.db.{_name}."
     return _f
 
 

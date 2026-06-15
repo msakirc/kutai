@@ -26,6 +26,8 @@ load_dotenv()
 
 from src.app.config import DOCKER_CONTAINER_NAME, print_config
 
+import fatih_hoca  # noqa: F401  registers registry schema with dabidabi (Phase B)
+
 # ── Logging must be initialized before any other import that might log ────────
 from src.infra.logging_config import init_logging, get_logger
 init_logging(

@@ -30,6 +30,7 @@ REGISTRY_DDL = [
             UNIQUE(model, agent_type)
         )
     """,
+    "CREATE INDEX IF NOT EXISTS idx_model_stats_model_agent ON model_stats(model, agent_type)",
     # ── model_pick_log — CREATE (added cols covered by REGISTRY_ALTERS) ──
     """
         CREATE TABLE IF NOT EXISTS model_pick_log (

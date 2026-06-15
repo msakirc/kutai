@@ -4036,7 +4036,6 @@ async def init_db():
         ("idx_missions_status", "missions", "status"),
         ("idx_conversations_task_id", "conversations", "task_id"),
         ("idx_memory_mission_category", "memory", "mission_id, category"),
-        ("idx_model_stats_model_agent", "model_stats", "model, agent_type"),
         ("idx_blackboards_mission", "blackboards", "mission_id"),
         ("idx_credentials_service", "credentials", "service_name"),
         ("idx_todo_status", "todo_items", "status"),

@@ -2811,20 +2811,9 @@ class TelegramInterface:
 
     async def cmd_bench_picks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show 7-day model pick distribution from model_pick_log."""
-        import aiosqlite
-        query = """
-            SELECT task_name, picked_model, COUNT(*) AS n,
-                   ROUND(AVG(picked_score), 2) AS avg_score
-            FROM model_pick_log
-            WHERE timestamp > datetime('now', '-7 days')
-            GROUP BY task_name, picked_model
-            ORDER BY task_name, n DESC
-        """
         try:
-            from src.infra.db import connect_aux
-            async with connect_aux(DB_PATH, _label="bench_picks_query") as db:
-                cursor = await db.execute(query)
-                rows = await cursor.fetchall()
+            from fatih_hoca.db import get_pick_summary
+            rows = await get_pick_summary(since_days=7, group_by_task=True)
         except Exception as exc:
             await self._reply(update, f"❌ bench_picks query failed: {exc}")
             return
@@ -2841,7 +2830,11 @@ class TelegramInterface:
             f"{'task':<20} {'model':<28} {'n':>4} {'avg':>5}",
             "─" * 60,
         ]
-        for task, model, n, avg in rows:
+        for r in rows:
+            task = r.get("task_name")
+            model = r.get("picked_model")
+            n = r.get("picks") or 0
+            avg = r.get("avg_score") or 0.0
             lines.append(
                 f"{(task or '?')[:20]:<20} {(model or '?')[:28]:<28} "
                 f"{n:>4} {(avg or 0.0):>5.2f}"

@@ -203,18 +203,10 @@ async def _pull_db_aggregates(mission_id: int | None, since: str) -> dict[str, A
             logger.debug("mission_lessons query failed", error=str(exc))
 
         # model_pick_log — internal-health: pick distribution last 7d.
+        # Repointed to fatih_hoca's read-API (owns model-registry SQL).
         try:
-            cur = await db.execute(
-                "SELECT picked_model, COUNT(*) AS picks, "
-                "AVG(picked_score) AS avg_score "
-                "FROM model_pick_log WHERE timestamp >= ? "
-                "GROUP BY picked_model ORDER BY picks DESC",
-                (since,),
-            )
-            cols = [d[0] for d in cur.description]
-            out["model_pick"] = [
-                dict(zip(cols, r)) for r in await cur.fetchall()
-            ]
+            from fatih_hoca.db import get_pick_summary
+            out["model_pick"] = await get_pick_summary(since_days=_WINDOW_DAYS)
         except Exception as exc:  # noqa: BLE001
             logger.debug("model_pick_log query failed", error=str(exc))
 

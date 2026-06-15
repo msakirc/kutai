@@ -5,6 +5,7 @@ import aiosqlite
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 
 from yazbunu import get_logger
 from dabidabi.times import utc_now, db_now, to_db, DB_FMT
@@ -93,6 +94,23 @@ def configure(db_path: str) -> None:
 # All callers must acquire this lock for the duration of an explicit
 # BEGIN ... COMMIT block.
 _tx_lock: asyncio.Lock = asyncio.Lock()
+
+# Per-domain schema registration. Owner packages call register_schema() at
+# import time; init_db() runs each registered DDL callback after the engine's
+# own core schema. Keyed by name so a module imported twice registers once.
+_registered_schemas: "dict[str, Callable[..., Awaitable[None]]]" = {}
+
+
+def register_schema(name: str, fn: "Callable[..., Awaitable[None]]") -> None:
+    """Register an ``async fn(db)`` schema callback run by init_db()."""
+    _registered_schemas[name] = fn
+
+
+async def _run_registered_schemas(db) -> None:
+    for name, fn in list(_registered_schemas.items()):
+        await fn(db)
+        logger.debug(f"Ran registered schema: {name}")
+    await db.commit()
 
 # ─── Z10 T3C: per-mission tx-lock shard ──────────────────────────────────────
 # Cross-mission interference (zone doc 10): the single global ``_tx_lock``
@@ -907,25 +925,8 @@ async def init_db():
         )
     """)
 
-    # Model performance stats (Phase 4)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS model_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model TEXT NOT NULL,
-            agent_type TEXT NOT NULL,
-            avg_grade REAL DEFAULT 0.0,
-            avg_cost REAL DEFAULT 0.0,
-            avg_latency REAL DEFAULT 0.0,
-            success_rate REAL DEFAULT 1.0,
-            total_calls INTEGER DEFAULT 0,
-            total_successes INTEGER DEFAULT 0,
-            total_grade_sum REAL DEFAULT 0.0,
-            total_cost_sum REAL DEFAULT 0.0,
-            total_latency_sum REAL DEFAULT 0.0,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(model, agent_type)
-        )
-    """)
+    # model_stats — registry domain; DDL now owned by fatih_hoca/schema.py
+    # (registered via dabidabi.register_schema, run in init_db's registration loop).
 
     # Per-call token telemetry (pool-pressure machinery)
     await db.execute("""
@@ -1228,64 +1229,10 @@ async def init_db():
         )
     """)
 
-    # Model pick telemetry (Phase 1 selection-intelligence plan)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS model_pick_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            task_name TEXT NOT NULL,
-            agent_type TEXT,
-            difficulty INTEGER,
-            call_category TEXT,
-            picked_model TEXT NOT NULL,
-            picked_score REAL NOT NULL,
-            picked_reasons TEXT,
-            candidates_json TEXT NOT NULL,
-            failures_json TEXT,
-            snapshot_summary TEXT,
-            pool TEXT,
-            urgency REAL,
-            success INTEGER,
-            error_category TEXT,
-            provider TEXT
-        )
-    """)
-    # Idempotent column add for pre-Phase-2c / pre-Task-5 / pre-Task-15 databases.
-    # ``reinforce`` (Z9 T4E) holds a confirmed-verdict score nudge — see
-    # record_reinforce_nudge() / fatih_hoca.grading.reinforce_bonus().
-    for col_name, col_type in (
-        ("pool", "TEXT"),
-        ("urgency", "REAL"),
-        ("success", "INTEGER"),
-        ("error_category", "TEXT"),
-        ("provider", "TEXT"),
-        ("outcome", "TEXT"),
-        ("reinforce", "REAL"),
-        ("task_id", "INTEGER"),
-    ):
-        try:
-            await db.execute(f"ALTER TABLE model_pick_log ADD COLUMN {col_name} {col_type}")
-        except Exception as e:
-            if "duplicate column" not in str(e).lower():
-                raise
-            # column already exists — expected on re-init
-    # Backfill legacy rows: pre-cloud era was 100% local picks. Idempotent —
-    # re-running just no-ops because no NULL rows remain.
-    await db.execute(
-        "UPDATE model_pick_log SET provider='local' WHERE provider IS NULL"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pick_log_provider ON model_pick_log(provider)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pick_log_task ON model_pick_log(task_name, timestamp DESC)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pick_log_model ON model_pick_log(picked_model, timestamp DESC)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pick_log_task_id ON model_pick_log(task_id)"
-    )
+    # model_pick_log — registry domain; CREATE + ALTERs + indexes now owned by
+    # fatih_hoca/schema.py (registered via dabidabi.register_schema). The
+    # legacy provider-backfill (UPDATE ... WHERE provider IS NULL) is dropped:
+    # fresh DBs get the column from the canonical CREATE, prod was backfilled.
     # ── Admission violations (Q1 forensics) ──────────────────────────────
     # Captures every "Beckman admitted, KDV/dispatcher rejected" event.
     # Three sites:
@@ -1351,60 +1298,12 @@ async def init_db():
         )
     """)
     # ── Provider/model registry ───────────────────────────────────────────
-    # Replaces the flat .dead_models.json file. Three concerns:
-    #   providers       — provider-level status (auth dead, key rotation hash)
-    #   models          — model-level status (404, cause, TTL expiry)
-    #   registry_events — append-only audit trail (mark_dead/revive/probe)
-    # Reads from packages/fatih_hoca/registry.py via src/infra/registry_store.
-    # Writes from caller (404/auth), discovery (revive), telegram (/revive),
-    # orchestrator boot probe.
-    #
-    # status='dead' AND (expires_at IS NULL OR expires_at > now) = effectively
-    # dead. Per-cause TTL stored explicitly on the row (not derived) so policy
-    # tweaks don't retroactively shift live entries.
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS providers (
-            name        TEXT PRIMARY KEY,
-            status      TEXT NOT NULL DEFAULT 'active',
-            cause       TEXT,
-            marked_at   TIMESTAMP,
-            revived_at  TIMESTAMP,
-            key_hash    TEXT
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS models (
-            litellm_name    TEXT PRIMARY KEY,
-            provider        TEXT NOT NULL,
-            status          TEXT NOT NULL DEFAULT 'active',
-            cause           TEXT,
-            marked_at       TIMESTAMP,
-            revived_at      TIMESTAMP,
-            expires_at      TIMESTAMP,
-            source          TEXT,
-            first_seen_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS registry_events (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            scope           TEXT NOT NULL,
-            target          TEXT NOT NULL,
-            event           TEXT NOT NULL,
-            cause           TEXT,
-            actor           TEXT,
-            payload_json    TEXT
-        )
-    """)
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_registry_events_target_ts "
-        "ON registry_events(target, timestamp DESC)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_models_status "
-        "ON models(status, provider)"
-    )
+    # providers / models / registry_events (+ their indexes) — registry domain.
+    # DDL now owned by fatih_hoca/schema.py (registered via
+    # dabidabi.register_schema; run in init_db's registration loop). The
+    # registry_events action-scope columns (mission_id/task_id/verb/
+    # reversibility) are folded into the canonical CREATE + REGISTRY_ALTERS
+    # there, so the old apply_migration here is gone too.
 
     # ── Z10 T1C: schema_migrations ledger ─────────────────────────────────
     # Records every DDL migration applied to this database. apply_migration()
@@ -1517,26 +1416,8 @@ async def init_db():
         ),
     )
 
-    # 3. registry_events: per-action audit columns
-    await apply_migration(
-        version="2026-05-10-registry-events-action-scope",
-        sql=(
-            "ALTER TABLE registry_events ADD COLUMN mission_id INTEGER;\n"
-            "ALTER TABLE registry_events ADD COLUMN task_id INTEGER;\n"
-            "ALTER TABLE registry_events ADD COLUMN verb TEXT;\n"
-            "ALTER TABLE registry_events ADD COLUMN reversibility TEXT;\n"
-        ),
-        reversal_sql=(
-            "ALTER TABLE registry_events DROP COLUMN mission_id;\n"
-            "ALTER TABLE registry_events DROP COLUMN task_id;\n"
-            "ALTER TABLE registry_events DROP COLUMN verb;\n"
-            "ALTER TABLE registry_events DROP COLUMN reversibility;\n"
-        ),
-        description=(
-            "T1C provenance: registry_events extended for scope='action' "
-            "audit rows (mission_id/task_id/verb/reversibility)"
-        ),
-    )
+    # 3. registry_events per-action audit columns — registry domain; folded
+    #    into fatih_hoca/schema.py canonical CREATE + REGISTRY_ALTERS.
 
     # 4. action_confirmations table + index
     await apply_migration(
@@ -4155,7 +4036,6 @@ async def init_db():
         ("idx_missions_status", "missions", "status"),
         ("idx_conversations_task_id", "conversations", "task_id"),
         ("idx_memory_mission_category", "memory", "mission_id, category"),
-        ("idx_model_stats_model_agent", "model_stats", "model, agent_type"),
         ("idx_blackboards_mission", "blackboards", "mission_id"),
         ("idx_credentials_service", "credentials", "service_name"),
         ("idx_todo_status", "todo_items", "status"),
@@ -4174,6 +4054,9 @@ async def init_db():
             logger.debug(f"Index {idx_name} creation skipped: {e}")
 
     await db.commit()
+
+    # Per-domain registered schemas (owner packages register their own DDL).
+    await _run_registered_schemas(db)
 
     # Yalayut tables (catalog, demand signals, sources, index, etc.)
     try:
@@ -6345,75 +6228,7 @@ async def get_task_tree(mission_id: int) -> list[dict]:
 
 # --- Model Stats ---
 
-async def record_model_call(
-    model: str,
-    agent_type: str,
-    success: bool,
-    cost: float = 0.0,
-    latency: float = 0.0,
-    grade: float | None = None,
-) -> None:
-    """Record a model call for performance tracking.
-
-    Persists per-(model, agent_type) aggregates to the ``model_stats`` DB
-    table. Phase C.5 (2026-05-05): in-memory Prometheus counters are
-    emitted by ``hallederiz_kadir.caller`` directly — this function used
-    to ALSO emit them which inflated counters ~2.5× because every ReAct
-    iter passed through both paths. Audit:
-    ``docs/handoff/2026-05-04-record-model-call-audit.md``.
-    """
-    db = await get_db()
-
-    # Upsert: try to get existing row
-    cursor = await db.execute(
-        "SELECT * FROM model_stats WHERE model = ? AND agent_type = ?",
-        (model, agent_type)
-    )
-    existing = await cursor.fetchone()
-
-    if existing:
-        row = dict(existing)
-        total = row["total_calls"] + 1
-        successes = row["total_successes"] + (1 if success else 0)
-        cost_sum = row["total_cost_sum"] + cost
-        latency_sum = row["total_latency_sum"] + latency
-        grade_sum = row["total_grade_sum"] + (grade if grade else 0)
-
-        avg_cost = cost_sum / total if total > 0 else 0
-        avg_latency = latency_sum / total if total > 0 else 0
-        graded_calls = row["total_calls"]  # approximate
-        if grade is not None:
-            graded_calls += 1
-        avg_grade = grade_sum / graded_calls if graded_calls > 0 else 0
-        success_rate = successes / total if total > 0 else 0
-
-        await db.execute(
-            """UPDATE model_stats SET
-                   total_calls = ?, total_successes = ?,
-                   total_cost_sum = ?, total_latency_sum = ?,
-                   total_grade_sum = ?,
-                   avg_cost = ?, avg_latency = ?,
-                   avg_grade = ?, success_rate = ?,
-                   updated_at = datetime('now')
-               WHERE model = ? AND agent_type = ?""",
-            (total, successes, cost_sum, latency_sum, grade_sum,
-             avg_cost, avg_latency, avg_grade, success_rate,
-             model, agent_type)
-        )
-    else:
-        avg_grade = grade if grade else 0.0
-        await db.execute(
-            """INSERT INTO model_stats
-               (model, agent_type, total_calls, total_successes,
-                total_cost_sum, total_latency_sum, total_grade_sum,
-                avg_cost, avg_latency, avg_grade, success_rate)
-               VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (model, agent_type, 1 if success else 0,
-             cost, latency, grade if grade else 0,
-             cost, latency, avg_grade,
-             1.0 if success else 0.0)
-        )
-    await db.commit()
+# record_model_call moved to fatih_hoca.db (Phase B). Back-compat shim at EOF.
 
 
 async def record_call_tokens(
@@ -6452,44 +6267,8 @@ async def record_call_tokens(
     await db.commit()
 
 
-async def get_model_stats(
-    model: str | None = None,
-    agent_type: str | None = None,
-) -> list[dict]:
-    """Query model performance stats.
-
-    Filter by model and/or agent_type.  Returns all if no filters.
-    """
-    db = await get_db()
-    query = "SELECT * FROM model_stats WHERE 1=1"
-    params: list = []
-    if model:
-        query += " AND model = ?"
-        params.append(model)
-    if agent_type:
-        query += " AND agent_type = ?"
-        params.append(agent_type)
-    query += " ORDER BY avg_grade DESC, success_rate DESC"
-    cursor = await db.execute(query, params)
-    return [dict(row) for row in await cursor.fetchall()]
-
-
-async def get_model_performance_ranking(agent_type: str) -> list[dict]:
-    """Get models ranked by performance for a specific agent type.
-
-    Returns models sorted by: success_rate * avg_grade (composite score).
-    Only includes models with >= 3 calls for statistical significance.
-    """
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT model, avg_grade, avg_cost, avg_latency,
-                  success_rate, total_calls
-           FROM model_stats
-           WHERE agent_type = ? AND total_calls >= 3
-           ORDER BY (success_rate * avg_grade) DESC""",
-        (agent_type,)
-    )
-    return [dict(row) for row in await cursor.fetchall()]
+# get_model_stats + get_model_performance_ranking moved to fatih_hoca.db
+# (Phase B). Back-compat shims at EOF.
 
 
 # --- Cost Budget ---
@@ -6910,37 +6689,10 @@ async def get_workflow_checkpoint(mission_id: int) -> dict | None:
     return result
 
 
-async def update_model_stats(
-    model: str,
-    agent_type: str,
-    success: bool,
-    cost: float = 0.0,
-    latency_ms: float = 0.0,
-    grade: float = 0.0,
-) -> None:
-    """Record model performance stats for health monitoring."""
-    try:
-        db = await get_db()
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS model_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model TEXT NOT NULL,
-                agent_type TEXT NOT NULL,
-                success INTEGER NOT NULL,
-                cost REAL DEFAULT 0,
-                latency_ms REAL DEFAULT 0,
-                grade REAL DEFAULT 0,
-                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        await db.execute(
-            "INSERT INTO model_stats (model, agent_type, success, cost, latency_ms, grade) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (model, agent_type, int(success), cost, latency_ms, grade),
-        )
-        await db.commit()
-    except Exception:
-        pass  # best-effort
+# update_model_stats DELETED (Phase B): dead code — its inline "Schema B"
+# CREATE TABLE was shadowed by the live Schema A model_stats and its INSERT
+# was silently try/excepted. Real aggregation lives in
+# fatih_hoca.db.record_model_call.
 
 
 # ─── Web Source Quality Tracking ───────────────────────────────────────────
@@ -7647,47 +7399,8 @@ async def get_artifact_provenance(path: str) -> list[dict]:
     return [dict(zip(cols, r)) for r in rows]
 
 
-async def record_action_event(
-    verb: str,
-    reversibility: str,
-    mission_id: int | None,
-    task_id: int | None,
-    payload: dict | None,
-    status: str,
-) -> int:
-    """Append a per-action audit row to ``registry_events`` (scope='action').
-
-    The existing ``event`` column carries the verb (mirrors ``verb`` for
-    backward-compatible target/event scans); ``payload_json`` carries the
-    JSON-serialized payload + status. Returns the new row id.
-    """
-    db = await get_db()
-    try:
-        payload_json = json.dumps(
-            {"payload": payload or {}, "status": status},
-            default=str,
-        )
-    except Exception:
-        payload_json = json.dumps(
-            {"payload": str(payload), "status": status}
-        )
-    cur = await db.execute(
-        "INSERT INTO registry_events "
-        "(scope, target, event, payload_json, "
-        " mission_id, task_id, verb, reversibility) "
-        "VALUES ('action', ?, ?, ?, ?, ?, ?, ?)",
-        (
-            verb,
-            verb,
-            payload_json,
-            mission_id,
-            task_id,
-            verb,
-            reversibility,
-        ),
-    )
-    await db.commit()
-    return cur.lastrowid or 0
+# record_action_event moved to fatih_hoca.db (Phase B). Back-compat shim at
+# EOF; internal callers (e.g. record_vendor_cost) resolve it at call-time.
 
 
 async def request_confirmation(
@@ -8002,51 +7715,8 @@ async def supersede_growth_events(
 # dedicated ``model_pick_log`` row (call_category='reinforce', reinforce
 # column carries the +bonus) — fatih_hoca.grading.reinforce_bonus() reads
 # these rows and folds a time-decayed sum into the model's perf_score.
-REINFORCE_NUDGE: float = 0.05  # founder-decided: +0.05 per confirmed verdict
-
-
-async def record_reinforce_nudge(
-    model: str,
-    *,
-    task_name: str = "hypothesis_verdict",
-    amount: float = REINFORCE_NUDGE,
-    provider: str = "local",
-    hypothesis_id: int | None = None,
-) -> None:
-    """Write a confirmed-verdict reinforce nudge for ``model``.
-
-    Fire-and-forget telemetry — never raises into the caller. The row is a
-    ``model_pick_log`` entry tagged ``call_category='reinforce'`` with the
-    bonus stored in the ``reinforce`` column. Fatih Hoca's grading layer
-    sums these with a 50%-per-30-day decay so the influence fades.
-    """
-    if not model:
-        return
-    try:
-        db = await get_db()
-        snapshot = f"hypothesis_id={hypothesis_id}" if hypothesis_id else ""
-        await db.execute(
-            "INSERT INTO model_pick_log "
-            "(task_name, picked_model, picked_score, call_category, "
-            " candidates_json, snapshot_summary, success, provider, "
-            " outcome, reinforce) "
-            "VALUES (?, ?, ?, 'reinforce', '[]', ?, 1, ?, 'reinforce', ?)",
-            (
-                task_name,
-                model,
-                0.0,
-                snapshot,
-                provider,
-                float(amount),
-            ),
-        )
-        await db.commit()
-        logger.info(
-            "reinforce nudge recorded model=%s amount=%.3f hyp=%s",
-            model, amount, hypothesis_id,
-        )
-    except Exception as e:  # noqa: BLE001 — telemetry must never propagate
-        logger.warning("record_reinforce_nudge failed: %s", e)
+# REINFORCE_NUDGE + record_reinforce_nudge moved to fatih_hoca.db (Phase B).
+# Back-compat shim at EOF.
 
 
 async def insert_variant(
@@ -9104,3 +8774,23 @@ async def calibration_matrix() -> list[dict]:
     await cur.close()
     return [dict(zip(cols, r)) for r in rows]
 
+
+
+# ── Back-compat: registry helpers now live in fatih_hoca.db. Lazy shims ─────
+# delegate without an eager dabidabi->fatih_hoca import (which would cycle).
+def _registry_shim(_name):
+    async def _f(*a, **k):
+        from fatih_hoca import db as _fdb
+        return await getattr(_fdb, _name)(*a, **k)
+    # functools.wraps can't be used here: the delegate (fatih_hoca.db.<name>)
+    # is resolved lazily inside _f, so it isn't available at factory time.
+    # Set introspection metadata directly instead.
+    _f.__name__ = _name
+    _f.__qualname__ = _name
+    _f.__doc__ = f"Back-compat shim delegating to fatih_hoca.db.{_name}."
+    return _f
+
+
+for _n in ("record_model_call", "get_model_stats", "get_model_performance_ranking",
+           "record_reinforce_nudge", "record_action_event"):
+    globals()[_n] = _registry_shim(_n)

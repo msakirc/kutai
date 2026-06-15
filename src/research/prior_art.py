@@ -146,6 +146,49 @@ def _write_cache(
 
 
 # ---------------------------------------------------------------------------
+# Query relaxation
+# ---------------------------------------------------------------------------
+# Keyword search engines (HN Algolia, Wikipedia srsearch) AND-match tokens, so
+# a long natural-language graveyard phrase like "gamified habit tracker mobile
+# app dead startup" matches no single document and returns 0 hits. Relaxation
+# strips graveyard/generic modifier tokens and keeps the short core noun
+# phrase (proven live: 6-token phrase -> 0 HN hits; "gamified habit tracker"
+# -> 19). Falls back to the planner's domain_keywords when the core collapses.
+_GRAVEYARD_MODIFIERS = {
+    "dead", "dying", "shutdown", "shut", "abandoned", "discontinued",
+    "defunct", "failed", "fail", "closed", "dormant", "graveyard", "sunset",
+    "deprecated", "killed", "ceased", "bankrupt", "obsolete", "retired",
+    "down",
+}
+_GENERIC_NOISE = {
+    "app", "apps", "mobile", "software", "tool", "tools", "platform",
+    "product", "products", "service", "services", "solution", "solutions",
+    "startup", "startups", "company", "companies", "online", "best", "top",
+    "the", "a", "an", "for", "of", "and", "or",
+}
+
+
+def _relax_query(q: str, domain_keywords: list[str] | None) -> str:
+    """Return a short keyword-core variant of ``q`` for AND-matching engines.
+
+    Strips graveyard + generic-noise tokens, caps to the first 3 core tokens.
+    Falls back to the first domain keyword when the core collapses below 2
+    tokens (the planner emits domain_keywords precisely for this).
+    """
+    toks = re.findall(r"[a-zA-Z0-9]+", (q or "").lower())
+    core = [t for t in toks if t not in _GRAVEYARD_MODIFIERS
+            and t not in _GENERIC_NOISE]
+    core = core[:3]
+    if len(core) >= 2:
+        return " ".join(core)
+    for dk in (domain_keywords or []):
+        dk_core = " ".join(str(dk).split()[:3]).strip()
+        if dk_core:
+            return dk_core
+    return " ".join(core)
+
+
+# ---------------------------------------------------------------------------
 # Source fetchers
 # ---------------------------------------------------------------------------
 async def _fetch_json(
@@ -165,9 +208,14 @@ async def _fetch_json(
 
 
 async def _query_hn(
-    session: "aiohttp.ClientSession", queries: list[str]
+    session: "aiohttp.ClientSession", queries: list[str],
+    domain_keywords: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int | None]:
-    """Return (hits, status_429_seen). One probe per query, max 3 queries."""
+    """Return (hits, status_429_seen). One probe per query, max 3 queries.
+
+    When a full query returns 0 hits, retry once with a relaxed keyword-core
+    variant (HN Algolia AND-matches tokens, so long phrases hit nothing).
+    """
     hits: list[dict[str, Any]] = []
     rate_limited = None
     for q in queries[:3]:
@@ -179,15 +227,29 @@ async def _query_hn(
             if status == 429:
                 rate_limited = 429
                 break
-            if isinstance(data, dict):
-                hits.extend(data.get("hits") or [])
+            q_hits = data.get("hits") or [] if isinstance(data, dict) else []
+            if not q_hits:
+                rq = _relax_query(q, domain_keywords)
+                if rq and rq.strip().lower() != (q or "").strip().lower():
+                    status, data = await _fetch_json(
+                        session, HN_ALGOLIA,
+                        params={"query": rq, "tags": "story",
+                                "hitsPerPage": 20},
+                    )
+                    if status == 429:
+                        rate_limited = 429
+                        break
+                    if isinstance(data, dict):
+                        q_hits = data.get("hits") or []
+            hits.extend(q_hits)
         except Exception as e:
             logger.debug("hn query failed: %s", e)
     return hits, rate_limited
 
 
 async def _query_wikipedia(
-    session: "aiohttp.ClientSession", queries: list[str]
+    session: "aiohttp.ClientSession", queries: list[str],
+    domain_keywords: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int | None]:
     hits: list[dict[str, Any]] = []
     rate_limited = None
@@ -203,9 +265,25 @@ async def _query_wikipedia(
             if status == 429:
                 rate_limited = 429
                 break
+            results = []
             if isinstance(data, dict):
                 results = (data.get("query") or {}).get("search") or []
-                hits.extend(results)
+            if not results:
+                rq = _relax_query(q, domain_keywords)
+                if rq and rq.strip().lower() != (q or "").strip().lower():
+                    status, data = await _fetch_json(
+                        session, WIKI_API,
+                        params={
+                            "action": "query", "list": "search",
+                            "format": "json", "srsearch": rq, "srlimit": 10,
+                        },
+                    )
+                    if status == 429:
+                        rate_limited = 429
+                        break
+                    if isinstance(data, dict):
+                        results = (data.get("query") or {}).get("search") or []
+            hits.extend(results)
         except Exception as e:
             logger.debug("wiki query failed: %s", e)
     return hits, rate_limited
@@ -337,6 +415,79 @@ def _normalize_ph(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _normalize_web(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize general web-search results ({title, body, href}) into the
+    candidate shape. URLs are HEAD-resolved downstream like any other source.
+    """
+    out = []
+    for h in hits or []:
+        if not isinstance(h, dict):
+            continue
+        title = (h.get("title") or "").strip()
+        url = (h.get("href") or h.get("url") or "").strip()
+        if not title or not url.startswith(("http://", "https://")):
+            continue
+        snippet = (h.get("body") or h.get("snippet") or "").strip()
+        out.append({
+            "name": title,
+            "url": url,
+            "thesis_summary": snippet[:200],
+            "sources": [url],
+            "_source_kind": "web_search",
+            "founded_year": None,
+            "status": "unknown",
+            "evidence_refs": ["agent_inference"],
+        })
+    return out
+
+
+async def _default_web_search(
+    queries: list[str], domain_keywords: list[str] | None
+) -> list[dict[str, Any]]:
+    """General web-search tier: Brave -> Google CSE -> DDGS, first that
+    returns hits wins per query. Brave/GCSE degrade to None without keys;
+    DDGS needs no key (blocking, run off-thread). Returns {title, body, href}
+    dicts. Never raises — coverage best-effort.
+    """
+    try:
+        from src.tools.web_search import (
+            _search_brave, _search_google_cse, _DDGS,
+        )
+    except Exception as e:  # pragma: no cover — import guard
+        logger.debug("web_search import failed: %s", e)
+        return []
+
+    # Relax to short keyword cores; web engines tolerate them and DDGS
+    # behaves far better on short queries. Dedup, cap to 3 to bound calls.
+    web_qs: list[str] = []
+    for q in (queries or [])[:3]:
+        rq = _relax_query(q, domain_keywords) or q
+        if rq and rq not in web_qs:
+            web_qs.append(rq)
+    if not web_qs and domain_keywords:
+        dk = " ".join(str(domain_keywords[0]).split()[:3]).strip()
+        if dk:
+            web_qs.append(dk)
+
+    hits: list[dict[str, Any]] = []
+    for q in web_qs:
+        res = None
+        try:
+            res = await _search_brave(q, max_results=10)
+            if res is None:
+                res = await _search_google_cse(q, max_results=10)
+            if res is None and _DDGS is not None:
+                res = await asyncio.to_thread(
+                    lambda qq=q: list(_DDGS().text(qq, max_results=10))
+                )
+        except Exception as e:
+            logger.debug("web search failed for %r: %s", q, e)
+            res = None
+        if res:
+            hits.extend(res)
+    return hits
+
+
 def _dedup_by_name(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: dict[str, dict[str, Any]] = {}
     for it in items:
@@ -430,6 +581,7 @@ async def fetch_candidates(
     db_path: str | None = None,
     session: "aiohttp.ClientSession | None" = None,
     ttl_hours: int = DEFAULT_TTL_HOURS,
+    web_searcher: "Any | None" = None,
 ) -> dict[str, Any]:
     """Fetch + normalize + URL-resolve prior-art candidates for a fixed
     query set. Returns ``{"candidates": [...], "search_summary": {...}}``.
@@ -444,6 +596,8 @@ async def fetch_candidates(
 
     domain_keywords = list(domain_keywords or [])
     queries = [q for q in (queries or []) if isinstance(q, str) and q.strip()][:5]
+    if web_searcher is None:
+        web_searcher = _default_web_search
     cache_key = _hash_keywords(domain_keywords or [(" ".join(queries))[:64]])
     cached = _read_cache(cache_key, db_path=db_path)
 
@@ -463,7 +617,8 @@ async def fetch_candidates(
         # Tier 1: HN
         try:
             hn_hits, hn_rate = await asyncio.wait_for(
-                _query_hn(session, queries), timeout=_SOURCE_TIMEOUT + 1)
+                _query_hn(session, queries, domain_keywords),
+                timeout=_SOURCE_TIMEOUT + 1)
             if hn_rate:
                 rate_limit_hits.append({"source": "hn_algolia", "err": "429"})
             sources_used.append("hn_algolia")
@@ -479,7 +634,8 @@ async def fetch_candidates(
         # Tier 2: Wikipedia
         try:
             wiki_hits, wiki_rate = await asyncio.wait_for(
-                _query_wikipedia(session, queries), timeout=_SOURCE_TIMEOUT + 1)
+                _query_wikipedia(session, queries, domain_keywords),
+                timeout=_SOURCE_TIMEOUT + 1)
             if wiki_rate:
                 rate_limit_hits.append({"source": "wikipedia", "err": "429"})
             sources_used.append("wikipedia")
@@ -491,6 +647,34 @@ async def fetch_candidates(
         except asyncio.TimeoutError:
             rate_limit_hits.append({"source": "wikipedia", "err": "timeout"})
             empty_count += 1
+
+        # Tier 2.5: general web search (Brave -> GCSE -> DDGS). Runs for
+        # EVERY ambition tier — the coverage backstop when HN + Wikipedia
+        # (keyword-AND engines that don't index niche consumer apps) return
+        # nothing. Without this, most real ideas yield zero candidates and
+        # the synthesizer (forbidden to invent) cannot produce a report.
+        # Gated on thin results: skip when HN/Wiki already delivered >= k
+        # candidates, so we don't hammer the (rate-limit-prone) web tier on
+        # every mission — it earns its latency only as the backstop.
+        if len(candidates) < k:
+            try:
+                web_hits = await asyncio.wait_for(
+                    web_searcher(queries, domain_keywords),
+                    timeout=_SOURCE_TIMEOUT + 6)
+            except asyncio.TimeoutError:
+                rate_limit_hits.append(
+                    {"source": "web_search", "err": "timeout"})
+                web_hits = []
+            except Exception as e:
+                logger.debug("web search tier failed: %s", e)
+                web_hits = []
+            normed_web = _normalize_web(web_hits)
+            if normed_web:
+                sources_used.append("web_search")
+                candidates.extend(normed_web)
+                total_inspected += len(normed_web)
+            else:
+                empty_count += 1
 
         # Tier 3: Wayback (per top-k candidate)
         if ambition_tier in ("private_beta", "public_launch", "revenue_product") and candidates:

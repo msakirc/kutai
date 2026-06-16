@@ -352,6 +352,7 @@ def test_parse_snapshot_field_completeness_guard():
         ram_available_mb=4000,
         ram_total_mb=32000,
         external_gpu_fraction=0.7,
+        local_inference_down=True,
     )
 
     # Every top-level field must hold a non-default value, otherwise the
@@ -412,6 +413,7 @@ def test_snapshot_overlay_passthrough_field_completeness():
         ram_available_mb=4000,
         ram_total_mb=32000,
         external_gpu_fraction=0.7,
+        local_inference_down=True,
     )
 
     client = NerdHerdClient(port=UNREACHABLE_PORT, timeout=0.5)

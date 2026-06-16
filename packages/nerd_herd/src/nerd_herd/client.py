@@ -63,6 +63,14 @@ class NerdHerdClient:
         # cadence without an extra RPC hop.
         from nerd_herd.swap_budget import SwapBudget
         self._swap_budget = SwapBudget()
+        # Local-inference liveness (MIRROR pattern): the dispatcher records
+        # local load outcomes in-process via module-level record_local_load,
+        # which fans out here. The sidecar has no load-outcome write path, so
+        # the selector reads this client cache directly (is_local_inference_down)
+        # rather than a snapshot field — same reason recent_swap_count is read
+        # off the client, not the parsed sidecar snapshot.
+        from nerd_herd.local_liveness import LocalLivenessTracker
+        self._local_liveness = LocalLivenessTracker(threshold=5, cooldown_s=300.0)
         # Locally-known queue profile (MIRROR pattern): beckman pushes
         # in-process via module-level push_queue_profile, which fans out
         # here. No transport delivers it to the sidecar, so the parsed
@@ -85,6 +93,12 @@ class NerdHerdClient:
 
     def record_swap(self, model_name: str = "") -> None:
         self._swap_budget.record_swap()
+
+    def record_local_load(self, ok: bool) -> None:
+        self._local_liveness.record_load(bool(ok))
+
+    def is_local_inference_down(self) -> bool:
+        return self._local_liveness.is_down()
 
     def set_local_queue_profile(self, profile: QueueProfile | None) -> None:
         """Store the in-process queue profile for snapshot overlay.
@@ -508,6 +522,11 @@ class NerdHerdClient:
             ram_available_mb=int(data.get("ram_available_mb", 0)),
             ram_total_mb=int(data.get("ram_total_mb", 0)),
             external_gpu_fraction=float(data.get("external_gpu_fraction", 0.0)),
+            # Round-trip the liveness flag so a field-drop is caught by the
+            # completeness guard. In practice the selector overlays the live
+            # value from this client's own cache (is_local_inference_down); the
+            # sidecar wire value is normally False (it has no load-outcome feed).
+            local_inference_down=bool(data.get("local_inference_down", False)),
         )
 
     async def mark_degraded(self, capability: str) -> None:

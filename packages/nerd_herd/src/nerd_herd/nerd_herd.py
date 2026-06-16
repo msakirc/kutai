@@ -11,6 +11,7 @@ from nerd_herd.inference import InferenceCollector
 from nerd_herd.exposition import MetricsServer, build_metrics_text
 from nerd_herd.swap_budget import SwapBudget
 from nerd_herd.presence import PresenceCollector
+from nerd_herd.local_liveness import LocalLivenessTracker
 from nerd_herd.types import GPUState, HealthStatus, InFlightCall, LocalModelState, CloudProviderState, QueueProfile, SystemSnapshot
 
 
@@ -59,6 +60,9 @@ class NerdHerd:
         self._in_flight_calls: list[InFlightCall] = []
 
         self._swap_budget = SwapBudget(window_seconds=300)
+        # Process-level local-inference liveness gate (5 consecutive cross-model
+        # load failures → lay off all local for 300s, half-open recovery).
+        self._local_liveness = LocalLivenessTracker(threshold=5, cooldown_s=300.0)
 
         self._server = MetricsServer(self.registry, port=metrics_port, nerd_herd=self)
 
@@ -129,6 +133,17 @@ class NerdHerd:
 
     def record_swap(self, model_name: str = "") -> None:
         self._swap_budget.record_swap()
+
+    def record_local_load(self, ok: bool) -> None:
+        """Record the outcome of a local model load attempt (called by the
+        dispatcher). Feeds the process-level local-inference liveness gate."""
+        self._local_liveness.record_load(bool(ok))
+
+    def is_local_inference_down(self) -> bool:
+        """True while local inference is structurally unavailable (llama-server
+        cannot bring any model up). The selector lays off ALL local while this
+        holds so tasks route to cloud instead of re-attempting a dead server."""
+        return self._local_liveness.is_down()
 
     def push_image_server_state(self, *, resident: bool, vram_mb: int) -> None:
         """Replace image-server residency state (pushed by clair_obscur on

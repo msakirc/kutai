@@ -197,6 +197,15 @@ class LLMDispatcher:
                         load_timeout=pick.estimated_load_seconds or 0.0,
                         estimated_context=_min_ctx,
                     )
+                # Feed the process-level local-inference liveness gate: 5
+                # consecutive cross-model load failures → selector lays off ALL
+                # local (routes to cloud) instead of admitting every task
+                # against a dead llama-server. Any success resets it.
+                try:
+                    import nerd_herd as _nh_live
+                    _nh_live.record_local_load(bool(ok))
+                except Exception:
+                    pass
                 if not ok:
                     # Loading failure — return non-retryable CallError.
                     # No record_pick (matches prior raise-before-record

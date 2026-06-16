@@ -269,6 +269,11 @@ class SystemSnapshot:
     ram_available_mb: int = 0
     ram_total_mb: int = 0
     external_gpu_fraction: float = 0.0  # cached from the 30s auto-detect loop
+    # Process-level local-inference liveness: True while llama-server is
+    # structurally unbootable (≥5 consecutive load failures). Overlaid in-process
+    # by the selector from the nerd_herd client cache (the sidecar has no
+    # load-outcome write path); the selector lays off ALL local while True.
+    local_inference_down: bool = False
 
     def pressure_for(
         self,

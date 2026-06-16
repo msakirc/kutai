@@ -130,6 +130,13 @@ class Selector:
         except Exception:
             pass
 
+        # Local-inference liveness overlay (in-process truth): the dispatcher
+        # records local load outcomes on the client cache; the sidecar snapshot
+        # can't carry it. Surface it so _check_eligibility lays off all local
+        # while the server is structurally down. Only a genuine bool overrides
+        # the snapshot default (a client without the signal leaves it untouched).
+        self._overlay_local_inference_down(snapshot)
+
         # ── Cloud availability overlay: in-process truth ─────────────────────
         # Same staleness defect as the in_flight overlay above, on the cloud
         # axis. The selector's nerd_herd is the sidecar NerdHerdClient, whose
@@ -675,6 +682,18 @@ class Selector:
 
         # Local inference allowed check — use snapshot.vram_available_mb > 0
         if model.is_local:
+            # Process-level liveness gate: while llama-server is structurally
+            # down (≥5 consecutive cross-model load failures — port collision,
+            # crashed/unbootable server, VRAM wall, missing GGUF, driver
+            # fault), lay off ALL local so tasks route to cloud instead of
+            # re-attempting a dead server (live 2026-06-16: hours of every task
+            # failing local). Read off snapshot.local_inference_down, which the
+            # select()/is_servable() entry points overlay in-process from the
+            # nerd_herd client (mirror pattern) — the sidecar has no
+            # load-outcome write path. Half-open recovery re-probes after the
+            # cooldown.
+            if getattr(snapshot, "local_inference_down", False):
+                return "local_server_down"
             # Minimal load mode = cloud-only. Local is structurally
             # ineligible — clearer than a pressure veto and gives a
             # named diag reason. (resource-signals 2026-06-09)
@@ -688,6 +707,24 @@ class Selector:
                 return "no_vram_available"
 
         return None
+
+    def _overlay_local_inference_down(self, snapshot: object) -> None:
+        """Overlay the in-process local-inference liveness flag onto snapshot.
+
+        Reads ``self._nerd_herd.is_local_inference_down()`` (client cache fed by
+        the dispatcher's load outcomes). Only a genuine ``bool`` overrides the
+        snapshot default — a nerd_herd without the signal (or a test stub
+        returning a non-bool) leaves the snapshot's own value untouched.
+        """
+        getter = getattr(self._nerd_herd, "is_local_inference_down", None)
+        if not callable(getter):
+            return
+        try:
+            val = getter()
+        except Exception:
+            return
+        if isinstance(val, bool):
+            snapshot.local_inference_down = val
 
     # ─── Continuation gate (RC-A, mission 74) ────────────────────────────────
 
@@ -707,6 +744,7 @@ class Selector:
         that is continuation, not contention.
         """
         snapshot = self._nerd_herd.snapshot()
+        self._overlay_local_inference_down(snapshot)
         reason = self._check_eligibility(
             model=model, reqs=reqs, failed_models=set(), snapshot=snapshot,
         )
@@ -716,13 +754,14 @@ class Selector:
                 and getattr(model, "is_local", False)
                 and getattr(model, "is_loaded", False)):
             return True
-        if (reason == "load_mode_minimal"
+        if (reason in ("load_mode_minimal", "local_server_down")
                 and getattr(model, "is_local", False)
                 and getattr(model, "is_loaded", False)):
-            # A held, already-loaded local model may CONTINUE under minimal —
-            # minimal blocks starting new local load, not finishing in-flight
-            # work (residency already paid). Mirrors the no_vram_available
-            # continuation carve-out. (resource-signals 2026-06-09)
+            # A held, already-loaded local model may CONTINUE — these gates
+            # block STARTING new local load, not finishing in-flight work
+            # (residency already paid). Mirrors the no_vram_available carve-out.
+            # (load_mode_minimal: resource-signals 2026-06-09; local_server_down:
+            # liveness gate 2026-06-17.)
             return True
         return False
 

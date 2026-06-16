@@ -105,6 +105,39 @@ def record_swap(model_name: str = "") -> None:
         pass  # best-effort mirror — singleton write already landed
 
 
+def record_local_load(ok: bool) -> None:
+    """Record the outcome of a local model load attempt (called by the
+    dispatcher after ensure_local_model).
+
+    MIRROR pattern (see record_swap): fans out to BOTH the in-process singleton
+    AND the default NerdHerdClient. The text selector reads
+    ``client.is_local_inference_down()`` off the client cache — the sidecar has
+    no load-outcome write path, so without the mirror the selector would read
+    "up" forever and keep admitting tasks against a dead local server.
+    """
+    _get_singleton().record_local_load(ok)
+    try:
+        from nerd_herd.client import get_default
+        client = get_default()
+        if client is not None:
+            client.record_local_load(ok)
+    except Exception:
+        pass  # best-effort mirror — singleton write already landed
+
+
+def is_local_inference_down() -> bool:
+    """True while local inference is structurally unavailable. Reads the default
+    client cache when present (what the selector sees), else the singleton."""
+    try:
+        from nerd_herd.client import get_default
+        client = get_default()
+        if client is not None:
+            return client.is_local_inference_down()
+    except Exception:
+        pass
+    return _get_singleton().is_local_inference_down()
+
+
 def record_image_server_state(*, resident: bool, vram_mb: int) -> None:
     """Record clair_obscur (local image-server) residency. Called by
     clair_obscur on start/stop. Read by fatih_hoca.image_select via the

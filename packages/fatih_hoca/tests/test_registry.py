@@ -414,7 +414,7 @@ def test_registry_mark_dead_with_explicit_cause():
     per CAUSE_POLICY (404_transient → 5min, 404_permanent → 24h, auth →
     no expiry)."""
     from fatih_hoca.registry import ModelRegistry
-    from src.infra import registry_store
+    from fatih_hoca import registry_store
     registry = ModelRegistry()
     registry.mark_dead("openrouter/foo", cause="404_transient")
     assert registry.is_dead("openrouter/foo") is True
@@ -438,7 +438,7 @@ def test_registry_mark_dead_ttl_expires(monkeypatch):
     """TTL-driven auto-revive: 404_transient (5min TTL) lets a model
     self-heal without operator action."""
     from fatih_hoca.registry import ModelRegistry
-    from src.infra import registry_store
+    from fatih_hoca import registry_store
     import time as _t
 
     registry = ModelRegistry()

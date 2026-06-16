@@ -437,7 +437,7 @@ async def test_init_boot_probe_revives_provider_when_auth_recovers(
     failure) but discovery's boot probe now succeeds, auto-revive —
     discovery's positive signal beats stale lockout."""
     from fatih_hoca.cloud.types import ProviderResult
-    from src.infra import registry_store
+    from fatih_hoca import registry_store
     import fatih_hoca
 
     # Pre-seed the provider as dead.
@@ -467,7 +467,7 @@ async def test_init_key_rotation_revives_provider(monkeypatch, tmp_path):
     discovery probe — operator scenario: auth lockout, fix key, restart,
     new key should NOT inherit the old key's dead state."""
     from fatih_hoca.cloud.types import ProviderResult
-    from src.infra import registry_store
+    from fatih_hoca import registry_store
     import fatih_hoca
 
     # Pre-seed: persisted hash matches OLD key + provider currently dead.
@@ -506,7 +506,7 @@ async def test_init_unchanged_key_no_revive(monkeypatch, tmp_path):
     """Same key across restarts — no rotation event, persisted dead
     state survives if probe still fails."""
     from fatih_hoca.cloud.types import ProviderResult
-    from src.infra import registry_store
+    from fatih_hoca import registry_store
     import fatih_hoca
 
     same_key = "same-key"
@@ -540,7 +540,7 @@ def test_load_yaml_pre_registers_models_with_source_yaml(tmp_path):
     """load_yaml must pre-populate the kill-switch registry so /dead
     rows on yaml-declared models show source='yaml' (vs the runtime
     UPSERT default of 'runtime' on a never-pre-registered id)."""
-    from src.infra import registry_store
+    from fatih_hoca import registry_store
     nerd_herd = MagicMock()
     nerd_herd.snapshot.return_value = SystemSnapshot()
 
@@ -570,7 +570,7 @@ async def test_discovery_pre_registers_models_with_source_discovery(
     registry with source='discovery' so /dead distinguishes catalog
     entries from discovery-only entries."""
     from fatih_hoca.cloud.types import DiscoveredModel, ProviderResult
-    from src.infra import registry_store
+    from fatih_hoca import registry_store
 
     fake_results = {
         "openai": ProviderResult(

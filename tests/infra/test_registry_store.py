@@ -1,11 +1,11 @@
-"""Tests for src.infra.registry_store — SQLite provider/model registry."""
+"""Tests for fatih_hoca.registry_store — SQLite provider/model registry."""
 from __future__ import annotations
 
 import time
 
 import pytest
 
-from src.infra import registry_store as rs
+from fatih_hoca import registry_store as rs
 
 
 @pytest.fixture(autouse=True)

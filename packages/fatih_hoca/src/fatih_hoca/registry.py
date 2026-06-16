@@ -973,7 +973,7 @@ def register_cloud_from_discovered(
     # source if mark_dead got there first (acceptable: runtime evidence
     # is more authoritative than a passive listing).
     try:
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         registry_store.register_model(
             model.litellm_name, model.provider, source="discovery",
         )
@@ -1205,7 +1205,7 @@ class ModelRegistry:
             404_permanent: 24h     auth/manual: never (operator /revive)
             404_transient: 5min    server_error: 10min
         """
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         for ident in self._both_ids(identifier):
             registry_store.mark_dead(ident, cause=cause, actor=actor)
 
@@ -1214,7 +1214,7 @@ class ModelRegistry:
         per registry_store. Store handles auto-revive on TTL expiry."""
         if not identifier:
             return False
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         # Cheap path: only check the literal id first; sibling check
         # only on miss to avoid catalog scan for known-clean ids.
         if registry_store.is_dead(identifier):
@@ -1227,7 +1227,7 @@ class ModelRegistry:
     def revive(self, identifier: str, actor: str = "auto") -> None:
         """Drop both keys from the dead set. Called by discovery on
         /v1/models hits and by the /revive Telegram command."""
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         for ident in self._both_ids(identifier):
             registry_store.revive(ident, actor=actor)
 
@@ -1236,18 +1236,18 @@ class ModelRegistry:
         """Mark a provider dead (auth failure, key cap, etc). Replaces
         the per-model mass-mark loop — selector now checks both
         is_dead(model) AND is_provider_dead(provider) at eligibility."""
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         registry_store.mark_provider_dead(provider, cause=cause, actor=actor)
 
     def is_provider_dead(self, provider: str) -> bool:
         """True iff provider row is dead. Provider-level dead has no
         TTL — operator must /revive after fixing credentials."""
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         return registry_store.is_provider_dead(provider)
 
     def revive_provider(self, provider: str, actor: str = "auto") -> None:
         """Mark a provider alive."""
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         registry_store.revive_provider(provider, actor=actor)
 
     def quarantine(self, identifier: str, duration_secs: float = 60.0) -> None:
@@ -1380,7 +1380,7 @@ class ModelRegistry:
             # (vs source='runtime' from a 404 mark_dead on a never-
             # pre-registered id). INSERT OR IGNORE — first source wins.
             try:
-                from src.infra import registry_store
+                from fatih_hoca import registry_store
                 registry_store.register_model(
                     litellm_name, config_provider, source="yaml",
                 )

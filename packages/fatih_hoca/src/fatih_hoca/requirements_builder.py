@@ -15,11 +15,20 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 
 from .requirements import AGENT_REQUIREMENTS, ModelRequirements
 
 import logging
 logger = logging.getLogger("fatih_hoca.requirements_builder")
+
+# Whole-word sensitivity tokens that auto-force ``local_only`` (keep user
+# PII off cloud providers). Matched with ``\b`` so a larger identifier that
+# merely contains a token as a substring (e.g. the ambition-tier enum value
+# ``private_beta``, or ``homepage``) does NOT trip it.
+_SENSITIVITY_RE = re.compile(
+    r"\b(?:personal|private|secret|password|credential|my|home)\b"
+)
 
 
 async def requirements_for(
@@ -86,11 +95,14 @@ async def requirements_for(
         reqs.difficulty = max(1, reqs.difficulty - 2)
 
     # ── Detect personal/sensitive data ──
-    sensitivity_keywords = [
-        "personal", "private", "secret", "password",
-        "credential", "my ", "my_", "home",
-    ]
-    if any(kw in f"{title} {description}" for kw in sensitivity_keywords):
+    # WHOLE-WORD match only. A raw substring scan mis-fired on workflow text
+    # that merely *contained* a token (live 2026-06-16: the ambition-tier enum
+    # value ``private_beta`` tripped ``private`` -> forced local_only -> the
+    # analyst task could only run local; with the local GPU busy/unloadable it
+    # crash-looped while cloud sat idle). ``\b`` treats ``_`` as a word char,
+    # so ``private_beta`` / ``homepage`` no longer match, while ``my password``
+    # / ``personal data`` / ``home address`` still do.
+    if _SENSITIVITY_RE.search(f"{title} {description}"):
         reqs.local_only = True
 
     if task_ctx.get("local_only"):

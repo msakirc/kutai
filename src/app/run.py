@@ -208,6 +208,18 @@ async def _critical_health_checks() -> bool:
             else:
                 _log.critical("Health check raised (critical)",
                               check="db_writable", error=str(exc))
+    if db_ok:
+        # Wire app services (sandbox/shell, vector store, dead-letter) into the
+        # dabidabi engine's hook registry now the DB is up — before any startup
+        # recovery (recover_startup_tasks quarantine) needs them. Engine→src
+        # inversion (Phase B §5a): the engine no longer imports src.*.
+        try:
+            from src.infra import db_hooks
+            db_hooks.wire()
+            _log.info("dabidabi service hooks wired")
+        except Exception as exc:
+            _log.warning("db_hooks.wire failed", error=str(exc))
+
     if not db_ok:
         critical_ok = False
 

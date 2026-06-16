@@ -9,6 +9,8 @@ from .config import (
 from .header_parser import RateLimitSnapshot, parse_rate_limit_headers
 from .in_flight import InFlightHandle, InFlightTracker
 from .kdv import KuledenDonenVar
+from . import schema as _schema  # noqa: F401  registers kdv_state DDL with dabidabi
+from . import persistence  # noqa: F401  kdv_state read/write helpers (save/load/load_sync)
 
 __all__ = [
     "KuledenDonenVar",
@@ -25,6 +27,7 @@ __all__ = [
     "end_call",
     "in_flight_count",
     "configure_in_flight_push",
+    "persistence",
 ]
 
 _in_flight_tracker: InFlightTracker | None = None

@@ -196,6 +196,7 @@ if __name__ == "__main__":  # pragma: no cover - manual CLI
 
     async def _main() -> None:
         import fatih_hoca  # noqa: F401 — registers the 5 registry tables on a fresh DB
+        import kuleden_donen_var  # noqa: F401 — registers kdv_state on a fresh DB
         from src.infra.db import init_db
 
         await init_db()

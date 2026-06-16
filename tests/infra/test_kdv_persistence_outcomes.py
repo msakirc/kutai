@@ -14,7 +14,7 @@ import time
 import pytest
 
 from kuleden_donen_var import KuledenConfig, KuledenDonenVar
-from src.infra import kdv_persistence
+from kuleden_donen_var import persistence as kdv_persistence
 
 
 def _create_kdv_state_table(db_path: str) -> None:

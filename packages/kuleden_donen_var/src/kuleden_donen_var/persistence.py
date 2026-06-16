@@ -1,11 +1,16 @@
-"""KDV state persistence: bridges KuledenDonenVar ↔ kutai.db.
+"""KDV state persistence: bridges KuledenDonenVar <-> kutai.db.
+
+Phase B §4 relocation: moved here from src/infra/kdv_persistence.py so the
+kdv_state domain (schema + read/write helpers) is owned by its package rather
+than living in src/infra and reaching through the dabidabi alias shim. The DB
+table schema lives in ``schema.py`` (registered with the engine).
 
 KDV itself stays free of sqlite imports; this module reads its public
 ``snapshot_state()`` / ``restore_state()`` API and shuttles per-row
 records to the ``kdv_state`` table.
 
 Persistence model:
-- One row per (scope, scope_key) where scope ∈ {"model","provider","breaker",
+- One row per (scope, scope_key) where scope in {"model","provider","breaker",
   "outcomes","meta"}; scope_key is the litellm_name, provider name, or
   "global".
 - snapshot_json is the JSON-encoded dict from the corresponding snapshot_state().
@@ -21,14 +26,12 @@ outcome window under the "outcomes" scope (Step 5c, 2026-05-04).
 from __future__ import annotations
 
 import json
-import sqlite3
+import logging
 import time
 
-import aiosqlite
+from dabidabi import connect_aux, connect_aux_sync
 
-from src.infra.logging_config import get_logger
-
-logger = get_logger("infra.kdv_persistence")
+logger = logging.getLogger(__name__)
 
 _STALE_HOURS_DEFAULT = 24.0
 
@@ -76,7 +79,6 @@ async def save(kdv, db_path: str) -> None:
     }
 
     try:
-        from src.infra.db import connect_aux
         async with connect_aux(db_path, _label="kdv_save") as db:
             await db.executemany(
                 "INSERT INTO kdv_state (scope, scope_key, snapshot_json, last_persisted) "
@@ -124,7 +126,6 @@ async def load(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> 
     attempt_count: dict = {}
 
     try:
-        from src.infra.db import connect_aux
         async with connect_aux(db_path, _label="kdv_load") as db:
             async with db.execute(
                 "SELECT scope, scope_key, snapshot_json, last_persisted "
@@ -197,7 +198,6 @@ def load_sync(kdv, db_path: str, stale_hours: float = _STALE_HOURS_DEFAULT) -> d
     attempt_count: dict = {}
 
     try:
-        from src.infra.db import connect_aux_sync
         conn = connect_aux_sync(db_path)
         try:
             cur = conn.execute(

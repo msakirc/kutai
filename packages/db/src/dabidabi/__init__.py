@@ -1283,21 +1283,11 @@ async def init_db():
         "ON admission_violations(site, timestamp DESC)"
     )
     # ── KDV (kuleden_donen_var) persistent state ─────────────────────────
-    # One row per (scope, scope_key). scope ∈ {"model","provider","breaker"}.
-    # snapshot_json holds the dict from RateLimitState/CircuitBreaker
-    # snapshot_state(). last_persisted is unix epoch; loader drops rows
-    # older than 24h to avoid restoring stale 60s windows or stale
-    # header reset times. KDV per-row design lets us do partial updates
-    # without rewriting one giant blob each save.
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS kdv_state (
-            scope TEXT NOT NULL,
-            scope_key TEXT NOT NULL,
-            snapshot_json TEXT NOT NULL,
-            last_persisted REAL NOT NULL,
-            PRIMARY KEY (scope, scope_key)
-        )
-    """)
+    # kdv_state DDL now owned by kuleden_donen_var/schema.py (registered via
+    # dabidabi.register_schema; run in init_db's registration loop below).
+    # Importing the kuleden_donen_var package registers it; run.py + the
+    # cold-init CLIs import the package so a fresh DB still gets the table
+    # (Phase B §4 domain split).
     # ── Provider/model registry ───────────────────────────────────────────
     # providers / models / registry_events (+ their indexes) — registry domain.
     # DDL now owned by fatih_hoca/schema.py (registered via

@@ -93,7 +93,7 @@ def get_kdv() -> KuledenDonenVar:
             import os
             db_path = os.environ.get("DB_PATH")
             if db_path:
-                from src.infra import kdv_persistence
+                from kuleden_donen_var import persistence as kdv_persistence
                 kdv_persistence.load_sync(_kdv, db_path)
         except Exception:
             pass

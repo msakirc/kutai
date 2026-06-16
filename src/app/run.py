@@ -27,6 +27,7 @@ load_dotenv()
 from src.app.config import DOCKER_CONTAINER_NAME, print_config
 
 import fatih_hoca  # noqa: F401  registers registry schema with dabidabi (Phase B)
+import kuleden_donen_var  # noqa: F401  registers kdv_state schema with dabidabi (Phase B §4)
 
 # ── Logging must be initialized before any other import that might log ────────
 from src.infra.logging_config import init_logging, get_logger
@@ -760,7 +761,7 @@ async def main():
             _db = os.environ.get("DB_PATH")
             if _db:
                 from src.core.router import get_kdv
-                from src.infra import kdv_persistence
+                from kuleden_donen_var import persistence as kdv_persistence
                 await kdv_persistence.save(get_kdv(), _db)
         except Exception as _exc:
             logger.debug(f"kdv final flush raised: {_exc!r}")

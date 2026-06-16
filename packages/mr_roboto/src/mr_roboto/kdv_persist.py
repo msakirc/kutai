@@ -30,7 +30,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
         return {"saved": False, "reason": "DB_PATH unset"}
 
     from src.core.router import get_kdv
-    from src.infra import kdv_persistence
+    from kuleden_donen_var import persistence as kdv_persistence
 
     kdv = get_kdv()
     snap = kdv.snapshot_state()

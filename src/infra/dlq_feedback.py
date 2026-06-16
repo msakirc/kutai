@@ -195,6 +195,7 @@ if __name__ == "__main__":  # pragma: no cover - manual CLI
     import asyncio as _asyncio
 
     async def _main() -> None:
+        import fatih_hoca  # noqa: F401 — registers the 5 registry tables on a fresh DB
         from src.infra.db import init_db
 
         await init_db()

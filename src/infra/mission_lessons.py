@@ -293,6 +293,7 @@ if __name__ == "__main__":
     if cmd == "emit-dlq":
         async def _main():
             # Bootstrap DB (creates tables if needed).
+            import fatih_hoca  # noqa: F401 — registers the 5 registry tables on a fresh DB
             from src.infra.db import init_db
             await init_db()
             n = await emit_lessons_from_dlq_patterns()

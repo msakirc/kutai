@@ -37,7 +37,26 @@ def patched(monkeypatch):
     monkeypatch.setattr(C, "_resolve_chat_id", AsyncMock(return_value=123))
     monkeypatch.setattr(C, "update_task", upd)
     monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value=None))
+    monkeypatch.setattr(C, "_load_surface_signal_surfaces", AsyncMock(return_value=[]))
     return C, write, kb, upd
+
+
+@pytest.mark.asyncio
+async def test_derive_layers_desktop_admin_from_signal(patched, monkeypatch):
+    """Stage 2 (safe half): desktop/admin from the deterministic surface_signal
+    augment the web/mobile derived from target_platform — design lane regains
+    them without a pause, primary stays a build surface."""
+    C, write, kb, _ = patched
+    monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value="mobile"))
+    monkeypatch.setattr(C, "_load_surface_signal_surfaces",
+                        AsyncMock(return_value=["mobile", "desktop", "admin"]))
+
+    res = await C.clarify(_task())
+
+    assert res["status"] == "completed"
+    assert res["surfaces"] == ["mobile", "desktop", "admin"]
+    assert write.await_args.kwargs["primary_surface"] == "mobile"  # build surface
+    kb.assert_not_awaited()
 
 
 @pytest.mark.asyncio

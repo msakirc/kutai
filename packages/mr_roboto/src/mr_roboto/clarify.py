@@ -223,6 +223,31 @@ async def _load_target_platform(mission_id: int | None) -> str | None:
     return None
 
 
+async def _load_surface_signal_surfaces(mission_id: int | None) -> list[str]:
+    """Read the deterministic ``surface_signal.json`` (3.5z) surfaces list.
+
+    Source of the design-only desktop/admin axes that target_platform can't
+    express. Best-effort: returns [] if the file is missing/unreadable.
+    """
+    if mission_id is None:
+        return []
+    try:
+        import json as _json
+        import os
+        from src.tools.workspace import get_mission_workspace
+        ws = str(get_mission_workspace(int(mission_id)))
+        path = os.path.join(ws, ".charter", "surface_signal.json")
+        if not os.path.isfile(path):
+            return []
+        with open(path, encoding="utf-8") as f:
+            data = _json.load(f)
+        surfaces = data.get("surfaces") if isinstance(data, dict) else None
+        return surfaces if isinstance(surfaces, list) else []
+    except Exception as exc:
+        logger.debug("_load_surface_signal_surfaces failed: %s", exc)
+        return []
+
+
 async def clarify(task: dict) -> dict:
     payload = task.get("payload") or {}
     kind = payload.get("kind")
@@ -284,16 +309,18 @@ async def clarify(task: dict) -> dict:
         options = payload.get("options") or []
 
         from mr_roboto.surface_infer import (
-            infer_surfaces, surfaces_label, surfaces_from_target_platform,
+            infer_surfaces, surfaces_label, merge_surfaces,
         )
 
-        # STAGE 1 — single source of truth. target_platform (3.6) is the
-        # canonical build signal; surfaces is its projection. DERIVE it, do not
-        # re-ask: 3.6 already settled web/mobile (and the stack at 4.2 is built
-        # on it). Re-asking here would be redundant and could contradict the
-        # already-chosen stack. See the surface-single-source spec.
+        # STAGE 1+2 — single source of truth. target_platform (3.6) is the
+        # canonical build signal; surfaces is DERIVED from it (web/mobile),
+        # plus desktop/admin layered on from the deterministic surface_signal
+        # (3.5z) — the design-only axes target_platform can't express. DERIVE,
+        # do not re-ask: 3.6 already settled the surface (and the stack at 4.2
+        # is built on it). See the surface-single-source spec.
         tp = await _load_target_platform(mission_id)
-        derived = surfaces_from_target_platform(tp) if tp else None
+        signal_surfaces = await _load_surface_signal_surfaces(mission_id)
+        derived = merge_surfaces(tp, signal_surfaces) if tp else None
         if derived:
             try:
                 from mr_roboto.surfaces_persist import write_surfaces_json

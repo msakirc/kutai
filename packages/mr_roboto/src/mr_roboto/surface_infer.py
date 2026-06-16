@@ -162,6 +162,39 @@ def target_platform_from_surfaces(surfaces: list[str]) -> str | None:
     return "web"
 
 
+# Surfaces that target_platform (web/mobile/both) cannot express. They ride on
+# the deterministic surface_signal (3.5z) and only affect the design lane
+# (screens at 5.0c/5.0d) — NOT the build rail — until Stage 2's build track.
+_DESIGN_ONLY_SURFACES = ("desktop", "admin")
+
+
+def merge_surfaces(
+    target_platform: str | None,
+    signal_surfaces: list[str] | None,
+) -> dict[str, Any] | None:
+    """Reconstruct the full surface set for the design lane (Stage 2, safe half).
+
+    web/mobile come from ``target_platform`` (the canonical build signal, so the
+    design lane stays consistent with the tech stack at 4.2). desktop/admin —
+    which target_platform cannot express — are layered on from the deterministic
+    ``surface_signal``. Returns ``{"surfaces": [...], "primary_surface": str}``
+    in canonical order, or ``None`` when target_platform is absent (caller falls
+    back to text inference). ``primary_surface`` stays a build surface (never
+    desktop/admin) so it aligns with what the stack was built for.
+    """
+    base = surfaces_from_target_platform(target_platform)
+    if base is None:
+        return None
+    base_surfaces = base["surfaces"]
+    extras = [
+        s for s in (signal_surfaces or [])
+        if s in _DESIGN_ONLY_SURFACES and s not in base_surfaces
+    ]
+    combined = set(base_surfaces) | set(extras)
+    ordered = [s for s in SURFACE_ORDER if s in combined]
+    return {"surfaces": ordered, "primary_surface": base["primary_surface"]}
+
+
 def surfaces_label(surfaces: list[str]) -> str:
     """Render surface tokens as a ``write_surfaces_json`` option label.
 

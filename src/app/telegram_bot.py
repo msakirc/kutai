@@ -11537,17 +11537,10 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         except (TypeError, ValueError):
             await self._reply(update, "mission_id must be an integer.")
             return
-        from src.infra.db import get_db
         import json as _json
-        db = await get_db()
-        async with db.execute(
-            "SELECT verb, reversibility, payload_json, timestamp "
-            "FROM registry_events "
-            "WHERE scope = 'action' AND mission_id = ? "
-            "ORDER BY id DESC LIMIT 20",
-            (mid,),
-        ) as cur:
-            rows = await cur.fetchall()
+        # registry_events READ is owned by fatih_hoca (registry domain).
+        from fatih_hoca.db import get_action_events
+        rows = await get_action_events(mid, limit=20)
         if not rows:
             await self._reply(update, f"No on-call actions for mission {mid}.")
             return

@@ -21,7 +21,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 - **Quality checks**: `packages/dogru_mu_samet/` (Doğru mu Samet) — degenerate/repetitive output detection
 - **Cloud capacity**: `packages/kuleden_donen_var/` — provider rate limit tracking
 - **Web scraping**: `packages/vecihi/` (Vecihi) — auto-escalating HTTP→TLS→Stealth→Browser
-- **Database**: SQLite via `src/infra/db.py` (aiosqlite, WAL mode)
+- **Database**: SQLite engine = `packages/db/` (**DaBiDaBi**) — connection primitives, schema registration, WAL mode. `src/infra/db.py` + `src/infra/registry_store.py` are now **alias shims** (sys.modules rebind → dabidabi / fatih_hoca). The **model-registry domain** (`model_stats`/`model_pick_log`/`providers`/`models`/`registry_events`) is owned by `packages/fatih_hoca/` (code-ownership only as of Phase B `e523f889`; tables still physically in `core.db` — file-split deferred). New code: import `dabidabi` / `fatih_hoca.db` / `fatih_hoca.registry_store` directly, not the `src.infra.*` shims.
 - **Vector store**: ChromaDB via `src/memory/vector_store.py`
 - **Shopping**: `src/shopping/` — product search, comparison, price watching
 - **Workflows**: `src/workflows/` — multi-phase mission pipelines

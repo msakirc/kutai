@@ -302,3 +302,112 @@ async def insert_pick_log_row(
             task_id,
         ),
     )
+
+
+async def get_latest_pick_for_task(
+    task_id: int, title: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Most-recent ``model_pick_log`` (picked_model, timestamp) for a task.
+
+    Tier-0 joins by ``task_id`` (precise, populated by the dispatcher since
+    commit e922a554). Tier-1 falls back to ``task_name = title`` for legacy
+    rows where ``task_id IS NULL``. Returns ``(None, None)`` when neither
+    finds a row.
+
+    Owns the registry-table READ that used to live raw inside the dabidabi
+    engine's ``record_confidence_claim``. Centralizing the two-tier JOIN here
+    is also what §1's ATTACH-split will qualify with the ``registry.`` schema
+    prefix (see 2026-06-16 deferred handoff).
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT picked_model, timestamp FROM model_pick_log "
+        "WHERE task_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (task_id,),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    if row:
+        return row[0], row[1]
+    if title:
+        cur = await db.execute(
+            "SELECT picked_model, timestamp FROM model_pick_log "
+            "WHERE task_name = ? ORDER BY timestamp DESC LIMIT 1",
+            (title,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        if row:
+            return row[0], row[1]
+    return None, None
+
+
+async def get_latest_model_for_mission(
+    mission_id: int | None,
+) -> tuple[str | None, str]:
+    """Resolve (picked_model, provider) for a mission's latest non-reinforce pick.
+
+    Three tiers, most-precise first (mirrors the logic that used to live raw
+    in ``mr_roboto.executors.record_verdict``):
+      * Tier-0 — ``model_pick_log.task_id`` JOIN ``tasks`` filtered by mission.
+      * Tier-1 — legacy ``tasks.title = model_pick_log.task_name`` JOIN.
+      * Tier-2 — global most-recent non-reinforce pick (mission None / no match).
+    Reinforce nudges (``call_category = 'reinforce'``) are excluded so we never
+    reinforce a model based on a prior reinforce row. Returns ``(None, 'local')``
+    when nothing matches.
+    """
+    db = await get_db()
+    if mission_id is not None:
+        cur = await db.execute(
+            "SELECT mpl.picked_model, mpl.provider "
+            "FROM model_pick_log mpl JOIN tasks t ON mpl.task_id = t.id "
+            "WHERE t.mission_id = ? AND mpl.call_category != 'reinforce' "
+            "ORDER BY mpl.timestamp DESC LIMIT 1",
+            (mission_id,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        if row and row[0]:
+            return row[0], row[1] or "local"
+        cur = await db.execute(
+            "SELECT mpl.picked_model, mpl.provider "
+            "FROM model_pick_log mpl JOIN tasks t ON t.title = mpl.task_name "
+            "WHERE t.mission_id = ? AND mpl.call_category != 'reinforce' "
+            "ORDER BY mpl.timestamp DESC LIMIT 1",
+            (mission_id,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        if row and row[0]:
+            return row[0], row[1] or "local"
+    cur = await db.execute(
+        "SELECT picked_model, provider FROM model_pick_log "
+        "WHERE call_category != 'reinforce' ORDER BY timestamp DESC LIMIT 1"
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    if row and row[0]:
+        return row[0], row[1] or "local"
+    return None, "local"
+
+
+async def get_action_events(
+    mission_id: int, limit: int = 20,
+) -> list[tuple]:
+    """Recent ``scope='action'`` audit rows for a mission (newest first).
+
+    Returns ``(verb, reversibility, payload_json, timestamp)`` tuples — the
+    read behind the Telegram ``/ops_log`` command. Owns the ``registry_events``
+    READ that used to be raw SQL inside ``telegram_bot.cmd_ops_log``.
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT verb, reversibility, payload_json, timestamp "
+        "FROM registry_events "
+        "WHERE scope = 'action' AND mission_id = ? "
+        "ORDER BY id DESC LIMIT ?",
+        (mission_id, limit),
+    )
+    rows = await cur.fetchall()
+    await cur.close()
+    return [tuple(r) for r in rows]

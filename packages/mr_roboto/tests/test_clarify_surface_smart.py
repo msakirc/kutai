@@ -20,7 +20,12 @@ def _task():
 
 @pytest.fixture
 def patched(monkeypatch):
-    """Patch the I/O seams; keep the real infer_surfaces decision logic."""
+    """Patch the I/O seams; keep the real infer_surfaces decision logic.
+
+    `_load_target_platform` defaults to None so these tests exercise the
+    text-inference FALLBACK path; the derive-from-target_platform path is
+    covered separately in test_derive_from_target_platform.
+    """
     import mr_roboto.clarify as C
     import mr_roboto.surfaces_persist as P
 
@@ -31,7 +36,52 @@ def patched(monkeypatch):
     monkeypatch.setattr(C, "send_surface_keyboard", kb)
     monkeypatch.setattr(C, "_resolve_chat_id", AsyncMock(return_value=123))
     monkeypatch.setattr(C, "update_task", upd)
+    monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value=None))
     return C, write, kb, upd
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tp,surfaces,primary",
+    [
+        ("web", ["web"], "web"),
+        ("mobile", ["mobile"], "mobile"),
+        ("both", ["mobile", "web"], "mobile"),
+    ],
+)
+async def test_derive_from_target_platform(patched, monkeypatch, tp, surfaces, primary):
+    """Stage 1: surfaces derived from 3.6's target_platform — never re-ask."""
+    C, write, kb, _ = patched
+    monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value=tp))
+    # Mission text would infer mobile, but derivation must win regardless.
+    monkeypatch.setattr(C, "_gather_mission_text",
+                        AsyncMock(return_value="some app idea"))
+
+    res = await C.clarify(_task())
+
+    assert res["status"] == "completed"
+    assert res["derived"] is True
+    assert res["surfaces"] == surfaces
+    assert res["target_platform"] == tp
+    assert write.await_count == 1
+    assert write.await_args.kwargs["source"] == "derived"
+    assert write.await_args.kwargs["primary_surface"] == primary
+    kb.assert_not_awaited()  # canonical signal exists → zero founder pause
+
+
+@pytest.mark.asyncio
+async def test_unknown_target_platform_falls_back_to_inference(patched, monkeypatch):
+    """Garbage target_platform → fall back to text inference, not a crash."""
+    C, write, kb, _ = patched
+    monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value="garbage"))
+    monkeypatch.setattr(C, "_gather_mission_text",
+                        AsyncMock(return_value="Build an iOS app"))
+
+    res = await C.clarify(_task())
+
+    assert res["status"] == "completed"
+    assert res.get("inferred") is True  # inference path, not derive path
+    assert res["surfaces"] == ["mobile"]
 
 
 @pytest.mark.asyncio

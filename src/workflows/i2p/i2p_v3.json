@@ -4770,16 +4770,18 @@
       "difficulty": "easy",
       "tools_hint": [],
       "depends_on": [
-        "2.11b"
+        "2.11b",
+        "3.6"
       ],
       "may_need_clarification": true,
       "input_artifacts": [
-        "prd_final_summary"
+        "prd_final_summary",
+        "platform_requirements"
       ],
       "output_artifacts": [
         "surfaces_config"
       ],
-      "instruction": "Ask founder which surfaces this product targets. Reply keyboard options: 'mobile only', 'web only', 'mobile + web', 'mobile + web + desktop', 'mobile + web + admin'. Persist the decision to mission_{mission_id}/.charter/surfaces.json with schema {_schema_version, mission_id, surfaces, primary_surface, founder_confirmed_at}. primary_surface defaults to first item; founder may override.",
+      "instruction": "Derive the target surfaces from platform_requirements.target_platform (the canonical build signal set at 3.6, already honored by the tech stack at 4.2) and persist them to mission_{mission_id}/.charter/surfaces.json — do NOT re-ask the founder what 3.6 already settled. Mapping: target_platform 'web' -> surfaces ['web'] (primary 'web'); 'mobile' -> ['mobile'] (primary 'mobile'); 'both' -> ['mobile','web'] (primary 'mobile'). Schema {_schema_version, mission_id, surfaces, primary_surface, source, inferred_at}. Only when platform_requirements is missing does the mechanical executor fall back to inferring from the mission text, asking the founder via reply keyboard solely on genuine ambiguity.",
       "done_when": "surfaces_config exists with founder confirmation.",
       "produces": [
         "mission_{mission_id}/.charter/surfaces.json"

@@ -190,6 +190,39 @@ async def _gather_mission_text(task: dict, mission_id: int | None) -> str:
     return "\n".join(parts)
 
 
+async def _load_target_platform(mission_id: int | None) -> str | None:
+    """Read ``platform_requirements.target_platform`` (3.6), the canonical
+    build-surface signal, from the artifact store. Returns the lowercased
+    enum (``web`` | ``mobile`` | ``both``) or ``None`` if unavailable. Surfaces
+    are DERIVED from this so the design lane (5.0c+) can never contradict the
+    tech stack (4.2). See the surface-single-source spec.
+    """
+    if mission_id is None:
+        return None
+    try:
+        from src.workflows.engine.hooks import get_artifact_store
+        store = get_artifact_store()
+        raw = await store.retrieve(mission_id, "platform_requirements")
+    except Exception as exc:
+        logger.debug("_load_target_platform: artifact lookup failed: %s", exc)
+        return None
+
+    data: object = None
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str) and raw.strip():
+        import json as _json
+        try:
+            data = _json.loads(raw)
+        except Exception:
+            data = None
+    if isinstance(data, dict):
+        tp = data.get("target_platform")
+        if isinstance(tp, str) and tp.strip():
+            return tp.strip().lower()
+    return None
+
+
 async def clarify(task: dict) -> dict:
     payload = task.get("payload") or {}
     kind = payload.get("kind")
@@ -250,7 +283,49 @@ async def clarify(task: dict) -> dict:
         mission_id = task.get("mission_id")
         options = payload.get("options") or []
 
-        from mr_roboto.surface_infer import infer_surfaces, surfaces_label
+        from mr_roboto.surface_infer import (
+            infer_surfaces, surfaces_label, surfaces_from_target_platform,
+        )
+
+        # STAGE 1 — single source of truth. target_platform (3.6) is the
+        # canonical build signal; surfaces is its projection. DERIVE it, do not
+        # re-ask: 3.6 already settled web/mobile (and the stack at 4.2 is built
+        # on it). Re-asking here would be redundant and could contradict the
+        # already-chosen stack. See the surface-single-source spec.
+        tp = await _load_target_platform(mission_id)
+        derived = surfaces_from_target_platform(tp) if tp else None
+        if derived:
+            try:
+                from mr_roboto.surfaces_persist import write_surfaces_json
+                await write_surfaces_json(
+                    mission_id=mission_id,
+                    option_label=surfaces_label(derived["surfaces"]),
+                    primary_surface=derived["primary_surface"],
+                    source="derived",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "surface_choice: derived write failed for mission=%s "
+                    "(target_platform=%r): %s — falling back to inference",
+                    mission_id, tp, exc,
+                )
+            else:
+                logger.info(
+                    "surface_choice: derived surfaces=%s from target_platform=%r "
+                    "for mission=%s — no founder pause",
+                    derived["surfaces"], tp, mission_id,
+                )
+                return {
+                    "status": "completed",
+                    "kind": "surface_choice",
+                    "derived": True,
+                    "surfaces": derived["surfaces"],
+                    "target_platform": tp,
+                }
+
+        # FALLBACK — platform_requirements missing/garbage (3.6 didn't run or
+        # produced no target_platform). Infer from mission text (2026-06-16
+        # smart gate); ask the founder only on genuine ambiguity.
         text = await _gather_mission_text(task, mission_id)
         inf = infer_surfaces(text)
         if inf["surfaces"] and inf["confidence"] in ("high", "medium"):

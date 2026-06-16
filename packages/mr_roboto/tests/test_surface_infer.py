@@ -37,6 +37,26 @@ def test_infer_surfaces(text, surfaces, primary, confidence):
     assert res["confidence"] == confidence, res
 
 
+@pytest.mark.parametrize(
+    "tp,expected",
+    [
+        ("web", {"surfaces": ["web"], "primary_surface": "web"}),
+        ("mobile", {"surfaces": ["mobile"], "primary_surface": "mobile"}),
+        ("both", {"surfaces": ["mobile", "web"], "primary_surface": "mobile"}),
+        ("BOTH", {"surfaces": ["mobile", "web"], "primary_surface": "mobile"}),
+        (" web ", {"surfaces": ["web"], "primary_surface": "web"}),
+        ("desktop", None),   # target_platform can't express desktop
+        ("garbage", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_surfaces_from_target_platform(tp, expected):
+    from mr_roboto.surface_infer import surfaces_from_target_platform
+
+    assert surfaces_from_target_platform(tp) == expected
+
+
 def test_surfaces_label_roundtrips():
     from mr_roboto.surfaces_persist import parse_surface_choice
 

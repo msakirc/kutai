@@ -110,6 +110,34 @@ def infer_surfaces(text: str) -> dict[str, Any]:
     }
 
 
+# target_platform (3.6, the canonical build signal) → surfaces projection.
+# This is the single-source-of-truth map: surfaces is DERIVED from the same
+# value the tech stack (4.2) and scaffold branch (7.5/7.5m) already honor, so
+# the design lane can never contradict the build. See
+# docs/superpowers/specs/2026-06-17-surface-single-source-design.md.
+_TP_TO_SURFACES: dict[str, tuple[list[str], str]] = {
+    "web": (["web"], "web"),
+    "mobile": (["mobile"], "mobile"),
+    "both": (["mobile", "web"], "mobile"),
+}
+
+
+def surfaces_from_target_platform(target_platform: str | None) -> dict[str, Any] | None:
+    """Project ``platform_requirements.target_platform`` onto a surface set.
+
+    Returns ``{"surfaces": [...], "primary_surface": str}`` for a recognized
+    target_platform (``web`` | ``mobile`` | ``both``), else ``None`` (caller
+    falls back to text inference). ``desktop``/``admin`` are intentionally NOT
+    produced here — target_platform cannot express them (Stage 2/3 of the spec).
+    """
+    key = (target_platform or "").strip().lower()
+    pair = _TP_TO_SURFACES.get(key)
+    if pair is None:
+        return None
+    surfaces, primary = pair
+    return {"surfaces": list(surfaces), "primary_surface": primary}
+
+
 def surfaces_label(surfaces: list[str]) -> str:
     """Render surface tokens as a ``write_surfaces_json`` option label.
 

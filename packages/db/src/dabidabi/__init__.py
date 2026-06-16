@@ -9,6 +9,7 @@ from typing import Awaitable, Callable
 
 from yazbunu import get_logger
 from dabidabi.times import utc_now, db_now, to_db, DB_FMT
+from dabidabi import hooks  # injected app-service hooks (engine→src inversion)
 
 logger = get_logger("infra.db")
 
@@ -4199,10 +4200,9 @@ async def add_mission(title, description, priority=5, context=None,
     # entirely when SANDBOX_MODE is ``none`` or ``local`` (no docker
     # path is going to be taken anyway).
     try:
-        if mission_id is not None:
-            from src.tools import shell as _shell_mod
-            if _shell_mod.SANDBOX_MODE not in ("none", "local"):
-                await _shell_mod.ensure_mission_container(int(mission_id))
+        if mission_id is not None and hooks.ensure_mission_container is not None:
+            # Impl owns the SANDBOX_MODE gate (engine is sandbox-mode agnostic).
+            await hooks.ensure_mission_container(int(mission_id))
     except Exception as e:
         logger.debug(f"ensure_mission_container at add_mission skipped: {e}")
     return mission_id
@@ -5525,8 +5525,9 @@ async def store_memory(key, value, category="general", mission_id=None):
 
     # Also embed into vector store for semantic recall
     try:
-        from src.memory.vector_store import embed_and_store
-        await embed_and_store(
+        if hooks.embed_and_store is None:
+            return
+        await hooks.embed_and_store(
             text=f"{key}: {value}",
             metadata={
                 "source": "memory_table",
@@ -5561,7 +5562,9 @@ async def recall_memory(category=None, mission_id=None, limit=20):
 async def semantic_recall(query_text, category=None, mission_id=None, top_k=5):
     """Semantic search over stored memories using vector similarity."""
     try:
-        from src.memory.vector_store import query as vquery
+        if hooks.vector_query is None:
+            return []
+        vquery = hooks.vector_query
 
         conditions = [{"source": {"$eq": "memory_table"}}]
         if category:
@@ -6044,13 +6047,20 @@ async def recover_startup_tasks() -> dict:
     # in 'processing' so the next boot re-attempts the quarantine, instead
     # of stranding a failed task that /dlq can never surface. The dispatcher
     # only picks 'pending', so a parked 'processing' row is not re-dispatched
-    # in the meantime. Lazy import: dead_letter imports back into src.infra.db.
+    # in the meantime. Quarantine is an injected hook (dead_letter imports back
+    # into the engine; the hook wrapper lazy-imports it). Hook unset → leave
+    # poison rows in 'processing' for next-boot retry (same as a quarantine
+    # failure), so a CLI/test path can never strand them as 'failed'.
     dead_lettered = 0
-    if poisoned:
-        from src.infra.dead_letter import quarantine_task
+    if poisoned and hooks.quarantine_task is None:
+        logger.warning(
+            "[Startup Recovery] no quarantine hook registered; %d poison "
+            "task(s) left in 'processing' for next-boot retry", len(poisoned)
+        )
+        poisoned = []
     for t in poisoned:
         try:
-            await quarantine_task(
+            await hooks.quarantine_task(
                 task_id=t["id"],
                 mission_id=t.get("mission_id"),
                 error=cap_error,
@@ -8470,10 +8480,9 @@ async def rewind_migrations_to(target_version: str | None) -> dict:
 async def purge_mission_chroma_collections_via_db(mission_id: int) -> int:
     """Convenience proxy to vector_store.purge_mission_chroma_collections."""
     try:
-        from src.memory.vector_store import (
-            purge_mission_chroma_collections as _purge,
-        )
-        return await _purge(mission_id)
+        if hooks.purge_mission_chroma is None:
+            return 0
+        return await hooks.purge_mission_chroma(mission_id)
     except Exception as e:
         logger.warning(f"purge_mission_chroma_collections proxy failed: {e}")
         return 0
@@ -8574,8 +8583,8 @@ async def record_confidence_claim(task_id: int) -> int | None:
     if not picked_at:
         picked_at = utc_now_str() if "utc_now_str" in globals() else None
         if picked_at is None:
-            from src.infra.times import utc_now, to_db as _to_db
-            picked_at = _to_db(utc_now())
+            # Engine owns its own time helpers (dabidabi.times, imported at top).
+            picked_at = to_db(utc_now())
 
     cur3 = await db.execute(
         "INSERT INTO confidence_outcomes "

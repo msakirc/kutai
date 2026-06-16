@@ -463,6 +463,23 @@ async def test_reset_workflow_step(fresh_db):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture
+def wire_quarantine():
+    """Wire the dabidabi quarantine hook to the real dead_letter impl.
+
+    recover_startup_tasks' poison-task quarantine is an injected hook as of
+    Phase B §5a (the engine no longer imports src.infra.dead_letter directly).
+    Production wires it in run.py; tests that exercise the DLQ path must mirror
+    that. The lazy wrapper resolves the (possibly monkeypatched) module attr
+    at call time, so quarantine-failure tests still work.
+    """
+    from dabidabi import hooks
+    from src.infra import db_hooks
+    db_hooks.wire()
+    yield
+    hooks.reset()
+
+
 @pytest.mark.asyncio
 async def test_recover_startup_tasks(fresh_db):
     """recover_startup_tasks resets processing→pending and clears backoff."""
@@ -497,7 +514,7 @@ async def test_recover_startup_tasks(fresh_db):
 
 
 @pytest.mark.asyncio
-async def test_recover_startup_tasks_dead_letters_at_cap(fresh_db):
+async def test_recover_startup_tasks_dead_letters_at_cap(fresh_db, wire_quarantine):
     """Poison-task guard: a processing task with infra_resets >= 5 must NOT
     be re-pended (eternal crash loop) — it goes to the dead-letter queue."""
     db_path = fresh_db
@@ -534,7 +551,7 @@ async def test_recover_startup_tasks_dead_letters_at_cap(fresh_db):
 
 
 @pytest.mark.asyncio
-async def test_recover_startup_tasks_quarantine_failure_keeps_processing(fresh_db, monkeypatch):
+async def test_recover_startup_tasks_quarantine_failure_keeps_processing(fresh_db, monkeypatch, wire_quarantine):
     """If quarantine_task raises mid-recover, the poison task must stay
     'processing' (so the next boot re-attempts the DLQ write) rather than
     become 'failed' but absent from the dead-letter queue — invisible to

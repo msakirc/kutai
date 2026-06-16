@@ -20,6 +20,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 _PACKAGE_SRCS = [
+    _ROOT / "packages" / "db" / "src",
     _ROOT / "packages" / "fatih_hoca" / "src",
     _ROOT / "packages" / "nerd_herd" / "src",
     _ROOT / "packages" / "kuleden_donen_var" / "src",

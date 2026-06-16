@@ -31,6 +31,35 @@ _SENSITIVITY_RE = re.compile(
 )
 
 
+def resolve_local_only(task: dict, task_ctx: dict | None) -> bool:
+    """Single source of truth for whether a task must run on a LOCAL model.
+
+    Called by BOTH the worker requirements builder (``requirements_for``) and
+    Beckman admission, so the two hand the selector the SAME constraint.
+    Divergence here was the admit-then-refuse loop (live 2026-06-16): admission
+    built its select kwargs by hand and omitted ``local_only``, so it admitted a
+    sensitive/local_only task onto a cloud model that the worker's re-select
+    (which DOES pass local_only) then categorically refused -> ModelCallFailed
+    -> Beckman re-pend -> admission re-picks cloud -> infinite loop.
+
+    Any source True -> local_only:
+      * classifier signal (``task_ctx.classification.local_only``)
+      * explicit context flag (``task_ctx.local_only``)
+      * whole-word PII heuristic over title + description
+    """
+    ctx = task_ctx if isinstance(task_ctx, dict) else {}
+    classification = ctx.get("classification") or {}
+    if classification.get("local_only"):
+        return True
+    if ctx.get("local_only"):
+        return True
+    title = (task.get("title") or "").lower()
+    description = (task.get("description") or "").lower()
+    if _SENSITIVITY_RE.search(f"{title} {description}"):
+        return True
+    return False
+
+
 async def requirements_for(
     task: dict,
     task_ctx: dict,
@@ -84,8 +113,6 @@ async def requirements_for(
         reqs.needs_vision = True
     if classification.get("needs_thinking"):
         reqs.needs_thinking = True
-    if classification.get("local_only"):
-        reqs.local_only = True
 
     # ── Adjust for task priority ──
     if priority >= 10:
@@ -94,19 +121,13 @@ async def requirements_for(
     elif priority <= 2:
         reqs.difficulty = max(1, reqs.difficulty - 2)
 
-    # ── Detect personal/sensitive data ──
-    # WHOLE-WORD match only. A raw substring scan mis-fired on workflow text
-    # that merely *contained* a token (live 2026-06-16: the ambition-tier enum
-    # value ``private_beta`` tripped ``private`` -> forced local_only -> the
-    # analyst task could only run local; with the local GPU busy/unloadable it
-    # crash-looped while cloud sat idle). ``\b`` treats ``_`` as a word char,
-    # so ``private_beta`` / ``homepage`` no longer match, while ``my password``
-    # / ``personal data`` / ``home address`` still do.
-    if _SENSITIVITY_RE.search(f"{title} {description}"):
+    # ── Local-only constraint (classifier / context flag / PII heuristic) ──
+    # Single source of truth shared with Beckman admission so both select with
+    # the same constraint (see resolve_local_only). Only upgrade, never
+    # downgrade a template that already set local_only=True.
+    if resolve_local_only(task, task_ctx):
         reqs.local_only = True
 
-    if task_ctx.get("local_only"):
-        reqs.local_only = True
     if task_ctx.get("prefer_quality"):
         reqs.prefer_quality = True
     if task_ctx.get("prefer_speed"):

@@ -843,6 +843,28 @@ async def next_task(lane: str | None = None):
                     _sel_kwargs["needs_thinking"] = _needs_thinking
                 if _prefer_speed is not None:
                     _sel_kwargs["prefer_speed"] = _prefer_speed
+                # local_only PARITY: admission must select with the SAME
+                # local_only the worker's re-select enforces, else it admits a
+                # local_only task onto cloud which the worker then refuses →
+                # admit-then-refuse loop (live 2026-06-16). Single source of
+                # truth = fatih_hoca.resolve_local_only (shared with the worker
+                # requirements builder).
+                try:
+                    from fatih_hoca.requirements_builder import (
+                        resolve_local_only as _resolve_lo,
+                    )
+                    import json as _json_lo
+                    _ctx_raw_lo = task.get("context") or "{}"
+                    _ctx_lo = (
+                        _json_lo.loads(_ctx_raw_lo)
+                        if isinstance(_ctx_raw_lo, str) else dict(_ctx_raw_lo)
+                    )
+                    if _resolve_lo(
+                        task, _ctx_lo if isinstance(_ctx_lo, dict) else {}
+                    ):
+                        _sel_kwargs["local_only"] = True
+                except Exception:
+                    pass
                 # Task 9: route through the single admission-selection point so
                 # failed_models from a prior attempt are forwarded as failures=
                 # (text → Failure objects, image → strings) and the just-failed

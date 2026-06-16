@@ -273,7 +273,7 @@ def init(
         #      transition; this closes the boot-probe loop so an
         #      operator who FIXES creds and restarts doesn't carry
         #      stale auth dead state across reboot).
-        from src.infra import registry_store as _rs
+        from fatih_hoca import registry_store as _rs
         import logging as _logging
         _log = _logging.getLogger(__name__)
         for _provider, _key in api_keys.items():

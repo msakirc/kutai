@@ -8,13 +8,6 @@ def test_relocated_module_importable():
     assert hasattr(rs, "CAUSE_POLICY")
 
 
-def test_legacy_import_path_still_works():
-    from src.infra import registry_store as legacy
-    from fatih_hoca import registry_store as new
-    assert legacy.register_model is new.register_model
-    assert legacy.CAUSE_POLICY is new.CAUSE_POLICY
-
-
 def test_ensure_schema_uses_shared_ddl(tmp_path):
     from fatih_hoca import registry_store as rs
     rs.set_db_path(str(tmp_path / "rs.db"))

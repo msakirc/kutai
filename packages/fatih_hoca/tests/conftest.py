@@ -16,13 +16,13 @@ if str(_tests_dir) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def _isolated_registry_store(tmp_path):
-    """Isolate src.infra.registry_store per-test. ModelRegistry now
+    """Isolate fatih_hoca.registry_store per-test. ModelRegistry now
     delegates mark_dead/is_dead/revive (and provider variants) to the
     SQLite-backed store; without isolation, dead-set state leaks across
     tests via the module-level singleton connection.
 
     Each test gets a fresh tmp DB; teardown closes the singleton."""
-    from src.infra import registry_store
+    from fatih_hoca import registry_store
     db_path = tmp_path / "registry_test.db"
     registry_store.set_db_path(str(db_path))
     yield

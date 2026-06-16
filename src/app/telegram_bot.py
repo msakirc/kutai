@@ -2922,7 +2922,7 @@ class TelegramInterface:
         """List currently-dead providers + models in the SQLite registry.
         Diagnostic sibling of /revive — operator can see what /revive
         would target."""
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         providers = registry_store.list_dead_providers()
         models = registry_store.list_dead()
         if not providers and not models:
@@ -2955,7 +2955,7 @@ class TelegramInterface:
           /revive <litellm_name>     — revive single model
           /revive provider <name>    — revive provider (releases all its models)
         """
-        from src.infra import registry_store
+        from fatih_hoca import registry_store
         args = context.args or []
         if not args:
             dead_models = registry_store.list_dead()

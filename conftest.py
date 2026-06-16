@@ -18,6 +18,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 _PACKAGE_SRCS = [
+    _ROOT / "packages" / "db" / "src",
     _ROOT / "packages" / "fatih_hoca" / "src",
     _ROOT / "packages" / "nerd_herd" / "src",
     _ROOT / "packages" / "kuleden_donen_var" / "src",
@@ -51,7 +52,7 @@ for p in _PACKAGE_SRCS:
 for _mod in list(sys.modules):
     root = _mod.split(".", 1)[0]
     if root in {
-        "fatih_hoca", "nerd_herd", "kuleden_donen_var", "general_beckman",
+        "dabidabi", "fatih_hoca", "nerd_herd", "kuleden_donen_var", "general_beckman",
         "hallederiz_kadir", "dallama", "dogru_mu_samet", "vecihi",
         "yasar_usta", "yazbunu", "mr_roboto", "coulson", "sade_kalsin",
         "c21_paraflow_diff", "intersect", "yalayut", "safety_guard",

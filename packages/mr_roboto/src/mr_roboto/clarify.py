@@ -248,9 +248,68 @@ async def _load_surface_signal_surfaces(mission_id: int | None) -> list[str]:
         return []
 
 
+async def _derive_surface_choice(task: dict) -> dict | None:
+    """Derive surfaces from the canonical build signal (Stage 1+2a).
+
+    web/mobile from ``platform_requirements.target_platform`` (3.6), desktop/admin
+    from the deterministic ``surface_signal`` (3.5z). Writes ``surfaces.json``
+    (source="derived") and returns a completed result — or ``None`` when there is
+    no target_platform to derive from (caller falls back to text inference + the
+    founder keyboard). A derived surface needs ZERO founder attention, so this
+    runs BEFORE the attention-budget gate.
+    """
+    mission_id = task.get("mission_id")
+    tp = await _load_target_platform(mission_id)
+    if not tp:
+        return None
+    signal_surfaces = await _load_surface_signal_surfaces(mission_id)
+    from mr_roboto.surface_infer import merge_surfaces, surfaces_label
+    derived = merge_surfaces(tp, signal_surfaces)
+    if not derived:
+        return None
+    try:
+        from mr_roboto.surfaces_persist import write_surfaces_json
+        await write_surfaces_json(
+            mission_id=mission_id,
+            option_label=surfaces_label(derived["surfaces"]),
+            primary_surface=derived["primary_surface"],
+            source="derived",
+        )
+    except Exception as exc:
+        logger.warning(
+            "surface_choice: derived write failed for mission=%s "
+            "(target_platform=%r): %s — falling back to inference",
+            mission_id, tp, exc,
+        )
+        return None
+    logger.info(
+        "surface_choice: derived surfaces=%s from target_platform=%r "
+        "(+signal desktop/admin) for mission=%s — no founder pause",
+        derived["surfaces"], tp, mission_id,
+    )
+    return {
+        "status": "completed",
+        "kind": "surface_choice",
+        "derived": True,
+        "surfaces": derived["surfaces"],
+        "target_platform": tp,
+    }
+
+
 async def clarify(task: dict) -> dict:
     payload = task.get("payload") or {}
     kind = payload.get("kind")
+
+    # SMART GATE (single source of truth) — for surface_choice, derive from the
+    # canonical build signal BEFORE the attention gate: a derived surface needs
+    # no founder attention, so it must not be deferred by an exhausted budget
+    # (which would complete the task without writing surfaces.json → DLQ at
+    # verify_surfaces_shape). Only the text-inference/keyboard fallback (genuine
+    # ambiguity, founder pause) is subject to the attention gate below.
+    if kind == "surface_choice":
+        early = await _derive_surface_choice(task)
+        if early is not None:
+            return early
 
     # Z1 Tier 5A (A5) — founder attention budget gate.
     # When the mission has a budget set AND remaining < reserve_minutes
@@ -308,51 +367,13 @@ async def clarify(task: dict) -> dict:
         mission_id = task.get("mission_id")
         options = payload.get("options") or []
 
-        from mr_roboto.surface_infer import (
-            infer_surfaces, surfaces_label, merge_surfaces,
-        )
+        from mr_roboto.surface_infer import infer_surfaces, surfaces_label
 
-        # STAGE 1+2 — single source of truth. target_platform (3.6) is the
-        # canonical build signal; surfaces is DERIVED from it (web/mobile),
-        # plus desktop/admin layered on from the deterministic surface_signal
-        # (3.5z) — the design-only axes target_platform can't express. DERIVE,
-        # do not re-ask: 3.6 already settled the surface (and the stack at 4.2
-        # is built on it). See the surface-single-source spec.
-        tp = await _load_target_platform(mission_id)
-        signal_surfaces = await _load_surface_signal_surfaces(mission_id)
-        derived = merge_surfaces(tp, signal_surfaces) if tp else None
-        if derived:
-            try:
-                from mr_roboto.surfaces_persist import write_surfaces_json
-                await write_surfaces_json(
-                    mission_id=mission_id,
-                    option_label=surfaces_label(derived["surfaces"]),
-                    primary_surface=derived["primary_surface"],
-                    source="derived",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "surface_choice: derived write failed for mission=%s "
-                    "(target_platform=%r): %s — falling back to inference",
-                    mission_id, tp, exc,
-                )
-            else:
-                logger.info(
-                    "surface_choice: derived surfaces=%s from target_platform=%r "
-                    "for mission=%s — no founder pause",
-                    derived["surfaces"], tp, mission_id,
-                )
-                return {
-                    "status": "completed",
-                    "kind": "surface_choice",
-                    "derived": True,
-                    "surfaces": derived["surfaces"],
-                    "target_platform": tp,
-                }
-
-        # FALLBACK — platform_requirements missing/garbage (3.6 didn't run or
-        # produced no target_platform). Infer from mission text (2026-06-16
-        # smart gate); ask the founder only on genuine ambiguity.
+        # Reached only when _derive_surface_choice (run before the attention
+        # gate) returned None — i.e. platform_requirements is missing/garbage
+        # (3.6 didn't run or produced no target_platform). FALLBACK: infer from
+        # mission text (2026-06-16 smart gate); ask the founder only on genuine
+        # ambiguity.
         text = await _gather_mission_text(task, mission_id)
         inf = infer_surfaces(text)
         if inf["surfaces"] and inf["confidence"] in ("high", "medium"):

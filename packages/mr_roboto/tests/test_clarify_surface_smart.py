@@ -89,6 +89,29 @@ async def test_derive_from_target_platform(patched, monkeypatch, tp, surfaces, p
 
 
 @pytest.mark.asyncio
+async def test_derive_runs_before_attention_gate(patched, monkeypatch):
+    """A derived surface needs no founder attention — it must short-circuit
+    BEFORE the attention-budget gate, so an exhausted budget can't defer it
+    (which would complete the task without writing surfaces.json → DLQ)."""
+    C, write, kb, _ = patched
+    monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value="both"))
+    # NB: `mr_roboto.attention_check` the name resolves to the function (the
+    # package re-exports it), so reach the submodule via importlib.
+    import importlib
+    A = importlib.import_module("mr_roboto.attention_check")
+    deferred = AsyncMock()
+    monkeypatch.setattr(A, "attention_check",
+                        AsyncMock(return_value={"ok": False, "remaining": 0}))
+    monkeypatch.setattr(A, "write_deferred_question", deferred)
+
+    res = await C.clarify(_task())
+
+    assert res["status"] == "completed"
+    assert res["derived"] is True
+    deferred.assert_not_awaited()  # attention gate never reached
+
+
+@pytest.mark.asyncio
 async def test_unknown_target_platform_falls_back_to_inference(patched, monkeypatch):
     """Garbage target_platform → fall back to text inference, not a crash."""
     C, write, kb, _ = patched

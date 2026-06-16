@@ -10508,8 +10508,13 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         mission_id: int,
         task_id: int,
         options: list,
+        prompt: str | None = None,
     ) -> None:
         """Send the 5.0b reply keyboard asking which platforms to target.
+
+        ``prompt`` overrides the default question text — the smart gate
+        passes a "🤖 assumed X, tap to change" notice for medium-confidence
+        inferred surfaces (Markdown-formatted).
 
         callback_data encodes mission_id + task_id + the parsed surface
         tokens (``sc:{mid}:{tid}:mobile,web``) so a tap survives a bot
@@ -10537,8 +10542,9 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         markup = InlineKeyboardMarkup(buttons)
         await self.app.bot.send_message(
             chat_id=chat_id,
-            text="📱 Bu ürün hangi platformları hedefliyor?",
+            text=prompt or "📱 Bu ürün hangi platformları hedefliyor?",
             reply_markup=markup,
+            parse_mode="Markdown" if prompt else None,
         )
         self._pending_action[chat_id] = {
             "kind": "surface_choice",

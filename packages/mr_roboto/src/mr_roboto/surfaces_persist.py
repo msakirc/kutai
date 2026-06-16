@@ -47,14 +47,27 @@ async def write_surfaces_json(
     primary_surface: str | None = None,
     confirmed_at: str | None = None,
     workspace_path: str | None = None,
+    source: str = "founder",
+    confidence: str | None = None,
 ) -> dict[str, Any]:
     """Write ``<workspace>/.charter/surfaces.json`` and return its contents.
 
     Schema (matches ``verify_surfaces_shape``):
-    ``{_schema_version, mission_id, surfaces, primary_surface, founder_confirmed_at}``.
+    ``{_schema_version, mission_id, surfaces, primary_surface,
+    founder_confirmed_at, source}``.
 
-    Raises ``ValueError`` if no valid surface token can be parsed — a human
-    confirmation gate must never persist an empty/garbage selection.
+    Two decision sources (5.0b smart gate):
+
+    - ``source="founder"`` (default): the founder tapped the keyboard.
+      ``founder_confirmed_at`` is stamped (the existing behaviour).
+    - ``source="inferred"``: the surface was inferred from the mission text
+      (no pause). ``founder_confirmed_at`` is ``None`` and ``inferred_at`` +
+      ``confidence`` are stamped instead. ``verify_surfaces_shape`` accepts
+      either timestamp — an inferred surface is a real, locked decision, just
+      not a human-tapped one.
+
+    Raises ``ValueError`` if no valid surface token can be parsed — the gate
+    must never persist an empty/garbage selection.
     """
     surfaces = parse_surface_choice(option_label)
     if not surfaces:
@@ -62,17 +75,23 @@ async def write_surfaces_json(
 
     primary = primary_surface if primary_surface in surfaces else surfaces[0]
 
-    if confirmed_at is None:
-        from datetime import datetime, timezone
-        confirmed_at = datetime.now(timezone.utc).isoformat()
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
 
     data: dict[str, Any] = {
         "_schema_version": "1",
         "mission_id": int(mission_id),
         "surfaces": surfaces,
         "primary_surface": primary,
-        "founder_confirmed_at": confirmed_at,
+        "source": source,
     }
+
+    if source == "founder":
+        data["founder_confirmed_at"] = confirmed_at or now
+    else:
+        data["founder_confirmed_at"] = None
+        data["inferred_at"] = now
+        data["confidence"] = confidence
 
     if workspace_path is None:
         from src.tools.workspace import get_mission_workspace

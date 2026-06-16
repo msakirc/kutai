@@ -6,7 +6,8 @@ Mechanical post-step verifier for step ``5.0b.verify``. No LLM. Asserts:
 - ``_schema_version`` == ``"1"``.
 - ``surfaces`` is a non-empty list of valid surface tokens.
 - ``primary_surface`` is present and is one of the declared surfaces.
-- ``founder_confirmed_at`` is a non-empty string (ISO timestamp).
+- ``founder_confirmed_at`` OR ``inferred_at`` is a non-empty string (ISO
+  timestamp) — founder-tapped vs smart-gate-inferred decision.
 """
 
 from __future__ import annotations
@@ -85,9 +86,16 @@ async def verify_surfaces_shape(
     elif surfaces and primary not in surfaces:
         errors.append(f"primary_surface {primary!r} not in surfaces {surfaces!r}")
 
+    # A locked surface decision must carry a timestamp. Founder-tapped picks
+    # stamp ``founder_confirmed_at``; inferred picks (5.0b smart gate, no
+    # pause) stamp ``inferred_at`` instead. Either satisfies the gate.
     confirmed = data.get("founder_confirmed_at")
-    if not confirmed or not isinstance(confirmed, str):
-        errors.append("founder_confirmed_at missing")
+    inferred = data.get("inferred_at")
+    if not (
+        (isinstance(confirmed, str) and confirmed)
+        or (isinstance(inferred, str) and inferred)
+    ):
+        errors.append("founder_confirmed_at or inferred_at missing")
 
     return {
         "ok": not errors,

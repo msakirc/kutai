@@ -65,6 +65,7 @@ async def send_surface_keyboard(
     task_id: int,
     chat_id: int | None,
     options: list[str],
+    prompt: str | None = None,
 ) -> bool:
     """Send the surface-choice (5.0b) reply keyboard via Telegram.
 
@@ -93,6 +94,7 @@ async def send_surface_keyboard(
             mission_id=mission_id,
             task_id=task_id,
             options=options,
+            prompt=prompt,
         )
         return True
     except Exception as exc:
@@ -139,6 +141,53 @@ async def _resolve_chat_id(task: dict, mission_id: int | None) -> int | None:
         except Exception as exc:
             logger.debug("_resolve_chat_id (missions) lookup failed: %s", exc)
     return None
+
+
+async def _gather_mission_text(task: dict, mission_id: int | None) -> str:
+    """Collect freeform text describing the product for surface inference.
+
+    Primary signal is the founder's own words: ``missions.title`` +
+    ``missions.description`` (this is what the founder means by "I already
+    said it's an app"). The PRD summary, if present, is folded in as a weak
+    enrichment. Best-effort: any lookup failure just contributes nothing.
+    """
+    parts: list[str] = []
+    for k in ("title", "description"):
+        v = task.get(k)
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+
+    if mission_id is not None:
+        try:
+            from dabidabi import get_db as _get_db
+            _db = await _get_db()
+            _cur = await _db.execute(
+                "SELECT title, description FROM missions WHERE id = ?",
+                (mission_id,),
+            )
+            _row = await _cur.fetchone()
+            await _cur.close()
+            if _row:
+                for cell in _row:
+                    if isinstance(cell, str) and cell.strip():
+                        parts.append(cell)
+        except Exception as exc:
+            logger.debug("_gather_mission_text (missions) lookup failed: %s", exc)
+
+        # PRD summary — secondary enrichment, never required.
+        try:
+            from src.workflows.engine.hooks import get_artifact_store
+            store = get_artifact_store()
+            raw = await store.retrieve(mission_id, "prd_final_summary")
+            if isinstance(raw, str) and raw.strip():
+                parts.append(raw)
+            elif isinstance(raw, dict):
+                import json as _json
+                parts.append(_json.dumps(raw, ensure_ascii=False))
+        except Exception as exc:
+            logger.debug("_gather_mission_text (prd) lookup failed: %s", exc)
+
+    return "\n".join(parts)
 
 
 async def clarify(task: dict) -> dict:
@@ -188,14 +237,70 @@ async def clarify(task: dict) -> dict:
             logger.warning("clarify: attention_check failed: %s", exc)
 
     if kind == "surface_choice":
-        # 5.0b surfaces_lock — ask the founder which platforms to target.
-        # Pre-fix this fell to the default branch and DLQ'd on "clarify
-        # payload requires 'question'": that branch can neither render the
-        # options keyboard nor write surfaces.json. Mirror variant_choice:
-        # send a keyboard, park the task; the Telegram callback writes
-        # surfaces.json + completes the task.
+        # 5.0b surfaces_lock — which platforms does this product target?
+        #
+        # SMART GATE: unconditionally asking is dumb when the mission text
+        # already says "build an app" / "a website". Infer the surface from
+        # the mission description (+ PRD) first:
+        #   high   → write surfaces.json (source=inferred), advance. No pause.
+        #   medium → write best guess, advance, AND fire a non-blocking
+        #            "assumed X — tap to change" keyboard (founder keeps the
+        #            override, mission never stops).
+        #   low    → genuinely ambiguous → the original blocking keyboard.
         mission_id = task.get("mission_id")
         options = payload.get("options") or []
+
+        from mr_roboto.surface_infer import infer_surfaces, surfaces_label
+        text = await _gather_mission_text(task, mission_id)
+        inf = infer_surfaces(text)
+        if inf["surfaces"] and inf["confidence"] in ("high", "medium"):
+            try:
+                from mr_roboto.surfaces_persist import write_surfaces_json
+                await write_surfaces_json(
+                    mission_id=mission_id,
+                    option_label=surfaces_label(inf["surfaces"]),
+                    primary_surface=inf["primary_surface"],
+                    source="inferred",
+                    confidence=inf["confidence"],
+                )
+            except Exception as exc:
+                # Inference write failed — fall through to the keyboard path
+                # so the founder still decides (never silently skip the gate).
+                logger.warning(
+                    "surface_choice: inferred write failed for mission=%s "
+                    "(surfaces=%s): %s — falling back to keyboard",
+                    mission_id, inf["surfaces"], exc,
+                )
+            else:
+                logger.info(
+                    "surface_choice: inferred surfaces=%s (%s) for mission=%s "
+                    "— no founder pause",
+                    inf["surfaces"], inf["confidence"], mission_id,
+                )
+                # MEDIUM: offer a one-tap correction but DO NOT park — the
+                # task completes and the mission advances. A later tap rewrites
+                # surfaces.json via the existing callback.
+                if inf["confidence"] == "medium":
+                    chat_id = await _resolve_chat_id(task, mission_id)
+                    guess = " + ".join(inf["surfaces"])
+                    await send_surface_keyboard(
+                        mission_id, task["id"], chat_id, options,
+                        prompt=(
+                            f"🤖 Bunu *{guess}* olarak varsaydım (açıklamandan). "
+                            "Yanlışsa değiştir:"
+                        ),
+                    )
+                return {
+                    "status": "completed",
+                    "kind": "surface_choice",
+                    "inferred": True,
+                    "surfaces": inf["surfaces"],
+                    "confidence": inf["confidence"],
+                }
+
+        # LOW confidence (no surface signal in the text): ask the founder.
+        # Mirror variant_choice: send a keyboard, park the task; the Telegram
+        # callback writes surfaces.json + completes the task.
         chat_id = await _resolve_chat_id(task, mission_id)
         sent = await send_surface_keyboard(mission_id, task["id"], chat_id, options)
         if sent:

@@ -76,6 +76,35 @@ async def test_write_surfaces_json_passes_verifier(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_write_surfaces_json_inferred_mode(tmp_path):
+    """Inferred picks stamp inferred_at + confidence, not founder_confirmed_at,
+    and still satisfy verify_surfaces_shape."""
+    from mr_roboto.surfaces_persist import write_surfaces_json
+    from mr_roboto.verify_surfaces_shape import verify_surfaces_shape
+
+    data = await write_surfaces_json(
+        mission_id=11,
+        option_label="mobile",
+        source="inferred",
+        confidence="medium",
+        workspace_path=str(tmp_path),
+    )
+
+    assert data["source"] == "inferred"
+    assert data["founder_confirmed_at"] is None
+    assert isinstance(data["inferred_at"], str) and data["inferred_at"]
+    assert data["confidence"] == "medium"
+    assert data["surfaces"] == ["mobile"]
+
+    res = await verify_surfaces_shape(
+        mission_id=11,
+        path=".charter/surfaces.json",
+        workspace_path=str(tmp_path),
+    )
+    assert res["ok"], res["errors"]
+
+
+@pytest.mark.asyncio
 async def test_write_surfaces_json_rejects_empty(tmp_path):
     from mr_roboto.surfaces_persist import write_surfaces_json
 

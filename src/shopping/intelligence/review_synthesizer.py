@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 from src.infra.logging_config import get_logger
-from src.infra.times import utc_now
+from dabidabi.times import utc_now
 
 logger = get_logger("shopping.intelligence.review_synthesizer")
 

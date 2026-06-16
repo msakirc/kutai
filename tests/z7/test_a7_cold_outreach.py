@@ -743,7 +743,7 @@ async def test_clear_pause_idempotent_already_cleared(tmp_path, monkeypatch):
     """clear_pause on an already-cleared row returns 'not_paused' (idempotent)."""
     db_mod = await _setup_db(tmp_path, monkeypatch)
 
-    from src.infra.times import db_now
+    from dabidabi.times import db_now
 
     db = await db_mod.get_db()
     await db.execute(

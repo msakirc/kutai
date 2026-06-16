@@ -458,7 +458,7 @@ async def test_sweep_skips_ungraded_with_pending_posthooks(tmp_path, monkeypatch
         _db_mod._db_connection = None
 
     from src.infra.db import init_db, add_task, get_task, update_task
-    from src.infra.times import utc_now, to_db
+    from dabidabi.times import utc_now, to_db
     await init_db()
 
     old_ts = to_db(utc_now() - timedelta(hours=2))

@@ -81,7 +81,7 @@ async def _fetch_duty_pharmacies_eczaneler_gen_tr(
         tab: Which Bootstrap tab to read — "dun" (yesterday), "bugun" (today),
              or "yarin" (tomorrow). Defaults to "bugun".
     """
-    from src.infra.times import turkey_now
+    from dabidabi.times import turkey_now
     try:
         from src.tools.scraper import scrape_url, ScrapeTier
 

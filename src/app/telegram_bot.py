@@ -5,7 +5,7 @@ import signal
 from datetime import datetime
 from pathlib import Path
 from src.infra.logging_config import get_logger
-from ..infra.times import utc_now, to_turkey, to_db, TZ_TR, tr_hour_to_utc
+from dabidabi.times import utc_now, to_turkey, to_db, TZ_TR, tr_hour_to_utc
 from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, TASK_PRIORITY, DB_PATH
 
 logger = get_logger("app.telegram_bot")
@@ -2719,7 +2719,7 @@ class TelegramInterface:
             retry_total = len(retry_pending)
             msg += f"🔁 Retry pending ({retry_total}):\n"
             from datetime import datetime
-            from src.infra.times import from_db, utc_now
+            from dabidabi.times import from_db, utc_now
             now = utc_now()
             for t in retry_pending[:5]:
                 agent = t.get('agent_type', '?')

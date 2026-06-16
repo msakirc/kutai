@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 _pending_notification_tasks: set[asyncio.Task] = set()
 
-from .times import db_now
+from dabidabi.times import db_now
 
 import requests
 

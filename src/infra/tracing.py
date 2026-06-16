@@ -11,7 +11,7 @@ import time
 from typing import Any, Optional
 
 from .logging_config import get_logger
-from .times import db_now
+from dabidabi.times import db_now
 from .db import get_db
 
 logger = get_logger("infra.tracing")

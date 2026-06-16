@@ -42,7 +42,6 @@ def _patch_telegram(monkeypatch):
 
     # Stub relative-import helpers that telegram_bot uses
     for mod in [
-        "src.infra.times",
         "src.app.config",
     ]:
         if mod not in sys.modules:

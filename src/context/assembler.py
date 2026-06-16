@@ -407,7 +407,7 @@ async def assemble_ambient_context(
     Includes: time of day, system load mode, active missions count, and recent
     blackboard decisions if mission_id is provided. Stays under max_tokens.
     """
-    from ..infra.times import utc_now
+    from dabidabi.times import utc_now
     parts: list[str] = []
 
     # Time of day

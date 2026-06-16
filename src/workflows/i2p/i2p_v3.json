@@ -3058,6 +3058,35 @@
       "reversibility": "full"
     },
     {
+      "id": "3.5z",
+      "phase": "phase_3",
+      "name": "surface_signal_inference",
+      "agent": "mechanical",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [
+        "2.11b"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "prd_final_summary"
+      ],
+      "output_artifacts": [
+        "surface_signal"
+      ],
+      "instruction": "Mechanically infer the founder's intended product surface from their own words (mission title + description, plus idea brief / charter / PRD summary) — no LLM. Persist mission_{mission_id}/.charter/surface_signal.json with schema {_schema_version, mission_id, surfaces, primary_surface, target_platform, confidence, source}. This is the deterministic single source for the surface decision; step 3.6 honors it when confidence is high so target_platform reflects what the founder said rather than re-derived prose. Low confidence still writes (target_platform null) so 3.6 derives from the PRD itself.",
+      "done_when": "surface_signal.json exists.",
+      "produces": [
+        "mission_{mission_id}/.charter/surface_signal.json"
+      ],
+      "executor": "infer_surface_signal",
+      "payload": {
+        "action": "infer_surface_signal"
+      },
+      "context": {},
+      "reversibility": "full"
+    },
+    {
       "id": "3.6",
       "phase": "phase_3",
       "name": "platform_and_accessibility_requirements",
@@ -3071,20 +3100,22 @@
       ],
       "depends_on": [
         "2.11b",
-        "1.11"
+        "1.11",
+        "3.5z"
       ],
       "may_need_clarification": true,
       "input_artifacts": [
         "prd_final_summary",
         "audience_research_data_summary",
-        "regulatory_requirements_summary"
+        "regulatory_requirements_summary",
+        "surface_signal"
       ],
       "output_artifacts": [
         "platform_requirements",
         "accessibility_requirements",
         "i18n_requirements"
       ],
-      "instruction": "Define platform support: primary_platform, browser_support, mobile_support, screen_sizes, os_versions, device_types. If multiple platforms equally important, trigger needs_clarification. Also emit target_platform, the build-branching signal, derived from mobile_support: set it to 'mobile' when the product is mobile-only (native/cross-platform apps with no meaningful web surface), 'both' when both a web app and a mobile app are in scope, and 'web' when there is no native mobile app (responsive web only counts as 'web'). target_platform MUST be exactly one of 'web', 'mobile', or 'both'. Define accessibility requirements: target WCAG 2.1 AA minimum. Organized by WCAG principle: perceivable, operable, understandable, robust. Each with req_id, WCAG criterion reference, implementation guidance, testing method. Define i18n requirements: initial_languages, future_languages, rtl_support, date/number/currency/timezone handling, text_expansion_budget, string_extraction_strategy.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
+      "instruction": "FIRST read surface_signal (mission_{mission_id}/.charter/surface_signal.json) — the deterministic inference of the founder's stated surface. When its confidence is 'high', set target_platform EXACTLY to surface_signal.target_platform and align mobile_support to match: the founder's stated surface is authoritative — do NOT override it from prose. When confidence is 'medium', adopt surface_signal.target_platform unless the PRD explicitly contradicts it. Only when surface_signal is absent or confidence is 'low' do you derive target_platform yourself. Define platform support: primary_platform, browser_support, mobile_support, screen_sizes, os_versions, device_types. If multiple platforms equally important AND surface_signal did not resolve it, trigger needs_clarification. Also emit target_platform, the build-branching signal, derived from mobile_support: set it to 'mobile' when the product is mobile-only (native/cross-platform apps with no meaningful web surface), 'both' when both a web app and a mobile app are in scope, and 'web' when there is no native mobile app (responsive web only counts as 'web'). target_platform MUST be exactly one of 'web', 'mobile', or 'both'. Define accessibility requirements: target WCAG 2.1 AA minimum. Organized by WCAG principle: perceivable, operable, understandable, robust. Each with req_id, WCAG criterion reference, implementation guidance, testing method. Define i18n requirements: initial_languages, future_languages, rtl_support, date/number/currency/timezone handling, text_expansion_budget, string_extraction_strategy.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
       "done_when": "platform_requirements (including target_platform), accessibility_requirements, and i18n_requirements exist.",
       "artifact_schema": {
         "platform_requirements": {

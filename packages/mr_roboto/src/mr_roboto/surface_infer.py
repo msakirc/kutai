@@ -138,6 +138,30 @@ def surfaces_from_target_platform(target_platform: str | None) -> dict[str, Any]
     return {"surfaces": list(surfaces), "primary_surface": primary}
 
 
+def target_platform_from_surfaces(surfaces: list[str]) -> str | None:
+    """Project a surface set onto ``target_platform`` (the 3.6 build enum).
+
+    Inverse of ``surfaces_from_target_platform``, for the Stage-3 intake
+    signal that grounds 3.6 in the founder's own words:
+    - mobile AND web present → ``both``
+    - mobile only            → ``mobile``
+    - any non-mobile surface (web/desktop/admin) without mobile → ``web``
+      (matches 3.6's rule: "responsive web only counts as 'web'"; desktop is
+      folded into 'web' until Stage 2 makes it first-class)
+    - empty → ``None`` (no signal; 3.6 derives from the PRD itself)
+    """
+    s = set(surfaces or [])
+    if not s:
+        return None
+    has_mobile = "mobile" in s
+    has_nonmobile = bool(s - {"mobile"})
+    if has_mobile and has_nonmobile:
+        return "both"
+    if has_mobile:
+        return "mobile"
+    return "web"
+
+
 def surfaces_label(surfaces: list[str]) -> str:
     """Render surface tokens as a ``write_surfaces_json`` option label.
 

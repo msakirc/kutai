@@ -57,6 +57,35 @@ def test_surfaces_from_target_platform(tp, expected):
     assert surfaces_from_target_platform(tp) == expected
 
 
+@pytest.mark.parametrize(
+    "surfaces,expected",
+    [
+        (["mobile"], "mobile"),
+        (["web"], "web"),
+        (["mobile", "web"], "both"),
+        (["web", "mobile"], "both"),
+        (["web", "admin"], "web"),        # non-mobile only → web
+        (["desktop"], "web"),             # desktop folded into web (pre-Stage 2)
+        (["mobile", "admin"], "both"),    # mobile + non-mobile → both
+        ([], None),
+    ],
+)
+def test_target_platform_from_surfaces(surfaces, expected):
+    from mr_roboto.surface_infer import target_platform_from_surfaces
+
+    assert target_platform_from_surfaces(surfaces) == expected
+
+
+def test_target_platform_roundtrip_with_projection():
+    """target_platform → surfaces → target_platform is stable for the 3 enums."""
+    from mr_roboto.surface_infer import (
+        surfaces_from_target_platform, target_platform_from_surfaces,
+    )
+    for tp in ("web", "mobile", "both"):
+        surfaces = surfaces_from_target_platform(tp)["surfaces"]
+        assert target_platform_from_surfaces(surfaces) == tp
+
+
 def test_surfaces_label_roundtrips():
     from mr_roboto.surfaces_persist import parse_surface_choice
 

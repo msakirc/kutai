@@ -48,6 +48,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "verify_interview_script_shape": "full",
     "verify_taste_emphasis_shape": "full",
     "verify_design_tokens_shape": "full",
+    "infer_surface_signal": "full",
     "verify_surfaces_shape": "full",
     "verify_user_flow_shape": "full",
     "verify_screen_inventory_shape": "full",

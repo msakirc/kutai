@@ -1445,6 +1445,18 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "infer_surface_signal":
+        # i2p 3.5z (Stage 3) — deterministic surface inference from the
+        # founder's words; persists .charter/surface_signal.json for 3.6.
+        from mr_roboto.infer_surface_signal import infer_surface_signal
+        try:
+            res = await infer_surface_signal(
+                task, workspace_path=payload.get("workspace_path"),
+            )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "verify_surfaces_shape":
         from mr_roboto.verify_surfaces_shape import verify_surfaces_shape
         try:

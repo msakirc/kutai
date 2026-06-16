@@ -50,6 +50,7 @@ from .checkpoint import (
 from .context import build_context, build_system_prompt
 from .dispatch_helpers import (
     pick_for_iter, record_pool_empty_forensics, result_to_response_dict,
+    _transport_should_terminate,
 )
 from .escalation import escalate_requirements, trim_for_escalation
 from .guards import (
@@ -647,7 +648,14 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                             reason=result.category,
                             latency=None,
                         ))
-                        if not result.retryable or transport_attempt >= MAX_TRANSPORT_ATTEMPTS:
+                        # loading / circuit_breaker: the chosen model is
+                        # unavailable but a DIFFERENT one (cloud) may serve —
+                        # re-select instead of terminating (the failed model is
+                        # already excluded via the appended Failure). Only quit
+                        # on a truly non-retryable error or spent attempts.
+                        if _transport_should_terminate(
+                            result, transport_attempt, MAX_TRANSPORT_ATTEMPTS
+                        ):
                             raise ModelCallFailed(
                                 call_id=reqs.effective_task or reqs.primary_capability,
                                 last_error=result.message,

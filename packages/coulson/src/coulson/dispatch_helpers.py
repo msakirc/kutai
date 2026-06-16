@@ -93,6 +93,33 @@ def pick_for_iter(
     return pick
 
 
+# Failure categories where the chosen model is unavailable *right now* but a
+# DIFFERENT model would serve. ``retryable=False`` on these means "don't retry
+# the same model", not "abandon the task" — the transport loop must re-select
+# (the failed model is excluded via the appended Failure), falling back to
+# cloud when local can't load. Live 2026-06-16: llama-server couldn't bind its
+# port, every local load returned category="loading", and the loop terminated
+# instead of re-selecting → tasks pinned to dead local while cloud sat idle.
+_RESELECTABLE_CATEGORIES = ("loading", "circuit_breaker")
+
+
+def _transport_should_terminate(result: Any, transport_attempt: int,
+                                max_attempts: int) -> bool:
+    """Decide whether a CallError ends the task or triggers a re-select.
+
+    Terminate when attempts are spent, or when the error is non-retryable AND
+    not re-selectable (e.g. a malformed request — a different model won't
+    help). A ``loading`` / ``circuit_breaker`` failure with attempts remaining
+    re-selects a different model instead of terminating.
+    """
+    if transport_attempt >= max_attempts:
+        return True
+    reselectable = getattr(result, "category", None) in _RESELECTABLE_CATEGORIES
+    if not getattr(result, "retryable", False) and not reselectable:
+        return True
+    return False
+
+
 def result_to_response_dict(result: Any, model: Any) -> dict:
     """Map a ``hallederiz_kadir.CallResult`` to the legacy response dict.
 

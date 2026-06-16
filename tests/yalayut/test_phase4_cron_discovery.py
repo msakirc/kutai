@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from src.infra.db import init_db, get_db
-from src.infra.times import utc_now, to_db
+from dabidabi.times import utc_now, to_db
 from yalayut.discovery import cron as yal_cron
 
 

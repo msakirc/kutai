@@ -25,7 +25,7 @@ Public API
 from __future__ import annotations
 
 from src.infra.logging_config import get_logger
-from src.infra.times import db_now
+from dabidabi.times import db_now
 
 logger = get_logger("app.jobs.lifecycle_email_send")
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .times import db_now
+from dabidabi.times import db_now
 
 from src.infra.logging_config import get_logger
 

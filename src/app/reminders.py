@@ -4,7 +4,7 @@
 from datetime import datetime, timezone
 
 from ..infra.db import get_todos
-from ..infra.times import utc_now
+from dabidabi.times import utc_now
 from ..infra.logging_config import get_logger
 
 logger = get_logger("app.reminders")

@@ -143,7 +143,7 @@ class TestIncidentLifecycle:
     async def test_open_and_resolve(self, initialized_db):
         """Can insert an incident, add status_updates, then resolve it."""
         from src.infra.db import get_db
-        from src.infra.times import db_now
+        from dabidabi.times import db_now
 
         db = await get_db()
         now = db_now()
@@ -272,7 +272,7 @@ class TestRedaction:
     ):
         """incident/draft_update returns ok status and redacted draft."""
         from src.infra.db import get_db
-        from src.infra.times import db_now
+        from dabidabi.times import db_now
 
         db = await get_db()
         cur = await db.execute(
@@ -763,7 +763,7 @@ class TestDraftPostmortem:
         from mr_roboto.incident_draft_postmortem import run as postmortem_run
 
         db = await get_db()
-        from src.infra.times import db_now
+        from dabidabi.times import db_now
         now = db_now()
 
         # Open and resolve incident.

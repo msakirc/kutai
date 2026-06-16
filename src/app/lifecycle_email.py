@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.infra.logging_config import get_logger
-from src.infra.times import db_now, to_db
+from dabidabi.times import db_now, to_db
 
 logger = get_logger("app.lifecycle_email")
 

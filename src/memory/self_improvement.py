@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timedelta
 
 from src.infra.logging_config import get_logger
-from src.infra.times import utc_now
+from dabidabi.times import utc_now
 from src.infra.db import get_db
 
 logger = get_logger("memory.self_improvement")

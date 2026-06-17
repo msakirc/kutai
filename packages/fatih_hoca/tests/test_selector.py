@@ -110,6 +110,63 @@ def test_select_returns_none_when_no_models():
     assert result is None
 
 
+# ─── Demand-floor gate: supply vetoes, demand only ranks (2026-06-18) ─────────
+# The utilization scalar is a SOFT composite multiplier by design (composite *=
+# 1 + K*scalar; -1.0 = rank-last, not exclude). The admission gate must veto
+# ONLY on genuine SUPPLY exhaustion (the `other` bucket at the floor), never on
+# DEMAND (burden+queue), or a deep queue deadlocks the whole fleet under minimal
+# (cloud-only) — the live 2026-06-17 stall. And the demand-floor fallback must
+# rank by the pre-demand base composite, or a premium model that escaped the
+# demand floor would grab easy tasks (waste).
+
+def _scored(model, *, urgency, supply, base):
+    from fatih_hoca.ranking import ScoredModel
+    # `score` mirrors the post-demand composite (base * (1+K*urgency), K=1,
+    # floored at 0) — i.e. demand-floored models are zeroed, exactly as ranking
+    # produces them. The gate must NOT use this for the fallback ordering.
+    sm = ScoredModel(model=model, score=max(0.0, base * (1.0 + urgency)),
+                     capability_score=base, composite_score=0.0)
+    sm.urgency = urgency
+    sm.supply_pressure = supply
+    sm.base_score = base
+    sm.pool = "time_bucketed" if getattr(model, "is_free", False) else "per_call"
+    return sm
+
+
+def test_demand_floored_fleet_admits_best_by_base_not_stall(monkeypatch):
+    # All candidates demand-floored (urgency=-1) but supply-HEALTHY (supply=0).
+    # Pre-fix: gate filtered every urgency==-1.0 -> empty -> select=None stall.
+    # Post-fix: demand never vetoes; fallback ranks by base composite. The cheap
+    # free model (higher base on an easy task) wins -- premium does NOT, even
+    # though demand zeroed both `score`s.
+    cheap = _make_model("cheap-free", location="cloud", provider="gemini", tier="free")
+    prem = _make_model("premium", location="cloud", provider="anthropic", tier="paid")
+    sel = _make_selector([cheap, prem])
+    # NOTE: `score` is 0 for both (demand ×0). Only base_score separates them.
+    scored = [
+        _scored(prem, urgency=-1.0, supply=0.0, base=40.0),
+        _scored(cheap, urgency=-1.0, supply=0.0, base=80.0),
+    ]
+    monkeypatch.setattr("fatih_hoca.selector.rank_candidates", lambda **kw: scored)
+    result = sel.select(task="summarizer", difficulty=3)
+    assert result is not None, "demand-floored but supply-healthy fleet must NOT stall"
+    assert result.model.name == "cheap-free", (
+        "fallback must rank by base composite (easy->cheap), not the demand-"
+        "zeroed score that would let the premium model escape and waste"
+    )
+
+
+def test_supply_exhausted_fleet_still_vetoes(monkeypatch):
+    # Genuine supply exhaustion (supply<=-1) MUST still veto -> None. This is the
+    # 'don't re-pick dead models' guard, correctly scoped to the supply floor.
+    dead = _make_model("dead-free", location="cloud", provider="gemini", tier="free")
+    sel = _make_selector([dead])
+    scored = [_scored(dead, urgency=-1.0, supply=-1.0, base=80.0)]
+    monkeypatch.setattr("fatih_hoca.selector.rank_candidates", lambda **kw: scored)
+    result = sel.select(task="summarizer", difficulty=3)
+    assert result is None, "supply-exhausted fleet must veto (return None)"
+
+
 # ─── Eligibility: demoted models ─────────────────────────────────────────────
 
 def test_select_excludes_demoted_models():

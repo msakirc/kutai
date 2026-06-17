@@ -1373,6 +1373,59 @@ def assert_rp5(scenario: "Scenario") -> list[str]:
     return failures
 
 
+def assert_pp10_demand_floor_is_not_supply() -> list[str]:
+    """A free model with FULL quota (supply healthy) but a DEEP pending queue
+    must floor on the DEMAND buckets (burden+queue), NOT the supply bucket
+    (`other`). This is the exact invariant the admission gate relies on to
+    veto only on genuine supply exhaustion while letting demand merely rank —
+    without it, a deep queue under minimal (cloud-only) drives every model's
+    scalar to the -1.0 clamp and the gate misreads demand as "can't serve" →
+    select=None deadlock (live stall 2026-06-17). Asserts the floor is real
+    (scalar≈-1) yet supply is healthy (other≈0) and demand owns it (queue<<0).
+    """
+    from nerd_herd.types import QueueProfile, RateLimit, RateLimitMatrix
+
+    now = _time.time()
+    # Small per-minute window (so queue demand saturates S4/S5) but FULL daily
+    # quota + full minute remaining → supply is healthy, nothing depleted. The
+    # small rpm limit (10) mirrors real free-tier models (gemini rpm 5-15) so
+    # M1 (smallest-populated-limit amplifier) AMPLIFIES the demand signal — the
+    # live floor's actual shape (M1≈1.5 at limit=10), not a dampened big tank.
+    matrix = RateLimitMatrix(
+        rpm=RateLimit(limit=10, remaining=10, reset_at=int(now + 60)),
+        tpm=RateLimit(limit=30_000, remaining=30_000, reset_at=int(now + 3600)),
+        rpd=RateLimit(limit=1_000, remaining=1_000, reset_at=int(now + 86400)),
+    )
+    snap = _pressure_snapshot(cloud_models={"free_prov": {"free/model": matrix}})
+    # ~300k projected tokens >> 30k window → S4/S5 (queue) saturate negative.
+    snap.queue_profile = QueueProfile(
+        total_ready_count=20, projected_tokens=300_000, projected_calls=30,
+    )
+    model = _cloud_model_stub(
+        name="free/model", provider="free_prov", is_free=True, rpd_remaining=1_000,
+    )
+    bd = snap.pressure_for(
+        model, task_difficulty=5, est_per_task_tokens=15_000, est_iterations=8,
+    )
+    other = bd.bucket_totals.get("other", 0.0)
+    queue = bd.bucket_totals.get("queue", 0.0)
+    failures = []
+    if not (bd.scalar <= -0.99):
+        failures.append(
+            f"pp10: expected demand floor (scalar<=-0.99), got {bd.scalar:.3f}"
+        )
+    if not (other > -0.5):
+        failures.append(
+            f"pp10: SUPPLY bucket must stay healthy (~0), got other={other:.3f} "
+            "— a demand floor must NOT masquerade as supply exhaustion"
+        )
+    if not (queue <= -0.5):
+        failures.append(
+            f"pp10: DEMAND (queue) bucket must own the floor, got queue={queue:.3f}"
+        )
+    return failures
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 POOL_PRESSURE_SCENARIOS = [
@@ -1385,6 +1438,7 @@ POOL_PRESSURE_SCENARIOS = [
     ("pp7_difficulty_lookahead", pp7_difficulty_lookahead),
     ("pp8_equilibrium_mission", pp8_equilibrium_mission),
     ("pp9_giant_vs_small_idle_spread", pp9_giant_vs_small_idle_spread),
+    ("pp10_demand_floor_is_not_supply", pp1_fat_vs_tiny),  # pressure-only; placeholder factory
     ("s7_continuity", pp1_fat_vs_tiny),
     ("s6_conserve", pp1_fat_vs_tiny),
     ("rp5_overdraw_early_warning", rp5_overdraw_early_warning),
@@ -1412,6 +1466,7 @@ POOL_PRESSURE_ASSERTIONS: dict[str, Callable] = {
     "pp7_difficulty_lookahead": lambda sc: assert_pp7_m3_weights(),
     "pp8_equilibrium_mission": lambda sc: assert_pp8(sc),
     "pp9_giant_vs_small_idle_spread": lambda sc: assert_pp9(sc),
+    "pp10_demand_floor_is_not_supply": lambda sc: assert_pp10_demand_floor_is_not_supply(),
     "s7_continuity": lambda sc: assert_s7_continuity(),
     "s6_conserve": lambda sc: assert_s6_conserve(),
     "rp5_overdraw_early_warning": lambda sc: assert_rp5(sc),

@@ -53,7 +53,8 @@ REGISTRY_DDL = [
             provider TEXT,
             outcome TEXT,
             reinforce REAL,
-            task_id INTEGER
+            task_id INTEGER,
+            mission_id INTEGER
         )
     """,
     # model_pick_log indexes
@@ -129,6 +130,10 @@ REGISTRY_ALTERS = [
     "ALTER TABLE model_pick_log ADD COLUMN outcome TEXT",
     "ALTER TABLE model_pick_log ADD COLUMN reinforce REAL",
     "ALTER TABLE model_pick_log ADD COLUMN task_id INTEGER",
+    "ALTER TABLE model_pick_log ADD COLUMN mission_id INTEGER",
+    # mission_id index placed here (after ALTER) so it runs after the column
+    # exists on pre-change DBs. CREATE INDEX IF NOT EXISTS is idempotent.
+    "CREATE INDEX IF NOT EXISTS idx_pick_log_mission ON model_pick_log(mission_id, timestamp DESC)",
 ]
 
 

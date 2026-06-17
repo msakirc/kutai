@@ -86,6 +86,40 @@ def test_target_platform_roundtrip_with_projection():
         assert target_platform_from_surfaces(surfaces) == tp
 
 
+@pytest.mark.parametrize(
+    "tp,signal,surfaces,primary",
+    [
+        # desktop/admin layer onto the build base
+        ("mobile", ["mobile", "desktop"], ["mobile", "desktop"], "mobile"),
+        ("web", ["web", "admin"], ["web", "admin"], "web"),
+        ("both", ["mobile", "web", "desktop", "admin"],
+         ["mobile", "web", "desktop", "admin"], "mobile"),
+        # signal has no design-only extras → just the build base
+        ("mobile", ["mobile"], ["mobile"], "mobile"),
+        # signal mobile/web are ignored (build axis owns those); only
+        # desktop/admin are layered
+        ("web", ["mobile", "web"], ["web"], "web"),
+        # empty signal
+        ("both", [], ["mobile", "web"], "mobile"),
+        # canonical ordering regardless of signal order
+        ("mobile", ["admin", "desktop", "mobile"],
+         ["mobile", "desktop", "admin"], "mobile"),
+    ],
+)
+def test_merge_surfaces(tp, signal, surfaces, primary):
+    from mr_roboto.surface_infer import merge_surfaces
+
+    res = merge_surfaces(tp, signal)
+    assert res == {"surfaces": surfaces, "primary_surface": primary}
+
+
+def test_merge_surfaces_none_target_returns_none():
+    from mr_roboto.surface_infer import merge_surfaces
+
+    assert merge_surfaces(None, ["desktop"]) is None
+    assert merge_surfaces("garbage", ["mobile"]) is None
+
+
 def test_surfaces_label_roundtrips():
     from mr_roboto.surfaces_persist import parse_surface_choice
 

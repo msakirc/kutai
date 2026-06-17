@@ -549,8 +549,19 @@ class Selector:
         if needed_ctx > 0 and model.context_length < needed_ctx:
             return f"ctx({model.context_length}<{needed_ctx})"
 
-        # Function calling requirement
-        if reqs.needs_function_calling and not model.supports_function_calling:
+        # Function calling requirement. supports_function_calling means the
+        # model accepts the native litellm tools= param. But the agent loop
+        # (coulson) also drives tools via response_format + text-JSON parsing,
+        # so a model with strict json_schema constrained decoding is equally
+        # agent-capable even when the native tools= path is unavailable — e.g.
+        # local --no-jinja builds (Apriel: FC=False, json_schema=True). Veto
+        # only models that can do NEITHER: the degenerate routers/classifiers
+        # (groq/compound, gpt-oss-safeguard, prompt-guard) are FC=False AND
+        # json_schema=False, so they stay excluded. 2026-06-17: the old FC-only
+        # veto filtered Apriel out of analyst/researcher ~150k times in 8h.
+        if (reqs.needs_function_calling
+                and not model.supports_function_calling
+                and not model.supports_json_schema):
             return "no_function_calling"
 
         # JSON mode requirement

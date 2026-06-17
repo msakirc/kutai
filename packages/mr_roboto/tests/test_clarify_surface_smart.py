@@ -37,7 +37,26 @@ def patched(monkeypatch):
     monkeypatch.setattr(C, "_resolve_chat_id", AsyncMock(return_value=123))
     monkeypatch.setattr(C, "update_task", upd)
     monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value=None))
+    monkeypatch.setattr(C, "_load_surface_signal_surfaces", AsyncMock(return_value=[]))
     return C, write, kb, upd
+
+
+@pytest.mark.asyncio
+async def test_derive_layers_desktop_admin_from_signal(patched, monkeypatch):
+    """Stage 2 (safe half): desktop/admin from the deterministic surface_signal
+    augment the web/mobile derived from target_platform — design lane regains
+    them without a pause, primary stays a build surface."""
+    C, write, kb, _ = patched
+    monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value="mobile"))
+    monkeypatch.setattr(C, "_load_surface_signal_surfaces",
+                        AsyncMock(return_value=["mobile", "desktop", "admin"]))
+
+    res = await C.clarify(_task())
+
+    assert res["status"] == "completed"
+    assert res["surfaces"] == ["mobile", "desktop", "admin"]
+    assert write.await_args.kwargs["primary_surface"] == "mobile"  # build surface
+    kb.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -67,6 +86,29 @@ async def test_derive_from_target_platform(patched, monkeypatch, tp, surfaces, p
     assert write.await_args.kwargs["source"] == "derived"
     assert write.await_args.kwargs["primary_surface"] == primary
     kb.assert_not_awaited()  # canonical signal exists → zero founder pause
+
+
+@pytest.mark.asyncio
+async def test_derive_runs_before_attention_gate(patched, monkeypatch):
+    """A derived surface needs no founder attention — it must short-circuit
+    BEFORE the attention-budget gate, so an exhausted budget can't defer it
+    (which would complete the task without writing surfaces.json → DLQ)."""
+    C, write, kb, _ = patched
+    monkeypatch.setattr(C, "_load_target_platform", AsyncMock(return_value="both"))
+    # NB: `mr_roboto.attention_check` the name resolves to the function (the
+    # package re-exports it), so reach the submodule via importlib.
+    import importlib
+    A = importlib.import_module("mr_roboto.attention_check")
+    deferred = AsyncMock()
+    monkeypatch.setattr(A, "attention_check",
+                        AsyncMock(return_value={"ok": False, "remaining": 0}))
+    monkeypatch.setattr(A, "write_deferred_question", deferred)
+
+    res = await C.clarify(_task())
+
+    assert res["status"] == "completed"
+    assert res["derived"] is True
+    deferred.assert_not_awaited()  # attention gate never reached
 
 
 @pytest.mark.asyncio

@@ -97,13 +97,33 @@ trigger needs_clarification"). It is asked **once, early, before the stack**.
 - Trade-off accepted: `desktop`/`admin` are no longer offered at 5.0b. `desktop`
   was an inversion bug there anyway (see Stage 2); `admin` deferred to Stage 3.
 
-### Stage 2 — `desktop` as a first-class build platform  *(gated — touches Z5 rail)*
+### Stage 2a — desktop/admin in the design lane, deterministic, no pause  *(implemented 2026-06-17)*
 
-Widen `target_platform` to carry `desktop` so it influences 4.2 (Electron/Tauri)
-instead of surfacing post-stack at phase 5. Touches `expander.py`,
-`conditions.py`, the conditional groups, `test_z5_platform_branching`. Requires
-schema v3 + migration. **Do not start without explicit go-ahead** — it
-destabilizes a well-tested rail for a currently-rare case.
+A lower-risk decomposition discovered during implementation: the surface fork is
+not "build vs nothing" but **design lane** (desktop/admin → more screens at
+5.0c/5.0d, safe at phase 5) **vs build lane** (stack/scaffold/variants, the
+rail-touching part). 2a delivers the safe design-lane half:
+
+- `5.0b` derive reconstructs the full surface set:
+  `merge_surfaces(target_platform, surface_signal.surfaces)` — web/mobile from
+  the canonical build signal (`target_platform`), desktop/admin layered on from
+  the deterministic `surface_signal` (3.5z). `primary_surface` stays a build
+  surface so it aligns with what the stack was built for.
+- `clarify._load_surface_signal_surfaces` reads `.charter/surface_signal.json`.
+- Net: desktop/admin design coverage restored (Stage 1 had dropped them), now
+  deterministic and pause-free, web/mobile still consistent with the build.
+- **Does not touch** `target_platform`'s enum or the Z5 build rail. 63 surface
+  tests green.
+
+### Stage 2b — desktop as a first-class BUILD platform  *(gated — large, touches Z5 rail)*
+
+Make desktop influence the actual build, not just the design: stack picks a
+desktop shell (Tauri/Electron), a desktop scaffold step (mirroring `7.5m`),
+feature-template desktop variants (mirroring `feat.*m`), an `expander.py` desktop
+branch, a `frontend_platform` desktop arm, schema bump. This mirrors the entire
+Z5 mobile track — a multi-session effort on a well-tested rail. **Gated on
+explicit go-ahead + confirmation that desktop is a real near-term target** — not
+worth destabilizing the rail speculatively.
 
 ### Stage 3 — structured surface capture at intake
 

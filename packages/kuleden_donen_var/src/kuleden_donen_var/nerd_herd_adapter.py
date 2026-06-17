@@ -82,13 +82,28 @@ def _build_prior_groups(
 
 
 def _rl(state, axis: str):
-    """Build a RateLimit for axis from KDV state. Empty if state lacks the axis."""
+    """Build a RateLimit for axis from KDV state. Empty if state lacks the axis.
+
+    Unknown remaining (the provider returns no per-axis remaining header, e.g.
+    daily rpd/tpd on gemini/groq/cerebras) is treated as FULL, not empty. Every
+    budget signal does ``(remaining or 0)``, so an axis with a known limit but
+    ``remaining=None`` would read as frac 0 → S1 depletion_max = -1.0 and the
+    pool-pressure gate would hard-veto a model KDV still considers healthy
+    (live 2026-06-17: free models that passed eligibility were pinned at -1.0,
+    starving every low-urgency overhead task). Genuine exhaustion is surfaced
+    separately via the daily_exhausted / rpm_cooldown flags at eligibility;
+    ``remaining=0`` from a real header still depletes (None != 0).
+    """
     from nerd_herd.types import RateLimit
     if state is None:
         return RateLimit()
+    limit = getattr(state, f"{axis}_limit", None)
+    remaining = getattr(state, f"{axis}_remaining", None)
+    if remaining is None and limit is not None:
+        remaining = limit
     return RateLimit(
-        limit=getattr(state, f"{axis}_limit", None),
-        remaining=getattr(state, f"{axis}_remaining", None),
+        limit=limit,
+        remaining=remaining,
         reset_at=int(getattr(state, f"{axis}_reset_at", 0) or 0) or None,
     )
 

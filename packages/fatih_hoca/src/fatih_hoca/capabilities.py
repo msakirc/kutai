@@ -442,11 +442,18 @@ def score_model_for_task(
     ops = model_operational
 
     # ── Hard constraint filtering ──
-    # NOTE: function_calling & vision are true hard requirements.
+    # NOTE: vision is a true hard requirement. function_calling is satisfied
+    # by EITHER native tools= support OR strict json_schema constrained
+    # decoding (a structured-output superset) — the agent loop drives tools
+    # via response_format text-JSON when native tools= is unavailable, so a
+    # json_schema model (e.g. Apriel --no-jinja: FC=False, json_schema=True)
+    # is agent-capable. Mirrors selector._check_eligibility's FC veto.
     # needs_thinking and needs_json_mode are SOFT preferences —
     # handled via scoring bonuses, not hard rejection.
     # The router's outer filter loop already enforces the real hard ones.
-    if requirements.needs_function_calling and not ops.get("supports_function_calling", False):
+    if (requirements.needs_function_calling
+            and not ops.get("supports_function_calling", False)
+            and not ops.get("supports_json_schema", False)):
         return -1.0
     if requirements.needs_vision and model_capabilities.get(Cap.VISION, 0) < 1.0:
         return -1.0

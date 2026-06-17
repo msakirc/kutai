@@ -15,6 +15,7 @@ Scoring pipeline:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -232,9 +233,12 @@ def _apply_utilization_layer(
 
         # ── Floor diagnostic (names the vetoing signal) ──────────────────
         if scalar <= -0.999:
+            # `now` may be None here (pressure_for defaults it internally);
+            # the throttle needs a concrete clock, so resolve locally.
+            _now = now if now is not None else time.time()
             _last = _floor_diag_last.get(sm.model.name, 0.0)
-            if now - _last >= _FLOOR_DIAG_INTERVAL_SECS:
-                _floor_diag_last[sm.model.name] = now
+            if _now - _last >= _FLOOR_DIAG_INTERVAL_SECS:
+                _floor_diag_last[sm.model.name] = _now
                 logger.warning(
                     "pressure FLOOR: model=%s pool=%s scalar=%.3f buckets=%s "
                     "signals=%s",

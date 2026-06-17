@@ -224,6 +224,39 @@ def test_select_floors_function_calling_via_agent_type():
     assert result.model.name == "with-fc"
 
 
+def test_select_admits_json_schema_model_without_native_fc():
+    """A model lacking native function-calling (tools= param) but with strict
+    json_schema constrained decoding CAN drive the agent loop: coulson parses
+    tool actions from response_format text-JSON, no native tool_calls needed.
+    It must be eligible for needs_function_calling tasks, not vetoed.
+
+    Regression 2026-06-17: Apriel-1.6-15b-Thinker runs --no-jinja (llama-server
+    rejects the tools= param → supports_function_calling=False) yet keeps
+    supports_json_schema=True. The old veto filtered it out of analyst/researcher
+    ~150k times in an 8h window despite it being fully agent-capable."""
+    apriel = _make_model("apriel-thinker", function_calling=False)
+    apriel.supports_json_schema = True
+    sel = _make_selector([apriel])
+    result = sel.select(task="coder", difficulty=5, needs_function_calling=True)
+    assert result is not None
+    assert result.model.name == "apriel-thinker"
+
+
+def test_select_still_vetoes_model_without_fc_or_json_schema():
+    """Degenerate models (groq/compound router, gpt-oss-safeguard /
+    prompt-guard classifiers) are FC=False AND json_schema=False — they
+    cannot produce structured agent output via either path. The veto must
+    still exclude them so they never leak into tool-using agent pools
+    (2026-05-01 DLQ: prompt-guard-2-22m picked for test_generator)."""
+    degenerate = _make_model("compound", location="cloud", provider="groq",
+                             function_calling=False)
+    # supports_json_schema stays False (default) — routers/classifiers can't
+    # constrain-decode arbitrary agent JSON.
+    sel = _make_selector([degenerate])
+    result = sel.select(task="coder", difficulty=5, needs_function_calling=True)
+    assert result is None
+
+
 # ─── Eligibility: needs_json_mode plumbing ───────────────────────────────────
 
 

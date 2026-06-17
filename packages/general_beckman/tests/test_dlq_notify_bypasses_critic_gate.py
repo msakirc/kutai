@@ -30,6 +30,8 @@ async def test_dlq_notify_bypasses_critic_gate(monkeypatch):
 
     import src.infra.dead_letter as dl
     monkeypatch.setattr(dl, "quarantine_task", AsyncMock(return_value=1))
+    # Fresh quarantine (no prior unresolved row) so the notify path runs.
+    monkeypatch.setattr(dl, "is_unresolved_dlq", AsyncMock(return_value=False), raising=False)
 
     from general_beckman.apply import _dlq_write
 

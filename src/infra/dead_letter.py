@@ -289,6 +289,17 @@ async def _in_dlq(task_id: int) -> bool:
     return (await cur.fetchone()) is not None
 
 
+async def is_unresolved_dlq(task_id: int) -> bool:
+    """True if the task already has an UNRESOLVED dead-letter row.
+
+    Used to dedupe the DLQ alert: a fail-looping task is re-quarantined on each
+    retry cycle (quarantine_task is idempotent — one row), but the user-facing
+    notification must fire only on the FIRST quarantine, not every re-DLQ.
+    """
+    await _ensure_dlq_table()
+    return await _in_dlq(task_id)
+
+
 async def _plain_retry(task: dict) -> bool:
     """Normal pending-reset retry for a single task row."""
     import json

@@ -90,17 +90,22 @@ async def test_get_latest_model_for_mission_tier0_and_reinforce_excluded(tmp_pat
     dabidabi.configure(str(tmp_path / "lmm.db"))
     await dabidabi.init_db()
     db = await dabidabi.get_db()
+    # Target mission 7 (non-reinforce).
     await db.execute(
-        "INSERT INTO tasks (id, mission_id, title) VALUES (10, 7, 'task A')")
-    await db.execute(
-        "INSERT INTO model_pick_log (task_name, task_id, picked_model, provider, "
+        "INSERT INTO model_pick_log (task_name, mission_id, picked_model, provider, "
         "call_category, picked_score, candidates_json, timestamp) "
-        "VALUES ('task A', 10, 'mm', 'cloud', 'main', 0.9, '[]', '2026-06-16 09:00:00')")
-    # Newer row, but it's a reinforce nudge → must be excluded.
+        "VALUES ('task A', 7, 'mm', 'cloud', 'main', 0.9, '[]', '2026-06-16 09:00:00')")
+    # Newer reinforce nudge on the SAME mission → must be excluded.
     await db.execute(
-        "INSERT INTO model_pick_log (task_name, task_id, picked_model, provider, "
+        "INSERT INTO model_pick_log (task_name, mission_id, picked_model, provider, "
         "call_category, picked_score, candidates_json, timestamp) "
-        "VALUES ('task A', 10, 'reinf', 'cloud', 'reinforce', 0.5, '[]', '2026-06-16 11:00:00')")
+        "VALUES ('task A', 7, 'reinf', 'cloud', 'reinforce', 0.5, '[]', '2026-06-16 11:00:00')")
+    # Newer non-reinforce row on a DIFFERENT mission → Tier-2 would pick this
+    # if the mission filter were broken; Tier-0 must NOT return it.
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, mission_id, picked_model, provider, "
+        "call_category, picked_score, candidates_json, timestamp) "
+        "VALUES ('task B', 9, 'other', 'local', 'main', 0.9, '[]', '2026-06-16 12:00:00')")
     await db.commit()
     model, provider = await fdb.get_latest_model_for_mission(7)
     assert model == "mm" and provider == "cloud"

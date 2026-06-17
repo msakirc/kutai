@@ -316,10 +316,7 @@ async def get_latest_pick_for_task(
     rows where ``task_id IS NULL``. Returns ``(None, None)`` when neither
     finds a row.
 
-    Owns the registry-table READ that used to live raw inside the dabidabi
-    engine's ``record_confidence_claim``. Centralizing the two-tier JOIN here
-    is also what §1's ATTACH-split will qualify with the ``registry.`` schema
-    prefix (see 2026-06-16 deferred handoff).
+    Pure registry read (no core-table JOIN). Owned by fatih_hoca.
     """
     db = await get_db()
     cur = await db.execute(
@@ -349,10 +346,10 @@ async def get_latest_model_for_mission(
 ) -> tuple[str | None, str]:
     """Resolve (picked_model, provider) for a mission's latest non-reinforce pick.
 
-    Three tiers, most-precise first (mirrors the logic that used to live raw
-    in ``mr_roboto.executors.record_verdict``):
-      * Tier-0 — ``model_pick_log.task_id`` JOIN ``tasks`` filtered by mission.
-      * Tier-1 — legacy ``tasks.title = model_pick_log.task_name`` JOIN.
+    Two tiers:
+      * Tier-0 — most-recent non-reinforce ``model_pick_log`` row whose
+        denormalized ``mission_id`` matches (no JOIN — fatih_hoca owns this read
+        end-to-end; see the 2026-06-17 registry-decouple spec).
       * Tier-2 — global most-recent non-reinforce pick (mission None / no match).
     Reinforce nudges (``call_category = 'reinforce'``) are excluded so we never
     reinforce a model based on a prior reinforce row. Returns ``(None, 'local')``
@@ -361,21 +358,9 @@ async def get_latest_model_for_mission(
     db = await get_db()
     if mission_id is not None:
         cur = await db.execute(
-            "SELECT mpl.picked_model, mpl.provider "
-            "FROM model_pick_log mpl JOIN tasks t ON mpl.task_id = t.id "
-            "WHERE t.mission_id = ? AND mpl.call_category != 'reinforce' "
-            "ORDER BY mpl.timestamp DESC LIMIT 1",
-            (mission_id,),
-        )
-        row = await cur.fetchone()
-        await cur.close()
-        if row and row[0]:
-            return row[0], row[1] or "local"
-        cur = await db.execute(
-            "SELECT mpl.picked_model, mpl.provider "
-            "FROM model_pick_log mpl JOIN tasks t ON t.title = mpl.task_name "
-            "WHERE t.mission_id = ? AND mpl.call_category != 'reinforce' "
-            "ORDER BY mpl.timestamp DESC LIMIT 1",
+            "SELECT picked_model, provider FROM model_pick_log "
+            "WHERE mission_id = ? AND call_category != 'reinforce' "
+            "ORDER BY timestamp DESC LIMIT 1",
             (mission_id,),
         )
         row = await cur.fetchone()

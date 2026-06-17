@@ -83,3 +83,60 @@ async def test_insert_pick_log_row_mission_id_defaults_null(tmp_path):
     await cur.close()
     assert row[0] is None
     await dabidabi.close_db()
+
+
+@pytest.mark.asyncio
+async def test_get_latest_model_for_mission_no_tasks_dependency(tmp_path):
+    # The hard regression guard: DROP the tasks table, then the query must
+    # still resolve the latest pick by mission_id alone.
+    dabidabi.configure(str(tmp_path / "r.db"))
+    await dabidabi.init_db()
+    db = await dabidabi.get_db()
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, picked_model, provider, "
+        "picked_score, candidates_json, mission_id, call_category, timestamp) "
+        "VALUES ('a','mA','local',0.9,'[]',7,'MAIN_WORK','2026-06-16 10:00:00')")
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, picked_model, provider, "
+        "picked_score, candidates_json, mission_id, call_category, timestamp) "
+        "VALUES ('b','mB','gemini',0.9,'[]',9,'MAIN_WORK','2026-06-16 11:00:00')")
+    await db.commit()
+    await db.execute("DROP TABLE tasks")
+    await db.commit()
+    model, provider = await fdb.get_latest_model_for_mission(7)
+    assert model == "mA" and provider == "local"
+    await dabidabi.close_db()
+
+
+@pytest.mark.asyncio
+async def test_get_latest_model_for_mission_tier2_fallback(tmp_path):
+    dabidabi.configure(str(tmp_path / "r2.db"))
+    await dabidabi.init_db()
+    db = await dabidabi.get_db()
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, picked_model, provider, "
+        "picked_score, candidates_json, mission_id, call_category, timestamp) "
+        "VALUES ('a','mA','local',0.9,'[]',7,'MAIN_WORK','2026-06-16 10:00:00')")
+    await db.commit()
+    assert (await fdb.get_latest_model_for_mission(None))[0] == "mA"
+    assert (await fdb.get_latest_model_for_mission(999))[0] == "mA"
+    await dabidabi.close_db()
+
+
+@pytest.mark.asyncio
+async def test_get_latest_model_for_mission_excludes_reinforce(tmp_path):
+    dabidabi.configure(str(tmp_path / "r3.db"))
+    await dabidabi.init_db()
+    db = await dabidabi.get_db()
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, picked_model, provider, "
+        "picked_score, candidates_json, mission_id, call_category, timestamp) "
+        "VALUES ('a','mReal','local',0.9,'[]',7,'MAIN_WORK','2026-06-16 10:00:00')")
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, picked_model, provider, "
+        "picked_score, candidates_json, mission_id, call_category, timestamp) "
+        "VALUES ('a','mReinf','local',0.9,'[]',7,'reinforce','2026-06-16 12:00:00')")
+    await db.commit()
+    model, _ = await fdb.get_latest_model_for_mission(7)
+    assert model == "mReal"
+    await dabidabi.close_db()

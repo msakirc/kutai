@@ -67,10 +67,17 @@ async def test_mission_id_alter_is_idempotent_on_existing_db(tmp_path):
     from fatih_hoca.schema import create_registry_schema
     dabidabi.configure(str(tmp_path / "existing.db"))
     db = await dabidabi.get_db()
+    # Minimal pre-change shape. MUST include every column the REGISTRY_DDL
+    # indexes reference (timestamp, provider, task_id) — create_registry_schema
+    # runs those CREATE INDEX statements with no try/except, and
+    # `CREATE INDEX IF NOT EXISTS` does NOT suppress a missing-column error. Only
+    # `mission_id` is intentionally absent (the ALTER must add it).
     await db.execute(
         "CREATE TABLE model_pick_log (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
         "task_name TEXT NOT NULL, picked_model TEXT NOT NULL, "
-        "picked_score REAL NOT NULL, candidates_json TEXT NOT NULL)")
+        "picked_score REAL NOT NULL, candidates_json TEXT NOT NULL, "
+        "provider TEXT, task_id INTEGER)")
     await db.commit()
     await create_registry_schema(db)
     assert "mission_id" in await _col_names(db, "model_pick_log")
@@ -470,15 +477,46 @@ In `get_latest_pick_for_task` (~318-320), delete the paragraph beginning "Owns t
 Run: `timeout 120 python -m pytest packages/fatih_hoca/tests/test_pick_log_mission_decouple.py -p no:aiohttp -v -k get_latest_model_for_mission`
 Expected: all three PASS.
 
-- [ ] **Step 6: Run the existing registry db-api suite (regression)**
+- [ ] **Step 6: Rewrite the existing Tier-0 test (it degrades to a tautology)**
 
+`packages/fatih_hoca/tests/test_registry_db_api.py:88-107` (`test_get_latest_model_for_mission_tier0_and_reinforce_excluded`) seeds a pick row with `task_id=10` and NO `mission_id`, plus a `tasks(id=10, mission_id=7)` row — it proves the OLD `JOIN tasks` Tier-0. After the rewrite that row has `mission_id=NULL`, so new-Tier-0 misses it and the query falls through to Tier-2; the assertion still passes but no longer tests mission resolution. Replace the body so it seeds `mission_id` directly AND adds a newer different-mission row (so Tier-2 would give a different answer — making it a genuine mission-filter guard):
+
+```python
+@pytest.mark.asyncio
+async def test_get_latest_model_for_mission_tier0_and_reinforce_excluded(tmp_path):
+    dabidabi.configure(str(tmp_path / "lmm.db"))
+    await dabidabi.init_db()
+    db = await dabidabi.get_db()
+    # Target mission 7 (non-reinforce).
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, mission_id, picked_model, provider, "
+        "call_category, picked_score, candidates_json, timestamp) "
+        "VALUES ('task A', 7, 'mm', 'cloud', 'main', 0.9, '[]', '2026-06-16 09:00:00')")
+    # Newer reinforce nudge on the SAME mission → must be excluded.
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, mission_id, picked_model, provider, "
+        "call_category, picked_score, candidates_json, timestamp) "
+        "VALUES ('task A', 7, 'reinf', 'cloud', 'reinforce', 0.5, '[]', '2026-06-16 11:00:00')")
+    # Newer non-reinforce row on a DIFFERENT mission → Tier-2 would pick this
+    # if the mission filter were broken; Tier-0 must NOT return it.
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, mission_id, picked_model, provider, "
+        "call_category, picked_score, candidates_json, timestamp) "
+        "VALUES ('task B', 9, 'other', 'local', 'main', 0.9, '[]', '2026-06-16 12:00:00')")
+    await db.commit()
+    model, provider = await fdb.get_latest_model_for_mission(7)
+    assert model == "mm" and provider == "cloud"
+    await dabidabi.close_db()
+```
+
+Then run the suite:
 Run: `timeout 120 python -m pytest packages/fatih_hoca/tests/test_registry_db_api.py -p no:aiohttp -v`
-Expected: PASS. Note: if a pre-existing test asserts the old Tier-1 title-JOIN behavior of `get_latest_model_for_mission`, update it to the new two-tier contract (Tier-1 is intentionally removed).
+Expected: PASS (including the rewritten test). If any OTHER pre-existing test asserts old Tier-1 title-JOIN behavior, bring it to the new two-tier contract the same way.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add packages/fatih_hoca/src/fatih_hoca/db.py packages/fatih_hoca/tests/test_pick_log_mission_decouple.py
+git add packages/fatih_hoca/src/fatih_hoca/db.py packages/fatih_hoca/tests/test_pick_log_mission_decouple.py packages/fatih_hoca/tests/test_registry_db_api.py
 git commit -m "feat(fatih_hoca): read latest mission pick by mission_id, drop tasks JOIN"
 ```
 

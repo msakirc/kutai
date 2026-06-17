@@ -739,6 +739,11 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
                 f"**{(task.get('title') or '')[:60]}**\n"
                 f"Reason: {_humanize_error(error)}"
             ),
+            # Internal admin status ping, not outward-facing agent comms. Bypass
+            # the SP6 critic gate \u2014 a stalled/vetoing critic must never silence
+            # the user's visibility into task failures (mission_id != None alone
+            # is not "outward-facing").
+            critic_gate=False,
         ),
         depends_on=[],
     )

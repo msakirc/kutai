@@ -39,6 +39,14 @@ from nerd_herd.types import SystemSnapshot
 
 logger = logging.getLogger("fatih_hoca.ranking")
 
+# Diagnostic: when a model's pool-pressure pins to the -1.0 floor, log the
+# full per-signal breakdown so the vetoing signal is named on the spot
+# (otherwise the gate only logs the final scalar). Throttled per-model to
+# avoid flooding the back-to-back admission ticks. Pure observability — set
+# the interval high or remove once the recurring phantom -1.0 is closed.
+_FLOOR_DIAG_INTERVAL_SECS = 20.0
+_floor_diag_last: dict[str, float] = {}
+
 # Weight for grading-derived score in the perf_score blend (Phase 2c).
 # blended = GRADING_WEIGHT * grading + (1 - GRADING_WEIGHT) * tps_perf
 GRADING_WEIGHT: float = 0.6
@@ -221,6 +229,20 @@ def _apply_utilization_layer(
         # for d>=7 comes from S9 right-tool-perishability — no ranking-layer
         # gate needed.
         sm.urgency = scalar
+
+        # ── Floor diagnostic (names the vetoing signal) ──────────────────
+        if scalar <= -0.999:
+            _last = _floor_diag_last.get(sm.model.name, 0.0)
+            if now - _last >= _FLOOR_DIAG_INTERVAL_SECS:
+                _floor_diag_last[sm.model.name] = now
+                logger.warning(
+                    "pressure FLOOR: model=%s pool=%s scalar=%.3f buckets=%s "
+                    "signals=%s",
+                    sm.model.name, pool.value, scalar,
+                    {k: round(v, 3) for k, v in breakdown.bucket_totals.items()},
+                    {k: round(v, 3) for k, v in breakdown.signals.items()
+                     if abs(v) > 1e-6},
+                )
 
         # Reliability is now a pressure signal (S10_failure) instead of a
         # post-composite multiplier. The signal flows through

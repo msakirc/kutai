@@ -306,6 +306,30 @@ async def insert_pick_log_row(
     )
 
 
+async def backfill_pick_mission_ids(
+    pairs: list[tuple[int, int]],
+) -> None:
+    """One-shot: set ``mission_id`` on legacy ``model_pick_log`` rows from
+    ``(task_id, mission_id)`` pairs supplied by the caller.
+
+    fatih_hoca owns this registry-table WRITE (keeps the write-ownership guard
+    satisfied). The caller (``dabidabi.init_db``) supplies the task->mission map
+    from its own ``tasks`` read, so fatih never reads core ``tasks``. No-op on
+    empty input. Idempotent: the per-row ``WHERE mission_id IS NULL`` guard skips
+    rows already backfilled, so re-running on every boot is cheap once drained.
+    """
+    if not pairs:
+        return
+    db = await get_db()
+    for task_id, mission_id in pairs:
+        await db.execute(
+            "UPDATE model_pick_log SET mission_id = ? "
+            "WHERE task_id = ? AND mission_id IS NULL",
+            (mission_id, task_id),
+        )
+    await db.commit()
+
+
 async def get_latest_pick_for_task(
     task_id: int, title: str | None = None,
 ) -> tuple[str | None, str | None]:

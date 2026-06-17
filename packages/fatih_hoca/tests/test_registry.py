@@ -1,7 +1,34 @@
 """Tests for fatih_hoca.registry — ModelInfo, ModelRegistry, and helpers."""
 
 import pytest
-from fatih_hoca.registry import ModelInfo, ModelRegistry
+from fatih_hoca.registry import ModelInfo, ModelRegistry, is_non_chat_model_name
+
+
+# ─── is_non_chat_model_name (scan-time non-chat GGUF filter) ──────────────────
+
+@pytest.mark.parametrize("name", [
+    "nomic-embed-text-v1.5.q4_k_m",
+    "multilingual-e5-large-instruct.q8_0",
+    "bge-large-en-v1.5.f16",
+    "gte-qwen2-7b-instruct.q4_k_m",   # GTE embedder mislabeled "instruct"
+    "jina-reranker-v2-base.q5_k_m",
+    "all-minilm-l6-v2.f16",
+])
+def test_is_non_chat_model_name_flags_embedders(name):
+    assert is_non_chat_model_name(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    "qwen3.5-27b.q4_k_m",
+    "qwen3-coder-32b-instruct-q4_k_m",
+    "meta-llama-3.1-8b-instruct-q5_k_m",
+    "serviceNow-ai_apriel-1.6-15b-thinker-q4_k_l".lower(),
+    "gemma-4-26b-a4b-it-ud-iq4_nl",
+    "glm-4.7-flash-ud-q4_k_xl",
+    "gpt-oss-20b-ud-q4_k_xl",
+])
+def test_is_non_chat_model_name_keeps_chat_models(name):
+    assert is_non_chat_model_name(name) is False
 
 # registry_store isolation fixture lives in conftest.py (autouse).
 

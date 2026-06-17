@@ -550,6 +550,32 @@ def detect_function_calling(family_key: str | None, gguf_metadata: dict) -> bool
     return False
 
 
+# Substrings marking a GGUF as a NON-chat model (embedding / reranker /
+# sentence-encoder). These never belong in the selectable agent pool. Local
+# GGUFs are registered with supports_json_schema=True unconditionally, so
+# without this filter such a model would pass the (FC OR json_schema)
+# eligibility gate and could be picked for agent tasks. Conservative,
+# lowercase, hyphen-anchored where a bare token could match a chat model.
+_NON_CHAT_NAME_MARKERS = (
+    "embed",        # nomic-embed-text, *-embedding-*
+    "rerank",       # rerankers / cross-encoders
+    "minilm",       # all-MiniLM sentence encoders
+    "bge-",         # BAAI BGE embeddings
+    "gte-",         # Alibaba GTE embeddings (incl. gte-qwen mislabeled "instruct")
+    "-e5-",         # multilingual-e5 / e5-large embeddings
+    "sentence-t",   # sentence-transformers / sentence-t5
+)
+
+
+def is_non_chat_model_name(name: str) -> bool:
+    """True when the filename clearly belongs to an embedding / reranker /
+    sentence-encoder model rather than an instruct/chat model. ``name`` is the
+    lowercased filename stem. Used to skip such GGUFs at scan time so they
+    never enter the selectable pool."""
+    n = name.lower()
+    return any(marker in n for marker in _NON_CHAT_NAME_MARKERS)
+
+
 # ─── Thinking Model Detection ───────────────────────────────────────────────
 
 _THINKING_FAMILIES = {"qwen3", "qwen35", "qwen3_coder", "qwq", "deepseek_r1", "glm4_flash", "apriel_thinker", "gpt_oss", "gemma4"}
@@ -591,6 +617,14 @@ def scan_model_directory(model_dir: str | Path) -> list[dict]:
 
         # Skip projector files
         if "mmproj" in fname or "projector" in fname:
+            continue
+
+        # Skip non-chat models (embeddings / rerankers / sentence-encoders).
+        # They are not instruct/agent models and must never enter the
+        # selectable pool — local GGUFs get supports_json_schema=True, which
+        # otherwise satisfies the relaxed function-calling eligibility gate.
+        if is_non_chat_model_name(fname):
+            logger.debug(f"Skipping non-chat model: {fpath.name}")
             continue
 
         # Skip tiny files

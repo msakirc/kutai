@@ -213,6 +213,41 @@ def test_record_failure_timeout_trips_breaker(kdv_with_model):
     assert result.allowed is False
 
 
+# -- reliability window (S10) must NOT see capacity rejections --
+# A 429 / daily-exhaustion is a CAPACITY condition (recoverable, already gated
+# by record_429 + mark_daily_exhausted). Counting it as a model-QUALITY failure
+# craters recent_success_rate → S10 = -1.0, and provider_prior_rate spreads it
+# to healthy full-quota siblings → phantom uniform -1.0 pressure (live outage
+# 2026-06-17). Only genuine quality failures may enter the outcome window.
+
+def test_rate_limited_not_recorded_as_reliability_failure(kdv_with_model):
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "rate_limited")
+    assert kdv_with_model.recent_samples_n("groq/llama-8b") == 0
+
+
+def test_rate_limit_legacy_not_recorded_as_reliability_failure(kdv_with_model):
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "rate_limit")
+    assert kdv_with_model.recent_samples_n("groq/llama-8b") == 0
+
+
+def test_daily_exhausted_not_recorded_as_reliability_failure(kdv_with_model):
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "daily_exhausted")
+    assert kdv_with_model.recent_samples_n("groq/llama-8b") == 0
+
+
+def test_server_error_recorded_as_reliability_failure(kdv_with_model):
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "server_error")
+    assert kdv_with_model.recent_samples_n("groq/llama-8b") == 1
+
+
+def test_rate_limit_still_tracks_capacity(kdv_with_model):
+    """Excluding 429 from the reliability window must NOT disable the
+    dedicated capacity machinery (adaptive rpm reduction via record_429)."""
+    kdv_with_model.record_failure("groq/llama-8b", "groq", "rate_limit")
+    state = kdv_with_model._rate_limiter.model_limits["groq/llama-8b"]
+    assert state.rpm_limit < 30
+
+
 def test_restore_limits(kdv_with_model):
     """Watchdog calls restore_limits to undo adaptive 429 reductions."""
     kdv_with_model.record_failure("groq/llama-8b", "groq", "rate_limit")
@@ -304,15 +339,20 @@ def test_recent_success_rate_excludes_auth_failures(kdv_with_model):
     assert kdv_with_model.recent_success_rate("groq/llama-8b") == 1.0
 
 
-def test_recent_success_rate_includes_quota_failures(kdv_with_model):
-    """A frequently-rate-limited model IS less reliable from the
-    dispatcher's POV — track quota/rate_limited as a failure outcome."""
-    for _ in range(3):
+def test_recent_success_rate_excludes_quota_failures(kdv_with_model):
+    """rate_limited / daily_exhausted are CAPACITY, not model quality. They
+    are gated separately (record_429 → rpm cooldown; mark_daily_exhausted →
+    daily veto) and must NOT enter the reliability window. Counting them here
+    craters S10 and provider_prior_rate spreads the penalty to healthy
+    full-quota siblings → phantom uniform -1.0 pressure (live outage
+    2026-06-17). Supersedes the old "includes_quota_failures" contract."""
+    for _ in range(6):
         kdv_with_model.post_call("groq/llama-8b", "groq", headers={}, token_count=10)
     for _ in range(7):
         kdv_with_model.record_failure("groq/llama-8b", "groq", "rate_limited")
-    rate = kdv_with_model.recent_success_rate("groq/llama-8b")
-    assert rate == 0.3, f"got {rate}"
+    for _ in range(3):
+        kdv_with_model.record_failure("groq/llama-8b", "groq", "daily_exhausted")
+    assert kdv_with_model.recent_success_rate("groq/llama-8b") == 1.0
 
 
 def test_recent_success_rate_unknown_model(kdv):

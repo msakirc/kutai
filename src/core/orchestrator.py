@@ -251,6 +251,7 @@ class Orchestrator:
         try:
             from src.core import heartbeat as _hb
             _hb.current_task_id.set(int(task_id) if task_id else None)
+            _hb.current_mission_id.set(task.get("mission_id"))
             _hb.bump(task_id)  # initial heartbeat — task is alive
             runner_task = asyncio.create_task(_run_with_audit())
 

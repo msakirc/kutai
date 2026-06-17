@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
 current_task_id: ContextVar[int | None] = ContextVar("current_task_id", default=None)
+current_mission_id: ContextVar[int | None] = ContextVar("current_mission_id", default=None)
 
 _HEARTBEATS: dict[int, float] = {}
 

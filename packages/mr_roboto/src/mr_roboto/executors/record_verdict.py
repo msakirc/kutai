@@ -197,9 +197,9 @@ async def _reinforce_winning_model(
         from dabidabi import record_reinforce_nudge
 
         # (model, provider) resolution is owned by fatih_hoca (registry domain).
-        # Three tiers, most-precise first: tier-0 task_id JOIN tasks (by
-        # mission) → tier-1 legacy title JOIN → tier-2 global most-recent
-        # non-reinforce pick. See 2026-06-16 DB Phase B deferred handoff §2.
+        # Two tiers: tier-0 most-recent non-reinforce model_pick_log row matching
+        # the denormalized mission_id (no JOIN) → tier-2 global most-recent
+        # non-reinforce pick. See the 2026-06-17 registry-decouple spec.
         from fatih_hoca.db import get_latest_model_for_mission
         model, provider = await get_latest_model_for_mission(mission_id)
         if not model:

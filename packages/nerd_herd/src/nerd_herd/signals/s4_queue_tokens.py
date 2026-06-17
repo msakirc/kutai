@@ -20,7 +20,10 @@ def s4_queue_tokens(matrix: RateLimitMatrix, *, queue: QueueProfile) -> float:
     if projected <= 0:
         return 0.0
     worst = 0.0
-    for _, rl in matrix.token_cells():
+    # Cycle axes only: a per-minute token window paces (refills ~60s), it does
+    # not conserve — a deep queue drains over minutes and never exhausts it.
+    # Per-task fit on the minute window stays with S2 (call burden).
+    for _, rl in matrix.cycle_token_cells():
         remaining = max(0, (rl.remaining or 0) - rl.in_flight)
         if remaining <= 0:
             continue

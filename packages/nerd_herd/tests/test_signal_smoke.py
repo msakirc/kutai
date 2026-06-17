@@ -116,7 +116,9 @@ def test_s3_fires_negative_when_full_task_eats_remaining():
 
 
 def test_s4_fires_negative_when_queue_tokens_dwarf_remaining():
-    m = RateLimitMatrix(tpm=RateLimit(limit=100_000, remaining=10_000))
+    # tpd (daily cycle axis): queue-conservation reads cycle axes, not the
+    # per-minute tpm (which paces, not conserves — see s4 cycle_token_cells).
+    m = RateLimitMatrix(tpd=RateLimit(limit=100_000, remaining=10_000))
     queue = QueueProfile(projected_tokens=50_000)
     p = s4_queue_tokens(m, queue=queue)
     assert p < 0

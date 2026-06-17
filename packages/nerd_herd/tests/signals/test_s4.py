@@ -34,3 +34,29 @@ def test_s4_clipped_at_oversubscription():
     qp = QueueProfile(projected_tokens=750_000)  # 150% — over budget
     p = s4_queue_tokens(m, queue=qp)
     assert p == pytest.approx(-1.0, abs=0.05)
+
+
+# ── Per-minute axes are PACING, not conservation (2026-06-18) ─────────────────
+# A per-minute window refills every ~60s — a deep queue drains over many
+# minutes and never "exhausts" it, so queue-CONSERVATION (S4) must not fire on
+# it. Per-task fit (does THIS call fit a minute's tokens) stays with S2/S3;
+# per-minute pacing stays with lane caps + in-flight reservation.
+
+def test_s4_ignores_per_minute_window():
+    # tpm dwarfed 10x by the whole-queue projection — but tpm is per-minute,
+    # so S4 must stay 0 (no conservation pressure from a refilling window).
+    m = _matrix(tpm=RateLimit(limit=30_000, remaining=30_000))
+    qp = QueueProfile(projected_tokens=300_000)
+    assert s4_queue_tokens(m, queue=qp) == 0.0
+
+
+def test_s4_reads_daily_ignores_minute_when_both_present():
+    # Healthy daily budget + tight per-minute window: S4 reads the daily
+    # (cycle) axis only -> 30% -> 0. The per-minute tightness is S2/S3's job,
+    # not a reason to conserve/erase this model.
+    m = _matrix(
+        tpm=RateLimit(limit=30_000, remaining=30_000),
+        tpd=RateLimit(limit=1_000_000, remaining=1_000_000),
+    )
+    qp = QueueProfile(projected_tokens=300_000)
+    assert s4_queue_tokens(m, queue=qp) == 0.0

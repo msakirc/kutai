@@ -1373,55 +1373,85 @@ def assert_rp5(scenario: "Scenario") -> list[str]:
     return failures
 
 
-def assert_pp10_demand_floor_is_not_supply() -> list[str]:
-    """A free model with FULL quota (supply healthy) but a DEEP pending queue
-    must floor on the DEMAND buckets (burden+queue), NOT the supply bucket
-    (`other`). This is the exact invariant the admission gate relies on to
-    veto only on genuine supply exhaustion while letting demand merely rank —
-    without it, a deep queue under minimal (cloud-only) drives every model's
-    scalar to the -1.0 clamp and the gate misreads demand as "can't serve" →
-    select=None deadlock (live stall 2026-06-17). Asserts the floor is real
-    (scalar≈-1) yet supply is healthy (other≈0) and demand owns it (queue<<0).
+def assert_pp10_per_minute_window_does_not_conserve_floor() -> list[str]:
+    """A free model whose ONLY tight axis is PER-MINUTE (rpm/tpm), with a FULL
+    daily quota, must NOT be floored by a deep queue. A per-minute window paces
+    (refills ~60s) — a deep queue drains over minutes and never exhausts it, so
+    queue-CONSERVATION (S4/S5) must not fire on it. Pre-fix this erased the
+    model (composite ×0): the live waste (premium grabbed easy tasks) + the
+    minimal-mode stall (every free floored on its per-minute window). Per-task
+    fit on the minute window stays with S2/S3; per-minute pacing stays with
+    lane caps + in-flight. Asserts the model stays SERVICEABLE (scalar > -0.5)
+    and the queue bucket is ~0.
     """
     from nerd_herd.types import QueueProfile, RateLimit, RateLimitMatrix
 
     now = _time.time()
-    # Small per-minute window (so queue demand saturates S4/S5) but FULL daily
-    # quota + full minute remaining → supply is healthy, nothing depleted. The
-    # small rpm limit (10) mirrors real free-tier models (gemini rpm 5-15) so
-    # M1 (smallest-populated-limit amplifier) AMPLIFIES the demand signal — the
-    # live floor's actual shape (M1≈1.5 at limit=10), not a dampened big tank.
+    # Small per-minute window (rpm 10 / tpm 30k) mirroring real free tiers, but
+    # FULL daily quota. Small rpm makes M1 amplify (×1.5) — the live floor's
+    # shape — so this proves the EXCLUSION, not a dampened magnitude.
     matrix = RateLimitMatrix(
         rpm=RateLimit(limit=10, remaining=10, reset_at=int(now + 60)),
         tpm=RateLimit(limit=30_000, remaining=30_000, reset_at=int(now + 3600)),
         rpd=RateLimit(limit=1_000, remaining=1_000, reset_at=int(now + 86400)),
     )
     snap = _pressure_snapshot(cloud_models={"free_prov": {"free/model": matrix}})
-    # ~300k projected tokens >> 30k window → S4/S5 (queue) saturate negative.
+    # Deep queue that WOULD saturate the per-minute window (300k >> 30k tpm,
+    # 100 >> 10 rpm) — but those are pacing axes, so it must not conserve-floor.
     snap.queue_profile = QueueProfile(
-        total_ready_count=20, projected_tokens=300_000, projected_calls=30,
+        total_ready_count=20, projected_tokens=300_000, projected_calls=100,
     )
     model = _cloud_model_stub(
         name="free/model", provider="free_prov", is_free=True, rpd_remaining=1_000,
     )
+    # Small per-task estimate so S2/S3 (per-task fit) don't muddy the queue test.
     bd = snap.pressure_for(
-        model, task_difficulty=5, est_per_task_tokens=15_000, est_iterations=8,
+        model, task_difficulty=3, est_per_task_tokens=2_000, est_iterations=4,
     )
-    other = bd.bucket_totals.get("other", 0.0)
     queue = bd.bucket_totals.get("queue", 0.0)
     failures = []
-    if not (bd.scalar <= -0.99):
+    if not (bd.scalar > -0.5):
         failures.append(
-            f"pp10: expected demand floor (scalar<=-0.99), got {bd.scalar:.3f}"
+            f"pp10: per-minute-only-tight model must stay serviceable, got "
+            f"scalar={bd.scalar:.3f} — a refilling window must not conserve-floor"
         )
-    if not (other > -0.5):
+    if not (queue > -0.3):
         failures.append(
-            f"pp10: SUPPLY bucket must stay healthy (~0), got other={other:.3f} "
-            "— a demand floor must NOT masquerade as supply exhaustion"
+            f"pp10: queue bucket must be ~0 (per-minute excluded), got "
+            f"queue={queue:.3f}"
         )
-    if not (queue <= -0.5):
+    return failures
+
+
+def assert_pp11_daily_overshoot_still_conserves() -> list[str]:
+    """The genuine conservation case S4/S5 exist for MUST survive: when the
+    queue projects to exhaust the DAILY budget (e.g. gemini ~20/day, queue
+    projects 40 calls), S5 fires on the daily (cycle) axis → conserve. Guards
+    that the per-minute exclusion (pp10) did not also blind the overshoot
+    protection.
+    """
+    from nerd_herd.types import QueueProfile, RateLimit, RateLimitMatrix
+
+    now = _time.time()
+    # Small DAILY request budget (20/day) — the perishable, exhaustible axis.
+    matrix = RateLimitMatrix(
+        rpm=RateLimit(limit=10, remaining=10, reset_at=int(now + 60)),
+        rpd=RateLimit(limit=20, remaining=20, reset_at=int(now + 86400)),
+    )
+    snap = _pressure_snapshot(cloud_models={"free_prov": {"free/model": matrix}})
+    snap.queue_profile = QueueProfile(
+        total_ready_count=40, projected_tokens=0, projected_calls=40,  # 2x daily
+    )
+    model = _cloud_model_stub(
+        name="free/model", provider="free_prov", is_free=True, rpd_remaining=20,
+    )
+    bd = snap.pressure_for(model, task_difficulty=5, est_per_task_tokens=1_000)
+    queue = bd.bucket_totals.get("queue", 0.0)
+    failures = []
+    if not (queue <= -0.3):
         failures.append(
-            f"pp10: DEMAND (queue) bucket must own the floor, got queue={queue:.3f}"
+            f"pp11: daily-overshoot must still conserve (queue bucket < 0), got "
+            f"queue={queue:.3f} — per-minute exclusion blinded the daily axis"
         )
     return failures
 
@@ -1438,7 +1468,8 @@ POOL_PRESSURE_SCENARIOS = [
     ("pp7_difficulty_lookahead", pp7_difficulty_lookahead),
     ("pp8_equilibrium_mission", pp8_equilibrium_mission),
     ("pp9_giant_vs_small_idle_spread", pp9_giant_vs_small_idle_spread),
-    ("pp10_demand_floor_is_not_supply", pp1_fat_vs_tiny),  # pressure-only; placeholder factory
+    ("pp10_per_minute_does_not_conserve_floor", pp1_fat_vs_tiny),  # pressure-only
+    ("pp11_daily_overshoot_still_conserves", pp1_fat_vs_tiny),     # pressure-only
     ("s7_continuity", pp1_fat_vs_tiny),
     ("s6_conserve", pp1_fat_vs_tiny),
     ("rp5_overdraw_early_warning", rp5_overdraw_early_warning),
@@ -1466,7 +1497,8 @@ POOL_PRESSURE_ASSERTIONS: dict[str, Callable] = {
     "pp7_difficulty_lookahead": lambda sc: assert_pp7_m3_weights(),
     "pp8_equilibrium_mission": lambda sc: assert_pp8(sc),
     "pp9_giant_vs_small_idle_spread": lambda sc: assert_pp9(sc),
-    "pp10_demand_floor_is_not_supply": lambda sc: assert_pp10_demand_floor_is_not_supply(),
+    "pp10_per_minute_does_not_conserve_floor": lambda sc: assert_pp10_per_minute_window_does_not_conserve_floor(),
+    "pp11_daily_overshoot_still_conserves": lambda sc: assert_pp11_daily_overshoot_still_conserves(),
     "s7_continuity": lambda sc: assert_s7_continuity(),
     "s6_conserve": lambda sc: assert_s6_conserve(),
     "rp5_overdraw_early_warning": lambda sc: assert_rp5(sc),

@@ -75,6 +75,13 @@ class RateLimit:
     in_flight: int = 0                 # calls dispatched but not yet confirmed
 
 
+# Per-minute axes: refill continuously (~60s) — a PACING constraint, not a
+# conservation one. Queue-conservation signals (S4/S5) exclude these via
+# cycle_*_cells(); per-task fit (S2/S3) and per-minute pacing (lane caps +
+# in-flight) still use the full token_cells()/request_cells(). Note rpm≠rpmonth.
+_PER_MINUTE_AXES = frozenset({"rpm", "tpm", "itpm", "otpm"})
+
+
 @dataclass
 class RateLimitMatrix:
     # Request-axis cells
@@ -114,6 +121,23 @@ class RateLimitMatrix:
     def request_cells(self):
         for name, rl in self.populated_cells():
             if name.startswith("rp"):
+                yield name, rl
+
+    def cycle_token_cells(self):
+        """Token cells on a reset CYCLE (daily/hourly/…) — excludes per-minute.
+        A per-minute window refills every ~60s: it paces, it does not conserve
+        (a deep queue drains over minutes, never exhausting it). Queue-
+        conservation (S4) reads these; per-task fit (S2/S3) reads token_cells.
+        """
+        for name, rl in self.token_cells():
+            if name not in _PER_MINUTE_AXES:
+                yield name, rl
+
+    def cycle_request_cells(self):
+        """Request cells on a reset CYCLE — excludes per-minute (rpm). See
+        cycle_token_cells. Queue-conservation (S5) reads these."""
+        for name, rl in self.request_cells():
+            if name not in _PER_MINUTE_AXES:
                 yield name, rl
 
     def cost_cells(self):

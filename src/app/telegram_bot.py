@@ -9154,6 +9154,72 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             await query.message.reply_text("❌ Unknown similar-review action.")
             return
 
+        # ── Z1 Tier 2 (A4): interview-gate DONE/SKIP inline buttons ──
+        # Format: ivack:<done|skip>:<task_id>. Resolves against the live DB
+        # (get_task → mission), so the gate survives bot restarts — the
+        # Telegram message persists in the founder's chat and the callback
+        # completes the waiting_human gate task on press.
+        if data.startswith("ivack:"):
+            try:
+                _, _verb, _tid_s = data.split(":", 2)
+                _tid = int(_tid_s)
+            except (ValueError, IndexError):
+                await query.message.reply_text("❌ Bozuk interview butonu.")
+                return
+            gate_task = await get_task(_tid)
+            if not gate_task:
+                await query.message.reply_text(
+                    "❌ Interview gate task not found (expired?)."
+                )
+                return
+            mid = gate_task.get("mission_id")
+            if _verb == "skip":
+                # Persist interview_skip_reason via the executor's record_skip
+                # sub-mode, then release the gate (mission proceeds at risk).
+                try:
+                    if mid is not None:
+                        import general_beckman as _beckman
+                        import json as _json_iv
+                        await _beckman.enqueue({
+                            "title": f"interview_skip:m{mid}",
+                            "agent_type": "mechanical",
+                            "mission_id": mid,
+                            "context": _json_iv.dumps({
+                                "executor": "mechanical",
+                                "payload": {
+                                    "action": "request_interview_data",
+                                    "mode": "record_skip",
+                                    "mission_id": mid,
+                                    "skip_reason": "founder_skipped",
+                                },
+                            }),
+                        })
+                    await update_task(
+                        _tid, status="completed",
+                        result="founder: SKIP (interviews skipped at own risk)",
+                    )
+                except Exception as e:
+                    await query.message.reply_text(f"❌ Skip failed: {e}")
+                    return
+                await query.message.reply_text(
+                    f"⏭️ Interviews skipped for mission #{mid}. "
+                    "Mission proceeds (reviewer grades by ambition tier)."
+                )
+                return
+            # DONE — founder dropped transcripts; release the gate.
+            try:
+                await update_task(
+                    _tid, status="completed",
+                    result="founder: DONE (interview transcripts provided)",
+                )
+            except Exception as e:
+                await query.message.reply_text(f"❌ Done failed: {e}")
+                return
+            await query.message.reply_text(
+                f"✅ Interview gate cleared for mission #{mid}. Continuing."
+            )
+            return
+
         # ── Z4 T4B/T4C: visual-review founder-loop inline buttons ───
         # Format: visrev:<mid>:<token> — token resolves against the
         # per-mission cbmap sidecar (mission_<mid>/.visual/.cbmap.json):

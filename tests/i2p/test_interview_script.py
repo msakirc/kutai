@@ -344,6 +344,110 @@ def test_request_interview_data_clarify_shape(tmp_path):
     assert expected_dir.is_dir()
 
 
+class _FakeBot:
+    def __init__(self):
+        self.send_message_calls = []
+
+    async def send_message(self, **kwargs):
+        self.send_message_calls.append(kwargs)
+        return object()
+
+
+class _FakeApp:
+    def __init__(self, bot):
+        self.bot = bot
+
+
+class _FakeTelegram:
+    """Captures send_notification + bot.send_message for assertions."""
+
+    def __init__(self):
+        self.bot = _FakeBot()
+        self.app = _FakeApp(self.bot)
+        self.notifications = []
+
+    async def send_notification(self, text, retries=2, reply_markup=None):
+        self.notifications.append({"text": text, "reply_markup": reply_markup})
+        return object()
+
+
+def _patch_telegram(fake):
+    return patch("src.app.telegram_bot.get_telegram", return_value=fake)
+
+
+def _flatten_buttons(markup):
+    """Return list of (text, callback_data) from an InlineKeyboardMarkup."""
+    out = []
+    for row in markup.inline_keyboard:
+        for btn in row:
+            out.append((btn.text, btn.callback_data))
+    return out
+
+
+def test_request_interview_data_sends_done_skip_buttons(tmp_path):
+    """Prompt must carry inline DONE/SKIP buttons whose callback_data
+    references the task id so the founder acks via button (survives
+    restart — Telegram message persists, callback resolves vs live DB)."""
+    script_dir = tmp_path / "mission_42" / ".intake"
+    script_dir.mkdir(parents=True)
+    (script_dir / "interview_script.md").write_text(_GOOD_SCRIPT, encoding="utf-8")
+
+    fake = _FakeTelegram()
+    task = {
+        "id": 99,
+        "mission_id": 42,
+        "payload": {
+            "action": "request_interview_data",
+            "script_path": "mission_42/.intake/interview_script.md",
+            "workspace_path": str(tmp_path),
+        },
+    }
+    with _patch_telegram(fake):
+        result = asyncio.run(mr_roboto_run(task))
+
+    assert result.status == "needs_clarification", result
+    assert result.result["keyboard_sent"] is True
+    # Exactly one outgoing message carried the keyboard.
+    sends_with_markup = [
+        n for n in fake.notifications if n["reply_markup"] is not None
+    ] + [
+        c for c in fake.bot.send_message_calls if c.get("reply_markup") is not None
+    ]
+    assert len(sends_with_markup) == 1, sends_with_markup
+    markup = sends_with_markup[0]["reply_markup"]
+    cbs = {cb for _, cb in _flatten_buttons(markup)}
+    assert "ivack:done:99" in cbs
+    assert "ivack:skip:99" in cbs
+
+
+def test_request_interview_data_inlines_script_questions(tmp_path):
+    """Founder must receive the actual questions, not just a server path."""
+    script_dir = tmp_path / "mission_42" / ".intake"
+    script_dir.mkdir(parents=True)
+    (script_dir / "interview_script.md").write_text(_GOOD_SCRIPT, encoding="utf-8")
+
+    fake = _FakeTelegram()
+    task = {
+        "id": 99,
+        "mission_id": 42,
+        "payload": {
+            "action": "request_interview_data",
+            "script_path": "mission_42/.intake/interview_script.md",
+            "workspace_path": str(tmp_path),
+        },
+    }
+    with _patch_telegram(fake):
+        asyncio.run(mr_roboto_run(task))
+
+    sent_text = "".join(
+        n["text"] for n in fake.notifications
+    ) + "".join(
+        c.get("text", "") for c in fake.bot.send_message_calls
+    )
+    # A real question line from the script body is present in the message.
+    assert "Walk me through the last time" in sent_text
+
+
 def test_request_interview_data_record_skip_mode():
     """record_skip mode does not require Telegram; it persists the skip
     reason and returns completed."""

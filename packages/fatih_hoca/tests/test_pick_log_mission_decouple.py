@@ -140,3 +140,35 @@ async def test_get_latest_model_for_mission_excludes_reinforce(tmp_path):
     model, _ = await fdb.get_latest_model_for_mission(7)
     assert model == "mReal"
     await dabidabi.close_db()
+
+
+@pytest.mark.asyncio
+async def test_backfill_populates_mission_id_idempotently(tmp_path):
+    dabidabi.configure(str(tmp_path / "bf.db"))
+    await dabidabi.init_db()
+    db = await dabidabi.get_db()
+    # Legacy pick row: task_id set, mission_id NULL. Matching tasks row maps it.
+    await db.execute("INSERT INTO tasks (id, mission_id, title) VALUES (42, 7, 't')")
+    await db.execute(
+        "INSERT INTO model_pick_log (task_name, picked_model, picked_score, "
+        "candidates_json, task_id) VALUES ('t','m1',0.9,'[]',42)")
+    await db.commit()
+    await dabidabi.close_db()
+
+    # Re-run init_db on the SAME file → backfill runs.
+    dabidabi.configure(str(tmp_path / "bf.db"))
+    await dabidabi.init_db()
+    db = await dabidabi.get_db()
+    cur = await db.execute("SELECT mission_id FROM model_pick_log WHERE task_id = 42")
+    assert (await cur.fetchone())[0] == 7
+    await cur.close()
+    await dabidabi.close_db()
+
+    # Third run → still 7, no error (idempotent).
+    dabidabi.configure(str(tmp_path / "bf.db"))
+    await dabidabi.init_db()
+    db = await dabidabi.get_db()
+    cur = await db.execute("SELECT mission_id FROM model_pick_log WHERE task_id = 42")
+    assert (await cur.fetchone())[0] == 7
+    await cur.close()
+    await dabidabi.close_db()

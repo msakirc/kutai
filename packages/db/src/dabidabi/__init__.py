@@ -4049,6 +4049,21 @@ async def init_db():
     # Per-domain registered schemas (owner packages register their own DDL).
     await _run_registered_schemas(db)
 
+    # One-shot idempotent backfill: denormalize mission_id onto legacy
+    # model_pick_log rows so fatih_hoca's get_latest_model_for_mission can
+    # resolve by mission_id without a JOIN into core `tasks` (registry-decouple
+    # slice 1, 2026-06-17 spec). After first run this matches 0 rows. Must run
+    # AFTER _run_registered_schemas (which adds the mission_id column).
+    try:
+        await db.execute(
+            "UPDATE model_pick_log SET mission_id = ("
+            "SELECT t.mission_id FROM tasks t WHERE t.id = model_pick_log.task_id"
+            ") WHERE mission_id IS NULL AND task_id IS NOT NULL"
+        )
+        await db.commit()
+    except Exception as e:
+        logger.debug(f"model_pick_log mission_id backfill skipped: {e}")
+
     # Yalayut tables (catalog, demand signals, sources, index, etc.)
     try:
         from yalayut.schema import ensure_yalayut_schema

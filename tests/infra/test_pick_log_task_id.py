@@ -4,11 +4,9 @@ Verifies:
   (a) migration  — schema-init on a fresh temp DB yields model_pick_log WITH
                    task_id; running init twice does not raise (idempotent).
   (b) write      — write_pick_log_row(..., task_id=42) persists task_id=42.
-  (c) join correctness — _reinforce_winning_model resolves via task_id even
-                   when task_name != tasks.title, and does NOT fall through
-                   to the cross-mission global-fallback row.
-  (d) legacy fallback — a row with task_id=NULL but matching task_name=title
-                   still resolves via the title-join path.
+  (c) mission resolution — _reinforce_winning_model resolves the winning model
+                   via the denormalized model_pick_log.mission_id, and does NOT
+                   fall through to a cross-mission global-fallback row.
 """
 from __future__ import annotations
 
@@ -151,55 +149,44 @@ def test_write_pick_log_row_task_id_defaults_to_null():
 
 
 # ---------------------------------------------------------------------------
-# (c) Join correctness — task_id path wins over the cross-mission fallback
+# (c) mission_id resolution — mission_id path wins over the cross-mission fallback
 # ---------------------------------------------------------------------------
 
-def test_reinforce_resolves_by_task_id_not_cross_mission():
-    """_reinforce_winning_model uses task_id join, not cross-mission fallback.
+def test_reinforce_resolves_by_mission_id_not_cross_mission():
+    """_reinforce_winning_model resolves via the denormalized mission_id, not a
+    cross-mission global fallback.
 
     Setup:
-      mission M, task T (title="step A")
-      pick row P1: task_id=T, task_name="unrelated" (mismatch on title)
-      pick row P2: task_id=NULL, different mission (what the old global-
-                   fallback would pick — newer timestamp, different mission)
+      mission M (id=mid)
+      pick row P1: mission_id=mid (this mission's pick) — older timestamp
+      pick row P2: mission_id=<other>, newer timestamp — what a broken mission
+                   filter / Tier-2 fallback would wrongly pick
 
-    Expected: function resolves model from P1 (task_id join), NOT P2.
+    Expected: resolves model from P1 (mission_id match), NOT P2.
     """
     async def _test():
         db_mod, db_path = await _fresh_db()
         try:
             from src.infra.db import get_db, add_mission
 
-            # Create mission M
             mid = await add_mission(title="Test Mission", description="d")
-
             db = await get_db()
 
-            # Insert task T for mission M
-            cur = await db.execute(
-                "INSERT INTO tasks (title, description, agent_type, mission_id, status) "
-                "VALUES (?, ?, ?, ?, 'completed')",
-                ("step A", "desc", "coder", mid),
-            )
-            task_id = cur.lastrowid
-
-            # P1: correct pick — task_id=T but task_name doesn't match title
+            # P1: this mission's pick (older), mission_id=mid.
             await db.execute(
                 "INSERT INTO model_pick_log "
                 "(task_name, picked_model, picked_score, call_category, "
-                " candidates_json, provider, task_id, timestamp) "
+                " candidates_json, provider, mission_id, timestamp) "
                 "VALUES (?, ?, 80.0, 'main_work', '[]', 'local', ?, '2026-05-01 10:00:00')",
-                ("unrelated", "correct-model", task_id),
+                ("step A", "correct-model", mid),
             )
-
-            # P2: decoy pick — newer timestamp, no task_id, different mission_id
-            # This is what the old global-fallback would pick (most-recent non-reinforce).
+            # P2: decoy — newer, DIFFERENT mission. Bait for a broken filter / Tier-2.
             await db.execute(
                 "INSERT INTO model_pick_log "
                 "(task_name, picked_model, picked_score, call_category, "
-                " candidates_json, provider, task_id, timestamp) "
-                "VALUES (?, ?, 90.0, 'main_work', '[]', 'cloud', NULL, '2026-05-02 12:00:00')",
-                ("other mission task", "wrong-model"),
+                " candidates_json, provider, mission_id, timestamp) "
+                "VALUES (?, ?, 90.0, 'main_work', '[]', 'cloud', ?, '2026-05-02 12:00:00')",
+                ("other mission task", "wrong-model", mid + 100000),
             )
             await db.commit()
 
@@ -220,7 +207,7 @@ def test_reinforce_resolves_by_task_id_not_cross_mission():
                 )
 
             assert result == "correct-model", (
-                f"expected 'correct-model' from task_id join, got {result!r}"
+                f"expected 'correct-model' from mission_id match, got {result!r}"
             )
             assert nudge_calls == ["correct-model"]
         finally:
@@ -228,65 +215,3 @@ def test_reinforce_resolves_by_task_id_not_cross_mission():
 
     run_async(_test())
 
-
-# ---------------------------------------------------------------------------
-# (d) Legacy fallback — NULL task_id, matching title still resolves
-# ---------------------------------------------------------------------------
-
-def test_reinforce_falls_back_to_title_join_for_legacy_rows():
-    """A NULL task_id row with task_name matching tasks.title uses title path.
-
-    Setup:
-      mission M, task T (title="build widget")
-      pick row: task_id=NULL, task_name="build widget" (matches title)
-
-    Expected: function resolves the model via the title-join path.
-    """
-    async def _test():
-        db_mod, db_path = await _fresh_db()
-        try:
-            from src.infra.db import get_db, add_mission
-
-            mid = await add_mission(title="Legacy Mission", description="d")
-            db = await get_db()
-
-            await db.execute(
-                "INSERT INTO tasks (title, description, agent_type, mission_id, status) "
-                "VALUES (?, ?, ?, ?, 'completed')",
-                ("build widget", "desc", "coder", mid),
-            )
-
-            # Legacy row: task_id=NULL, task_name matches title
-            await db.execute(
-                "INSERT INTO model_pick_log "
-                "(task_name, picked_model, picked_score, call_category, "
-                " candidates_json, provider, task_id) "
-                "VALUES (?, ?, 75.0, 'main_work', '[]', 'local', NULL)",
-                ("build widget", "legacy-model"),
-            )
-            await db.commit()
-
-            from mr_roboto.executors.record_verdict import _reinforce_winning_model
-
-            nudge_calls = []
-
-            async def fake_nudge(model, task_name="", provider="local",
-                                 hypothesis_id=None):
-                nudge_calls.append(model)
-
-            with patch(
-                "src.infra.db.record_reinforce_nudge",
-                side_effect=fake_nudge,
-            ):
-                result = await _reinforce_winning_model(
-                    mission_id=mid, hypothesis_id=None, feature="legacy"
-                )
-
-            assert result == "legacy-model", (
-                f"expected 'legacy-model' from title-join fallback, got {result!r}"
-            )
-            assert nudge_calls == ["legacy-model"]
-        finally:
-            await _close_db(db_mod)
-
-    run_async(_test())

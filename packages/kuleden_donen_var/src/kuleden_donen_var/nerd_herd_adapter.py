@@ -99,12 +99,25 @@ def _rl(state, axis: str):
         return RateLimit()
     limit = getattr(state, f"{axis}_limit", None)
     remaining = getattr(state, f"{axis}_remaining", None)
+    reset_at = int(getattr(state, f"{axis}_reset_at", 0) or 0) or None
     if remaining is None and limit is not None:
+        remaining = limit
+    # Reset-window rollover: a `remaining<=0` whose `reset_at` has already
+    # ELAPSED means the quota bucket refilled — the stale 0 is not depletion.
+    # Mirrors has_capacity()'s recovery gate (rate_limiter.py:313 `now <
+    # reset_at`): a past reset = recovered. Without this, a single old 429
+    # leaves remaining=0 forever on header-less daily axes (gemini/cerebras
+    # send no remaining header → nothing refreshes it), S1 reads frac 0 →
+    # depletion_max -1.0, and _worst_of smears a poisoned provider-aggregate
+    # onto every sibling → fleet-wide phantom -1.0 (live outage 2026-06-17).
+    # Genuine depletion keeps reset_at in the FUTURE → veto preserved.
+    if (remaining is not None and limit is not None and remaining <= 0
+            and reset_at is not None and reset_at <= _time.time()):
         remaining = limit
     return RateLimit(
         limit=limit,
         remaining=remaining,
-        reset_at=int(getattr(state, f"{axis}_reset_at", 0) or 0) or None,
+        reset_at=reset_at,
     )
 
 

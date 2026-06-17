@@ -585,13 +585,21 @@ class KuledenDonenVar:
                 self._fire(provider, model_id, "circuit_breaker_tripped")
         # auth errors: not tracked (permanent, not transient)
 
-        # Reliability tracking: every non-auth failure feeds the rolling
-        # window. auth failures are excluded — they're a credentials
-        # problem, not a model-quality signal. quota/rate_limited included
-        # because a frequently-rate-limited model IS less reliable from
-        # the dispatcher's POV, even if the underlying call would have
-        # worked given fresh quota.
-        if error_type != "auth_failure":
+        # Reliability tracking (S10): only genuine model-QUALITY failures feed
+        # the rolling outcome window. Excluded:
+        #   - auth_failure: a credentials problem, not model quality.
+        #   - rate_limit / rate_limited / daily_exhausted: CAPACITY, not
+        #     quality. These are recoverable (quota resets) and already gated
+        #     by their own machinery above (record_429 → rpm cooldown;
+        #     mark_daily_exhausted → daily flag + eligibility veto). Counting
+        #     them here too craters recent_success_rate → S10 = -1.0, and
+        #     provider_prior_rate spreads that to healthy full-quota siblings,
+        #     pinning every cloud model at phantom -1.0 pressure so the selector
+        #     returns None for everything (live outage 2026-06-17). A model that
+        #     is genuinely always out of quota is kept out by the daily_exhausted
+        #     veto + rpm cooldown — it must not also read as "broken".
+        _CAPACITY_OR_AUTH = ("auth_failure", "rate_limit", "rate_limited", "daily_exhausted")
+        if error_type not in _CAPACITY_OR_AUTH:
             self._record_outcome(model_id, False)
 
         # Canary slot release + state transition. Whatever the failure

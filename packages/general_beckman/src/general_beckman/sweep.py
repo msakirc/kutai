@@ -32,7 +32,10 @@ async def _notify(message: str) -> None:
         title="Notify: stuck-task sweep",
         description="",
         agent_type="mechanical",
-        context=_mechanical_context("notify_user", message=message),
+        # Queue-hygiene status ping (stuck/cascade/escalation) — internal admin
+        # alert, not outward-facing comms. Bypass the SP6 critic gate so a
+        # stalled/vetoing critic can never silence sweep notifications.
+        context=_mechanical_context("notify_user", message=message, critic_gate=False),
         depends_on=[],
     )
 

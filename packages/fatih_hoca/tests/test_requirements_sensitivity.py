@@ -70,3 +70,55 @@ def test_personal_data_phrase_still_forces_local_only():
     }
     reqs = _run(requirements_for(task, {}, agent_name="analyst"))
     assert reqs.local_only is True
+
+
+def test_workflow_step_security_subject_matter_does_not_force_local_only():
+    """Live regression 2026-06-18: i2p step [4.6] auth_system_design *discusses*
+    password hashing as SUBJECT MATTER. The user's actual idea is a benign todo
+    app. A workflow step's template-generated title/description must NOT be
+    keyword-scanned — that mass-false-marks public engineering work local_only
+    (5 i2p steps live: auth_system_design, html_prototypes lucide:home icon,
+    compliance_checks 'personal info', ...).
+    """
+    task = {
+        "id": 459204,
+        "title": "[4.6] auth_system_design",
+        "description": (
+            "Design authentication: login, logout, password reset, "
+            "password hashing (bcrypt/scrypt), refresh token mechanism."
+        ),
+        "priority": 5,
+    }
+    ctx = {
+        "is_workflow_step": True,
+        "workflow_context": {
+            "raw_idea": "an improved todo app, evolved into a habit builder",
+            "product_name": "an improved todo app",
+        },
+    }
+    reqs = _run(requirements_for(task, ctx, agent_name="architect"))
+    assert reqs.local_only is False
+
+
+def test_workflow_step_inherits_local_only_from_sensitive_user_idea():
+    """The other half of the user directive: 'skip for workflow steps, BUT mark
+    them if they really contain sensitive info.' Sensitivity is a property of the
+    user's *actual* idea (propagated as workflow_context), not the generated step
+    text — so a benign step description under a sensitive mission still goes
+    local_only.
+    """
+    task = {
+        "id": 9,
+        "title": "[4.6] auth_system_design",
+        "description": "Design the login screen layout and navigation flow.",
+        "priority": 5,
+    }
+    ctx = {
+        "is_workflow_step": True,
+        "workflow_context": {
+            "raw_idea": "an app to store my password vault and personal records",
+            "product_name": "password vault",
+        },
+    }
+    reqs = _run(requirements_for(task, ctx, agent_name="architect"))
+    assert reqs.local_only is True

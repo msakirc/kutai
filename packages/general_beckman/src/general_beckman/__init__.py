@@ -1394,7 +1394,7 @@ async def _send_standalone_completion(task: dict, status: str, result: dict) -> 
     context. Without this path, the user sees 'Task #N queued' and then
     radio silence even after the task finishes.
     """
-    if task.get("agent_type") in ("mechanical", "reviewer", "summarizer"):
+    if task.get("agent_type") in ("mechanical", "reviewer", "summarizer", "critic"):
         return
     import json as _json
     ctx_raw = task.get("context") or "{}"
@@ -1438,7 +1438,7 @@ async def _send_step_progress(task: dict, status: str, result: dict) -> None:
     on steps that are queued for re-grade or retry.
     """
     if task.get("agent_type") in (
-        "mechanical", "reviewer", "summarizer",
+        "mechanical", "reviewer", "summarizer", "critic",
     ):
         return
     # Always compare the raw agent-reported status against the live DB

@@ -684,7 +684,15 @@ async def _maybe_emit_lesson_from_posthook_fail(
 
 async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) -> None:
     from dabidabi import add_task, update_task
-    from src.infra.dead_letter import quarantine_task
+    from src.infra.dead_letter import quarantine_task, is_unresolved_dlq
+    # Dedupe the user-facing alert: a fail-looping task is re-DLQ'd on each
+    # retry/re-pend cycle. quarantine_task collapses to one row, but the notify
+    # (+demand signal) must fire only on the FIRST quarantine — check BEFORE the
+    # (idempotent) quarantine call creates/refreshes the row.
+    try:
+        _already_dlq = await is_unresolved_dlq(task["id"])
+    except Exception:
+        _already_dlq = False
     await update_task(
         task["id"], status="failed",
         error=error[:500],
@@ -726,6 +734,13 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
         # (failed for blocker kinds, completed for drained warning kinds)
         # inside the CHILD's DLQ write; fire the source's continuation now.
         await _fire_source_continuation(_ctx_for_cascade.get("source_task_id"))
+    # Notify + demand signal fire ONCE per quarantine. A fail-looping task is
+    # re-DLQ'd on each retry/re-pend cycle; quarantine_task collapses to one row,
+    # but re-emitting the alert floods Telegram (and, when mission-scoped, spawns
+    # a redundant critic gate per duplicate). Skip both on a re-DLQ — the user was
+    # already alerted and the demand recorded on the first quarantine.
+    if _already_dlq:
+        return
     # Telegram DLQ notification → mechanical mr_roboto task (no inline send).
     await add_task(
         title=f"Notify: DLQ task #{task['id']}",
@@ -739,6 +754,11 @@ async def _dlq_write(task: dict, *, error: str, category: str, attempts: int) ->
                 f"**{(task.get('title') or '')[:60]}**\n"
                 f"Reason: {_humanize_error(error)}"
             ),
+            # Internal admin status ping, not outward-facing agent comms. Bypass
+            # the SP6 critic gate \u2014 a stalled/vetoing critic must never silence
+            # the user's visibility into task failures (mission_id != None alone
+            # is not "outward-facing").
+            critic_gate=False,
         ),
         depends_on=[],
     )

@@ -112,8 +112,14 @@ def test_diag_out_fc_capable_rejected_names_daily_exhausted_cloud():
 
 
 def test_diag_out_pressure_stage_records_threshold_and_scalars(monkeypatch):
-    """Candidates pass eligibility but all fall below the pressure threshold
-    → empty pool at the pressure stage. diag records threshold + scalars."""
+    """Candidates pass eligibility but are SUPPLY-exhausted → empty pool at the
+    pressure stage. diag records threshold + scalars.
+
+    Contract (2026-06-18): the pressure gate vetoes (→ None + diag) only on
+    genuine SUPPLY exhaustion (supply_pressure at the floor). A demand-only
+    floor admits via the fallback and does NOT empty the pool — so this test
+    sets supply_pressure=-1.0 to exercise the true veto path.
+    """
     m = _make_model("loaded-fc", function_calling=True, is_loaded=True)
     sel = _selector([m])
 
@@ -121,7 +127,8 @@ def test_diag_out_pressure_stage_records_threshold_and_scalars(monkeypatch):
         s = MagicMock()
         s.model = candidates[0]
         s.score = 5.0
-        s.urgency = -1.0  # below any threshold → filtered out
+        s.urgency = -1.0          # below any threshold
+        s.supply_pressure = -1.0  # genuine supply exhaustion → veto (not demand)
         return [s]
 
     monkeypatch.setattr("fatih_hoca.selector.rank_candidates", fake_rank)

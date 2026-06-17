@@ -64,6 +64,19 @@ class ScoredModel:
     reasons: list[str] = field(default_factory=list)
     pool: str = ""       # "local" | "time_bucketed" | "per_call"
     urgency: float = 0.0  # [0, 1]
+    # Supply-side pressure only (the `other` bucket: S1 depletion / S9 perish+
+    # local-busy / S7 burn / S10 reliability / S11 cost). Distinct from the
+    # full `urgency` scalar, which also folds in DEMAND (burden+queue). The
+    # admission gate vetoes on THIS (genuine "can't serve"); demand is a soft
+    # rank-only signal and must never empty the fleet. 0.0 = no supply pressure.
+    supply_pressure: float = 0.0
+    # Composite score BEFORE the utilization multiplier (capability/cost/speed
+    # — the proven, waste=0 base ranking). The demand-floor fallback ranks by
+    # THIS, not the demand-zeroed `score`: a model demand-floored to urgency=-1
+    # has composite ×0, so ranking the fallback by `score` would hand work to
+    # whatever dodged the demand penalty (premium models) → waste on easy tasks.
+    # Ranking by base preserves tier-matching regardless of the demand floor.
+    base_score: float = 0.0
 
     @property
     def litellm_name(self) -> str:
@@ -230,6 +243,13 @@ def _apply_utilization_layer(
         # for d>=7 comes from S9 right-tool-perishability — no ranking-layer
         # gate needed.
         sm.urgency = scalar
+        # Supply-side component (the `other` bucket) for the admission gate's
+        # veto-vs-rank decision. burden+queue (demand) deliberately excluded:
+        # demand down-ranks via the full `urgency` multiplier but must not veto.
+        sm.supply_pressure = breakdown.bucket_totals.get("other", 0.0)
+        # Snapshot the pre-multiplier base composite (for the demand-floor
+        # fallback's tier-faithful ranking — see ScoredModel.base_score).
+        sm.base_score = sm.score
 
         # ── Floor diagnostic (names the vetoing signal) ──────────────────
         if scalar <= -0.999:

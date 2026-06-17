@@ -382,26 +382,71 @@ class Selector:
         if scored_after:
             scored = scored_after
         else:
-            # Every candidate fell below threshold — return None so caller
-            # can either back off or escalate urgency. Important: do NOT
-            # silently relax the threshold — that's how we got back into
-            # the "selector keeps picking dead models" loop.
-            logger.info(
-                "selector: all candidates below pressure threshold "
-                "task=%s urgency=%.2f threshold=%+.2f scalars=[%s]",
-                task, urgency, threshold,
-                ", ".join(f"{s.model.name}={getattr(s, 'urgency', 0.0):+.2f}"
-                          for s in scored[:5]),
-            )
-            _emit_diag(
-                "pressure",
-                pressure_threshold=round(threshold, 3),
-                pressure_scalars={
-                    s.model.name: round(getattr(s, "urgency", 0.0), 3)
-                    for s in scored[:10]
-                },
-            )
-            return None
+            # No candidate clears the urgency-derived pacing bar. WHY decides
+            # veto vs admit. The utilization scalar is a SOFT composite
+            # multiplier by design (composite *= 1 + K*scalar, K=1 → ×0..×2);
+            # -1.0 means "rank LAST", never "exclude" (Phase-2d /
+            # 2026-06-04-continuity §6). The admission veto must fire ONLY on
+            # genuine SUPPLY exhaustion — the `other` bucket at the floor (S1
+            # real depletion, S9 local-busy sentinel) — which is also the gate's
+            # documented contract. A healthy, full-quota model dragged to the
+            # floor purely by DEMAND (burden+queue) + M1 small-pool amplification
+            # is still serviceable; demand already down-ranked it via the
+            # composite multiplier, so it sorts low but must remain SELECTABLE —
+            # else a deep queue deadlocks the whole fleet (nothing admits → queue
+            # never drains → pressure never eases). Live 2026-06-17 under
+            # minimal (cloud-only, no local escape): healthy cloud models
+            # demand-floored → select=None → stall.
+            serviceable = [
+                s for s in scored
+                if getattr(s, "supply_pressure", 0.0) > -1.0
+            ]
+            if serviceable:
+                # Rank by the PRE-demand base composite, NOT the demand-zeroed
+                # `score`/`urgency`. Demand floored these to ×0; ranking by the
+                # post-demand score would pick whatever escaped the demand
+                # penalty (premium models with huge token windows) → waste on
+                # easy tasks. base_score is the proven (waste=0) tier-matching
+                # ranking — easy→cheap, hard→capable — independent of the floor.
+                serviceable.sort(
+                    key=lambda s: -getattr(s, "base_score", s.score)
+                )
+                logger.warning(
+                    "selector: pacing bar empty, %d/%d serviceable "
+                    "(demand-floored, NOT supply-exhausted) task=%s urgency=%.2f "
+                    "— admitting best-by-base; demand ranks, never vetoes [top=%s]",
+                    len(serviceable), len(scored), task, urgency,
+                    ", ".join(
+                        f"{s.model.name}(base={getattr(s,'base_score',0.0):.1f},"
+                        f"u={getattr(s,'urgency',0.0):+.2f},"
+                        f"sup={getattr(s,'supply_pressure',0.0):+.2f})"
+                        for s in serviceable[:3]
+                    ),
+                )
+                scored = serviceable  # re-sorted by base composite; best first
+            else:
+                # Genuine supply exhaustion — every candidate's SUPPLY side is
+                # at the floor. Veto (return None) so the caller backs off /
+                # escalates. Do NOT relax — this is the "don't re-pick dead
+                # models" guard, now scoped to true supply exhaustion.
+                logger.info(
+                    "selector: all candidates supply-exhausted "
+                    "task=%s urgency=%.2f threshold=%+.2f scalars=[%s]",
+                    task, urgency, threshold,
+                    ", ".join(
+                        f"{s.model.name}=u{getattr(s, 'urgency', 0.0):+.2f}"
+                        f"/sup{getattr(s, 'supply_pressure', 0.0):+.2f}"
+                        for s in scored[:5]),
+                )
+                _emit_diag(
+                    "pressure",
+                    pressure_threshold=round(threshold, 3),
+                    pressure_scalars={
+                        s.model.name: round(getattr(s, "urgency", 0.0), 3)
+                        for s in scored[:10]
+                    },
+                )
+                return None
 
         best = scored[0]
 

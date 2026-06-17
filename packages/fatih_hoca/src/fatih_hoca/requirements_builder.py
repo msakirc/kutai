@@ -45,7 +45,21 @@ def resolve_local_only(task: dict, task_ctx: dict | None) -> bool:
     Any source True -> local_only:
       * classifier signal (``task_ctx.classification.local_only``)
       * explicit context flag (``task_ctx.local_only``)
-      * whole-word PII heuristic over title + description
+      * PII heuristic, scoped by task origin (see below)
+
+    PII-heuristic scoping (live 2026-06-18):
+      Workflow steps (``task_ctx.is_workflow_step``) have machine-generated
+      titles/descriptions that *discuss* security/auth/UI as SUBJECT MATTER —
+      ``[4.6] auth_system_design`` says "password hashing", a prototype step
+      embeds the ``lucide:home`` icon, ``[12.3] compliance_checks`` mentions
+      "personal info". Keyword-scanning that template text mass-false-marked
+      public engineering work ``local_only`` (5 i2p steps live), starving them
+      onto a busy local GPU and feeding the local-thrash crashloop.
+      Sensitivity is a property of the USER'S actual input, not of the
+      generated step text — so for workflow steps we scan the propagated
+      mission idea (``workflow_context``: raw_idea/product_name) instead. A
+      genuinely sensitive idea still marks every step; benign idea marks none.
+      Non-workflow (user free-text) tasks keep the title+description scan.
     """
     ctx = task_ctx if isinstance(task_ctx, dict) else {}
     classification = ctx.get("classification") or {}
@@ -53,6 +67,15 @@ def resolve_local_only(task: dict, task_ctx: dict | None) -> bool:
         return True
     if ctx.get("local_only"):
         return True
+    if ctx.get("is_workflow_step"):
+        wc = ctx.get("workflow_context")
+        if isinstance(wc, dict):
+            user_idea = " ".join(
+                str(v) for v in wc.values() if isinstance(v, str)
+            ).lower()
+            if _SENSITIVITY_RE.search(user_idea):
+                return True
+        return False
     title = (task.get("title") or "").lower()
     description = (task.get("description") or "").lower()
     if _SENSITIVITY_RE.search(f"{title} {description}"):

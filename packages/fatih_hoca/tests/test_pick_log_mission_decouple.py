@@ -148,7 +148,7 @@ async def test_backfill_populates_mission_id_idempotently(tmp_path):
     await dabidabi.init_db()
     db = await dabidabi.get_db()
     # Legacy pick row: task_id set, mission_id NULL. Matching tasks row maps it.
-    await db.execute("INSERT INTO tasks (id, mission_id, title) VALUES (42, 7, 't')")
+    await db.execute("INSERT INTO tasks (id, mission_id, title) VALUES (42, 7, 't')")  # title NOT NULL
     await db.execute(
         "INSERT INTO model_pick_log (task_name, picked_model, picked_score, "
         "candidates_json, task_id) VALUES ('t','m1',0.9,'[]',42)")

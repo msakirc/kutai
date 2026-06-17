@@ -4062,7 +4062,7 @@ async def init_db():
         )
         await db.commit()
     except Exception as e:
-        logger.debug(f"model_pick_log mission_id backfill skipped: {e}")
+        logger.warning(f"model_pick_log mission_id backfill skipped: {e}")
 
     # Yalayut tables (catalog, demand signals, sources, index, etc.)
     try:

@@ -270,6 +270,7 @@ async def insert_pick_log_row(
     provider: str,
     outcome: str,
     task_id: int | None,
+    mission_id: int | None = None,
 ) -> None:
     """Owns the raw ``INSERT INTO model_pick_log`` SQL.
 
@@ -284,8 +285,8 @@ async def insert_pick_log_row(
         "INSERT INTO model_pick_log "
         "(task_name, agent_type, difficulty, picked_model, picked_score, "
         " call_category, candidates_json, snapshot_summary, success, "
-        " error_category, provider, outcome, task_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " error_category, provider, outcome, task_id, mission_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             task_name,
             agent_type,
@@ -300,6 +301,7 @@ async def insert_pick_log_row(
             provider,
             outcome,
             task_id,
+            mission_id,
         ),
     )
 

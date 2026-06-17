@@ -44,3 +44,42 @@ async def test_mission_id_alter_is_idempotent_on_existing_db(tmp_path):
     await create_registry_schema(db)  # idempotent — must not raise
     assert "mission_id" in await _col_names(db, "model_pick_log")
     await dabidabi.close_db()
+
+
+@pytest.mark.asyncio
+async def test_insert_pick_log_row_persists_mission_id(tmp_path):
+    dabidabi.configure(str(tmp_path / "w.db"))
+    await dabidabi.init_db()
+    await fdb.insert_pick_log_row(
+        task_name="t", agent_type="coder", difficulty=1,
+        picked_model="m1", picked_score=0.9, category="MAIN_WORK",
+        candidates_json="[]", snapshot_summary="", success=True,
+        error_category="", provider="local", outcome="success",
+        task_id=42, mission_id=7,
+    )
+    db = await dabidabi.get_db()
+    cur = await db.execute(
+        "SELECT mission_id FROM model_pick_log WHERE task_id = 42")
+    row = await cur.fetchone()
+    await cur.close()
+    assert row[0] == 7
+    await dabidabi.close_db()
+
+
+@pytest.mark.asyncio
+async def test_insert_pick_log_row_mission_id_defaults_null(tmp_path):
+    dabidabi.configure(str(tmp_path / "wn.db"))
+    await dabidabi.init_db()
+    await fdb.insert_pick_log_row(
+        task_name="t", agent_type=None, difficulty=None,
+        picked_model="m1", picked_score=0.9, category="OVERHEAD",
+        candidates_json="[]", snapshot_summary="", success=True,
+        error_category="", provider="local", outcome="success",
+        task_id=None,
+    )
+    db = await dabidabi.get_db()
+    cur = await db.execute("SELECT mission_id FROM model_pick_log LIMIT 1")
+    row = await cur.fetchone()
+    await cur.close()
+    assert row[0] is None
+    await dabidabi.close_db()

@@ -64,6 +64,13 @@ async def record_pick(
         except Exception:
             pass
 
+        _active_mission_id: int | None = None
+        try:
+            from src.core.heartbeat import current_mission_id as _cmid
+            _active_mission_id = _cmid.get()
+        except Exception:
+            pass
+
         await _pick_log_mod.write_pick_log_row(
             db_path=db_path,
             task_name=task_name,
@@ -77,6 +84,7 @@ async def record_pick(
             agent_type=agent_type,
             difficulty=difficulty,
             task_id=_active_task_id,
+            mission_id=_active_mission_id,
         )
     except Exception as e:  # noqa: BLE001 — telemetry must never break dispatch
         logger.debug("pick_log record failed: %s", e)

@@ -42,6 +42,7 @@ async def write_pick_log_row(
     agent_type: str = "",
     difficulty: int | None = None,
     task_id: int | None = None,
+    mission_id: int | None = None,
 ) -> None:
     """Fire-and-forget write of a pick outcome.
 
@@ -78,6 +79,7 @@ async def write_pick_log_row(
             provider=provider,
             outcome=outcome,
             task_id=task_id,
+            mission_id=mission_id,
         )
     except Exception as e:  # noqa: BLE001 — telemetry must never propagate
         logger.warning("pick_log write failed: %s", e)

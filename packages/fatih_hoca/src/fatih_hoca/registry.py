@@ -868,6 +868,16 @@ def detect_cloud_model(litellm_name: str, provider: str) -> dict:
     info.setdefault("rate_limit_rpm", provider_defaults.get("rpm", 30))
     info.setdefault("rate_limit_tpm", provider_defaults.get("tpm", 100000))
     info.setdefault("tier", provider_defaults.get("tier", "paid"))
+    # The ':free' suffix is the authoritative per-model free signal and WINS
+    # over the provider default. Aggregators (openrouter) host both free and
+    # paid ids under one provider, so a provider-level tier can't express it —
+    # without this, openrouter ':free' models inherit tier='paid' →
+    # is_free=False → per_call pool → S9-free-perishability + S12 pool-balance
+    # (both gated on is_free) go silent → the "use-it-before-reset" arm of the
+    # utilization equilibrium is amputated, leaving only conserve (S4 queue) →
+    # -1.0 floor on the whole free-but-mislabelled pool (live stall 2026-06-17).
+    if litellm_name.endswith(":free"):
+        info["tier"] = "free"
     info.setdefault("context_length", 128000)
     info.setdefault("max_tokens", 4096)
     info.setdefault("supports_function_calling", True)

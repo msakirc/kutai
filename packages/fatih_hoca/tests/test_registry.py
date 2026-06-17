@@ -395,6 +395,31 @@ def test_register_cloud_uses_detect_defaults_when_scraped_missing():
     assert m.family == "claude-sonnet-4"
 
 
+def test_detect_cloud_model_free_suffix_sets_free_tier():
+    """A litellm_name ending in ':free' is authoritatively free, regardless of
+    the provider-level default. openrouter hosts both free and paid models, so
+    the per-model ':free' suffix — not the provider default — must decide tier.
+
+    Live 2026-06-17: openrouter is absent from _FREE_TIER_DEFAULTS, so every
+    openrouter model (incl ':free') got tier='paid' -> is_free=False -> per_call
+    pool -> S9-free-perishability + S12 pool-balance (both gated on is_free)
+    returned 0 -> the 'use-it-before-reset' arm of the utilization equilibrium
+    was amputated, leaving only the conserve side (S4 queue) -> -1.0 floor on
+    all 26 openrouter models -> select=None stall under minimal (cloud-only).
+    """
+    from fatih_hoca.registry import detect_cloud_model
+    info = detect_cloud_model("openrouter/google/gemma-4-31b-it:free", "openrouter")
+    assert info["tier"] == "free", "':free' suffix must be tiered free"
+
+
+def test_detect_cloud_model_paid_openrouter_stays_paid():
+    """Guard: a non-':free' openrouter model must stay paid — the suffix rule
+    must not flip genuinely-paid models to free."""
+    from fatih_hoca.registry import detect_cloud_model
+    info = detect_cloud_model("openrouter/openai/gpt-4o", "openrouter")
+    assert info["tier"] == "paid"
+
+
 def test_registry_mark_dead_excludes_by_either_key():
     """mark_dead is the runtime kill-switch for a model that 404'd. Set
     membership keys on BOTH name and litellm_name so eligibility filter

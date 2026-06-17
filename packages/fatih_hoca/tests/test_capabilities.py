@@ -163,6 +163,19 @@ def test_score_hard_reject_no_function_calling():
     assert score == -1.0
 
 
+def test_score_admits_json_schema_model_without_function_calling():
+    """needs_function_calling is satisfied by strict json_schema constrained
+    decoding too (a structured-output superset): a model with FC=False but
+    json_schema=True is agent-drivable via response_format, so it must NOT be
+    hard-rejected. Mirrors the selector eligibility relaxation (Apriel case)."""
+    caps = _strong_coder_caps()
+    ops = {**_basic_ops(), "supports_function_calling": False,
+           "supports_json_schema": True}
+    req = TaskRequirements(task_name="executor", needs_function_calling=True)
+    score = score_model_for_task(caps, ops, req)
+    assert score >= 0
+
+
 def test_score_hard_reject_context_too_small():
     caps = _strong_coder_caps()
     ops = {**_basic_ops(), "context_length": 2048}

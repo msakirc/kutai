@@ -1,32 +1,32 @@
-"""One-shot: prune context-budget-bloat poison from the B-table.
+"""One-shot: clear context-bloat poison from the B-table rollup.
 
 Background (mission 86 / step 1.4a, 2026-06-18): ``compute_layer_budgets``
 scaled the context-layer pool to ``model_ctx * 0.40`` with no ceiling, so a
 gemini-class 1M-token window produced a 400k pool. The deps + board layers
 filled it with the legacy completed-results dump and the ~102k-token mission
-blackboard → ~190k prompt tokens. The B-table rollup
+blackboard → ~190k prompt tokens. The rollup
 (``model_call_tokens`` → ``step_token_stats``, 14-day p90) learned that, the
-estimator forced a 226k ``ctx_needed``, every model was filtered (window +
+estimator forced a ~226k ``ctx_needed``, every model was filtered (window +
 free-tier TPM), and the task DLQ'd — self-reinforcing.
 
-``context_policy.CONTEXT_ABS_CAP`` (64k) fixes the *cause*. This script clears
-the already-learned poison so the estimate recovers immediately instead of
-waiting ~14 days for the bad rows to age out of the rollup window.
+The cause is fixed by ``context_policy.CONTEXT_ABS_CAP`` (32k pool) and the
+rollup now drops samples above ``SANE_MAX_PROMPT_TOKENS`` (64k) so bloat can
+never re-enter the estimate. This script clears the *already-learned* poison
+row(s) in ``step_token_stats`` so the estimate recovers immediately instead of
+waiting for the next hourly rollup.
 
-RUN ONLY AFTER the cap fix is live (restart), so cleaned rows can't be
-re-poisoned by a fresh oversized run.
+It does NOT delete ``model_call_tokens`` rows — those are the cost/usage ledger
+(``cost_by_iteration`` etc.) and the rollup's new sanity filter already excludes
+the bloated samples from the estimate. Only the derived ``step_token_stats`` row
+is removed; the next rollup regenerates it cleanly from the surviving (≤64k)
+samples, or the step falls back to the agent default until fresh samples land.
+
+Safe to run on the live DB (single short transaction, busy_timeout), but the
+cap fix must be live first (restart) so cleared rows can't be re-poisoned.
 
 Usage:
     python scripts/prune_btable_context_poison.py <db_path>            # dry-run
     python scripts/prune_btable_context_poison.py <db_path> --apply    # execute
-
-Deletes:
-  * ``model_call_tokens`` rows with ``prompt_tokens > CAP`` (the bloated
-    source samples — provably impossible post-cap).
-  * ``step_token_stats`` rows with ``in_p90 > CAP`` (the poisoned rollups).
-The next scheduled rollup regenerates ``step_token_stats`` for the affected
-steps from the surviving (sub-cap) samples; steps with no surviving sample
-fall back to the ``AGENT_REQUIREMENTS`` default until fresh samples land.
 """
 from __future__ import annotations
 
@@ -35,44 +35,48 @@ import sqlite3
 import sys
 
 
+def _sane_max() -> int:
+    try:
+        return int(os.environ["KUTAI_BTABLE_SANE_MAX_PROMPT"])
+    except (KeyError, ValueError, TypeError):
+        return 65536
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
     db_path = sys.argv[1]
     apply = "--apply" in sys.argv[2:]
-    cap = int(os.getenv("KUTAI_CONTEXT_ABS_CAP", "65536"))
+    ceil = _sane_max()
 
     con = sqlite3.connect(db_path)
+    con.execute("PRAGMA busy_timeout=5000")
     try:
-        n_raw = con.execute(
-            "SELECT COUNT(*) FROM model_call_tokens WHERE prompt_tokens > ?", (cap,)
-        ).fetchone()[0]
-        n_roll = con.execute(
-            "SELECT COUNT(*) FROM step_token_stats WHERE in_p90 > ?", (cap,)
-        ).fetchone()[0]
-
-        print(f"cap = {cap}")
-        print(f"poisoned model_call_tokens rows (prompt_tokens > cap): {n_raw}")
-        print(f"poisoned step_token_stats rows   (in_p90 > cap):       {n_roll}")
-        # Show the affected steps for the operator's confidence.
         rows = con.execute(
             "SELECT workflow_step_id, agent_type, in_p90, samples_n "
-            "FROM step_token_stats WHERE in_p90 > ? ORDER BY in_p90 DESC", (cap,)
+            "FROM step_token_stats WHERE in_p90 > ? ORDER BY in_p90 DESC", (ceil,)
         ).fetchall()
+        print(f"sane_max prompt_tokens = {ceil}")
+        print(f"poisoned step_token_stats rows (in_p90 > sane_max): {len(rows)}")
         for step, agent, in_p90, n in rows:
-            print(f"  rollup: {step} ({agent}) in_p90={in_p90} samples={n}")
+            print(f"  {step} ({agent}) in_p90={in_p90} samples={n}")
+        print("(model_call_tokens cost ledger is left intact by design.)")
 
         if not apply:
-            print("\nDRY-RUN — re-run with --apply to delete.")
+            print("\nDRY-RUN — re-run with --apply to delete the rollup row(s).")
             return 0
 
-        con.execute("DELETE FROM model_call_tokens WHERE prompt_tokens > ?", (cap,))
-        con.execute("DELETE FROM step_token_stats WHERE in_p90 > ?", (cap,))
+        con.execute("BEGIN")
+        cur = con.execute("DELETE FROM step_token_stats WHERE in_p90 > ?", (ceil,))
         con.commit()
-        print(f"\nDELETED {n_raw} source rows + {n_roll} rollup rows. "
-              "Next rollup regenerates clean estimates.")
+        print(f"\nDELETED {cur.rowcount} rollup row(s). Next rollup regenerates "
+              "clean estimates from surviving samples.")
         return 0
+    except sqlite3.OperationalError as exc:
+        con.rollback()
+        print(f"ERROR (DB busy? retry when idle): {exc}", file=sys.stderr)
+        return 1
     finally:
         con.close()
 

@@ -15,6 +15,25 @@ from general_beckman.btable_cache import set_btable
 WINDOW_DAYS = 14
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError, TypeError):
+        return default
+
+
+# Sanity ceiling on per-call prompt_tokens admitted into the estimate. A sample
+# above this is a context-bloat artifact (mission 86 / step 1.4a hit ~190k from
+# the unbounded layer-budget pool before CONTEXT_ABS_CAP landed), not a real
+# steady-state cost — letting it into the p90 forces a huge ctx_needed that
+# filters the whole fleet → DLQ. Post-cap a legit prompt is ~pool(≤32k)+overhead
+# (~42k worst case), so this ceiling (64k) excludes only bloat and never clips a
+# real sample. Defense-in-depth: survives any future budgeting regression
+# without re-poisoning the estimate, and unlike deleting rows it preserves the
+# model_call_tokens cost ledger. Env-overridable.
+SANE_MAX_PROMPT_TOKENS = _int_env("KUTAI_BTABLE_SANE_MAX_PROMPT", 65536)
+
+
 def _percentile(sorted_vals: list[float], pct: float) -> float:
     if not sorted_vals:
         return 0.0
@@ -48,6 +67,7 @@ async def run_rollup(db_path: str | None = None) -> int:
                 WHERE timestamp > datetime('now', '-{WINDOW_DAYS} days')
                   AND completion_tokens > 0
                   AND prompt_tokens > 0
+                  AND prompt_tokens <= {SANE_MAX_PROMPT_TOKENS}
                   AND agent_type IS NOT NULL
                   AND workflow_step_id IS NOT NULL
                   AND workflow_phase IS NOT NULL"""

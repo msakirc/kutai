@@ -39,18 +39,32 @@ LAYER_WEIGHTS: dict[str, int] = {
 
 CONTEXT_FRACTION = 0.40
 
+
+def _int_env(name: str, default: int) -> int:
+    """Parse an int env var, falling back to ``default`` on absent/garbage.
+
+    This constant is read at import time; a malformed value must not crash the
+    context builder (and everything importing it)."""
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError, TypeError):
+        return default
+
+
 # Absolute ceiling on the per-build context-layer budget pool, independent of
 # the target model's window. Without it, ``available = model_ctx * FRACTION``
 # scales unbounded: a gemini-class 1M-token window yields a 400k pool, so the
 # deps + board layers fill with the legacy completed-results dump and the
 # (102k-token) mission blackboard — observed ~190k prompt tokens on mission 86
 # / step 1.4a (2026-06-18). The B-table then learns that p90, the estimator
-# forces a 226k ctx_needed, every model is filtered (ctx + free-tier TPM), and
+# forces a ~226k ctx_needed, every model is filtered (ctx + free-tier TPM), and
 # the task DLQs — self-reinforcing because each oversized run re-teaches the
-# estimate. The cap (64k default) sits above the legit per-step max (~26k) and
-# below both the 100k free-tier TPM cap and common 131k model windows. Small
-# local models (8k * 0.40 = 3.3k) are unaffected. Env-overridable.
-CONTEXT_ABS_CAP = int(os.getenv("KUTAI_CONTEXT_ABS_CAP", "65536"))
+# estimate. The cap restores fleet eligibility: 32k sits above the observed
+# legit per-step max (~26k) yet keeps the total prompt (~pool + ~10k overhead)
+# under the 60k-class free-tier TPM caps and the 64k/128k model windows that
+# were being filtered out. Small local models (8k * 0.40 = 3.3k) are
+# unaffected (available already below the cap). Env-overridable.
+CONTEXT_ABS_CAP = _int_env("KUTAI_CONTEXT_ABS_CAP", 32768)
 
 
 def get_context_policy(agent_type: str) -> set[str]:

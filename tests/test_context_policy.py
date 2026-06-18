@@ -106,10 +106,11 @@ class TestComputeLayerBudgets:
         model filtered → DLQ, self-reinforcing. An absolute cap must bound the
         pool regardless of model window."""
         budgets = compute_layer_budgets(1_000_000, {"deps", "rag", "board"})
-        assert sum(budgets.values()) <= 65536
+        assert sum(budgets.values()) <= 32768
 
-    def test_cap_does_not_starve_mid_window_model(self):
-        """A 131k-window model yields available = 52k < cap → unaffected."""
-        budgets = compute_layer_budgets(131072, {"deps", "rag", "board"})
-        assert sum(budgets.values()) <= int(131072 * 0.40) + 1
-        assert sum(budgets.values()) >= 50000  # not over-trimmed
+    def test_below_cap_window_unaffected(self):
+        """A 64k-window model yields available = 25.6k < cap → distributed
+        unchanged (the cap only bites windows above ~82k)."""
+        budgets = compute_layer_budgets(65536, {"deps", "rag", "board"})
+        assert sum(budgets.values()) <= int(65536 * 0.40) + 1
+        assert sum(budgets.values()) >= 25000  # not over-trimmed

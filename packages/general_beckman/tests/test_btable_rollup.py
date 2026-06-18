@@ -74,3 +74,57 @@ async def test_rollup_refreshes_btable_cache(monkeypatch):
         assert btable[key]["out_p90"] > 0
         await db_mod.close_db()
         db_mod._db_connection = None
+
+
+@pytest.mark.asyncio
+async def test_rollup_excludes_context_bloat_samples(monkeypatch):
+    """Context-bloat artifacts (prompt_tokens > SANE_MAX_PROMPT_TOKENS) must NOT
+    enter the estimate — mission 86 / step 1.4a learned in_p90=173k from the
+    unbounded layer pool and DLQ'd the whole fleet. The sanity filter drops
+    those samples so the p90 reflects only real, sub-cap calls."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        import src.infra.db as db_mod
+        monkeypatch.setattr(db_mod, "DB_PATH", str(db_path))
+        db_mod._db_connection = None
+        await db_mod.init_db()
+        from general_beckman.btable_rollup import (
+            run_rollup, SANE_MAX_PROMPT_TOKENS,
+        )
+        async with aiosqlite.connect(str(db_path)) as conn:
+            # 6 legitimate small calls (~10k prompt)
+            for i in range(6):
+                await conn.execute(
+                    """INSERT INTO model_call_tokens (
+                        agent_type, workflow_step_id, workflow_phase, call_category,
+                        model, provider, is_streaming, prompt_tokens, completion_tokens,
+                        total_tokens, duration_ms, iteration_n, success
+                    ) VALUES ('analyst','1.4a','phase_1','main_work','gpt','openai',0,
+                              ?, 1500, ?, 1000, 0, 1)""",
+                    (10000 + i*200, 11500 + i*200),
+                )
+            # 3 bloat artifacts well above the sanity ceiling
+            for j in range(3):
+                await conn.execute(
+                    """INSERT INTO model_call_tokens (
+                        agent_type, workflow_step_id, workflow_phase, call_category,
+                        model, provider, is_streaming, prompt_tokens, completion_tokens,
+                        total_tokens, duration_ms, iteration_n, success
+                    ) VALUES ('analyst','1.4a','phase_1','main_work','gpt','openai',0,
+                              ?, 1500, ?, 1000, 0, 1)""",
+                    (SANE_MAX_PROMPT_TOKENS + 100000 + j, SANE_MAX_PROMPT_TOKENS + 101500),
+                )
+            await conn.commit()
+        await run_rollup(str(db_path))
+        async with aiosqlite.connect(str(db_path)) as conn:
+            async with conn.execute(
+                "SELECT samples_n, in_p90 FROM step_token_stats "
+                "WHERE agent_type='analyst' AND workflow_step_id='1.4a'"
+            ) as cur:
+                row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == 6, "bloat samples must be excluded from the count"
+        assert row[1] <= SANE_MAX_PROMPT_TOKENS, "p90 must reflect only sane calls"
+        assert row[1] < 12000, "p90 should be ~the legit ~10k, not the 173k bloat"
+        await db_mod.close_db()
+        db_mod._db_connection = None

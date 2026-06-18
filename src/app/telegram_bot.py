@@ -7363,14 +7363,10 @@ class TelegramInterface:
         # ═══════════════════════════════════════════════════════
         pending_task_id = self._pending_clarifications.get(chat_id)
         if pending_task_id:
-            lower = text.lower().strip()
-            # Allow user to escape the clarification loop
-            escape_phrases = [
-                "skip", "cancel", "dismiss", "ignore", "forget it",
-                "never mind", "nevermind", "no this is", "new task",
-                "stop", "different",
-            ]
-            if lower.startswith("/") or any(p in lower for p in escape_phrases):
+            # Allow user to escape the clarification loop. Whole-word escape
+            # tokens on a short message only — a substantive answer that
+            # contains "skip"/"stop"/… must NOT dismiss the task.
+            if self._message_is_escape(text):
                 # User wants out — cancel the clarification task
                 old_id = self._pending_clarifications.pop(chat_id, None)
                 if old_id:
@@ -8019,6 +8015,38 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             return result
         return {"type": "task"}
 
+    # Single-word escape/abort tokens. These count as an escape ONLY when
+    # they dominate a short message — never as a substring of a longer answer
+    # ("skip the onboarding, keep signup" is an answer, not an escape).
+    _ESCAPE_WORDS = frozenset({
+        "skip", "cancel", "dismiss", "ignore", "stop", "different",
+    })
+    # Multi-word escape phrases are unambiguous → matched as substrings.
+    _ESCAPE_PHRASES = (
+        "forget it", "never mind", "nevermind", "no this is",
+        "new task", "new mission",
+    )
+
+    def _message_is_escape(self, text: str) -> bool:
+        """True when the message is an escape/abort command, not an answer.
+
+        Single-word tokens (skip/stop/cancel/…) count only when they dominate
+        a short message (≤3 words); multi-word phrases match as substrings.
+        A leading slash is always a command. This prevents a substantive
+        clarification answer that merely *contains* an escape word from being
+        dismissed.
+        """
+        import re as _re
+        lower = (text or "").lower().strip()
+        if lower.startswith("/"):
+            return True
+        if any(ph in lower for ph in self._ESCAPE_PHRASES):
+            return True
+        words = _re.findall(r"[a-z']+", lower)
+        if len(words) <= 3 and any(w in self._ESCAPE_WORDS for w in words):
+            return True
+        return False
+
     async def _is_likely_clarification_response(
         self, text: str, waiting_task: dict
     ) -> bool:
@@ -8029,19 +8057,19 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         """
         lower = text.lower().strip()
 
-        # Clearly NOT a clarification response
+        # Escape/abort command → not an answer.
+        if self._message_is_escape(text):
+            return False
+
+        # New-task / command intents → not a clarification response. (Escape
+        # words live in _message_is_escape so substantive answers that merely
+        # contain one — "skip the onboarding screen" — aren't swallowed here.)
         not_response_phrases = [
             "new task", "new mission", "let's", "lets ", "i want to",
             "can you", "please ", "do some", "shopping", "research",
-            "create", "build", "help me with", "start a", "no this is",
-            "forget it", "skip", "cancel", "never mind", "nevermind",
-            "ignore", "dismiss", "stop", "different",
+            "create", "build", "help me with", "start a",
         ]
         if any(phrase in lower for phrase in not_response_phrases):
-            return False
-
-        # Starts with a slash → command, not a clarification answer
-        if lower.startswith("/"):
             return False
 
         # Very short single-word/phrase answers that directly address

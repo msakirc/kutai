@@ -105,6 +105,7 @@ def parse_response(response, model_name: str, is_local: bool, is_thinking: bool)
         "thinking": thinking,
         "usage": usage,
         "cost": cost,
+        "finish_reason": getattr(response.choices[0], "finish_reason", None),
     }
 
 

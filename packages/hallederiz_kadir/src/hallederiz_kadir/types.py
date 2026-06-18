@@ -17,6 +17,7 @@ class CallResult:
     is_local: bool
     provider: str
     task: str
+    finish_reason: str | None = None
 
 
 @dataclass

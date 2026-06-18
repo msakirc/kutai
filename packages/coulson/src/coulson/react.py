@@ -88,6 +88,27 @@ logger = get_logger("runtime.react")
 # Mirrors the agent-visible failure detection at the tool_failed checkpoint.
 _TOOL_FAIL_PREFIXES: tuple[str, ...] = ("❌", "\U0001f6ab")  # ❌ 🚫
 
+# Empty-response handling. Empties are transient — the server streams zero
+# tokens during a warmup/settle window or under --parallel 1 slot contention,
+# then recovers within ~8s with identical messages (observed 2026-06-18, task
+# 459147: ~10 empties then valid JSON). Back off between retries instead of
+# re-hammering at 0ms, and cap total wait so a genuinely wedged model still
+# terminates.
+_EMPTY_BACKOFF_CAP_S = 8.0
+_EMPTY_MAX_CONSECUTIVE = 6  # ~0.5+1+2+4+8 = 15.5s budget before giving up
+
+
+def _empty_retry_plan(consecutive_empties: int) -> tuple[float, bool]:
+    """Decide how to handle the Nth consecutive empty response.
+
+    Returns ``(backoff_seconds, give_up)``. Backoff grows 0.5·2^(n-1) capped at
+    ``_EMPTY_BACKOFF_CAP_S``; ``give_up`` flips True once consecutive empties
+    reach ``_EMPTY_MAX_CONSECUTIVE``.
+    """
+    give_up = consecutive_empties >= _EMPTY_MAX_CONSECUTIVE
+    backoff = min(0.5 * (2 ** (consecutive_empties - 1)), _EMPTY_BACKOFF_CAP_S)
+    return backoff, give_up
+
 
 def _tool_output_ok(output: str) -> bool:
     """Heuristic: did the tool execution succeed?
@@ -713,19 +734,31 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             logger.info(f"[Task #{task_id}] Raw response ({len(content)} chars):\n{content}")
 
             # Skip empty responses — don't burn an iteration on nothing.
+            # Empties are transient (server warmup / slot contention): back off
+            # and retry rather than fail a recoverable task. finish_reason +
+            # usage are logged so the root is diagnosable next occurrence
+            # (length=ctx-overflow/truncation vs stop+0 prompt_tokens=not-ready).
             if not content and not response.get("tool_calls"):
+                empty_response_count += 1
+                backoff_s, give_up = _empty_retry_plan(empty_response_count)
+                _usage = response.get("usage") or {}
                 logger.warning(
                     f"[Task #{task_id}] Empty response (0 chars, no tool_calls) "
+                    f"#{empty_response_count} — finish_reason="
+                    f"{response.get('finish_reason')!r} "
+                    f"prompt_tokens={_usage.get('prompt_tokens')} "
+                    f"completion_tokens={_usage.get('completion_tokens')} "
                     f"— not counting as iteration {iteration + 1}/{effective_max_iterations}"
                 )
-                empty_response_count += 1
-                if empty_response_count >= 3:
+                if give_up:
                     return {
                         "status": "failed",
                         "error": f"Model returned {empty_response_count} consecutive empty responses",
                         "model": used_model,
                         "cost": total_cost,
                     }
+                if backoff_s > 0:
+                    await asyncio.sleep(backoff_s)
                 continue  # retry same iteration
             empty_response_count = 0  # reset on non-empty
 

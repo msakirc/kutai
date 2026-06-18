@@ -1293,4 +1293,5 @@ async def call(
         usage=parsed["usage"], cost=parsed["cost"], latency=call_latency,
         model=model.litellm_name, model_name=model.name,
         is_local=is_local, provider=model.provider if not is_local else "local", task=task,
+        finish_reason=parsed.get("finish_reason"),
     )

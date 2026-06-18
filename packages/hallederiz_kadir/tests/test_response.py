@@ -31,6 +31,20 @@ def test_parse_simple_content():
     assert result["tool_calls"] is None
     assert result["thinking"] is None
 
+
+def test_parse_surfaces_finish_reason():
+    """Empty-response diagnosis needs finish_reason — 'length' (ctx/truncation)
+    vs 'stop' (clean/EOS) tells apart ctx-overflow from a not-ready server."""
+    resp = _make_response(content="", finish_reason="length")
+    result = parse_response(resp, model_name="test", is_local=True, is_thinking=False)
+    assert result["finish_reason"] == "length"
+
+
+def test_parse_finish_reason_defaults_none_when_absent():
+    resp = _make_response(content="hi", finish_reason=None)
+    result = parse_response(resp, model_name="test", is_local=True, is_thinking=False)
+    assert result["finish_reason"] is None
+
 def test_parse_tool_calls():
     tc = MagicMock()
     tc.id = "call_1"

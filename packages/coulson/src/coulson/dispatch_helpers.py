@@ -140,6 +140,7 @@ def result_to_response_dict(result: Any, model: Any) -> dict:
         "ran_on": "local" if result.is_local else result.provider,
         "provider": result.provider,
         "task": result.task,
+        "finish_reason": getattr(result, "finish_reason", None),
         "capability_score": 0.0,
         "difficulty": 5,
     }

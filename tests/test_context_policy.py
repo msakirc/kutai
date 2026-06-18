@@ -97,3 +97,19 @@ class TestComputeLayerBudgets:
         budgets_8k = compute_layer_budgets(8192, {"deps", "skills"})
         budgets_32k = compute_layer_budgets(32768, {"deps", "skills"})
         assert budgets_32k["deps"] > budgets_8k["deps"]
+
+    def test_large_model_budget_absolutely_capped(self):
+        """Mission 86 / step 1.4a (2026-06-18): a gemini-class 1M-token window
+        made ``available = 1M * 0.40 = 400k``, so the deps+board layers filled
+        ~190k (legacy completed-results dump + the 102k blackboard). The
+        B-table then learned 173k → estimate forced 226k ctx_needed → every
+        model filtered → DLQ, self-reinforcing. An absolute cap must bound the
+        pool regardless of model window."""
+        budgets = compute_layer_budgets(1_000_000, {"deps", "rag", "board"})
+        assert sum(budgets.values()) <= 65536
+
+    def test_cap_does_not_starve_mid_window_model(self):
+        """A 131k-window model yields available = 52k < cap → unaffected."""
+        budgets = compute_layer_budgets(131072, {"deps", "rag", "board"})
+        assert sum(budgets.values()) <= int(131072 * 0.40) + 1
+        assert sum(budgets.values()) >= 50000  # not over-trimmed

@@ -1456,30 +1456,57 @@ def assert_pp11_daily_overshoot_still_conserves() -> list[str]:
     return failures
 
 
-# ── Scenario PP12: Learned B-table reduces demand-pressure floor ──────────────
+# ── Scenario PP12: Learned B-table reduces demand-pressure through S2/S3 ─────
 
 def assert_pp12_btable_demand_reduces_floor() -> list[str]:
-    """A low-p90 B-table row for a known step must reduce the projected demand
-    fed into S4/S5, making the model LESS pressure-floored vs cold btable={}.
+    """Proves that the learned B-table row drives the per-task token estimate
+    fed to S2/S3 (burden bucket) through _apply_utilization_layer (Site-2).
 
-    Approach: build a snapshot with a deep queue_profile carrying the learned
-    (low) projected_tokens vs the cold (high static-default) projected_tokens,
-    and assert the learned scenario yields a LESS negative queue bucket scalar.
-    This is a unit-level test of the pressure path — no full sim needed.
+    Mechanism:
+      ranking.py calls estimate_for(reqs, btable=_bt) → est_per_task_tokens
+      → snapshot.pressure_for(... est_per_task_tokens=...) → S3_task_burden
+      fires on every TOKEN cell (tpm, tpd, …) when est_per_task_tokens /
+      remaining > BITE_THRESHOLD (0.30).
+
+    Setup: a cloud model whose ONLY tight axis is a TPM cell with
+    remaining=50_000. queue_profile is absent (None) so S4/S5 (queue bucket)
+    contribute nothing — the only varying factor is the btable-driven
+    est_per_task_tokens reaching S3.
+
+    Cold run   (btable={}):
+      researcher static default: in=8000 out=2000 iters=24
+      est_per_task_tokens = (8000+2000)×24 = 240_000
+      S3 bite = 240_000/50_000 = 4.8 → excess=4.5 → pressure=-1.0 (floor)
+
+    Seeded run (btable with low p90):
+      row: in_p90=800 out_p90=400 iters_p90=2
+      est_per_task_tokens = (800+400)×2 = 2_400
+      S3 bite = 2_400/50_000 = 0.048 → below BITE_THRESHOLD (0.30) → pressure=0
+
+    Assert: seeded sm.score > cold sm.score (seeded less penalised).
+    Reverting ranking.py's `btable=_bt` to `btable={}` makes BOTH runs equal
+    (same cold estimate) → delta collapses → assertion fails.
     """
     from general_beckman.btable_cache import set_btable
     from fatih_hoca.ranking import _apply_utilization_layer, ScoredModel
     from nerd_herd.types import (
-        CloudModelState, CloudProviderState, QueueProfile,
+        CloudModelState, CloudProviderState,
         RateLimit, RateLimitMatrix, SystemSnapshot, LocalModelState,
     )
     from types import SimpleNamespace
 
-    # A free cloud model with a tight daily budget (20 RPD) — S4/S5 fire
-    # hard when projected_calls project overshoot.
-    rpd = RateLimit(limit=20, remaining=20, reset_at=int(_time.time() + 86400))
+    # Tight TPM cell so S3 (per-task token burden) bites hard on the cold
+    # estimate and not at all on the seeded estimate.  No RPD / RPS / queue_profile
+    # → S1/S4/S5 contribute nothing; only S2/S3 vary with the btable.
+    now_ts = int(_time.time() + 3600)
+    tpm_cell = RateLimit(limit=50_000, remaining=50_000, reset_at=now_ts)
+    # Populate a nominal RPD so the model isn't invisible to S1 (remaining > 0
+    # but abundant → S1 ~ 0; burst-cap M1 irrelevant at this scale).
+    rpd_cell = RateLimit(limit=10_000, remaining=10_000, reset_at=int(_time.time() + 86400))
+    matrix = RateLimitMatrix(tpm=tpm_cell, rpd=rpd_cell)
+
     cms = CloudModelState(
-        model_id="free/m", utilization_pct=0.0, limits=RateLimitMatrix(rpd=rpd)
+        model_id="free/m", utilization_pct=0.0, limits=matrix,
     )
     cps = CloudProviderState(
         provider="free_prov", utilization_pct=0.0,
@@ -1491,56 +1518,54 @@ def assert_pp12_btable_demand_reduces_floor() -> list[str]:
         name="free/m", litellm_name="free/m",
         is_local=False, is_free=True, is_loaded=False,
         provider="free_prov", capabilities=set(),
+        is_thinking=False,
     )
 
     step_key = ("researcher", "1.0a", "research")
-    # Learned: tiny p90 (100 in + 50 out, 1 iter = 150 total tokens)
-    learned_row = {"samples_n": 10, "in_p90": 100, "out_p90": 50, "iters_p90": 1}
+    # Seeded row: small est — well below BITE_THRESHOLD on the 50k TPM cell.
+    seeded_row = {"samples_n": 10, "in_p90": 800, "out_p90": 400, "iters_p90": 2}
 
     def _make_sm() -> ScoredModel:
         return ScoredModel(model=model_stub, score=100.0,
                            capability_score=5.0, composite_score=100.0)
 
-    # reqs proxy: needs agent_type + context for estimate_for
-    reqs_proxy = SimpleNamespace(agent_type="researcher",
-                                 context={"workflow_step_id": "1.0a",
-                                          "workflow_phase": "research"})
+    # reqs proxy: agent_type="researcher" + context → estimate_for reads these.
+    reqs_proxy = SimpleNamespace(
+        agent_type="researcher",
+        context={"workflow_step_id": "1.0a", "workflow_phase": "research"},
+    )
 
     failures = []
     try:
-        # ── Cold run (btable={}) — uses static default → high projected_tokens
+        # ── Cold run (btable={}) ─────────────────────────────────────────────
+        # estimate_for falls to AGENT_REQUIREMENTS["researcher"]:
+        #   in=8000, out=2000, iters=24 → total = 240_000
+        # S3 bite = 240_000 / 50_000 = 4.8 → excess 4.5 → pressure = -1.0
         set_btable({})
-        # Build a queue_profile whose projected_tokens comes from a COLD estimate
-        # (static default for researcher is large). Use projected_calls=40 >> 20 RPD
-        # to guarantee S5 fires.
-        cold_profile = QueueProfile(
-            total_ready_count=40, projected_tokens=0, projected_calls=40,
-        )
         cold_snap = SystemSnapshot(local=local, cloud={"free_prov": cps})
-        cold_snap.queue_profile = cold_profile
+        # No queue_profile → S4/S5 = 0, isolating burden bucket.
+        cold_snap.queue_profile = None
         sm_cold = _make_sm()
         _apply_utilization_layer([sm_cold], cold_snap, task_difficulty=5,
                                  reqs=reqs_proxy)
-        cold_queue = sm_cold.urgency  # scalar after apply
+        cold_score = sm_cold.score  # mutated in-place by the layer
 
-        # ── Learned run (btable with low p90) — fewer projected_calls
-        set_btable({step_key: learned_row})
-        # With learned row: 150 total tokens, 1 iter → projected_calls much smaller
-        learned_profile = QueueProfile(
-            total_ready_count=5, projected_tokens=0, projected_calls=5,
-        )
-        learned_snap = SystemSnapshot(local=local, cloud={"free_prov": cps})
-        learned_snap.queue_profile = learned_profile
-        sm_learned = _make_sm()
-        _apply_utilization_layer([sm_learned], learned_snap, task_difficulty=5,
+        # ── Seeded run (btable with low p90) ────────────────────────────────
+        # estimate_for hits B-table: in=800, out=400, iters=2 → total = 2_400
+        # S3 bite = 2_400 / 50_000 = 0.048 → below BITE_THRESHOLD → pressure = 0
+        set_btable({step_key: seeded_row})
+        seeded_snap = SystemSnapshot(local=local, cloud={"free_prov": cps})
+        seeded_snap.queue_profile = None
+        sm_seeded = _make_sm()
+        _apply_utilization_layer([sm_seeded], seeded_snap, task_difficulty=5,
                                  reqs=reqs_proxy)
-        learned_queue = sm_learned.urgency  # scalar after apply
+        seeded_score = sm_seeded.score
 
-        if not (learned_queue > cold_queue):
+        if not (seeded_score > cold_score):
             failures.append(
-                f"PP12: learned btable (scalar={learned_queue:.3f}) must yield LESS "
-                f"negative pressure than cold (scalar={cold_queue:.3f}) — "
-                "btable demand-reduction not flowing into ranking"
+                f"PP12: seeded btable score ({seeded_score:.3f}) must be GREATER "
+                f"than cold score ({cold_score:.3f}) — btable-driven S2/S3 burden "
+                "not flowing into _apply_utilization_layer (Site-2 wiring broken)"
             )
     finally:
         set_btable({})

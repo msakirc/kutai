@@ -84,3 +84,45 @@ def test_pool_and_urgency_fields_populated():
 
 def test_empty_list_is_no_op():
     _apply_utilization_layer([], _blank_snapshot(), task_difficulty=5)
+
+
+def test_utilization_layer_passes_learned_btable_to_estimate_for(monkeypatch):
+    """_apply_utilization_layer must use get_btable(), not hardcode {}.
+
+    Spy variant: monkeypatch general_beckman.btable_cache.get_btable to return
+    a sentinel dict, then monkeypatch fatih_hoca.ranking.estimate_for to capture
+    the btable kwarg passed. Assert every call received the sentinel, not {}.
+    """
+    import fatih_hoca.ranking as _ranking_mod
+    from fatih_hoca.estimates import Estimates
+
+    sentinel = {("researcher", "1.0a", "research"): {"samples_n": 10,
+                "in_p90": 1000, "out_p90": 500, "iters_p90": 2}}
+    captured_btables: list[dict] = []
+
+    # Monkeypatch get_btable in general_beckman.btable_cache (source)
+    import general_beckman.btable_cache as _btcache
+    monkeypatch.setattr(_btcache, "_BTABLE", sentinel)
+    monkeypatch.setattr(_btcache, "get_btable", lambda: sentinel)
+
+    # Spy on estimate_for as used by ranking
+    _real_estimate_for = _ranking_mod.estimate_for
+
+    def _spy_estimate_for(task, *, btable, model_is_thinking=False):
+        captured_btables.append(btable)
+        return _real_estimate_for(task, btable=btable, model_is_thinking=model_is_thinking)
+
+    monkeypatch.setattr(_ranking_mod, "estimate_for", _spy_estimate_for)
+
+    sm1 = _sm("a", cap_score_1_to_10=5.0, score=100.0, is_local=True, is_loaded=True)
+    sm2 = _sm("b", cap_score_1_to_10=5.0, score=90.0, is_local=False, is_free=True,
+              provider="groq")
+    snap = _loaded_snapshot("a")
+    _apply_utilization_layer([sm1, sm2], snap, task_difficulty=5)
+
+    assert len(captured_btables) >= 1, "estimate_for was never called"
+    for bt in captured_btables:
+        assert bt is sentinel, (
+            f"estimate_for received btable={bt!r} instead of sentinel — "
+            "btable still hardcoded to {{}}"
+        )

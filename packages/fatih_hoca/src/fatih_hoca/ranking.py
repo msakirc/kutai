@@ -210,12 +210,21 @@ def _apply_utilization_layer(
             rpd_remaining=_rpd_rem,
         ))
 
+    # Hoist btable load above the per-model loop: general_beckman imports
+    # fatih_hoca so a module-level import here would be circular; lazy+fallback
+    # pattern mirrors requirements_builder.py. Cold cache (empty dict) == prior
+    # behavior (static defaults via estimate_for lookup chain).
+    try:
+        from general_beckman.btable_cache import get_btable
+        _bt = get_btable()
+    except Exception:
+        _bt = {}
+
     for sm in scored:
         pool = classify_pool(sm.model)
         sm.pool = pool.value
 
-        # btable empty-dict cold-start; populated by Beckman rollup cron (Task 26)
-        estimates = estimate_for(task_proxy, btable={},
+        estimates = estimate_for(task_proxy, btable=_bt,
                                  model_is_thinking=getattr(sm.model, "is_thinking", False))
         # consecutive_failures left at 0: the per-provider streak field
         # has no live writer in cloud paths (api_reliability writes it

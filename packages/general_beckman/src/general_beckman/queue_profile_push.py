@@ -85,6 +85,8 @@ async def build_profile(db_path: str | None = None) -> QueueProfile:
 
     # Lazy import to avoid module-load circular
     from fatih_hoca.estimates import estimate_for
+    from general_beckman.btable_cache import get_btable
+    bt = get_btable()
 
     unblocked: list[_TaskShim] = []
     for tid, agent_type, deps_json, ctx_json in ready_rows:
@@ -128,7 +130,7 @@ async def build_profile(db_path: str | None = None) -> QueueProfile:
             by_capability["thinking"] += 1
         if shim.agent_type in _NEEDS_TOOLS_AGENTS:
             by_capability["function_calling"] += 1
-        e = estimate_for(shim, btable={})
+        e = estimate_for(shim, btable=bt)
         projected_tokens += e.total_tokens
         projected_calls += e.iterations
 

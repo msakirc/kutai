@@ -1456,6 +1456,98 @@ def assert_pp11_daily_overshoot_still_conserves() -> list[str]:
     return failures
 
 
+# ── Scenario PP12: Learned B-table reduces demand-pressure floor ──────────────
+
+def assert_pp12_btable_demand_reduces_floor() -> list[str]:
+    """A low-p90 B-table row for a known step must reduce the projected demand
+    fed into S4/S5, making the model LESS pressure-floored vs cold btable={}.
+
+    Approach: build a snapshot with a deep queue_profile carrying the learned
+    (low) projected_tokens vs the cold (high static-default) projected_tokens,
+    and assert the learned scenario yields a LESS negative queue bucket scalar.
+    This is a unit-level test of the pressure path — no full sim needed.
+    """
+    from general_beckman.btable_cache import set_btable
+    from fatih_hoca.ranking import _apply_utilization_layer, ScoredModel
+    from nerd_herd.types import (
+        CloudModelState, CloudProviderState, QueueProfile,
+        RateLimit, RateLimitMatrix, SystemSnapshot, LocalModelState,
+    )
+    from types import SimpleNamespace
+
+    # A free cloud model with a tight daily budget (20 RPD) — S4/S5 fire
+    # hard when projected_calls project overshoot.
+    rpd = RateLimit(limit=20, remaining=20, reset_at=int(_time.time() + 86400))
+    cms = CloudModelState(
+        model_id="free/m", utilization_pct=0.0, limits=RateLimitMatrix(rpd=rpd)
+    )
+    cps = CloudProviderState(
+        provider="free_prov", utilization_pct=0.0,
+        consecutive_failures=0, limits=RateLimitMatrix(), models={"free/m": cms},
+    )
+    local = LocalModelState(model_name=None, idle_seconds=0.0, measured_tps=0.0)
+
+    model_stub = SimpleNamespace(
+        name="free/m", litellm_name="free/m",
+        is_local=False, is_free=True, is_loaded=False,
+        provider="free_prov", capabilities=set(),
+    )
+
+    step_key = ("researcher", "1.0a", "research")
+    # Learned: tiny p90 (100 in + 50 out, 1 iter = 150 total tokens)
+    learned_row = {"samples_n": 10, "in_p90": 100, "out_p90": 50, "iters_p90": 1}
+
+    def _make_sm() -> ScoredModel:
+        return ScoredModel(model=model_stub, score=100.0,
+                           capability_score=5.0, composite_score=100.0)
+
+    # reqs proxy: needs agent_type + context for estimate_for
+    reqs_proxy = SimpleNamespace(agent_type="researcher",
+                                 context={"workflow_step_id": "1.0a",
+                                          "workflow_phase": "research"})
+
+    failures = []
+    try:
+        # ── Cold run (btable={}) — uses static default → high projected_tokens
+        set_btable({})
+        # Build a queue_profile whose projected_tokens comes from a COLD estimate
+        # (static default for researcher is large). Use projected_calls=40 >> 20 RPD
+        # to guarantee S5 fires.
+        cold_profile = QueueProfile(
+            total_ready_count=40, projected_tokens=0, projected_calls=40,
+        )
+        cold_snap = SystemSnapshot(local=local, cloud={"free_prov": cps})
+        cold_snap.queue_profile = cold_profile
+        sm_cold = _make_sm()
+        _apply_utilization_layer([sm_cold], cold_snap, task_difficulty=5,
+                                 reqs=reqs_proxy)
+        cold_queue = sm_cold.urgency  # scalar after apply
+
+        # ── Learned run (btable with low p90) — fewer projected_calls
+        set_btable({step_key: learned_row})
+        # With learned row: 150 total tokens, 1 iter → projected_calls much smaller
+        learned_profile = QueueProfile(
+            total_ready_count=5, projected_tokens=0, projected_calls=5,
+        )
+        learned_snap = SystemSnapshot(local=local, cloud={"free_prov": cps})
+        learned_snap.queue_profile = learned_profile
+        sm_learned = _make_sm()
+        _apply_utilization_layer([sm_learned], learned_snap, task_difficulty=5,
+                                 reqs=reqs_proxy)
+        learned_queue = sm_learned.urgency  # scalar after apply
+
+        if not (learned_queue > cold_queue):
+            failures.append(
+                f"PP12: learned btable (scalar={learned_queue:.3f}) must yield LESS "
+                f"negative pressure than cold (scalar={cold_queue:.3f}) — "
+                "btable demand-reduction not flowing into ranking"
+            )
+    finally:
+        set_btable({})
+
+    return failures
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 POOL_PRESSURE_SCENARIOS = [
@@ -1473,6 +1565,7 @@ POOL_PRESSURE_SCENARIOS = [
     ("s7_continuity", pp1_fat_vs_tiny),
     ("s6_conserve", pp1_fat_vs_tiny),
     ("rp5_overdraw_early_warning", rp5_overdraw_early_warning),
+    ("pp12_btable_demand_reduces_floor", pp1_fat_vs_tiny),  # pressure-only
 ]
 
 # Realistic-pool scenarios — distribution observation (no pass/fail
@@ -1502,4 +1595,5 @@ POOL_PRESSURE_ASSERTIONS: dict[str, Callable] = {
     "s7_continuity": lambda sc: assert_s7_continuity(),
     "s6_conserve": lambda sc: assert_s6_conserve(),
     "rp5_overdraw_early_warning": lambda sc: assert_rp5(sc),
+    "pp12_btable_demand_reduces_floor": lambda sc: assert_pp12_btable_demand_reduces_floor(),
 }

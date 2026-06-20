@@ -76,6 +76,33 @@ def check_paragraph_repetition(text: str) -> tuple[float, bool, str | None]:
     return ratio, False, None
 
 
+_CONTROL_TOKEN_RE = re.compile(
+    r'<\w+_(?:tool_call|tool_calls|arg_key|arg_value|function_call)>',
+    re.IGNORECASE,
+)
+
+
+def check_control_token_leak(text: str) -> tuple[int, bool, str | None]:
+    """Detect leaked model function-calling control tokens.
+
+    Some models (notably LongCat-Flash, seen in prod via the cloaked OpenRouter
+    alias ``owl-alpha``) emit their native namespaced tool-call special tokens —
+    ``<longcat_tool_call>``, ``<longcat_arg_key>``, ``<longcat_arg_value>`` — as
+    literal text when driven through the json / text tool path instead of native
+    tool calls. The tokens then trip downstream placeholder shape gates and DLQ
+    the task after retries on the SAME model (2026-06-20). Flagging them as
+    degenerate lets the call-path quality gate reject the response and
+    failure-adapt to a clean model — model-agnostic, no hardcoded aliases.
+
+    The namespaced form ``<name_tool_call>`` is specific enough that it never
+    appears in legitimate prose, so a single occurrence is enough to flag.
+    """
+    count = len(_CONTROL_TOKEN_RE.findall(text))
+    if count >= 1:
+        return count, True, "control_token_leak"
+    return count, False, None
+
+
 def check_token_entropy(text: str) -> tuple[float, bool, str | None]:
     """Measure Shannon entropy of whitespace-split tokens.
 

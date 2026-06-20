@@ -201,6 +201,27 @@ async def _fire_tool_call_signal(tool_name: str, *, task_id: int | None = None) 
                      task_id, exc)
 
 
+def reqs_for_run(fresh_reqs, checkpoint):
+    """Selection requirements always come from the FRESH build, never a checkpoint.
+
+    A checkpoint (``tasks.task_state``) snapshots ModelRequirements from an
+    earlier attempt. Restoring it verbatim froze selection constraints
+    (``local_only``, token estimates, ctx); a value captured under different
+    conditions then became permanent and bypassed every requirements-layer fix.
+    Live 2026-06-20: analyst task 459220 checkpointed ``local_only=True`` (a
+    stale classifier verdict) — under the user's intentional Minimal load mode
+    (cloud-only) that forbids cloud while Minimal forbids local → empty
+    candidate set → "No model candidates available" on every retry, surviving
+    restarts and DLQ-recovery (the checkpoint lives in the DB).
+
+    Conversation state (messages/iteration/cost/tool_calls) is restored from the
+    checkpoint by the caller; only the selection requirements are re-derived.
+    ``checkpoint`` is accepted (not used) to document that it is deliberately
+    ignored for reqs.
+    """
+    return fresh_reqs
+
+
 async def run(profile, task: dict, progress_callback: Callable | None = None) -> dict:
     """ReAct loop with requirements-based model selection."""
     _start_time = time.time()
@@ -267,23 +288,14 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             "completed_tool_ops", {}
         )
 
-        # Restore reqs from checkpoint
-        saved_reqs = checkpoint.get("reqs")
-        if isinstance(saved_reqs, ModelRequirements):
-            reqs = saved_reqs
-        elif isinstance(saved_reqs, dict):
-            # Checkpoint saved via dataclasses.asdict — reconstruct
-            valid_fields = {f.name for f in dataclasses.fields(ModelRequirements)}
-            reqs = ModelRequirements(
-                **{k: v for k, v in saved_reqs.items() if k in valid_fields}
-            )
-        else:
-            # Very old checkpoint or missing — build fresh
-            reqs = await requirements_for(
-        task, _task_ctx,
-        agent_name=profile.name,
-        allowed_tools=profile.allowed_tools,
-    )
+        # Selection requirements are ALWAYS re-derived fresh — never restored
+        # from the checkpoint. Restoring froze stale constraints (local_only,
+        # token estimates) that bypassed every requirements-layer fix and
+        # re-DLQ'd the task forever under changed conditions (2026-06-20 root
+        # cause — see reqs_for_run). The fresh reqs built above (with _task_id
+        # already stamped) stands; the checkpoint only restores conversation
+        # state (messages / iteration / cost / tool_calls) below.
+        reqs = reqs_for_run(reqs, checkpoint)
 
         logger.info(
             f"[Task #{task_id}] Resuming from checkpoint "

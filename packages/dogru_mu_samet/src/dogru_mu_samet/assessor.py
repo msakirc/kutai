@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from .detectors import (
     HARD_CAP,
+    check_control_token_leak,
     check_header_repetition,
     check_paragraph_repetition,
     check_size,
@@ -68,6 +69,10 @@ def assess(text, max_size: int = 20_000) -> ContentQualityResult:
     entropy_val, entropy_breached, entropy_reason = check_token_entropy(text)
     if entropy_breached and entropy_reason:
         reasons.append(entropy_reason)
+
+    _, ctl_breached, ctl_reason = check_control_token_leak(text)
+    if ctl_breached and ctl_reason:
+        reasons.append(ctl_reason)
 
     # Size alone is not degenerate — large but unique content (e.g. shopping
     # search aggregating 16 scrapers) is legitimate.  Only flag degenerate

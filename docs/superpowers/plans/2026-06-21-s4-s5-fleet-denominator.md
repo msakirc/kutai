@@ -101,7 +101,7 @@ def s4_queue_tokens(
 - [ ] **Step 4: Run tests to verify all pass**
 
 Run: `python -m pytest packages/nerd_herd/tests/signals/test_s4.py -v -o addopts="" -p no:aiohttp`
-Expected: all tests PASS (3 new + 5 existing — existing pass via the per-model fallback).
+Expected: all tests PASS (3 new + 6 existing — existing pass via the per-model fallback).
 
 - [ ] **Step 5: Commit**
 
@@ -271,7 +271,11 @@ def test_pressure_for_fleet_of_one_still_conserves():
 
 def test_pressure_for_precomputed_matches_internal_build():
     # Passing a precomputed fleet_remaining must yield the SAME scalar as letting
-    # pressure_for build it from self.cloud (the ranking perf path == internal path).
+    # pressure_for build it from self.cloud (the ranking perf path == internal
+    # path). Thread a shared `now` so the S9 free-cloud proximity term is
+    # identical across the two calls — otherwise each call reads time.time()
+    # microseconds apart and the scalars differ by ~1e-9 (flaky on bare `==`).
+    import pytest
     from nerd_herd.types import (
         CloudModelState, CloudProviderState, QueueProfile,
         RateLimit, RateLimitMatrix, SystemSnapshot,
@@ -292,10 +296,10 @@ def test_pressure_for_precomputed_matches_internal_build():
     model = SimpleNamespace(name="free/m", provider="free_prov", is_free=True,
                             is_local=False, cap_score=7.0)
 
-    internal = snap.pressure_for(model, task_difficulty=3).scalar
+    internal = snap.pressure_for(model, task_difficulty=3, now=now).scalar
     precomputed = snap.pressure_for(
-        model, task_difficulty=3, fleet_remaining={"rpd": 1020}).scalar
-    assert internal == precomputed
+        model, task_difficulty=3, now=now, fleet_remaining={"rpd": 1020}).scalar
+    assert internal == pytest.approx(precomputed, abs=1e-9)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -516,7 +520,7 @@ git commit -m "perf(fatih_hoca): ranking precomputes fleet_remaining for S4/S5"
 
 - [ ] **Step 1: Add the assertion function**
 
-In `packages/fatih_hoca/tests/sim/scenarios.py`, immediately after `assert_pp12_btable_demand_reduces_floor` (and its setup, ends ~line 1585), add:
+In `packages/fatih_hoca/tests/sim/scenarios.py`, immediately after the END of the `assert_pp12_btable_demand_reduces_floor` function (~line 1573, just before the `POOL_PRESSURE_SCENARIOS` list at ~1578 — anchor on the function's end, do NOT land inside the registry block), add:
 
 ```python
 # ── Scenario PP13: aggregate-queue ÷ single-model leak (Residual 2) ──────────

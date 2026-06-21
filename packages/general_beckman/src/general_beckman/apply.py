@@ -4224,16 +4224,43 @@ def _adapt_shape_findings(verdict: PostHookVerdict) -> None:
 async def _load_mission_workflow(mission_id: int) -> dict | None:
     """Return a plain workflow dict ({"steps": [...]}) for a mission, or None.
 
-    Resolves the workflow name from the mission's checkpoint, then loads +
-    parses the JSON via the engine loader. Used by the reviewer-failure router
-    (build_producer_index needs the steps' input/output_artifacts)."""
+    Resolves the workflow name, then loads + parses the JSON via the engine
+    loader. Used by the reviewer-failure router (build_producer_index needs the
+    steps' input/output_artifacts).
+
+    Name resolution order:
+    1. `missions.context.workflow_name` — the reliable source, seeded at mission
+       expansion. Primary because the checkpoint table is written only on full-
+       phase completion (and seeds name="" on first write), so it is empty /
+       useless for in-flight missions whose reviewer fired before any phase
+       completed (Class C: 2026-06-21 handoff).
+    2. `workflow_checkpoints.workflow_name` — fallback, for missions that lack a
+       context name but do have a checkpoint row."""
     try:
-        from dabidabi import get_workflow_checkpoint
+        from dabidabi import get_mission, get_workflow_checkpoint
         from src.workflows.engine.loader import load_workflow
-        checkpoint = await get_workflow_checkpoint(int(mission_id))
-        if not checkpoint or not checkpoint.get("workflow_name"):
+
+        name = ""
+        mission = await get_mission(int(mission_id))
+        if mission:
+            raw_ctx = mission.get("context")
+            if isinstance(raw_ctx, str) and raw_ctx:
+                import json as _json
+                try:
+                    name = str((_json.loads(raw_ctx) or {}).get("workflow_name") or "")
+                except (ValueError, TypeError):
+                    name = ""
+            elif isinstance(raw_ctx, dict):
+                name = str(raw_ctx.get("workflow_name") or "")
+
+        if not name:
+            checkpoint = await get_workflow_checkpoint(int(mission_id))
+            if checkpoint and checkpoint.get("workflow_name"):
+                name = str(checkpoint["workflow_name"])
+
+        if not name:
             return None
-        wf = load_workflow(str(checkpoint["workflow_name"]))
+        wf = load_workflow(name)
         return {"steps": list(wf.steps)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("review verdict: could not load mission workflow",

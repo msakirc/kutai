@@ -1777,6 +1777,23 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
         await _check_phase_completion(mission_id, workflow_phase)
 
 
+async def _resolve_workflow_name_from_mission(mission_id: int) -> str:
+    """Best-effort workflow name from `missions.context.workflow_name` ("" if
+    unavailable). Lets the phase-completion writer seed the real name instead of
+    "" on the first checkpoint write."""
+    try:
+        from ...infra.db import get_mission
+        mission = await get_mission(mission_id)
+        if not mission:
+            return ""
+        m_ctx = mission.get("context") or "{}"
+        if isinstance(m_ctx, str):
+            m_ctx = json.loads(m_ctx) if m_ctx else {}
+        return str((m_ctx or {}).get("workflow_name") or "")
+    except Exception:
+        return ""
+
+
 async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
     """Detect when all tasks in a workflow phase are done and checkpoint it.
 
@@ -1813,6 +1830,11 @@ async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
         checkpoint = await get_workflow_checkpoint(mission_id)
         completed = checkpoint["completed_phases"] if checkpoint else []
         workflow_name = checkpoint["workflow_name"] if checkpoint else ""
+        # On the FIRST write there is no prior checkpoint, so workflow_name was
+        # persisted as "" — leaving the table useless to the reviewer-failure
+        # loader (Class C, 2026-06-21). Seed the real name from mission context.
+        if not workflow_name:
+            workflow_name = await _resolve_workflow_name_from_mission(mission_id)
 
         if phase_id not in completed:
             completed.append(phase_id)

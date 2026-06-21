@@ -183,6 +183,20 @@ async def _seed_mission_with_checkpoint(db_path: str, workflow_name: str) -> int
     return mid
 
 
+async def _seed_mission_with_context(db_path: str, workflow_name: str) -> int:
+    """A mission carrying workflow_name in its context JSON but NO
+    workflow_checkpoints row (the prod-realistic state — the writer never
+    seeds the table). The loader must fall back to mission context."""
+    ctx = json.dumps({"workflow_name": workflow_name})
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO missions (title, lifecycle_state, context) "
+            "VALUES ('m', 'active', ?)", (ctx,))
+        mid = (await (await db.execute("SELECT last_insert_rowid()")).fetchone())[0]
+        await db.commit()
+    return mid
+
+
 async def _seed_reviewer(db_path: str, *, mission_id: int, step_id: str) -> int:
     """An ungraded reviewer task carrying a pending verify_review_verdict."""
     ctx = json.dumps({
@@ -255,6 +269,65 @@ async def test_verdict_fail_routes_to_producer_and_repends_reviewer(
     # past an unsatisfied review (advance.py never re-runs a completed step).
     assert rev["status"] == "pending"
     assert rev["status"] != "completed"
+
+
+@pytest.mark.asyncio
+async def test_verdict_fail_routes_with_no_checkpoint_via_mission_context(
+    tmp_path, monkeypatch,
+):
+    """Class C regression: a mission with NO workflow_checkpoints row but
+    `context.workflow_name='i2p_v3'` must still load the graph and re-pend the
+    producer — NOT DLQ the reviewer with 'workflow graph unavailable'.
+    The prod writer never seeds the checkpoint table, so the loader MUST fall
+    back to mission context. Deliberately does NOT pre-seed a checkpoint."""
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    _reset_db_singleton(db_path)
+    from src.infra.db import init_db
+    await init_db()
+    _reset_db_singleton(db_path)
+
+    steps = [
+        {"id": "3.4", "output_artifacts": ["requirements_spec"]},
+        {"id": "3.11", "input_artifacts": ["requirements_spec"],
+         "output_artifacts": ["review_result"]},
+    ]
+    _patch_workflow(monkeypatch, steps)
+
+    # No checkpoint row — only mission context carries the workflow name.
+    mid = await _seed_mission_with_context(db_path, "i2p_v3")
+    producer_id = await _seed_producer(
+        db_path, mission_id=mid, step_id="3.4", worker_attempts=1,
+    )
+    reviewer_id = await _seed_reviewer(db_path, mission_id=mid, step_id="3.11")
+
+    from general_beckman.apply import _apply_posthook_verdict
+    from general_beckman.result_router import PostHookVerdict
+
+    verdict = PostHookVerdict(
+        source_task_id=reviewer_id, kind="verify_review_verdict", passed=False,
+        raw={
+            "verdict_class": "fail",
+            "issues": [{"target_artifact": "requirements_spec",
+                        "severity": "blocker", "problem": "no traceability"}],
+        },
+    )
+    await _apply_posthook_verdict({"id": reviewer_id}, verdict)
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        prod = dict(await (await db.execute(
+            "SELECT * FROM tasks WHERE id=?", (producer_id,))).fetchone())
+        rev = dict(await (await db.execute(
+            "SELECT * FROM tasks WHERE id=?", (reviewer_id,))).fetchone())
+
+    # Producer re-pended (router resolved the graph from mission context).
+    assert prod["status"] == "pending"
+    assert prod["worker_attempts"] == 2
+    assert "no traceability" in json.loads(prod["context"])["_schema_error"]
+    # Reviewer re-pended, NOT DLQ'd with "workflow graph unavailable".
+    assert rev["status"] == "pending"
+    assert (rev["error"] or "") != "reviewer rejected artifact but workflow graph unavailable"
 
 
 @pytest.mark.asyncio

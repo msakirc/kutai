@@ -1878,6 +1878,8 @@ async def _check_phase_completion(mission_id: int, phase_id: str) -> bool:
         return False
 
     # Phase complete — update checkpoint
+    workflow_name = ""  # hoisted: read by _evaluate_phase_gate even if the
+    # checkpoint read below throws (otherwise NameError at gate eval).
     try:
         checkpoint = await get_workflow_checkpoint(mission_id)
         completed = checkpoint["completed_phases"] if checkpoint else []

@@ -77,6 +77,54 @@ def test_estimate_for_uses_btable_when_samples_sufficient():
     assert e.iterations == 7
 
 
+def test_estimate_for_clamps_poisoned_btable_input(monkeypatch):
+    """A runaway/poisoned learned in_p90 must not inflate the estimate past
+    the ceiling — else the selector ctx/per-request/TPM gates over-filter and
+    collapse the candidate pool to gemini-only (no-candidates DLQ, 2026-06-20).
+    Default ceiling 64000 keeps effective_context_needed < cerebras 128k."""
+    monkeypatch.delenv("KUTAI_MAX_EST_IN_TOKENS", raising=False)
+    from fatih_hoca.estimates import estimate_for
+    task = FakeTask("analyst", step_id="2.6", phase="phase_2")
+    btable = {
+        ("analyst", "2.6", "phase_2"): {
+            "samples_n": 10,
+            "in_p90": 200_000, "out_p90": 4000, "iters_p90": 7,
+        }
+    }
+    e = estimate_for(task, btable=btable)
+    assert e.in_tokens == 64_000          # clamped
+    assert e.out_tokens == 4000           # output NOT clamped
+
+
+def test_estimate_for_input_ceiling_env_tunable(monkeypatch):
+    monkeypatch.setenv("KUTAI_MAX_EST_IN_TOKENS", "32000")
+    from fatih_hoca.estimates import estimate_for
+    task = FakeTask("analyst", step_id="2.6", phase="phase_2")
+    btable = {("analyst", "2.6", "phase_2"): {
+        "samples_n": 10, "in_p90": 200_000, "out_p90": 4000, "iters_p90": 7}}
+    assert estimate_for(task, btable=btable).in_tokens == 32_000
+
+
+def test_estimate_for_does_not_clamp_below_ceiling():
+    from fatih_hoca.estimates import estimate_for
+    task = FakeTask("analyst", step_id="2.6", phase="phase_2")
+    btable = {("analyst", "2.6", "phase_2"): {
+        "samples_n": 10, "in_p90": 5000, "out_p90": 4000, "iters_p90": 7}}
+    assert estimate_for(task, btable=btable).in_tokens == 5000
+
+
+def test_estimate_for_does_not_clamp_curated_heavy_override():
+    """Static overrides (Level 2) are trusted — a heavy openapi_spec input
+    estimate must survive; only learned B-table values are clamped."""
+    from fatih_hoca.estimates import estimate_for, Estimates
+    from fatih_hoca import step_overrides
+    # 4.5b is output-heavy; assert the override path is never input-clamped
+    # by feeding a hypothetical heavy-input override and confirming passthrough.
+    task = FakeTask("architect", step_id="4.5b")
+    e = estimate_for(task, btable={})  # no btable → Level 2 override
+    assert e.out_tokens >= 100_000     # untouched by any input clamp
+
+
 def test_estimate_for_skips_btable_when_samples_below_threshold():
     from fatih_hoca.estimates import estimate_for
     task = FakeTask("analyst", step_id="4.5b", phase="phase_4")

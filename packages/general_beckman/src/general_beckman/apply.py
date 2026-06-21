@@ -2931,7 +2931,7 @@ async def _apply_grounding_verdict(
             ctx["_schema_error"] = feedback
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             _stamp_retry_feedback(ctx, attempts)
             await update_task(
                 verdict.source_task_id,
@@ -2957,7 +2957,7 @@ async def _apply_grounding_verdict(
     ctx["_schema_error"] = feedback
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
-        ctx["_prev_output"] = prev_output[:6000]
+        ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
     _stamp_retry_feedback(ctx, attempts)
     await update_task(
         verdict.source_task_id,
@@ -3062,7 +3062,7 @@ async def _apply_verify_artifacts_verdict(
             ctx["_schema_error"] = feedback
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             _stamp_retry_feedback(ctx, attempts)
             await update_task(
                 verdict.source_task_id,
@@ -3088,7 +3088,7 @@ async def _apply_verify_artifacts_verdict(
     ctx["_schema_error"] = feedback
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
-        ctx["_prev_output"] = prev_output[:6000]
+        ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
     _stamp_retry_feedback(ctx, attempts)
     await update_task(
         verdict.source_task_id,
@@ -3197,7 +3197,7 @@ async def _apply_code_review_verdict(
             ctx["_schema_error"] = feedback
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             _stamp_retry_feedback(ctx, attempts)
             await update_task(
                 verdict.source_task_id,
@@ -3223,7 +3223,7 @@ async def _apply_code_review_verdict(
     ctx["_schema_error"] = feedback
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
-        ctx["_prev_output"] = prev_output[:6000]
+        ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
     _stamp_retry_feedback(ctx, attempts)
     await update_task(
         verdict.source_task_id,
@@ -3352,7 +3352,7 @@ async def _apply_test_run_verdict(
             ctx["_schema_error"] = feedback
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             _stamp_retry_feedback(ctx, attempts)
             await update_task(
                 verdict.source_task_id,
@@ -3374,7 +3374,7 @@ async def _apply_test_run_verdict(
     ctx["_schema_error"] = feedback
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
-        ctx["_prev_output"] = prev_output[:6000]
+        ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
     _stamp_retry_feedback(ctx, attempts)
     await update_task(
         verdict.source_task_id,
@@ -3646,7 +3646,7 @@ async def _apply_semgrep_blocker_verdict(
             ctx["_schema_error"] = feedback
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             _stamp_retry_feedback(ctx, attempts)
             await update_task(
                 verdict.source_task_id,
@@ -3668,7 +3668,7 @@ async def _apply_semgrep_blocker_verdict(
     ctx["_schema_error"] = feedback
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
-        ctx["_prev_output"] = prev_output[:6000]
+        ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
     _stamp_retry_feedback(ctx, attempts)
     await update_task(
         verdict.source_task_id,
@@ -3852,7 +3852,7 @@ async def _apply_type_sync_verdict(
                 ctx["_schema_error"] = feedback
                 prev_output = source.get("result") or ""
                 if isinstance(prev_output, str) and prev_output.strip():
-                    ctx["_prev_output"] = prev_output[:6000]
+                    ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
                 _stamp_retry_feedback(ctx, attempts)
                 await update_task(
                     verdict.source_task_id,
@@ -3874,7 +3874,7 @@ async def _apply_type_sync_verdict(
         ctx["_schema_error"] = feedback
         prev_output = source.get("result") or ""
         if isinstance(prev_output, str) and prev_output.strip():
-            ctx["_prev_output"] = prev_output[:6000]
+            ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
         _stamp_retry_feedback(ctx, attempts)
         await update_task(
             verdict.source_task_id,
@@ -4008,7 +4008,7 @@ async def _apply_migration_apply_verdict(
             ctx["_schema_error"] = feedback
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             _stamp_retry_feedback(ctx, attempts)
             await update_task(
                 verdict.source_task_id,
@@ -4030,7 +4030,7 @@ async def _apply_migration_apply_verdict(
     ctx["_schema_error"] = feedback
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
-        ctx["_prev_output"] = prev_output[:6000]
+        ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
     _stamp_retry_feedback(ctx, attempts)
     await update_task(
         verdict.source_task_id,
@@ -4437,7 +4437,7 @@ async def _apply_review_verdict(
             # producers via depends_on.
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             ctx["_schema_error"] = (
                 "Previous review REJECTED upstream artifact(s); the "
                 f"producer(s) {routed} were re-pended to fix it. Re-review the "
@@ -4594,7 +4594,7 @@ async def _apply_simple_blocker_verdict(
             ctx["_schema_error"] = feedback
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             _stamp_retry_feedback(ctx, attempts)
             await update_task(
                 verdict.source_task_id, status="pending",
@@ -4610,7 +4610,7 @@ async def _apply_simple_blocker_verdict(
     ctx["_schema_error"] = feedback
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
-        ctx["_prev_output"] = prev_output[:6000]
+        ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
     _stamp_retry_feedback(ctx, attempts)
     await update_task(
         verdict.source_task_id, status="pending",
@@ -4714,7 +4714,7 @@ async def _apply_mobile_smoke_verdict(
             ctx["_schema_error"] = feedback
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]
+                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
             _stamp_retry_feedback(ctx, attempts)
             await update_task(
                 verdict.source_task_id, status="pending",
@@ -4732,7 +4732,7 @@ async def _apply_mobile_smoke_verdict(
     ctx["_schema_error"] = feedback
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
-        ctx["_prev_output"] = prev_output[:6000]
+        ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
     _stamp_retry_feedback(ctx, attempts)
     await update_task(
         verdict.source_task_id, status="pending",
@@ -5028,7 +5028,7 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
                 ctx["_schema_error"] = f"Grader rejected output: {error_str}"
                 prev_output = source.get("result") or ""
                 if isinstance(prev_output, str) and prev_output.strip():
-                    ctx["_prev_output"] = prev_output[:6000]
+                    ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
                 _stamp_retry_feedback(ctx, attempts)
                 # error_category=quality so the next retry decision
                 # (decide_retry) takes the immediate path, not the
@@ -5093,7 +5093,7 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
                 prev_output = canonicalize_for_retry(prev_output)
             except Exception:
                 pass
-            ctx["_prev_output"] = prev_output[:6000]
+            ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
         _stamp_retry_feedback(ctx, attempts)
         # error_category=quality so decide_retry takes the immediate
         # path, not the availability backoff ladder. Grader rejection

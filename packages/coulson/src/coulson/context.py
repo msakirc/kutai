@@ -1152,6 +1152,7 @@ async def build_user_context(
             retry_section.append(
                 "\n## Your Previous Output (fix this, don't start over)"
             )
+            # fallback only — artifact-backed continuation reads full draft (T3)
             retry_section.append(f"```\n{_prev[:4000]}\n```")
         # Recency: defer retry hint to end-of-prompt as well so the
         # checklist + previous output sit right before the model's

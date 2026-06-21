@@ -1159,9 +1159,14 @@ def collect_empty_exemption_inputs(schema: dict, mission_id: int) -> dict | None
     finds no proof and rejects the empty value).
     """
     markers = _scan_empty_exemption_markers(schema)
-    if not markers:
+    if not markers or mission_id is None:
         return None
+    # First dotted segment is the artifact name; reject any that could escape
+    # the mission workspace (markers are static config, but cheap to harden).
     names = {m.split(".", 1)[0] for m in markers}
+    names = {n for n in names if n and "/" not in n and "\\" not in n and ".." not in n}
+    if not names:
+        return None
     inputs: dict = {}
     try:
         ws = get_mission_workspace(mission_id)
@@ -1673,7 +1678,22 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
             except Exception as _e:
                 logger.debug(f"[Workflow Hook] dynamic-constraint resolution skipped: {_e}")
                 _eff_schema = artifact_schema
-            is_valid, error_msg = validate_artifact_schema(output_value, _eff_schema)
+            # Anchor any empty_ok_when_input_empty exemption to the REAL
+            # upstream input artifacts (no-op when the schema carries no
+            # marker — the common case, zero file IO). This is the gate that
+            # DLQ'd a legitimately-empty compliance_overlay (mission 87 task
+            # 524377): when the upstream fingerprint has no jurisdictions,
+            # zero required documents is the correct answer.
+            _gate_inputs = None
+            try:
+                _gate_inputs = collect_empty_exemption_inputs(
+                    _eff_schema, task.get("mission_id") or ctx.get("mission_id")
+                )
+            except Exception as _e:
+                logger.debug(f"[Workflow Hook] empty-exemption inputs skipped: {_e}")
+            is_valid, error_msg = validate_artifact_schema(
+                output_value, _eff_schema, inputs=_gate_inputs
+            )
         if is_valid and os.environ.get("LAZY_TRUE_EVIDENCE_CHECK") == "1":
             # Lazy-true detection: agent claimed a verification flag is true
             # but the audit_log shows no actual verification command ran.

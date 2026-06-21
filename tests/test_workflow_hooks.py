@@ -207,6 +207,82 @@ class TestPostExecuteWorkflowStep(unittest.TestCase):
         self._run(post_execute_workflow_step(task, result))
         self.assertEqual(result.get("status"), "failed")
 
+    # ── Producer gate honors empty_ok_when_input_empty (mission 87 / 524377) ──
+    #
+    # This is the gate that actually DLQ'd the task — it runs on the producer's
+    # own finish and emits "Schema validation: ... empty placeholder value".
+    # The schema_gate posthook tests don't exercise it.
+
+    _OVERLAY_SCHEMA = {
+        "compliance_overlay": {
+            "type": "object",
+            "fields": {
+                "required_documents": {
+                    "type": "array",
+                    "empty_ok_when_input_empty":
+                        "compliance_fingerprint.jurisdictions",
+                },
+                "monitoring_obligations": {
+                    "empty_ok_when_input_empty":
+                        "compliance_fingerprint.jurisdictions",
+                },
+                "data_subject_rights_implementation": {
+                    "empty_ok_when_input_empty":
+                        "compliance_fingerprint.jurisdictions",
+                },
+            },
+            "_schema_version": "1",
+        }
+    }
+
+    def _producer_task(self, mission_id):
+        return {
+            "id": 999,
+            "mission_id": mission_id,
+            "agent_type": "analyst",
+            "context": json.dumps({
+                "is_workflow_step": True,
+                "mission_id": mission_id,
+                "workflow_step_id": "1.11a",
+                "output_artifacts": ["compliance_overlay"],
+                "artifact_schema": self._OVERLAY_SCHEMA,
+            }),
+        }
+
+    def _empty_overlay_result(self):
+        return {"result": json.dumps({
+            "required_documents": [],
+            "monitoring_obligations": [],
+            "data_subject_rights_implementation": [],
+        })}
+
+    def test_producer_empty_overlay_passes_when_fingerprint_empty(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "compliance_fingerprint.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump({"jurisdictions": []}, f)
+            with patch("src.workflows.engine.hooks.get_mission_workspace",
+                       return_value=d):
+                result = self._empty_overlay_result()
+                self._run(post_execute_workflow_step(
+                    self._producer_task(8700), result))
+        self.assertNotEqual(result.get("status"), "failed", result.get("error"))
+
+    def test_producer_empty_overlay_fails_when_fingerprint_has_scope(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "compliance_fingerprint.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump({"jurisdictions": ["US", "EU"]}, f)
+            with patch("src.workflows.engine.hooks.get_mission_workspace",
+                       return_value=d):
+                result = self._empty_overlay_result()
+                self._run(post_execute_workflow_step(
+                    self._producer_task(8701), result))
+        self.assertEqual(result.get("status"), "failed")
+        self.assertIn("required_documents", result.get("error", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

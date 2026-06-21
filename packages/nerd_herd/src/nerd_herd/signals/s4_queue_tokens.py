@@ -15,16 +15,25 @@ THRESHOLD = 0.70
 SLOPE = 2.0  # demand 70% → 0; 95% → -0.5; 120% → -1.0
 
 
-def s4_queue_tokens(matrix: RateLimitMatrix, *, queue: QueueProfile) -> float:
+def s4_queue_tokens(
+    matrix: RateLimitMatrix, *, queue: QueueProfile,
+    fleet_remaining: dict[str, int] | None = None,
+) -> float:
     projected = queue.projected_tokens
     if projected <= 0:
         return 0.0
     worst = 0.0
     # Cycle axes only: a per-minute token window paces (refills ~60s), it does
-    # not conserve — a deep queue drains over minutes and never exhausts it.
-    # Per-task fit on the minute window stays with S2 (call burden).
-    for _, rl in matrix.cycle_token_cells():
-        remaining = max(0, (rl.remaining or 0) - rl.in_flight)
+    # not conserve. Denominator is the FLEET's cycle-remaining on this axis
+    # (passed in / built by pressure_for) so a small-window model is not floored
+    # by the whole queue when other capacity can absorb it. fleet_remaining=None
+    # or axis-absent -> fall back to this model's own remaining (fleet-of-one /
+    # bare-matrix unit tests == today's behavior).
+    for name, rl in matrix.cycle_token_cells():
+        if fleet_remaining is not None and name in fleet_remaining:
+            remaining = fleet_remaining[name]
+        else:
+            remaining = max(0, (rl.remaining or 0) - rl.in_flight)
         if remaining <= 0:
             continue
         ratio = projected / remaining

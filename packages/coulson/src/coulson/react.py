@@ -222,6 +222,32 @@ def reqs_for_run(fresh_reqs, checkpoint):
     return fresh_reqs
 
 
+def should_restore_messages(checkpoint: dict | None, current_attempts: int) -> bool:
+    """Decide whether to restore the checkpointed ``messages`` array (M1/C4).
+
+    The dispatch boundary is ``worker_attempts``:
+
+      * ``saved_attempts >= current`` → the SAME attempt was interrupted
+        mid-loop (a crash / heartbeat-timeout resume does NOT bump
+        worker_attempts — ``sweep.py`` flips processing→pending without
+        touching the column) → restore the in-flight conversation so the
+        tool_call→observation chain survives (crash-resume, C4).
+      * ``saved_attempts < current`` → the checkpoint is from a COMPLETED
+        prior dispatch; a quality re-dispatch incremented worker_attempts
+        (apply.py:530/615). Do NOT restore the accumulated ``messages``
+        array — it is the proven 775k cross-dispatch bloat. The fresh
+        rebuild (system + context + ledger + durable draft from Phase 1)
+        carries the signal the conversation used to.
+
+    Errs toward reset: a missing ``saved_attempts`` is treated as 0, so any
+    real re-dispatch (worker_attempts >= 1) rebuilds fresh. Durable
+    artifacts (C3) always survive — only the bloated conversation is dropped.
+    """
+    if not checkpoint:
+        return False
+    return int(checkpoint.get("saved_attempts", 0)) >= int(current_attempts)
+
+
 async def run(profile, task: dict, progress_callback: Callable | None = None) -> dict:
     """ReAct loop with requirements-based model selection."""
     _start_time = time.time()
@@ -276,6 +302,24 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             logger.warning(
                 f"[Task #{task_id}] Checkpoint load failed: {exc}"
             )
+        # Bounded conversation reset (spec M1/C4 — the 775k-bloat kill).
+        # A checkpoint left by a COMPLETED prior dispatch carries an
+        # accumulated `messages` array that grows every quality re-dispatch
+        # (task 459160: assistant 113 msgs / 709,922c). Restoring it is the
+        # proven runaway. saved_attempts < worker_attempts means a new
+        # attempt started → drop the checkpoint and rebuild fresh; the
+        # ledger + durable prior draft (Phase 1) carry the signal. Only a
+        # SAME-attempt interruption (saved_attempts == worker_attempts, a
+        # crash / heartbeat-timeout resume that does NOT bump the counter)
+        # restores messages, preserving the in-flight tool chain (C4).
+        if checkpoint and not should_restore_messages(checkpoint, worker_attempts):
+            logger.info(
+                f"[Task #{task_id}] Checkpoint from a completed prior dispatch "
+                f"(saved_attempts={checkpoint.get('saved_attempts', 0)} < "
+                f"worker_attempts={worker_attempts}) — dropping bloated messages, "
+                f"rebuilding fresh (ledger + durable draft carry forward)"
+            )
+            checkpoint = None
 
     if checkpoint:
         messages = checkpoint.get("messages", [])

@@ -101,3 +101,60 @@ def test_save_checkpoint_defaults_saved_attempts_zero(monkeypatch):
         )
     )
     assert captured["state"]["saved_attempts"] == 0
+
+
+# ── T6: should_restore_messages discriminator ──────────────────────────────
+
+
+def test_restore_when_same_attempt_interrupted():
+    """saved_attempts == current → SAME attempt interrupted mid-loop → restore (C4)."""
+    from coulson.react import should_restore_messages
+    ckpt = {"saved_attempts": 4, "messages": [{"role": "user", "content": "x"}]}
+    assert should_restore_messages(ckpt, current_attempts=4) is True
+
+
+def test_no_restore_when_prior_dispatch_completed():
+    """saved_attempts < current → checkpoint from a COMPLETED prior dispatch → fresh."""
+    from coulson.react import should_restore_messages
+    ckpt = {"saved_attempts": 3, "messages": [{"role": "user", "content": "x"}]}
+    # A quality re-dispatch bumped worker_attempts 3 -> 4; do NOT restore the
+    # accumulated messages array (this is the 775k-bloat kill path).
+    assert should_restore_messages(ckpt, current_attempts=4) is False
+
+
+def test_no_restore_without_checkpoint():
+    """No checkpoint → nothing to restore."""
+    from coulson.react import should_restore_messages
+    assert should_restore_messages(None, current_attempts=0) is False
+    assert should_restore_messages({}, current_attempts=0) is False
+
+
+def test_missing_saved_attempts_defaults_zero():
+    """A legacy checkpoint with no saved_attempts → treated as attempt 0.
+
+    Any real re-dispatch has worker_attempts >= 1 > 0 → False (fresh). A
+    first-ever interrupted dispatch (current_attempts == 0) → 0 >= 0 → True.
+    """
+    from coulson.react import should_restore_messages
+    legacy = {"messages": [{"role": "user", "content": "x"}]}
+    assert should_restore_messages(legacy, current_attempts=4) is False
+    assert should_restore_messages(legacy, current_attempts=0) is True
+
+
+@pytest.mark.parametrize(
+    "saved, current",
+    [
+        # F1 bloat re-entry shapes: degenerate / empty-completed /
+        # post-availability re-dispatch. Each is a NEW attempt, so the live
+        # worker_attempts is strictly greater than the checkpoint's stamp.
+        (1, 2),   # degenerate rejection re-dispatch
+        (5, 6),   # empty-result re-dispatch
+        (8, 9),   # dispatch following an availability bounce
+        (0, 1),   # first quality re-dispatch
+    ],
+)
+def test_f1_trigger_shapes_never_restore(saved, current):
+    """All F1 bloat-accumulation shapes (incremented worker_attempts) → fresh."""
+    from coulson.react import should_restore_messages
+    ckpt = {"saved_attempts": saved, "messages": [{"role": "user", "content": "x"}]}
+    assert should_restore_messages(ckpt, current_attempts=current) is False

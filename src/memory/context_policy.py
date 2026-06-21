@@ -53,10 +53,15 @@ def _int_env(name: str, default: int) -> int:
 
 # Absolute ceiling on the per-build context-layer budget pool, independent of
 # the target model's window. Without it, ``available = model_ctx * FRACTION``
-# scales unbounded: a gemini-class 1M-token window yields a 400k pool, so the
-# deps + board layers fill with the legacy completed-results dump and the
-# (102k-token) mission blackboard — observed ~190k prompt tokens on mission 86
-# / step 1.4a (2026-06-18). The B-table then learns that p90, the estimator
+# scales unbounded: a gemini-class 1M-token window yields a 400k pool, and the
+# highest-weight ``deps`` layer (legacy ``get_completed_dependency_results``
+# full-dump, capped only by its budget) fills it with upstream completed
+# results — observed ~190k prompt tokens on mission 86 / step 1.4a
+# (2026-06-18). NOTE: the ``board`` layer was NOT the bloat source — its
+# injection is content-capped inside ``format_blackboard_for_prompt`` (<=3000
+# chars / ~750 tok even when the raw ``blackboards.data`` blob is ~400k chars);
+# an earlier diagnosis mis-attributed ~102k tok to it. The B-table then learns
+# that p90, the estimator
 # forces a ~226k ctx_needed, every model is filtered (ctx + free-tier TPM), and
 # the task DLQs — self-reinforcing because each oversized run re-teaches the
 # estimate. The cap restores fleet eligibility: 32k sits above the observed

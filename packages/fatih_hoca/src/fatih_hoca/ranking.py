@@ -191,6 +191,14 @@ def _apply_utilization_layer(
         if _has_capacity:
             fleet_consumed[_prov] = _consumed
 
+    # Fleet cycle-remaining for the S4/S5 denominator. Built once here (perf:
+    # O(models)) and passed into every pressure_for so it does not rebuild the
+    # fleet map per candidate (O(models²)). Identical value to pressure_for's
+    # own internal build — see SystemSnapshot._build_fleet_cycle_remaining.
+    # getattr guard: SimpleNamespace snapshots used in unit tests lack the method.
+    _build_fn = getattr(snapshot, "_build_fleet_cycle_remaining", None)
+    fleet_remaining = _build_fn() if _build_fn is not None else None
+
     # Capable-supply rollup for S6: the set of candidates with their remaining
     # daily capacity, so a capability-shortage produces conserve-pressure. Built
     # once here; rpd_remaining is read from the snapshot (authoritative) and
@@ -241,6 +249,7 @@ def _apply_utilization_layer(
                                   lambda *_: 0.0)(estimates.in_tokens, estimates.out_tokens),
             cap_needed=CAP_NEEDED_BY_DIFFICULTY.get(task_difficulty, 5.0),
             fleet_consumed=fleet_consumed,
+            fleet_remaining=fleet_remaining,
             now=now,
             burn_log=burn_log,
             eligible_models=eligible_models,

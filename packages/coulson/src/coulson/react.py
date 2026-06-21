@@ -227,6 +227,12 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
     _start_time = time.time()
     task_id = task.get("id", "?")
     mission_id = task.get("mission_id")
+    # Dispatch-boundary discriminator (spec M1/C4): the attempt counter this
+    # dispatch runs under. Stamped into every checkpoint as saved_attempts so a
+    # later run() can tell a same-attempt crash-resume (restore messages) from a
+    # checkpoint left by a COMPLETED prior dispatch (a quality re-dispatch bumped
+    # this value → rebuild fresh, drop the accumulated messages array).
+    worker_attempts = int(task.get("worker_attempts") or 0)
 
     # ── Parse task context ──
     _task_ctx = task.get("context")
@@ -990,6 +996,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             completed_tool_ops, format_corrections,
             tools_used_names,
             tool_calls=tool_calls,
+            worker_attempts=worker_attempts,
         )
 
         action_type = parsed.get("action", "final_answer")
@@ -1170,6 +1177,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     completed_tool_ops, format_corrections,
                     tools_used_names,
                     tool_calls=tool_calls,
+                    worker_attempts=worker_attempts,
                 )
                 continue
 
@@ -1201,6 +1209,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                         completed_tool_ops, format_corrections,
                         tools_used_names,
                         tool_calls=tool_calls,
+                        worker_attempts=worker_attempts,
                     )
                     continue
 
@@ -1272,6 +1281,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                             completed_tool_ops, format_corrections,
                             tools_used_names,
                             tool_calls=tool_calls,
+                            worker_attempts=worker_attempts,
                         )
                         continue
 
@@ -1480,6 +1490,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 completed_tool_ops, format_corrections,
                 tools_used_names,
                 tool_calls=tool_calls,
+                worker_attempts=worker_attempts,
             )
             continue
 
@@ -1687,6 +1698,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 completed_tool_ops, format_corrections,
                 tools_used_names,
                 tool_calls=tool_calls,
+                worker_attempts=worker_attempts,
             )
             continue
 
@@ -1751,6 +1763,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 completed_tool_ops, format_corrections,
                 tools_used_names,
                 tool_calls=tool_calls,
+                worker_attempts=worker_attempts,
             )
             continue
 
@@ -1793,6 +1806,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
             completed_tool_ops, format_corrections,
             tools_used_names,
             tool_calls=tool_calls,
+            worker_attempts=worker_attempts,
         )
 
     except asyncio.CancelledError:
@@ -1812,6 +1826,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                 False, completed_tool_ops, format_corrections,
                 tools_used_names,
                 tool_calls=tool_calls,
+                worker_attempts=worker_attempts,
             )
             logger.info(
                 f"[Task #{task_id}] Timeout checkpoint saved at iteration {iteration}"

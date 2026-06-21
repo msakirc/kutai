@@ -37,6 +37,7 @@ async def save_checkpoint(
     format_corrections: int = 0,
     tools_used_names: set[str] | None = None,
     tool_calls: list[dict] | None = None,
+    worker_attempts: int = 0,
 ) -> None:
     """Persist agent loop state so execution can resume after a crash.
 
@@ -45,6 +46,16 @@ async def save_checkpoint(
     ``{name, args, ok}``. Used by the grounding guard to verify the
     agent actually called write_file (or other declared tools) for the
     paths it claimed to produce.
+
+    ``worker_attempts`` is the CURRENT dispatch's attempt counter; it is
+    serialized as ``saved_attempts`` so ``run()`` can tell a crash-resume
+    of the SAME attempt (restore the conversation) from a checkpoint left
+    behind by a COMPLETED prior dispatch (a quality re-dispatch bumped the
+    counter → rebuild fresh, do NOT restore the bloated messages array).
+    A quality re-dispatch increments worker_attempts (apply.py:530/615);
+    a crash / heartbeat-timeout resume does NOT (sweep.py flips
+    processing→pending without touching the column). ``saved_attempts``
+    is thus the load-bearing dispatch-boundary discriminator (spec M1/C4).
     """
     if task_id == "?":
         return
@@ -61,6 +72,7 @@ async def save_checkpoint(
             "validation_retried": validation_retried,
             "format_corrections": format_corrections,
             "completed_tool_ops": completed_tool_ops or {},
+            "saved_attempts": int(worker_attempts or 0),
         }
         from general_beckman import save_task_checkpoint as _save_ckpt
         await _save_ckpt(task_id, state)

@@ -299,6 +299,33 @@ class SystemSnapshot:
     # load-outcome write path); the selector lays off ALL local while True.
     local_inference_down: bool = False
 
+    def _build_fleet_cycle_remaining(self) -> dict[str, int]:
+        """Σ over ALL cloud models of max(0, remaining − per-model in-flight) per
+        CYCLE axis (rpd/tpd/…; per-minute excluded). The denominator S4/S5 divide
+        the whole-queue projection by — so a small-window model conserves only
+        when the FLEET would be exhausted (no escape hatch), not when the whole
+        queue merely dwarfs its own window. In-flight is per-MODEL here (cycle
+        budgets are per-model), distinct from the per-PROVIDER rpm/tpm
+        subtraction in pressure_for (those free-tier minute limits are shared)."""
+        inflight_calls: dict[str, int] = {}
+        inflight_tokens: dict[str, int] = {}
+        for c in self.in_flight_calls:
+            if getattr(c, "is_local", False):
+                continue
+            m = getattr(c, "model", "") or ""
+            inflight_calls[m] = inflight_calls.get(m, 0) + 1
+            inflight_tokens[m] = inflight_tokens.get(m, 0) + int(getattr(c, "est_tokens", 0) or 0)
+        fleet: dict[str, int] = {}
+        for ps in self.cloud.values():
+            for mname, ms in ps.models.items():
+                for axis, rl in ms.limits.cycle_request_cells():
+                    rem = max(0, (rl.remaining or 0) - inflight_calls.get(mname, 0))
+                    fleet[axis] = fleet.get(axis, 0) + rem
+                for axis, rl in ms.limits.cycle_token_cells():
+                    rem = max(0, (rl.remaining or 0) - inflight_tokens.get(mname, 0))
+                    fleet[axis] = fleet.get(axis, 0) + rem
+        return fleet
+
     def pressure_for(
         self,
         model,
@@ -314,6 +341,7 @@ class SystemSnapshot:
         now: float | None = None,
         burn_log=None,
         eligible_models: list | None = None,
+        fleet_remaining: dict[str, int] | None = None,
     ):
         """Compute pressure breakdown via signals + modifiers.
 
@@ -403,13 +431,21 @@ class SystemSnapshot:
         else:
             matrix_effective = matrix
 
+        # Fleet cycle-remaining for S4/S5 denominator. Ranking passes a
+        # precomputed map (perf); the pressure-only path (pp11/pp13 call this
+        # directly) builds it here from self.cloud.
+        if fleet_remaining is None:
+            fleet_remaining = self._build_fleet_cycle_remaining()
+
         # Compute signals
         sig = {
             "S1": s1_remaining(matrix_effective, reset_in_secs=reset_in, in_flight=in_flight_n, profile=profile),
             "S2": s2_call_burden(matrix_effective, est_per_call_tokens=est_per_call_tokens),
             "S3": s3_task_burden(matrix_effective, est_per_task_tokens=est_per_task_tokens),
-            "S4": s4_queue_tokens(matrix, queue=self.queue_profile or QueueProfile()),
-            "S5": s5_queue_calls(matrix, queue=self.queue_profile or QueueProfile()),
+            "S4": s4_queue_tokens(matrix, queue=self.queue_profile or QueueProfile(),
+                                  fleet_remaining=fleet_remaining),
+            "S5": s5_queue_calls(matrix, queue=self.queue_profile or QueueProfile(),
+                                 fleet_remaining=fleet_remaining),
             "S6": s6_capable_supply(model, queue=self.queue_profile or QueueProfile(),
                                     eligible_models=eligible_models or [],
                                     iter_avg=float(est_iterations or 8)),

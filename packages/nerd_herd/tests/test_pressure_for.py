@@ -155,3 +155,100 @@ def test_pressure_for_subtracts_in_flight_est_tokens_from_remaining():
         f"S2 should fire negative when in-flight reservations leave "
         f"insufficient headroom: signals={breakdown.signals}"
     )
+
+
+def test_pressure_for_fleet_denominator_unfloors_small_free():
+    # Leak reproduction at the pressure_for level: free model rpd=20 alongside a
+    # premium rpd=1000. A 40-call queue should NOT floor the free model's queue
+    # bucket, because the fleet (1020) absorbs it. Pre-fix (per-model 40/20=2x)
+    # this floored to ~ -1.4.
+    from nerd_herd.types import (
+        CloudModelState, CloudProviderState, QueueProfile,
+        RateLimit, RateLimitMatrix, SystemSnapshot,
+    )
+    from types import SimpleNamespace
+    import time
+
+    now = time.time()
+    free_m = CloudModelState(
+        model_id="free/m", limits=RateLimitMatrix(
+            rpd=RateLimit(limit=20, remaining=20, reset_at=int(now + 86400))),
+    )
+    prem_m = CloudModelState(
+        model_id="prem/m", limits=RateLimitMatrix(
+            rpd=RateLimit(limit=1000, remaining=1000, reset_at=int(now + 86400))),
+    )
+    snap = SystemSnapshot(cloud={
+        "free_prov": CloudProviderState(provider="free_prov", models={"free/m": free_m}),
+        "prem_prov": CloudProviderState(provider="prem_prov", models={"prem/m": prem_m}),
+    })
+    snap.queue_profile = QueueProfile(total_ready_count=40, projected_calls=40)
+    model = SimpleNamespace(name="free/m", provider="free_prov", is_free=True,
+                            is_local=False, cap_score=7.0)
+
+    bd = snap.pressure_for(model, task_difficulty=3, est_per_task_tokens=2_000)
+    assert bd.bucket_totals.get("queue", 0.0) > -0.3  # serviceable, not floored
+
+
+def test_pressure_for_fleet_of_one_still_conserves():
+    # Single daily-budgeted model, queue 2x its window -> fleet-of-one -> floors
+    # (the pp11 invariant at the pressure_for level).
+    from nerd_herd.types import (
+        CloudModelState, CloudProviderState, QueueProfile,
+        RateLimit, RateLimitMatrix, SystemSnapshot,
+    )
+    from types import SimpleNamespace
+    import time
+
+    now = time.time()
+    only_m = CloudModelState(
+        model_id="free/m", limits=RateLimitMatrix(
+            rpd=RateLimit(limit=20, remaining=20, reset_at=int(now + 86400))),
+    )
+    snap = SystemSnapshot(cloud={
+        "free_prov": CloudProviderState(provider="free_prov", models={"free/m": only_m}),
+    })
+    snap.queue_profile = QueueProfile(total_ready_count=40, projected_calls=40)
+    model = SimpleNamespace(name="free/m", provider="free_prov", is_free=True,
+                            is_local=False, cap_score=7.0)
+
+    bd = snap.pressure_for(model, task_difficulty=5, est_per_task_tokens=1_000)
+    assert bd.bucket_totals.get("queue", 0.0) <= -0.3  # conserves
+
+
+def test_pressure_for_precomputed_matches_internal_build():
+    # Passing a precomputed fleet_remaining must yield the SAME scalar as letting
+    # pressure_for build it from self.cloud (the ranking perf path == internal
+    # path). Thread a shared `now` so the S9 free-cloud proximity term is
+    # identical across the two calls — otherwise each call reads time.time()
+    # microseconds apart and the scalars differ by ~1e-9 (flaky on bare `==`).
+    import pytest
+    from nerd_herd.types import (
+        CloudModelState, CloudProviderState, QueueProfile,
+        RateLimit, RateLimitMatrix, SystemSnapshot,
+    )
+    from types import SimpleNamespace
+    import time
+
+    now = time.time()
+    free_m = CloudModelState(model_id="free/m", limits=RateLimitMatrix(
+        rpd=RateLimit(limit=20, remaining=20, reset_at=int(now + 86400))))
+    prem_m = CloudModelState(model_id="prem/m", limits=RateLimitMatrix(
+        rpd=RateLimit(limit=1000, remaining=1000, reset_at=int(now + 86400))))
+    snap = SystemSnapshot(cloud={
+        "free_prov": CloudProviderState(provider="free_prov", models={"free/m": free_m}),
+        "prem_prov": CloudProviderState(provider="prem_prov", models={"prem/m": prem_m}),
+    })
+    # projected_calls=900 against fleet rpd=1020 -> ratio 0.88 > THRESHOLD 0.70,
+    # so S5 ACTUALLY FIRES (~ -0.72). This makes the equivalence meaningful: if
+    # it were below threshold both paths would be 0.0 == 0.0 (vacuous).
+    snap.queue_profile = QueueProfile(total_ready_count=900, projected_calls=900)
+    model = SimpleNamespace(name="free/m", provider="free_prov", is_free=True,
+                            is_local=False, cap_score=7.0)
+
+    internal_bd = snap.pressure_for(model, task_difficulty=3, now=now)
+    precomputed_bd = snap.pressure_for(
+        model, task_difficulty=3, now=now, fleet_remaining={"rpd": 1020})
+    # Signal must have fired, else the equivalence below is vacuous.
+    assert internal_bd.bucket_totals.get("queue", 0.0) < 0.0
+    assert internal_bd.scalar == pytest.approx(precomputed_bd.scalar, abs=1e-9)

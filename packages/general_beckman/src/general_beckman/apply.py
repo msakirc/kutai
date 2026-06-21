@@ -533,6 +533,49 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     ctx = _parse_ctx(task)
     bonus_count = int(ctx.get("_bonus_count", 0))
 
+    # T7 (Phase 3) — degenerate repeat detector. A quality-rejected worker
+    # that emits byte-identical output across re-dispatches is not converging
+    # (the proven symptom: 48 identical attempts). Hash THIS attempt's output
+    # and compare to the immediately-prior _rejection_ledger entry's out_hash
+    # (stamped in Phase 1). If they match AND are non-None, escalate to the DLQ
+    # instead of re-dispatching a 49th identical attempt.
+    #   - hashing parity: we hash task["result"] (the raw result field) with the
+    #     SAME _output_hash the ledger appliers used (source.get("result") in
+    #     apply.py) — apples-to-apples for the dominant grade/review/verify retry
+    #     path that funnels here. The refetched task carries this attempt's result.
+    #   - LIMIT (F6): exact-hash only; semantic near-duplicates won't match
+    #     (out of scope for Phase 3).
+    #   - guards: only quality rejections (availability/transient store no judged
+    #     output and append nothing to the ledger); empty ledger or a None prior
+    #     out_hash → no detection, normal retry; never fires on the first attempt
+    #     (no prior entry exists yet).
+    if category == "quality":
+        ledger = ctx.get("_rejection_ledger") or []
+        if ledger:
+            prior_hash = ledger[-1].get("out_hash")
+            try:
+                from src.workflows.engine.hooks import _output_hash
+                current_hash = _output_hash(task.get("result"))
+            except Exception:  # pragma: no cover - defensive
+                current_hash = None
+            if prior_hash and current_hash and prior_hash == current_hash:
+                logger.warning(
+                    "degenerate repeat — identical output, escalating to DLQ",
+                    task_id=task.get("id"),
+                    attempts=attempts,
+                    out_hash=current_hash,
+                )
+                await _dlq_write(
+                    task,
+                    error=(
+                        "degenerate repeat: identical output across attempts, "
+                        "not converging"
+                    ),
+                    category="quality",
+                    attempts=attempts,
+                )
+                return
+
     decision = decide_retry(
         {
             "category": category,

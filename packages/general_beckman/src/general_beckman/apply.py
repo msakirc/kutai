@@ -5052,6 +5052,15 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
         ctx["failed_models"] = worker_failed
         ctx["_pending_posthooks"] = []
 
+        # Rejection ledger (T1 / GAP1): the proven 48x competitive_positioning
+        # loop was a GRADE loop, but the ledger was only wired into the
+        # grounding/verify/code_review appliers — grade re-pended with no
+        # ledger entry, so the retry prompt's "Prior attempts" render stayed
+        # empty exactly where it mattered. Append here (after the availability
+        # masquerade guard above, before the terminal/re-pend split) so EVERY
+        # grade rejection is recorded — mirrors grounding (apply.py ~2960).
+        _ledger_reject(ctx, attempts, f"grade: {error_str}", source.get("result"))
+
         if attempts >= max_attempts:
             # Bonus: mirror _retry_or_dlq — if task made progress and
             # bonus budget remains, grant one more attempt. Otherwise DLQ.

@@ -57,8 +57,27 @@ for _, rl in matrix.cycle_request_cells(): # this ONE model's cycle window
 
 ---
 
+## Residual 3 — M4 amplifies graded S13/S14 desktop signals into a hard SUPPLY veto (NEW, found in 2026-06-21 review pass)
+
+**Files:** `packages/nerd_herd/src/nerd_herd/modifiers.py:81-93` (`_M4_BY_MODE` = full 0.0 / heavy 1.5 / shared 2.0 / minimal 1.0), `signals/s13_presence.py` (`PRESENT_PENALTY=-0.6` graded, `FULLSCREEN_VETO=-10` sentinel), `signals/s14_contention.py` (RAM penalty graded to `-1.0`, ext-GPU `-10` sentinel).
+
+**Symptom / mechanism.** S13/S14 are designed so only the **−10 sentinels** (fullscreen / external-GPU) peg the scalar to a veto; the rest is an intentionally **soft gradient** (present-user −0.6, RAM up to −1.0) meant to *down-rank* local, not exclude it. But S13/S14 live in `OTHER_BUCKET` (= supply), and M4 multiplies them by **1.5 (heavy) / 2.0 (shared)** in `combine` before the fold. So:
+- **shared** + present user (no fullscreen): S13 = −0.6 × 2.0 = **−1.2** → `supply_pressure ≤ −1.0` → local **vetoed**.
+- **heavy/shared** + RAM near cap: S14 = −1.0 × 1.5/2.0 = **−1.5 / −2.0** → local **vetoed**.
+
+A graded "yield the machine" hint has become a hard supply veto without the sentinel. Because it's a *supply* signal it does **not** break the `48e4cee8` invariant, and in heavy/shared a cloud model is normally the escape — **except** the genuine fleet-empty edge: a **`local_only` task** (cloud excluded at eligibility) in heavy/shared mode under a present user or RAM pressure → every local shares the same machine-level S13/S14 value → entire local fleet vetoed at once → **`select=None` silent stall, no fallback.** Same silent-stall pathology the saga was about, just sourced from the desktop axis instead of the cloud axis.
+
+**Directional idea (NOT designed/built):** keep M4-weighted S13/S14 **above** the veto floor — i.e. cap the graded (non-sentinel) contribution so only the −10 sentinels can reach `supply_pressure ≤ −1.0`, preserving the soft gradient M4 was meant to strengthen. OR: treat `local_only + all-local-vetoed-by-desktop` as a **defer** (wait for user-idle / RAM relief) with a clear reason, not a silent `select=None` loop. Either path must be sim-gated.
+
+**Risk / reachability:** needs heavy/shared mode (user-selected) + a present user or real RAM pressure + a `local_only` task. Plausible in normal desktop use. Confirm reachability (is `local_only` ever issued while shared/heavy is set?) before sizing the fix; if unreachable in practice, downgrade to LOW.
+
+## Review-pass findings (2026-06-21, independent adversarial review — non-residual)
+The phantom-veto chain (Residual-context fixes above) was re-reviewed end-to-end; the supply/demand invariant holds, base_score/supply_pressure are stamped on every path (incl. `scalar==0` continue and time-gate rescue), cycle-axis exclusion is correct (no rpm/rpmonth confusion), and `_rl` rollover does not mask genuine depletion. Two LOW doc/claim drifts to clean up opportunistically (not bugs):
+- **B-table "only decreases" claim is not enforced.** `estimate_for` uses learned **p90**; a step whose real p90 exceeds the curated static default would *increase* the projection. Only inflates demand pressure (rank-only, cannot veto), so no stall risk — but correct the "can only decrease" comment or add a `min(learned, static_default)` guard if the invariant is relied on.
+- **`ScoredModel.supply_pressure` docstring drift** (`ranking.py:67-71`, mirrored `selector.py:391`): enumerates S1/S7/S9/S10/S11 but the value is `bucket_totals["other"]` = the FULL `OTHER_BUCKET` incl S12/S13/S14. Code correct; comment stale (and it's exactly the S13/S14 that Residual 3 rides).
+
 ## Interaction between the two
-They compound: Residual 2 inflates `negative_total` (over-conserve on small-window models), which then trips Residual 1's gate (`negative_total <= -0.2`) and silences the positive arm — double-suppressing exactly the free/perishable models that should serve the backlog. Fixing Residual 2 alone reduces how often Residual 1 misfires, but doesn't remove the switch semantics. Consider sequencing: Residual 1 (gate condition) is the smaller, more central change; Residual 2 (S4/S5 reshape) is larger. Either order, sim-gate each independently.
+They compound: Residual 2 inflates `negative_total` (over-conserve on small-window models), which then trips Residual 1's gate (`negative_total <= -0.2`) and silences the positive arm — double-suppressing exactly the free/perishable models that should serve the backlog. Fixing Residual 2 alone reduces how often Residual 1 misfires, but doesn't remove the switch semantics. Consider sequencing: Residual 1 (gate condition) is the smaller, more central change; Residual 2 (S4/S5 reshape) is larger. Either order, sim-gate each independently. **Residual 3 is independent** (desktop/supply axis, not demand) — fixable on its own; cap-above-veto-floor is the smallest of the three.
 
 ## Mandatory sim gate (every change, both residuals)
 - `python packages/fatih_hoca/tests/sim/run_scenarios.py` — all pool-pressure (`pp1`–`pp12`) PASS, **no existing scenario shifts** unless intended (report deltas, never silently retune). `pp11` (daily overshoot conserves) + `pp12` (B-table demand reduces S2/S3, fails-when-reverted) are the key anchors.

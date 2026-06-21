@@ -63,6 +63,19 @@ async def test_gemini_scrapes_token_limits_and_sampling():
     assert m.sampling_defaults == {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0}
 
 
+def test_gemini_infer_modality_fallback_vocabulary():
+    """Generative-media family ids must map to non-text modality so registry
+    skips them. Mirrors the openrouter fix (production 2026-06-20: lyria audio
+    model registered as text). Gemini quota-gates lyria/imagen/veo to (0,0,0)
+    too, but the modality tag is the correct, provider-agnostic guard."""
+    from fatih_hoca.cloud.providers.gemini import _infer_modality
+
+    assert _infer_modality("lyria-3-pro-preview") == "audio"
+    assert _infer_modality("imagen-4-generate") == "image"
+    assert _infer_modality("veo-3-fast-generate") == "video"
+    assert _infer_modality("gemini-2.0-flash") == "text"
+
+
 @pytest.mark.asyncio
 async def test_gemini_tags_modality_for_image_and_tts_models():
     """Image / TTS models share `generateContent` with text models so the

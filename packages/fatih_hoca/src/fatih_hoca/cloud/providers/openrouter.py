@@ -137,13 +137,28 @@ def _infer_modality(entry: dict, raw_id: str) -> str:
             return "embedding"
         if "text" in out:
             return "text"
+    return _modality_from_id(raw_id)
+
+
+# Generative-media family tokens for id-pattern fallback when a provider omits
+# structured modality metadata (preview models often do). Ordered image →
+# audio → video → embedding; first match wins. Tokens are distinctive enough
+# not to collide with chat/instruct model names. Production 2026-06-20:
+# google/lyria-3-clip-preview (audio) was registered as text and won a writer
+# pick because "lyria" matched none of the original {image,tts,audio,video}.
+_IMAGE_TOKENS = ("image", "imagen", "diffusion", "sdxl", "flux", "dall-e", "dalle")
+_AUDIO_TOKENS = ("tts", "audio", "speech", "voice", "lyria", "music")
+_VIDEO_TOKENS = ("video", "veo", "sora")
+
+
+def _modality_from_id(raw_id: str) -> str:
     n = raw_id.lower()
-    if "embedding" in n:
+    if "embedding" in n or "embed" in n:
         return "embedding"
-    if "image" in n:
+    if any(t in n for t in _IMAGE_TOKENS):
         return "image"
-    if "tts" in n or "audio" in n:
+    if any(t in n for t in _AUDIO_TOKENS):
         return "audio"
-    if "video" in n:
+    if any(t in n for t in _VIDEO_TOKENS):
         return "video"
     return "text"

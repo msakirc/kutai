@@ -65,6 +65,67 @@ class TestValidate:
         err = validate_value(rule, {"info": {}})
         assert err and "empty placeholder" in err
 
+    # ── Conditional-empty exemption (empty_ok_when_input_empty) ──────────
+    #
+    # An empty required field is normally a placeholder reject. But some
+    # fields are legitimately empty when the upstream SCOPE is empty (e.g.
+    # compliance_overlay.required_documents when compliance_fingerprint has
+    # no jurisdictions). The exemption is anchored to a DIFFERENT task's
+    # input artifact — never the model's own self-report — so a lazy model
+    # cannot fake its way past it.
+
+    def _cond_rule(self):
+        return {"type": "object", "fields": {
+            "required_documents": {
+                "type": "array",
+                "empty_ok_when_input_empty": "compliance_fingerprint.jurisdictions",
+            },
+        }}
+
+    def test_conditional_empty_allowed_when_input_empty(self):
+        # jurisdictions=[] upstream → empty required_documents is valid.
+        inputs = {"compliance_fingerprint": {"jurisdictions": []}}
+        assert validate_value(
+            self._cond_rule(), {"required_documents": []}, inputs=inputs
+        ) is None
+
+    def test_conditional_empty_rejected_when_input_nonempty(self):
+        # Real scope exists upstream → an empty list is a LAZY placeholder.
+        inputs = {"compliance_fingerprint": {"jurisdictions": ["US", "EU"]}}
+        err = validate_value(
+            self._cond_rule(), {"required_documents": []}, inputs=inputs
+        )
+        assert err and "empty placeholder" in err
+
+    def test_conditional_empty_rejected_when_no_inputs(self):
+        # No proof the scope is empty → conservative reject (laziness-safe).
+        err = validate_value(self._cond_rule(), {"required_documents": []})
+        assert err and "empty placeholder" in err
+
+    def test_conditional_empty_rejected_when_input_missing(self):
+        # Marker references an artifact/path that isn't present → no proof.
+        inputs = {"some_other_artifact": {"foo": []}}
+        err = validate_value(
+            self._cond_rule(), {"required_documents": []}, inputs=inputs
+        )
+        assert err and "empty placeholder" in err
+
+    def test_conditional_nonempty_field_still_validates_normally(self):
+        # A populated field passes regardless of the marker / inputs.
+        inputs = {"compliance_fingerprint": {"jurisdictions": ["US"]}}
+        assert validate_value(
+            self._cond_rule(), {"required_documents": [{"doc": "privacy_policy"}]},
+            inputs=inputs,
+        ) is None
+
+    def test_empty_without_marker_still_rejected_with_inputs(self):
+        # Same empty value, no marker on the field → normal reject even when
+        # inputs happen to be present (exemption is opt-in per field).
+        rule = {"type": "object", "fields": {"required_documents": {"type": "array"}}}
+        inputs = {"compliance_fingerprint": {"jurisdictions": []}}
+        err = validate_value(rule, {"required_documents": []}, inputs=inputs)
+        assert err and "empty placeholder" in err
+
     def test_optional_field_skipped(self):
         rule = {"type": "object", "fields": {
             "a": {"type": "string"},

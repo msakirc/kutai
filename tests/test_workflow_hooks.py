@@ -10,12 +10,64 @@ from src.workflows.engine.hooks import (
     is_workflow_step,
     extract_output_artifact_names,
     post_execute_workflow_step,
+    collect_empty_exemption_inputs,
 )
 # enrich_task_description + pre_execute_workflow_step removed
 # 2026-04-27 (handoff item D). Tests for them deleted with the
 # functions; live prompt-build path covered by tests/test_missing_
 # artifact_note.py + tests/test_recency_reorder.py.
 from src.workflows.engine.artifacts import ArtifactStore
+
+
+class TestCollectEmptyExemptionInputs(unittest.TestCase):
+    """The lazy loader behind the empty_ok_when_input_empty exemption.
+
+    Anchors the exemption to the REAL upstream artifact file (authored by a
+    different task), never the producer's own output — so a lazy producer
+    cannot fake an empty-scope exemption.
+    """
+
+    _SCHEMA = {
+        "compliance_overlay": {
+            "type": "object",
+            "fields": {
+                "required_documents": {
+                    "type": "array",
+                    "empty_ok_when_input_empty":
+                        "compliance_fingerprint.jurisdictions",
+                },
+            },
+        }
+    }
+
+    def test_no_marker_returns_none_without_touching_fs(self):
+        # Schema with no marker must short-circuit (zero file IO).
+        plain = {"prd": {"type": "object", "required_fields": ["a"]}}
+        with patch("src.workflows.engine.hooks.get_mission_workspace") as gw:
+            out = collect_empty_exemption_inputs(plain, 87)
+        self.assertIsNone(out)
+        gw.assert_not_called()
+
+    def test_loads_referenced_artifact_file(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "compliance_fingerprint.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump({"jurisdictions": [], "user_classes": []}, f)
+            with patch("src.workflows.engine.hooks.get_mission_workspace",
+                       return_value=d):
+                out = collect_empty_exemption_inputs(self._SCHEMA, 87)
+        self.assertEqual(out, {"compliance_fingerprint":
+                               {"jurisdictions": [], "user_classes": []}})
+
+    def test_missing_file_yields_empty_inputs_not_crash(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:  # no fingerprint file
+            with patch("src.workflows.engine.hooks.get_mission_workspace",
+                       return_value=d):
+                out = collect_empty_exemption_inputs(self._SCHEMA, 87)
+        # Nothing loaded → None (gate then has no proof → rejects empties).
+        self.assertIsNone(out)
 
 
 class TestIsWorkflowStep(unittest.TestCase):

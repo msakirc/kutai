@@ -236,13 +236,8 @@ def _infer_modality(raw_id: str) -> str:
         *-embedding*   → embedding (also filtered earlier by method check)
         *-video*       → video generation
     """
-    n = raw_id.lower()
-    if "embedding" in n:
-        return "embedding"
-    if "image" in n:
-        return "image"
-    if "tts" in n or "audio" in n:
-        return "audio"
-    if "video" in n:
-        return "video"
-    return "text"
+    # Share the openrouter id-pattern vocabulary so the two adapters never
+    # drift (e.g. a new audio family caught in one but not the other).
+    from fatih_hoca.cloud.providers.openrouter import _modality_from_id
+
+    return _modality_from_id(raw_id)

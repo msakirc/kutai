@@ -1945,11 +1945,18 @@
       "artifact_schema": {
         "compliance_overlay": {
           "type": "object",
-          "required_fields": [
-            "required_documents",
-            "monitoring_obligations",
-            "data_subject_rights_implementation"
-          ],
+          "fields": {
+            "required_documents": {
+              "type": "array",
+              "empty_ok_when_input_empty": "compliance_fingerprint.jurisdictions"
+            },
+            "monitoring_obligations": {
+              "empty_ok_when_input_empty": "compliance_fingerprint.jurisdictions"
+            },
+            "data_subject_rights_implementation": {
+              "empty_ok_when_input_empty": "compliance_fingerprint.jurisdictions"
+            }
+          },
           "_schema_version": "1"
         }
       },

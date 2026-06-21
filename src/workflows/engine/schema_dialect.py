@@ -127,14 +127,57 @@ def is_empty_required_value(val: Any) -> bool:
     return False
 
 
+def _resolve_dotted(data: Any, dotted: str) -> tuple[bool, Any]:
+    """Resolve ``artifact.a.b`` against an ``{artifact_name: value}`` map.
+
+    Returns ``(found, value)``. ``found`` is False when any segment is
+    absent or a non-dict is traversed — the caller treats "not found" as
+    "no proof", never as an exemption.
+    """
+    if not isinstance(data, dict) or not isinstance(dotted, str) or not dotted:
+        return False, None
+    cur: Any = data
+    for seg in dotted.split("."):
+        if isinstance(cur, dict) and seg in cur:
+            cur = cur[seg]
+        else:
+            return False, None
+    return True, cur
+
+
+def _empty_exemption_granted(frule: dict, inputs: Optional[dict]) -> bool:
+    """Decide whether an empty required field is permitted.
+
+    ``empty_ok_when_input_empty: "<artifact>.<dot.path>"`` grants the
+    exemption ONLY when that UPSTREAM input value is itself empty. The
+    anchor is a different task's artifact (passed in via ``inputs``), never
+    the model's own output — so a lazy model that emits ``[]`` for a field
+    whose real scope is non-empty is still rejected. No inputs, missing
+    artifact, or unresolvable path → no proof → no exemption.
+    """
+    marker = frule.get("empty_ok_when_input_empty") if isinstance(frule, dict) else None
+    if not marker or inputs is None:
+        return False
+    found, val = _resolve_dotted(inputs, marker)
+    if not found:
+        return False
+    return is_empty_required_value(val)
+
+
 # ── Validation ──────────────────────────────────────────────────────────
 
-def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
+def validate_value(
+    rule: dict, value: Any, path: str = "", inputs: Optional[dict] = None
+) -> Optional[str]:
     """Validate ``value`` against dialect ``rule``. Returns error or None.
 
     Recurses through nested objects/arrays. Reports the failing path so
     retry feedback can pinpoint the breakage (e.g. ``info.title``,
     ``sprint_plans[0].tasks[2].task_id``).
+
+    ``inputs`` (optional ``{artifact_name: parsed_value}``) anchors the
+    ``empty_ok_when_input_empty`` per-field exemption to upstream input
+    artifacts. Omit it and the dialect behaves exactly as before.
     """
     if not isinstance(rule, dict):
         return f"{path or '<root>'}: rule is not a dict"
@@ -165,8 +208,10 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
                 return f"{field_path}: missing required field"
             fvalue = value[fname]
             if is_empty_required_value(fvalue):
+                if _empty_exemption_granted(frule, inputs):
+                    continue  # upstream scope is empty → empty value is valid
                 return f"{field_path}: empty placeholder value"
-            sub = validate_value(frule, fvalue, field_path)
+            sub = validate_value(frule, fvalue, field_path, inputs)
             if sub:
                 return sub
         return None
@@ -241,7 +286,7 @@ def validate_value(rule: dict, value: Any, path: str = "") -> Optional[str]:
                 item_path = f"{path}[{i}]"
                 if is_empty_required_value(item):
                     return f"{item_path}: empty placeholder value"
-                sub = validate_value(items_rule, item, item_path)
+                sub = validate_value(items_rule, item, item_path, inputs)
                 if sub:
                     return sub
         return None

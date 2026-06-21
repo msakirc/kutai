@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from src.infra.logging_config import get_logger
+from src.tools.workspace import get_mission_workspace
 from .artifacts import ArtifactStore, format_artifacts_for_prompt, get_phase_summaries, CONTEXT_BUDGETS, _TIER_ORDER
 from .conditions import evaluate_condition, resolve_group
 from .policies import ReviewTracker
@@ -723,10 +724,16 @@ async def resolve_dynamic_constraints(
     return resolved
 
 
-def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str]:
+def validate_artifact_schema(
+    output_value: str, schema: dict, inputs: dict | None = None
+) -> tuple[bool, str]:
     """Validate an artifact output against its schema definition.
 
     Returns (is_valid, error_message). error_message is empty if valid.
+
+    ``inputs`` (optional ``{artifact_name: parsed_value}``) anchors the
+    dialect's ``empty_ok_when_input_empty`` per-field exemption to upstream
+    input artifacts. Omit it and validation behaves exactly as before.
     """
     if not schema:
         return True, ""
@@ -747,7 +754,7 @@ def validate_artifact_schema(output_value: str, schema: dict) -> tuple[bool, str
         if schema_type in ("object", "array"):
             data = _extract_artifact_value(output_value, artifact_name, schema_type)
             if data is not None:
-                err = _dialect_validate(rules, data, path=artifact_name)
+                err = _dialect_validate(rules, data, path=artifact_name, inputs=inputs)
                 if err:
                     return False, f"Schema validation: {err}"
                 continue  # passed dialect check
@@ -1122,6 +1129,51 @@ async def should_skip_workflow_step(task: dict) -> tuple[bool, str]:
     if matched:
         return True, f"{artifact_name}.{'.'.join(path)} {op} {literal!r}"
     return False, ""
+
+
+def _scan_empty_exemption_markers(node: Any, out: set | None = None) -> set:
+    """Collect every ``empty_ok_when_input_empty`` marker string in a schema."""
+    if out is None:
+        out = set()
+    if isinstance(node, dict):
+        m = node.get("empty_ok_when_input_empty")
+        if isinstance(m, str) and m:
+            out.add(m)
+        for v in node.values():
+            _scan_empty_exemption_markers(v, out)
+    elif isinstance(node, list):
+        for it in node:
+            _scan_empty_exemption_markers(it, out)
+    return out
+
+
+def collect_empty_exemption_inputs(schema: dict, mission_id: int) -> dict | None:
+    """Load upstream input artifacts referenced by ``empty_ok_when_input_empty``.
+
+    Returns ``{artifact_name: parsed_value}`` for the dialect's conditional-
+    empty exemption, or ``None`` when the schema declares no marker (no file
+    IO in that case — the common path). Each artifact is read from its
+    produced file ``<mission_workspace>/<artifact_name>.json`` — authored by
+    the UPSTREAM task, so the exemption can't be self-granted by a lazy
+    producer. Unreadable/missing files are simply omitted (the gate then
+    finds no proof and rejects the empty value).
+    """
+    markers = _scan_empty_exemption_markers(schema)
+    if not markers:
+        return None
+    names = {m.split(".", 1)[0] for m in markers}
+    inputs: dict = {}
+    try:
+        ws = get_mission_workspace(mission_id)
+    except Exception:  # noqa: BLE001 — never let the loader break the gate
+        return None
+    for name in names:
+        try:
+            with open(os.path.join(ws, f"{name}.json"), encoding="utf-8") as f:
+                inputs[name] = json.load(f)
+        except Exception:  # noqa: BLE001 — missing/unreadable → no proof
+            continue
+    return inputs or None
 
 
 def is_workflow_step(context: dict) -> bool:

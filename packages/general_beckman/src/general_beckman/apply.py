@@ -1748,7 +1748,23 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
             if isinstance(_draft, str) and _draft.strip():
                 try:
                     from mr_roboto.schema_gate import schema_gate as _schema_gate
-                    _sg = _schema_gate(output_value=_draft, schema=_art_schema)
+                    # Load upstream input artifacts ONLY when the schema declares
+                    # an empty_ok_when_input_empty exemption (no-op otherwise).
+                    # Anchors the exemption to a DIFFERENT task's artifact so a
+                    # lazy producer can't self-grant an empty-scope pass.
+                    _gate_inputs = None
+                    try:
+                        from src.workflows.engine.hooks import (
+                            collect_empty_exemption_inputs as _cee,
+                        )
+                        _mid = source.get("mission_id")
+                        if _mid is not None:
+                            _gate_inputs = _cee(_art_schema, _mid)
+                    except Exception:  # noqa: BLE001 — loader must never break grade
+                        _gate_inputs = None
+                    _sg = _schema_gate(
+                        output_value=_draft, schema=_art_schema, inputs=_gate_inputs
+                    )
                 except Exception:  # noqa: BLE001 — never let the gate crash grade
                     _sg = {"passed": True, "error": ""}
                 if not _sg.get("passed"):

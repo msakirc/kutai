@@ -21,7 +21,9 @@ from __future__ import annotations
 from typing import Any
 
 
-def schema_gate(*, output_value: str, schema: dict) -> dict[str, Any]:
+def schema_gate(
+    *, output_value: str, schema: dict, inputs: dict | None = None
+) -> dict[str, Any]:
     """Return ``{passed, error}``.
 
     Parameters
@@ -31,6 +33,13 @@ def schema_gate(*, output_value: str, schema: dict) -> dict[str, Any]:
         envelope is unwrapped by the underlying validator.
     schema:
         The step's ``artifact_schema`` dict, keyed by artifact name.
+    inputs:
+        Optional ``{artifact_name: parsed_value}`` map of the step's upstream
+        input artifacts. Anchors the dialect's ``empty_ok_when_input_empty``
+        per-field exemption (an empty required field is valid only when the
+        named upstream scope is itself empty). Loaded by the caller from the
+        produced files — NEVER from the producer's own output — so a lazy
+        model cannot fake an empty-scope exemption.
 
     Returns
     -------
@@ -45,5 +54,5 @@ def schema_gate(*, output_value: str, schema: dict) -> dict[str, Any]:
 
     from src.workflows.engine.hooks import validate_artifact_schema
 
-    ok, error = validate_artifact_schema(output_value, schema)
+    ok, error = validate_artifact_schema(output_value, schema, inputs=inputs)
     return {"passed": bool(ok), "error": "" if ok else (error or "schema validation failed")}

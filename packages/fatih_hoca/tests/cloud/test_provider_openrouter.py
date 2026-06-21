@@ -79,6 +79,17 @@ _MIXED_MODALITY = {
             # Architecture missing — fall back to id-pattern detection
             "id": "vendor/some-image-model",
         },
+        {
+            # Architecture missing on a preview media model — id-pattern must
+            # still catch generative-media families. Production 2026-06-20:
+            # google/lyria-3-clip-preview (audio) registered as TEXT and won a
+            # writer-step pick because "lyria" matched no fallback token.
+            "id": "google/lyria-3-clip-preview",
+        },
+        {
+            # Image generator, no architecture metadata
+            "id": "black-forest-labs/flux-1-schnell",
+        },
     ],
 }
 
@@ -155,3 +166,6 @@ async def test_openrouter_tags_modality_from_architecture_and_id():
     assert by_id["openai/embedding-3-large"].output_modality == "embedding"
     # ID-pattern fallback when architecture absent
     assert by_id["vendor/some-image-model"].output_modality == "image"
+    # Generative-media families must be caught by the fallback vocabulary
+    assert by_id["google/lyria-3-clip-preview"].output_modality == "audio"
+    assert by_id["black-forest-labs/flux-1-schnell"].output_modality == "image"

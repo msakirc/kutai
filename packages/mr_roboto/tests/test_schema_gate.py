@@ -81,3 +81,45 @@ def test_no_schema_is_vacuous_pass():
     res = schema_gate(output_value="anything", schema={})
     assert res["passed"] is True
     assert not res["error"]
+
+
+# ── Conditional-empty exemption anchored to an upstream input ────────────
+
+_OVERLAY_SCHEMA = {
+    "compliance_overlay": {
+        "type": "object",
+        "fields": {
+            "required_documents": {
+                "type": "array",
+                "empty_ok_when_input_empty": "compliance_fingerprint.jurisdictions",
+            },
+        },
+        "_schema_version": "1",
+    }
+}
+
+
+def test_empty_overlay_passes_when_fingerprint_has_no_jurisdictions():
+    # A hobby app: fingerprint has zero jurisdictions, so zero required docs
+    # is the CORRECT answer. The gate must accept it when given the upstream.
+    overlay = json.dumps({"required_documents": []})
+    inputs = {"compliance_fingerprint": {"jurisdictions": []}}
+    res = schema_gate(output_value=overlay, schema=_OVERLAY_SCHEMA, inputs=inputs)
+    assert res["passed"] is True, res["error"]
+    assert not res["error"]
+
+
+def test_empty_overlay_fails_when_fingerprint_has_jurisdictions():
+    # Real scope upstream → an empty list is a LAZY placeholder. Reject.
+    overlay = json.dumps({"required_documents": []})
+    inputs = {"compliance_fingerprint": {"jurisdictions": ["US", "EU"]}}
+    res = schema_gate(output_value=overlay, schema=_OVERLAY_SCHEMA, inputs=inputs)
+    assert res["passed"] is False
+    assert "required_documents" in res["error"]
+
+
+def test_empty_overlay_fails_without_inputs():
+    # No upstream proof supplied → conservative reject (back-compat default).
+    overlay = json.dumps({"required_documents": []})
+    res = schema_gate(output_value=overlay, schema=_OVERLAY_SCHEMA)
+    assert res["passed"] is False

@@ -117,21 +117,28 @@ queue — is behavior we *want* gone.
 ### Fleet-of-one fallback (default when no fleet view)
 
 `s4/s5` gain a parameter `fleet_remaining: dict[str, int] | None`. When `None`
-(pressure-only unit tests that build a bare snapshot, or a single-model fleet),
-each axis falls back to **this model's own remaining** — which is mathematically
-the fleet sum of a fleet-of-one, and equals today's behavior. So existing
-pressure-only tests that pass a lone model are unaffected by construction.
+or an axis is absent (direct bare-matrix unit-test calls), that axis falls back
+to **this model's own `max(0, remaining − in_flight)`** — mathematically the
+fleet sum of a fleet-of-one, == today's behavior. Existing `test_s4`/`test_s5`
+unit tests (call the signal directly, no fleet view) stay green by construction.
 
-### Threading — build in ranking, pass through pressure_for
+### Threading — three call paths
 
-Build `fleet_remaining[axis] = Σ over all cloud models of max(0, remaining −
-in_flight_for_that_model)` (cycle axes only) **once per pick in the ranking
-layer**, then pass it into each `pressure_for(... fleet_remaining=...)` call,
-which forwards it to S4/S5. Mirrors the existing `fleet_consumed` pattern
-(`ranking.py:243` builds once, `types.py:313` consumes). Building it *inside*
-`pressure_for` would be O(models²) per pick (an O(models) fleet walk nested in
-the O(models) candidate loop); hoisting to ranking keeps it O(models). Owner
-explicitly named "S1-actual remaining + in-flight" as the basis.
+`fleet_remaining[axis] = Σ over all cloud models of max(0, remaining −
+in_flight_for_that_model)`, cycle axes only. Three paths set it:
+
+1. **Prod / ranking** (perf path): build once per pick in the ranking layer
+   (mirror `fleet_consumed`: `ranking.py:172` builds, `pressure_for` consumes),
+   pass into each `pressure_for(... fleet_remaining=...)`. O(models), not the
+   O(models²) of building inside the candidate loop.
+2. **Pressure-only anchors** (pp11/pp13 call `snap.pressure_for` directly, never
+   through ranking): `pressure_for` **builds `fleet_remaining` itself from
+   `self.cloud` + `self.in_flight_calls` when the arg is None**, then forwards to
+   S4/S5. One O(models) pass on a single-pick path — fine; prod skips it via #1.
+3. **Direct signal unit tests**: call `s4_queue_tokens(matrix, queue=...)` with
+   no fleet arg → per-model fallback (old behavior); new tests pass it explicitly.
+
+Owner explicitly named "S1-actual remaining + in-flight" as the basis.
 
 ### In-flight attribution — note the asymmetry
 

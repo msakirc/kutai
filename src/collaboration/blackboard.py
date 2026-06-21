@@ -174,7 +174,15 @@ def clear_cache(mission_id: int | None = None) -> None:
 # ── Prompt formatting ────────────────────────────────────────────────────────
 
 def format_blackboard_for_prompt(board: dict, max_chars: int = 3000) -> str:
-    """Format a blackboard for injection into an agent system prompt."""
+    """Format a blackboard for injection into an agent system prompt.
+
+    Truncation is *structural*: each ``### section`` is kept whole or
+    dropped entirely, and an honest note records how many were omitted.
+    The block is never sliced mid-content. A raw ``text[:max_chars]``
+    cut could sever the architecture JSON or a section header mid-line,
+    leaving the model to parse/trust malformed structure — which
+    confuses it more than the missing data would.
+    """
     if not board:
         return ""
 
@@ -189,15 +197,27 @@ def format_blackboard_for_prompt(board: dict, max_chars: int = 3000) -> str:
     if not has_content:
         return ""
 
-    parts = ["## Shared Blackboard (Project State)"]
+    header = "## Shared Blackboard (Project State)"
 
-    # Architecture
+    # Each section = (section-header, [item lines]). Truncation below is
+    # item-granular: whole items are kept or dropped, never byte-sliced,
+    # and a section can be partially shown (e.g. the first N constraints)
+    # rather than dropped wholesale. Sections that are themselves
+    # uncapped (constraints) therefore can't starve the budget.
+    sections: list[tuple[str, list[str]]] = []
+
+    # Architecture — render a VALID key summary when the full JSON is
+    # large, never a sliced (unparseable) ```json blob. Treated as a
+    # single multi-line item so the fence is kept whole or dropped whole.
     arch = board.get("architecture", {})
     if arch:
         arch_json = json.dumps(arch, indent=2)
-        if len(arch_json) > 500:
-            arch_json = arch_json[:500] + "\n..."
-        parts.append(f"### Architecture\n```json\n{arch_json}\n```")
+        if len(arch_json) > 500 and isinstance(arch, dict):
+            keys = ", ".join(str(k) for k in arch.keys())
+            body = f"  {len(arch)} keys: {keys}\n  (full content via read_blackboard)"
+        else:
+            body = f"```json\n{arch_json}\n```"
+        sections.append(("### Architecture", [body]))
 
     # Files
     files = board.get("files", {})
@@ -206,7 +226,7 @@ def format_blackboard_for_prompt(board: dict, max_chars: int = 3000) -> str:
         for path, info in list(files.items())[:20]:
             status = info.get("status", "?") if isinstance(info, dict) else str(info)
             file_lines.append(f"  - `{path}`: {status}")
-        parts.append("### File Status\n" + "\n".join(file_lines))
+        sections.append(("### File Status", file_lines))
 
     # Decisions
     decisions = board.get("decisions", [])
@@ -217,31 +237,57 @@ def format_blackboard_for_prompt(board: dict, max_chars: int = 3000) -> str:
             if isinstance(d, dict)
         ]
         if dec_lines:
-            parts.append("### Key Decisions\n" + "\n".join(dec_lines))
+            sections.append(("### Key Decisions", dec_lines))
 
     # Open Issues
     issues = board.get("open_issues", [])
     if issues:
         issue_lines = [f"  - {i}" for i in issues[-5:] if isinstance(i, str)]
         if issue_lines:
-            parts.append("### Open Issues\n" + "\n".join(issue_lines))
+            sections.append(("### Open Issues", issue_lines))
 
     # Constraints
     constraints = board.get("constraints", [])
     if constraints:
         constraint_lines = [f"  - {c}" for c in constraints if isinstance(c, str)]
         if constraint_lines:
-            parts.append("### Constraints\n" + "\n".join(constraint_lines))
+            sections.append(("### Constraints", constraint_lines))
 
     # Dependency Map
     dependency_map = board.get("dependency_map", {})
     if dependency_map:
         num_deps = len(dependency_map)
-        parts.append(f"### Task Dependencies\n  {num_deps} task dependencies tracked")
+        sections.append(("### Task Dependencies",
+                         [f"  {num_deps} task dependencies tracked"]))
 
-    text = "\n\n".join(parts)
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n... [blackboard truncated]"
+    # Item-granular budget fit: keep whole items in order until the next
+    # would overflow; count omissions honestly. A section header costs
+    # budget only once its first item is placed, so an entirely-dropped
+    # section leaves no orphan header.
+    out = [header]
+    used = len(header)
+    omitted = 0
+    for sec_header, items in sections:
+        header_placed = False
+        for item in items:
+            hdr_cost = (len(sec_header) + 2) if not header_placed else 0
+            if used + hdr_cost + len(item) + 1 > max_chars:
+                omitted += 1
+                continue
+            if not header_placed:
+                out.append("")  # blank line separating sections
+                out.append(sec_header)
+                used += len(sec_header) + 2
+                header_placed = True
+            out.append(item)
+            used += len(item) + 1
+
+    text = "\n".join(out)
+    if omitted:
+        text += (
+            f"\n\n_[{omitted} blackboard item(s) omitted to fit budget — "
+            "full state via read_blackboard]_"
+        )
     return text
 
 

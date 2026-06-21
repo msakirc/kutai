@@ -1085,9 +1085,16 @@ async def build_user_context(
     if "board" in policy and mission_id:
         try:
             board = await get_or_create_blackboard(mission_id)
-            bb_block = format_blackboard_for_prompt(board)
+            # Enforce the layer budget INSIDE the formatter so truncation is
+            # item-granular (whole sections/items dropped, honest note added).
+            # Do NOT wrap in truncate_to_tokens — that raw byte-slice would
+            # re-sever the block mid-content (invalid JSON / dangling header),
+            # which confuses the model more than the omitted data would.
+            bb_block = format_blackboard_for_prompt(
+                board, max_chars=budgets.get("board", 500) * 4
+            )
             if bb_block:
-                parts.append(truncate_to_tokens(bb_block, budgets.get("board", 500)))
+                parts.append(bb_block)
         except Exception as exc:
             logger.debug(f"Blackboard failed: {exc}")
 

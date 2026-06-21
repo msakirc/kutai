@@ -45,6 +45,55 @@ logger = get_logger("runtime.context")
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Rejection ledger render (Phase 1, T2)
+# ────────────────────────────────────────────────────────────────────────────
+
+_LEDGER_BUDGET_CHARS = 2000
+
+
+def render_rejection_ledger(ledger) -> str:
+    """Render ``ctx["_rejection_ledger"]`` into a compact retry block.
+
+    The ledger is the accumulated history of (approach, why-rejected) for
+    a task (written by ``hooks.append_rejection``, T1). Showing the worker
+    every prior rejection — not just the last one — is what stops it
+    re-trying a rejected approach (spec C5).
+
+    Gated on >=2 entries (a single rejection is already covered by the
+    existing per-artifact schema checklist). One WHOLE line per entry; if
+    the block would exceed ``_LEDGER_BUDGET_CHARS`` the OLDEST whole
+    entries are dropped (never byte-sliced — spec C1/F5). Returns "" when
+    there is nothing to render so the caller can skip the block entirely.
+    """
+    if not ledger or not isinstance(ledger, (list, tuple)) or len(ledger) < 2:
+        return ""
+
+    header = "## Prior attempts (do not repeat):"
+
+    def _line(e) -> str:
+        try:
+            attempt = e.get("attempt")
+            reason = str(e.get("reason", "")).replace("\n", " ").strip()
+        except AttributeError:
+            return ""
+        return f"- attempt {attempt}: {reason}"
+
+    lines = [_line(e) for e in ledger]
+    lines = [ln for ln in lines if ln]
+    if len(lines) < 2:
+        return ""
+
+    # Drop OLDEST whole entries until under budget (keep newest, which carry
+    # the most relevant "what I just tried" signal). Header always counts.
+    while len(lines) > 2 and (
+        len(header) + 1 + sum(len(ln) + 1 for ln in lines) > _LEDGER_BUDGET_CHARS
+    ):
+        lines.pop(0)
+
+    return header + "\n" + "\n".join(lines)
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Tool-description block
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -1276,6 +1325,17 @@ async def build_user_context(
     #   ## Your Previous Output (when retrying)
     # Model sees the schema, the rejection reason, and the previous
     # output adjacent to its own generation point.
+    # ── Rejection ledger (T2) — OUTSIDE the _schema_error guard ──
+    # The bloat re-entry paths (degenerate / empty-result / post-availability)
+    # never set _schema_error (spec §1 / M4), so the ledger render lives in
+    # its own independent block, gated only on the ledger itself. It carries
+    # the accumulated history of prior rejection reasons so the worker does
+    # not repeat a rejected approach (spec C5). Placed just before the schema
+    # / retry tail so it sits near the model's generation point.
+    _ledger_block = render_rejection_ledger(task_context.get("_rejection_ledger"))
+    if _ledger_block:
+        parts.append(_ledger_block)
+
     if _tail_schema_block:
         parts.append(_tail_schema_block)
     if _tail_retry_block:

@@ -316,6 +316,14 @@ class SystemSnapshot:
             inflight_calls[m] = inflight_calls.get(m, 0) + 1
             inflight_tokens[m] = inflight_tokens.get(m, 0) + int(getattr(c, "est_tokens", 0) or 0)
         fleet: dict[str, int] = {}
+        # NOTE: in-flight is keyed on InFlightCall.model (the pick's `model.name`),
+        # matched against `ps.models` keys (CloudModelState.model_id). For the live
+        # fleet these coincide — dynamically-discovered cloud models set
+        # name == litellm_name == the snapshot key. A YAML-catalog cloud model with
+        # a friendly name != litellm_name would silently skip in-flight subtraction
+        # here (fleet over-counts remaining → mild under-conserve, the SAFE
+        # direction since demand never vetoes and S1 backstops real depletion). The
+        # pre-existing S6 rpd lookup (ranking.py) relies on the same convention.
         for ps in self.cloud.values():
             for mname, ms in ps.models.items():
                 for axis, rl in ms.limits.cycle_request_cells():

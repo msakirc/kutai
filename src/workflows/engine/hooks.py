@@ -369,7 +369,7 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
     # attempt. The fresh output_value (this run's final_answer) must outrank it,
     # even when the stale file is itself schema-valid (task 524364: a gate-failed
     # 'dead' report kept being resurrected over the corrected 'active' result).
-    write_stripped = bool(schema) and not ctx.get("_allow_write_tools")
+    write_stripped = isinstance(schema, dict) and bool(schema) and not ctx.get("_allow_write_tools")
     canonical_out = output_value
     for entry in produces:
         if not (isinstance(entry, str) and entry.endswith((".md", ".json"))):
@@ -381,9 +381,12 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
                 disk = fh.read()
         except OSError:
             disk = None
-        # Priority: the agent's on-disk write outranks output_value — a rich
-        # valid file is preserved (intake #73); only a disk file that FAILS
-        # the schema yields to the (unwrapped) result (mission 81).
+        # Priority is CONDITIONAL (see write_stripped above):
+        #   • write NOT stripped → the agent's fresh on-disk write outranks
+        #     output_value; a rich valid file is preserved (intake #73), only a
+        #     disk file that FAILS the schema yields to the result (mission 81).
+        #   • write stripped (schema'd step) → disk is necessarily a STALE prior
+        #     attempt, so the fresh output_value outranks it (task 524364).
         #
         # output_value is the step's SINGLE result, so it can only stand in for
         # the produces path of a single-artifact step. For a multi-produces step

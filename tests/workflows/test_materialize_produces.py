@@ -142,6 +142,61 @@ async def test_multi_produces_length_fallback_does_not_contaminate(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_schema_strip_step_fresh_output_beats_stale_disk(tmp_path, monkeypatch):
+    """Task 524364 (mission 87, [1.0c] prior_art_synthesize) regression.
+
+    For a single-produces step with an ``artifact_schema``, ``write_file`` is
+    auto-stripped (_apply_auto_strip) — the agent CANNOT write disk this run, so
+    any on-disk file is a STALE artifact from a prior failed attempt. The fresh
+    ``output_value`` (this run's final_answer) must win, even though the stale
+    disk file is itself schema-valid.
+
+    Pre-fix: candidates were unconditionally [disk, output_value]; a schema-valid
+    stale disk outranked the fresh result, so a gate-failed file was resurrected
+    on every retry -> permanent DLQ. The synthesizer had already corrected its
+    output (all 'active') but the engine kept rewriting the old 'dead' file the
+    post-hook gate reads."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    rel = "mission_87/.research/prior_art_report.json"
+    abs_p = tmp_path / rel
+    abs_p.parent.mkdir(parents=True, exist_ok=True)
+    # STALE prior-attempt file — schema-valid but gate-failing content.
+    abs_p.write_text(json.dumps({"items": ["stale"], "label": "STALE"}), encoding="utf-8")
+    schema = {"draft": {"type": "object", "required": ["items"]}}
+    ctx = _ctx([rel], schema)   # artifact_schema present -> write_file stripped
+    task = {"mission_id": 87, "agent_type": "prior_art_synthesizer"}
+    fresh = json.dumps({"items": ["fresh"], "label": "FRESH"})
+
+    out = await materialize_produces(ctx, task, {"result": fresh}, fresh)
+
+    disk = json.loads(abs_p.read_text(encoding="utf-8"))
+    assert disk["label"] == "FRESH"          # fresh output written, stale overwritten
+    assert json.loads(out)["label"] == "FRESH"   # returned == on-disk (gate parity)
+
+
+@pytest.mark.asyncio
+async def test_schema_strip_invalid_fresh_output_keeps_valid_disk(tmp_path, monkeypatch):
+    """Safety net for the priority flip: when the fresh output_value FAILS the
+    (enforced) schema, select_canonical falls back to the schema-valid stale disk
+    so a degraded retry can't erase a usable prior file with garbage."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    rel = "mission_87/.research/prior_art_report.json"
+    abs_p = tmp_path / rel
+    abs_p.parent.mkdir(parents=True, exist_ok=True)
+    abs_p.write_text(json.dumps({"items": ["VALID_PRIOR"]}), encoding="utf-8")
+    schema = {"draft": {"type": "object", "fields": {"items": {"type": "array"}}}}  # enforced
+    ctx = _ctx([rel], schema)
+    task = {"mission_id": 87, "agent_type": "prior_art_synthesizer"}
+    bad = json.dumps({"noitems": "schema-invalid"})   # missing required "items"
+
+    out = await materialize_produces(ctx, task, {"result": bad}, bad)
+
+    disk = json.loads(abs_p.read_text(encoding="utf-8"))
+    assert disk["items"] == ["VALID_PRIOR"]   # valid disk preserved over invalid fresh
+    assert json.loads(out)["items"] == ["VALID_PRIOR"]
+
+
+@pytest.mark.asyncio
 async def test_mission81_289715_regression(tmp_path, monkeypatch):
     """The real failure: agent wrote a narration report to the produces path
     while the correct doc sat in a ```yaml fence in result. Materializer must

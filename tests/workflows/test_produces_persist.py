@@ -49,12 +49,18 @@ def test_persists_to_declared_json_produces_path(tmp_path):
     assert "items" in data and len(data["items"]) == 14
 
 
-def test_does_not_clobber_existing_produces_file(tmp_path):
-    # An agent-written (richer) file must be preserved, not overwritten.
+def test_schema_strip_stale_file_overwritten_by_fresh_output(tmp_path):
+    # For a schema'd step write_file is auto-stripped (see module docstring), so
+    # the agent CANNOT have written the produces file this run — any existing
+    # file is a STALE prior-attempt artifact. A schema-valid fresh output_value
+    # must overwrite it, else a gate-failed file is resurrected on every retry
+    # (task 524364: an old 'dead' prior-art report kept clobbering the corrected
+    # 'active' result -> permanent DLQ).
     d = tmp_path / "mission_999" / ".intake"
     d.mkdir(parents=True)
-    (d / "intake_todo_draft.json").write_text('{"items": ["AGENT_WROTE_THIS"]}', encoding="utf-8")
+    (d / "intake_todo_draft.json").write_text('{"items": ["STALE_PRIOR_ATTEMPT"]}', encoding="utf-8")
     _run(tmp_path, ["mission_999/.intake/intake_todo_draft.json"],
          {"_schema_version": "1", "items": [{"n": 1}]})
     kept = (d / "intake_todo_draft.json").read_text(encoding="utf-8")
-    assert "AGENT_WROTE_THIS" in kept
+    assert "STALE_PRIOR_ATTEMPT" not in kept       # stale overwritten
+    assert '"n": 1' in kept or '"n":1' in kept       # fresh output landed

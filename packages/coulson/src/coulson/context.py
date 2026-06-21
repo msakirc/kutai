@@ -93,6 +93,53 @@ def render_rejection_ledger(ledger) -> str:
     return header + "\n" + "\n".join(lines)
 
 
+async def fetch_prior_draft(
+    *,
+    output_names,
+    mission_id,
+    store,
+    already_injected,
+) -> str:
+    """Inject the step's OWN prior draft WHOLE on a same-step retry (T3).
+
+    The durable artifact IS the un-truncated last attempt (spec C3): it is
+    persisted BEFORE the schema gate, so on retry the worker can continue /
+    fix it instead of restarting. We read by OUTPUT artifact NAME (M2 — the
+    step's ``output_artifacts``, NOT the ``produces`` paths), preferring the
+    ``<name>_summary`` form then the bare name (mirrors ``_fetch_deps``).
+
+    No truncation — the whole draft is injected (spec C1). Names already
+    injected by the deps block (upstream ``input_artifacts``) are skipped so
+    the same artifact is not duplicated. Returns "" when there is nothing to
+    inject (no names / no mission_id / no stored artifact) — non-workflow
+    tasks and degenerate output (which stores no artifact) get no draft.
+    """
+    if not output_names or mission_id is None:
+        return ""
+    already = already_injected or set()
+    blocks: list[str] = []
+    for name in output_names:
+        if not isinstance(name, str) or name in already:
+            continue
+        value = None
+        if not name.endswith("_summary"):
+            value = await store.retrieve(mission_id, f"{name}_summary")
+        if value is None:
+            value = await store.retrieve(mission_id, name)
+        if value is None and name.endswith("_summary"):
+            bare = name[: -len("_summary")]
+            value = await store.retrieve(mission_id, bare)
+        if value is None or not str(value).strip():
+            continue
+        blocks.append(str(value))
+    if not blocks:
+        return ""
+    body = "\n\n".join(blocks)
+    return (
+        "## Your prior draft (continue/fix — do NOT restart):\n" + body
+    )
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Tool-description block
 # ────────────────────────────────────────────────────────────────────────────
@@ -1325,6 +1372,34 @@ async def build_user_context(
     #   ## Your Previous Output (when retrying)
     # Model sees the schema, the rejection reason, and the previous
     # output adjacent to its own generation point.
+    # ── Same-step durable draft read-back (T3) — OUTSIDE the guard ──
+    # On a workflow-step retry, inject the step's OWN prior draft WHOLE so a
+    # 75%-complete attempt is continued/fixed, not restarted (spec C3/C1).
+    # The durable artifact is the un-truncated last attempt; this replaces
+    # the 6k `_prev_output` as the continuation carrier on the artifact-backed
+    # path. Read by OUTPUT artifact NAME (M2), preferring the summary form.
+    # Skips names already shown by the deps block; non-workflow / degenerate
+    # (no stored artifact) get nothing and fall back to ledger / _prev_output.
+    try:
+        if int(task.get("worker_attempts", 0) or 0) > 0:
+            from src.workflows.engine.hooks import (
+                get_artifact_store, extract_output_artifact_names,
+            )
+            _draft_names = extract_output_artifact_names(task_context)
+            _draft_mid = task_context.get("mission_id") or task.get("mission_id")
+            if _draft_names and _draft_mid is not None:
+                _already = set(task_context.get("input_artifacts") or [])
+                _draft_block = await fetch_prior_draft(
+                    output_names=_draft_names,
+                    mission_id=_draft_mid,
+                    store=get_artifact_store(),
+                    already_injected=_already,
+                )
+                if _draft_block:
+                    parts.append(_draft_block)
+    except Exception as _exc:
+        logger.debug(f"prior-draft read-back skipped: {_exc!r}")
+
     # ── Rejection ledger (T2) — OUTSIDE the _schema_error guard ──
     # The bloat re-entry paths (degenerate / empty-result / post-availability)
     # never set _schema_error (spec §1 / M4), so the ledger render lives in

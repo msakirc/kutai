@@ -127,6 +127,15 @@ def classify_error(error: str, status_code: int | None = None) -> str:
             # other minute-scoped Gemini quotas use "PerMinute".
             or "perday" in e
             or "perdayperproject" in e
+            # OpenRouter free-tier DAILY cap: body says "Rate limit
+            # exceeded: free-models-per-day". Its `per-day` is hyphenated,
+            # so none of the markers above caught it → it fell to short
+            # rate_limited → 60s synthetic backoff → the selector re-picked
+            # the same :free model every ~60-120s for hours instead of
+            # cooling it for the day and falling back to local (overnight
+            # storm 2026-06-21). The per-MINUTE free cap ("free-models-
+            # per-min") has no "per-day" substring, so it stays rate_limited.
+            or "free-models-per-day" in e
         ):
             return "daily_exhausted"
         return cat
@@ -145,6 +154,7 @@ def classify_error(error: str, status_code: int | None = None) -> str:
         or "(rpd)" in e
         or "perday" in e
         or "perdayperproject" in e
+        or "free-models-per-day" in e  # OpenRouter free DAILY cap (hyphenated)
     ):
         return "daily_exhausted"
     if any(k in e for k in ("rate limit", "rate_limit", "429",

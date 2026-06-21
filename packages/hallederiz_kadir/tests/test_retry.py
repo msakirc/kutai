@@ -191,6 +191,27 @@ def test_classify_gpu_busy():
 def test_classify_daily_exhausted():
     assert classify_error("Daily limit exhausted for groq/llama") == "daily_exhausted"
 
+def test_classify_openrouter_free_daily_is_daily_exhausted():
+    """OpenRouter free-tier DAILY cap (`free-models-per-day`) must classify as
+    daily_exhausted, not short rate_limited. Its `per-day` is hyphenated so it
+    matched none of the existing daily markers → got a 60s synthetic backoff →
+    the selector re-picked the same :free model every ~60-120s for hours
+    (overnight 2026-06-21 storm) instead of cooling it for the day and falling
+    back to local."""
+    body = ('litellm.RateLimitError: OpenrouterException - {"error":{"message":'
+            '"Rate limit exceeded: free-models-per-day.","code":429}}')
+    assert classify_error(body, status_code=429) == "daily_exhausted"
+    assert classify_error(body) == "daily_exhausted"
+
+
+def test_classify_openrouter_free_per_minute_stays_rate_limited():
+    """The per-MINUTE free cap is a genuine short window — must stay
+    rate_limited (the daily marker must not over-catch it)."""
+    body = ('OpenrouterException - {"error":{"message":'
+            '"Rate limit exceeded: free-models-per-min.","code":429}}')
+    assert classify_error(body, status_code=429) == "rate_limited"
+
+
 def test_classify_loading():
     assert classify_error("loading model qwen3-30b") == "loading"
 

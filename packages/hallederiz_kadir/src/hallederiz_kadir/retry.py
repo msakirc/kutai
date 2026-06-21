@@ -233,6 +233,36 @@ def classify_error(error: str, status_code: int | None = None) -> str:
     return "unknown"
 
 
+def classify_404_cause(message: str) -> str:
+    """Return the mark_dead cause (TTL bucket) for a model_not_found / 404.
+
+    OpenRouter returns 404 ``"No endpoints found that support tool use"`` when
+    the picked model has NO endpoint supporting the requested ``tools=`` param.
+    That is a PERMANENT capability mismatch for tool tasks, not a routing /
+    rotation blip — a 5-minute transient TTL just revives the model to be
+    re-picked and 404 again. Overnight 2026-06-21 the assistant ``1.0c`` step
+    looped on this ~4h (03:34→07:41), because once the night run exhausted the
+    other providers' daily quotas this model was the only candidate, so each
+    5-min revival fed it straight back. Route capability-404 to the 24h
+    permanent bucket so the selector durably moves on.
+
+    Genuine no-upstream routing 404s ("no endpoints found" without a capability
+    clause, "no providers available", "no upstream") stay transient (5min) so
+    they auto-revive without operator action. Everything else is treated as a
+    retired / unknown id (permanent until rediscovery).
+    """
+    m = (message or "").lower()
+    # Capability mismatch — permanent for this request shape. Checked FIRST so
+    # it wins over the generic "no endpoints found" transient marker.
+    if "support tool use" in m or "support tools" in m:
+        return "404_permanent"
+    if any(k in m for k in (
+        "no endpoints found", "no providers available", "no upstream",
+    )):
+        return "404_transient"
+    return "404_permanent"
+
+
 async def execute_with_retry(
     call_fn: Callable[[], Awaitable],
     max_retries: int,

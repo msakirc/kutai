@@ -1062,29 +1062,22 @@ async def call(
             # appended a False outcome, so reliability tracking captures
             # the failure.
             if raw_result.category == "model_not_found":
-                _msg_lc = (raw_result.message or "").lower()
-                _transient_404_markers = (
-                    "no endpoints found",
-                    "no providers available",
-                    "no upstream",
-                )
-                _is_transient_routing = any(
-                    m in _msg_lc for m in _transient_404_markers
-                )
-                if _is_transient_routing:
-                    # Mark dead with short-TTL cause so the model is
-                    # excluded for a few minutes (CAUSE_POLICY:
-                    # 404_transient → 5min) but auto-revives without
-                    # operator action when the upstream rotation
-                    # completes. Reliability pressure (S10) still ranks
-                    # it down naturally on top of the gate.
-                    try:
-                        from src.models.model_registry import get_registry
-                        get_registry().mark_dead(
-                            model.litellm_name, cause="404_transient",
-                        )
-                    except Exception:
-                        pass
+                # Cause/TTL decided by classify_404_cause: genuine no-upstream
+                # routing 404s are transient (5min auto-revive); capability
+                # 404s ("no endpoints found that support tool use") and retired
+                # ids are permanent (24h) — a transient TTL on a capability
+                # mismatch just revives the model to be re-picked and 404 again
+                # (overnight 2026-06-21: assistant 1.0c looped ~4h on this).
+                from hallederiz_kadir.retry import classify_404_cause
+                _cause = classify_404_cause(raw_result.message or "")
+                try:
+                    from src.models.model_registry import get_registry
+                    get_registry().mark_dead(
+                        model.litellm_name, cause=_cause,
+                    )
+                except Exception:
+                    pass
+                if _cause == "404_transient":
                     _get_logger().warning(
                         "404 transient (routing/rotation) on %s — "
                         "marked dead with 5min TTL: %s",
@@ -1092,13 +1085,12 @@ async def call(
                         (raw_result.message or "")[:200],
                     )
                 else:
-                    try:
-                        from src.models.model_registry import get_registry
-                        get_registry().mark_dead(
-                            model.litellm_name, cause="404_permanent",
-                        )
-                    except Exception:
-                        pass
+                    _get_logger().warning(
+                        "404 permanent (capability/retired) on %s — "
+                        "marked dead with 24h TTL: %s",
+                        model.litellm_name,
+                        (raw_result.message or "")[:200],
+                    )
             # auth_failure: per-call evidence is too noisy for provider-
             # wide kill action (federated routing, sub-vendor outages,
             # transient credit walls, gated-model 403s, body-parse

@@ -212,6 +212,32 @@ def test_classify_openrouter_free_per_minute_stays_rate_limited():
     assert classify_error(body, status_code=429) == "rate_limited"
 
 
+def test_404_cause_tool_capability_is_permanent():
+    """OpenRouter 404 'No endpoints found that support tool use' is a PERMANENT
+    capability mismatch for tool tasks — not a routing blip. A 5min transient
+    TTL revives the model to be re-picked and 404 again; overnight 2026-06-21
+    the assistant 1.0c step looped on it ~4h (03:34→07:41). Must route to the
+    24h permanent bucket so the selector moves on."""
+    from hallederiz_kadir.retry import classify_404_cause
+    msg = ('OpenrouterException - {"error":{"message":"No endpoints found that '
+           'support tool use. Try disabling read_file","code":404}}')
+    assert classify_404_cause(msg) == "404_permanent"
+
+
+def test_404_cause_no_upstream_stays_transient():
+    """Genuine routing/rotation 404 (no upstream available right now) must stay
+    transient (5min) so the model auto-revives without operator action."""
+    from hallederiz_kadir.retry import classify_404_cause
+    assert classify_404_cause("No endpoints found for this model") == "404_transient"
+    assert classify_404_cause("no providers available") == "404_transient"
+
+
+def test_404_cause_generic_not_found_is_permanent():
+    """A retired/unknown id (no transient marker) is permanently not-found."""
+    from hallederiz_kadir.retry import classify_404_cause
+    assert classify_404_cause("model is not found for api version v1") == "404_permanent"
+
+
 def test_classify_loading():
     assert classify_error("loading model qwen3-30b") == "loading"
 

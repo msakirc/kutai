@@ -18,6 +18,7 @@ Free-only mode (env OPENROUTER_FREE_ONLY=1):
 from __future__ import annotations
 
 import os
+import re
 
 import httpx
 
@@ -141,24 +142,42 @@ def _infer_modality(entry: dict, raw_id: str) -> str:
 
 
 # Generative-media family tokens for id-pattern fallback when a provider omits
-# structured modality metadata (preview models often do). Ordered image →
-# audio → video → embedding; first match wins. Tokens are distinctive enough
-# not to collide with chat/instruct model names. Production 2026-06-20:
+# structured modality metadata (preview models often do). Order embedding →
+# image → audio → video; first match wins. Production 2026-06-20:
 # google/lyria-3-clip-preview (audio) was registered as text and won a writer
 # pick because "lyria" matched none of the original {image,tts,audio,video}.
+#
+# Tokens match only at DELIMITER boundaries (/, -, _, ., :, space, or string
+# end) — never as a bare substring — so a media token embedded inside a longer
+# word (e.g. "flux" in "reflux", "sora" in "sorano", "embed" in "membed")
+# cannot false-drop a legitimate text model. Multi-part tokens like "dall-e"
+# work because the leading/trailing delimiter is what's anchored, not the
+# internal hyphen.
+_EMBED_TOKENS = ("embedding", "embed")
 _IMAGE_TOKENS = ("image", "imagen", "diffusion", "sdxl", "flux", "dall-e", "dalle")
 _AUDIO_TOKENS = ("tts", "audio", "speech", "voice", "lyria", "music")
 _VIDEO_TOKENS = ("video", "veo", "sora")
 
 
+def _compile_token_re(tokens: tuple[str, ...]) -> "re.Pattern[str]":
+    alt = "|".join(re.escape(t) for t in tokens)
+    return re.compile(rf"(?:^|[/\-_.: ])(?:{alt})(?:$|[/\-_.: ])")
+
+
+_EMBED_RE = _compile_token_re(_EMBED_TOKENS)
+_IMAGE_RE = _compile_token_re(_IMAGE_TOKENS)
+_AUDIO_RE = _compile_token_re(_AUDIO_TOKENS)
+_VIDEO_RE = _compile_token_re(_VIDEO_TOKENS)
+
+
 def _modality_from_id(raw_id: str) -> str:
     n = raw_id.lower()
-    if "embedding" in n or "embed" in n:
+    if _EMBED_RE.search(n):
         return "embedding"
-    if any(t in n for t in _IMAGE_TOKENS):
+    if _IMAGE_RE.search(n):
         return "image"
-    if any(t in n for t in _AUDIO_TOKENS):
+    if _AUDIO_RE.search(n):
         return "audio"
-    if any(t in n for t in _VIDEO_TOKENS):
+    if _VIDEO_RE.search(n):
         return "video"
     return "text"

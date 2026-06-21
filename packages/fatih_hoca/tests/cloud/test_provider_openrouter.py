@@ -169,3 +169,26 @@ async def test_openrouter_tags_modality_from_architecture_and_id():
     # Generative-media families must be caught by the fallback vocabulary
     assert by_id["google/lyria-3-clip-preview"].output_modality == "audio"
     assert by_id["black-forest-labs/flux-1-schnell"].output_modality == "image"
+
+
+def test_modality_from_id_matches_only_at_delimiter_boundaries():
+    """Media tokens must not false-drop text models that merely CONTAIN a
+    token as a substring of a longer word (review 2026-06-21)."""
+    from fatih_hoca.cloud.providers.openrouter import _modality_from_id
+
+    # Real media ids → correctly classed non-text
+    assert _modality_from_id("google/lyria-3-clip-preview") == "audio"
+    assert _modality_from_id("black-forest-labs/flux-1-schnell") == "image"
+    assert _modality_from_id("openai/dall-e-3") == "image"
+    assert _modality_from_id("openai/gpt-4o-tts") == "audio"
+    assert _modality_from_id("openai/sora") == "video"
+    assert _modality_from_id("nomic-ai/nomic-embed-text-v1.5") == "embedding"
+    assert _modality_from_id("vendor/text-embedding-3") == "embedding"
+
+    # Embedded-substring landmines must stay text
+    assert _modality_from_id("vendor/reflux-instruct") == "text"      # "flux"
+    assert _modality_from_id("vendor/sorano-chat") == "text"          # "sora"
+    assert _modality_from_id("vendor/membedded-7b") == "text"         # "embed"
+    assert _modality_from_id("vendor/leveomatic-2") == "text"         # "veo"
+    assert _modality_from_id("meta-llama/llama-3.3-70b-instruct") == "text"
+    assert _modality_from_id("deepseek/deepseek-r1") == "text"

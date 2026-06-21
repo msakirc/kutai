@@ -40,3 +40,27 @@ def test_s5_fires_on_daily_overshoot():
     qp = QueueProfile(projected_calls=40)  # 2x daily -> conserve
     p = s5_queue_calls(m, queue=qp)
     assert p == pytest.approx(-1.0, abs=0.05)
+
+
+# ── Fleet-capacity denominator (2026-06-21) ───────────────────────────────────
+
+def test_s5_fleet_denominator_dilutes_small_window():
+    # The leak case: free model rpd=20, but fleet rpd = 1020 (free20 + premium1000).
+    # A 40-call queue is 4% of the fleet -> no conservation -> free stays serviceable.
+    m = _matrix(rpd=RateLimit(limit=20, remaining=20))
+    qp = QueueProfile(projected_calls=40)
+    assert s5_queue_calls(m, queue=qp, fleet_remaining={"rpd": 1020}) == 0.0
+
+
+def test_s5_per_model_fallback_when_no_fleet():
+    # No fleet view -> per-model remaining (old behavior): 40/20 = 2x -> floor.
+    m = _matrix(rpd=RateLimit(limit=20, remaining=20))
+    qp = QueueProfile(projected_calls=40)
+    assert s5_queue_calls(m, queue=qp) == pytest.approx(-1.0, abs=0.05)
+
+
+def test_s5_fleet_of_one_equals_per_model():
+    # Fleet-of-one (only this daily-budgeted model) -> still conserves (pp11 shape).
+    m = _matrix(rpd=RateLimit(limit=20, remaining=20))
+    qp = QueueProfile(projected_calls=40)
+    assert s5_queue_calls(m, queue=qp, fleet_remaining={"rpd": 20}) == pytest.approx(-1.0, abs=0.05)

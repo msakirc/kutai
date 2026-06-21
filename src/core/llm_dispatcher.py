@@ -48,16 +48,27 @@ from src.core.in_flight import (
 # ─── Context-size resolver ───────────────────────────────────────────────────
 
 def _resolve_load_ctx(*, need_ctx: int, min_context: int, est_in: int, est_out: int) -> int:
-    """Pick's need_ctx wins; fall back to min_context, then the legacy
-    token heuristic. Kept as a thin fallback for cloud picks / tests that
-    don't carry need_ctx."""
-    if need_ctx and need_ctx > 0:
-        return need_ctx
-    if min_context and min_context > 0:
-        return min_context
-    if est_in or est_out:
-        return int((est_in + est_out) * 1.3) + 512
-    return 0
+    """Largest of: Pick's need_ctx, the min_context floor, and the live-prompt
+    token heuristic — so the local load window never undershoots the prompt.
+
+    need_ctx is computed once by the selector at admission and frozen across
+    ReAct iterations (pick_for_iter reuses the admitted pick on no-failure
+    turns). Returning it unconditionally meant a conversation that GREW past
+    the admission estimate still loaded at the stale-small ctx: the
+    dispatcher's loaded_ctx_insufficient guard compared the live model against
+    that stale target, judged it sufficient, reused the small-loaded model,
+    and the grown prompt overflowed it (context_overflow recurrence 2026-06 on
+    Qwen3.5-9B / gemma-26B / analyst). react recomputes est_in =
+    count_tokens(messages) fresh every iteration, so the heuristic tracks the
+    real prompt; taking the max lets resize-on-growth actually fire.
+    Over-asking is safe — ensure_model clamps to the model's trained ceiling.
+    Result is 0 only when every input is 0 (cloud picks / tests)."""
+    candidates = [
+        need_ctx,
+        min_context,
+        (int((est_in + est_out) * 1.3) + 512) if (est_in or est_out) else 0,
+    ]
+    return max((c for c in candidates if c and c > 0), default=0)
 
 
 # ─── Call Categories ─────────────────────────────────────────────────────────

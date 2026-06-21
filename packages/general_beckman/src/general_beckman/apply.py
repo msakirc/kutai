@@ -32,6 +32,21 @@ from general_beckman.result_router import (
 from general_beckman.retry import decide_retry, DLQAction, RetryDecision
 
 
+def _ledger_reject(ctx: dict, attempt, reason, prev_output=None) -> None:
+    """Append a quality rejection to the conversation rejection ledger (T1).
+
+    Thin lazy wrapper over ``src.workflows.engine.hooks.append_rejection``
+    (lazy import avoids a package->src import cycle). Best-effort: a ledger
+    failure must never break the retry/DLQ path. ``out_hash`` lets the
+    Phase-3 repeat-detector spot identical re-attempts.
+    """
+    try:
+        from src.workflows.engine.hooks import append_rejection, _output_hash
+        append_rejection(ctx, attempt, reason, _output_hash(prev_output))
+    except Exception as _e:  # pragma: no cover - defensive
+        logger.debug("rejection-ledger append skipped", error=str(_e))
+
+
 def _mechanical_context(action: str, **payload_fields) -> dict:
     """Build the canonical context shape for a mechanical mr_roboto task.
 
@@ -549,6 +564,16 @@ async def _retry_or_dlq(task: dict, *, category: str, error: str) -> None:
     # the stamp won't match and we drop the stale feedback so the next prompt
     # doesn't replay an unrelated failure as "your last output failed".
     _drop_stale_retry_feedback(ctx, attempts)
+
+    # Rejection ledger (T1) — the "completed with empty result" quality
+    # failure flows here (result_router emits Failed with no judged output
+    # and no _schema_error). Record it so the retry prompt shows the prior
+    # empty attempt. Availability/infra retries are NOT quality and append
+    # nothing (spec C2). _retry_or_dlq is the single persist funnel for
+    # Failed/Exhausted, so the append survives via the update_task below.
+    if category == "quality" and "empty result" in (error or ""):
+        from src.workflows.engine.hooks import append_rejection
+        append_rejection(ctx, attempts, "empty result", None)
 
     # Persist the failed model so the NEXT pick excludes it. Without
     # this, fatih_hoca.requirements_builder.get_model_constraints reads
@@ -2887,6 +2912,9 @@ async def _apply_grounding_verdict(
         "On retry: actually call the write_file tool for each declared "
         "path before final_answer. Do NOT just narrate the file contents."
     )
+    # Rejection ledger (T1): one entry per quality re-pend, before either
+    # the bonus arm or the normal arm — both re-dispatch the same step.
+    _ledger_reject(ctx, attempts, f"grounding: {error_str}", source.get("result"))
 
     if attempts >= max_attempts:
         from general_beckman.retry import _MAX_BONUS
@@ -3016,6 +3044,8 @@ async def _apply_verify_artifacts_verdict(
         "On retry: actually call the write_file tool for each declared path. "
         "Do not just emit JSON describing the file."
     )
+    # Rejection ledger (T1): one entry per quality re-pend (both arms).
+    _ledger_reject(ctx, attempts, f"verify_artifacts: {error_str}", source.get("result"))
 
     if attempts >= max_attempts:
         from general_beckman.retry import _MAX_BONUS
@@ -3149,6 +3179,8 @@ async def _apply_code_review_verdict(
         "Code review rejected your output. Fix these issues on retry, "
         "then re-emit:\n" + bullet_block
     )
+    # Rejection ledger (T1): one entry per quality re-pend (both arms).
+    _ledger_reject(ctx, attempts, f"code_review: {error_str}", source.get("result"))
 
     if attempts >= max_attempts:
         from general_beckman.retry import _MAX_BONUS

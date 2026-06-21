@@ -18,6 +18,49 @@ from .quality_gates import evaluate_gate, format_gate_result
 
 logger = get_logger("workflows.engine.hooks")
 
+
+def _output_hash(value) -> Optional[str]:
+    """Stable short hash of a produced output, for the ledger ``out_hash``.
+
+    Used by the repeat-detector (Phase 3) to spot identical re-attempts.
+    Returns None for empty/non-string output so degenerate/empty paths
+    carry a null hash (they store no comparable draft)."""
+    import hashlib
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return hashlib.sha1(value.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def append_rejection(
+    ctx: dict,
+    attempt,
+    reason,
+    out_hash=None,
+) -> None:
+    """Append a quality-rejection entry to ``ctx["_rejection_ledger"]``.
+
+    The ledger is the compact, accumulated history of (approach,
+    why-rejected) for a task — appended, never overwritten — so the retry
+    prompt (coulson/context.py, T2) can show the worker every prior
+    rejection reason and tell it to take a different path (spec C5).
+
+    Shape per entry: ``{attempt:int, category:"quality", reason:str≤500,
+    out_hash}``. ``reason`` is capped at 500 chars (M3/F5) so a long
+    grader/schema error cannot bloat the ledger. Only QUALITY rejections
+    call this; availability failures produce no judged output and append
+    nothing (C2). Pure ctx mutation — the caller persists ``ctx``.
+    """
+    ctx.setdefault("_rejection_ledger", []).append(
+        {
+            "attempt": int(attempt),
+            "category": "quality",
+            "reason": str(reason)[:500],
+            "out_hash": out_hash,
+        }
+    )
+
+
 def build_summary_spec(text: str, artifact_name: str) -> dict:
     """Pure builder for the summarizer child (SP3). No mission_id/parent on the
     spec — those travel in continuation state. No input degenerate check (the
@@ -270,6 +313,19 @@ def _unwrap_envelope(text) -> str:
     return stripped
 
 
+def _single_produces(produces) -> bool:
+    """True when the step declares exactly one ``.md``/``.json`` produces path.
+
+    Shared by ``materialize_produces`` (which canonicalizes only the single
+    case) and ``post_execute_workflow_step`` (which promotes that canonical to
+    the step's ``result``) so the two predicates can never drift.
+    """
+    if not isinstance(produces, list):
+        return False
+    return len([e for e in produces
+                if isinstance(e, str) and e.endswith((".md", ".json"))]) == 1
+
+
 async def materialize_produces(ctx: dict, task: dict, result, output_value):
     """Sole writer of declared ``produces`` paths.
 
@@ -306,8 +362,14 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
         except Exception:
             return False
 
-    single = len([e for e in produces if isinstance(e, str)
-                  and e.endswith((".md", ".json"))]) == 1
+    single = _single_produces(produces)
+    # When the step carries an artifact_schema, _apply_auto_strip removes the
+    # write tools (unless _allow_write_tools) — the agent CANNOT have written
+    # disk this run, so any on-disk file is a STALE artifact from a prior failed
+    # attempt. The fresh output_value (this run's final_answer) must outrank it,
+    # even when the stale file is itself schema-valid (task 524364: a gate-failed
+    # 'dead' report kept being resurrected over the corrected 'active' result).
+    write_stripped = bool(schema) and not ctx.get("_allow_write_tools")
     canonical_out = output_value
     for entry in produces:
         if not (isinstance(entry, str) and entry.endswith((".md", ".json"))):
@@ -329,7 +391,12 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
         # output_value belongs to one logical artifact and must never overwrite a
         # sibling file — so it is dropped from the candidate list and each file is
         # materialized from its own on-disk content (Cut #2, spec 2026-06-07).
-        candidates = [disk, output_value] if single else [disk]
+        if not single:
+            candidates = [disk]
+        elif write_stripped:
+            candidates = [output_value, disk]   # fresh result outranks stale disk
+        else:
+            candidates = [disk, output_value]   # agent's fresh write outranks result
         chosen = select_canonical(candidates, _schema_ok)
         if not isinstance(chosen, str):
             continue
@@ -1528,6 +1595,25 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 f"[Workflow Hook] Step '{step_id}' output rejected: "
                 f"{cq.summary} ({len(output_value)} chars)"
             )
+            # Rejection ledger (T1/M3): this branch returns BEFORE the
+            # post_execute ctx persist (~1820), so an in-memory append
+            # would be LOST. Persist the ledger explicitly here. Degenerate
+            # output stores no artifact -> ledger-only, no durable draft
+            # (spec F3). Stamped for the attempt about to run.
+            try:
+                from general_beckman import update_task as _update_task
+                _deg_attempt = int(task.get("worker_attempts", 0)) + 1
+                append_rejection(
+                    ctx, _deg_attempt,
+                    f"degenerate: {cq.summary}",
+                    _output_hash(output_value),
+                )
+                ctx["_schema_error_for_attempt"] = _deg_attempt
+                await _update_task(task.get("id"), context=json.dumps(ctx))
+            except Exception as _e:
+                logger.debug(
+                    f"[Workflow Hook] degenerate ledger persist skipped: {_e}"
+                )
             return
 
     # Multi-artifact envelope split: when LLM emits {art1: ..., art2: ...}
@@ -1585,7 +1671,42 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
     # and the coulson auto-persist/canonicalize blocks.
     if output_value and mission_id:
         try:
+            _pre_mat = output_value
             output_value = await materialize_produces(ctx, task, result, output_value)
+            # ── Single source of truth for a single-`produces` step ──
+            # materialize_produces canonicalizes the on-disk file (schema-best
+            # of {disk write, result}, fence-unwrapped, mission_id-stamped). For
+            # a single-produces step that canonical IS the step's artifact — so
+            # propagate it to EVERY place the artifact is consumed, not just the
+            # disk file the engine gate validates:
+            #   • result["result"]  -> route_result -> tasks.result, read by the
+            #     grade post-hook gate, the LLM grader, constrained_emit /
+            #     self_reflect rewriters, DLQ inspection.
+            #   • the artifact store -> read by downstream steps' input_artifacts
+            #     (coulson/context.py _store.retrieve); store.store above ran on
+            #     the PRE-materialize value (possibly a "Wrote X.md" narration).
+            # This collapses the narration-vs-canonical divergence at its source
+            # instead of patching each reader. Only when materialize actually
+            # changed the value (canonical != raw result); multi-produces leaves
+            # output_value unchanged and mechanical siblings emit no artifact —
+            # both skipped. The agent's raw narration is preserved for
+            # continuation handlers via the pre-hook _agent_result_snapshot.
+            _exec = (task.get("executor") or ctx.get("executor") or "")
+            _atype = (task.get("agent_type") or ctx.get("agent_type") or "")
+            if (
+                _single_produces(ctx.get("produces"))
+                and _exec != "mechanical" and _atype != "mechanical"
+                and isinstance(output_value, str) and output_value.strip()
+                and output_value != _pre_mat
+            ):
+                if isinstance(result, dict):
+                    result["result"] = output_value
+                for _name in output_names:
+                    await store.store(mission_id, _name, output_value)
+                    if len(output_value) > _SUMMARY_THRESHOLD:
+                        _summ = _structural_summary(output_value)
+                        if _summ and len(_summ) >= _MIN_SUMMARY_LEN:
+                            await store.store(mission_id, f"{_name}_summary", _summ)
         except Exception as _e:
             logger.debug(f"[Workflow Hook] materialize_produces skipped: {_e}")
 
@@ -1732,9 +1853,17 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 # layers Qwen / Mistral / etc. emit so the NEXT retry's
                 # prompt shows clean JSON, not soup that the model will
                 # re-escape into deeper compounding.
+                # fallback only — artifact-backed continuation reads full draft (T3)
                 new_ctx["_prev_output"] = canonicalize_for_retry(
                     output_value
                 )[:6000]
+                # Rejection ledger (T1): record this quality reason so the
+                # next prompt shows the accumulated history of what was
+                # rejected (spec C5). Stamped for the attempt about to run.
+                append_rejection(
+                    new_ctx, int(attempts) + 1, f"schema: {error_msg}",
+                    _output_hash(output_value),
+                )
                 # Stamp for the NEXT attempt — _retry_or_dlq increments
                 # worker_attempts before re-queuing. The reader gates on
                 # match against the live worker_attempts.

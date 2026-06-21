@@ -233,3 +233,30 @@ commits behind (kdv, FC-gate, phantom chain, registry-decouple, btable-wiring) �
 `/restart` + verify + push the backlog before/with this work. Worktree + 3-way
 merge (concurrent sessions cross `main`). NEVER `run_in_background` pytest on
 Windows (orphans hold the prod SQLite lock).
+
+## Post-restart watch-items (production red-team, 2026-06-21)
+
+Verdict SHIP-WITH-WATCH-ITEMS — no blockers (every worst case is a rank nudge,
+never a stall, because S4/S5 stay rank-only). After `/restart`, watch:
+
+1. **Sim-vs-prod validation gap.** S4/S5 are dormant (==0) in every full-flow
+   sim (the factory leaves `projected_*` unset), but `queue_profile_push.build_profile`
+   DOES populate them in prod — so the reshape's emergent *ranking* effect is
+   validated only by pressure-only anchors, never end-to-end. Confirm via
+   `model_pick_log` that small free models stay serviceable on easy tasks under
+   deep queues (the headline behavior) and that free-vs-paid distribution on easy
+   work didn't regress. Follow-up (deferred to avoid mass scenario shift): wire
+   `projected_*` into the sim factory for a genuine full-flow exercise.
+2. **Long-context S6 gap.** The fleet sum counts an rpd-populating model even when
+   it can't serve a capability-constrained queue. S6 covers vision/thinking/
+   function_calling/cloud_only but has **no context-size key** — a lone
+   large-context model (e.g. gemini 1M) under a long-context-only deep queue is
+   conserved by neither S6 nor the fleet denominator. Bounded (S1 backstops as it
+   depletes). Watch for long-context models exhausting faster; if seen, add an S6
+   context-size capability key.
+3. **`name==litellm_name` in-flight match.** No live mismatch today (dynamic
+   discovery sets them equal; YAML cloud catalog empty). Guarded by a comment in
+   `_build_fleet_cycle_remaining`. If a YAML cloud model with a friendly name is
+   ever added, its in-flight stops subtracting → fleet over-counts → mild
+   under-conserve (safe direction). Normalize on `litellm_name` if that path goes
+   live.

@@ -1573,6 +1573,46 @@ def assert_pp12_btable_demand_reduces_floor() -> list[str]:
     return failures
 
 
+# ── Scenario PP13: aggregate-queue ÷ single-model leak (Residual 2) ──────────
+
+def assert_pp13_aggregate_vs_single_leak() -> list[str]:
+    """The over-conservation leak the fleet-capacity denominator removes: a small
+    daily-window free model (rpd=20) sitting beside an abundant premium (rpd=1000)
+    must NOT be conserve-floored by the WHOLE queue's projected demand — only a
+    fraction routes to it; the fleet (1020) absorbs the rest. Pre-fix (per-model
+    denominator: 40/20 = 2x) this floored the free model and leaked the easy task
+    to paid premium = waste. Reverting S4/S5 to the per-model denominator makes
+    this assertion FAIL (the free model floors again).
+    """
+    from nerd_herd.types import (
+        CloudModelState, CloudProviderState, QueueProfile,
+        RateLimit, RateLimitMatrix, SystemSnapshot,
+    )
+    from types import SimpleNamespace
+
+    now = _time.time()
+    free_m = CloudModelState(model_id="free/m", limits=RateLimitMatrix(
+        rpd=RateLimit(limit=20, remaining=20, reset_at=int(now + 86400))))
+    prem_m = CloudModelState(model_id="prem/m", limits=RateLimitMatrix(
+        rpd=RateLimit(limit=1000, remaining=1000, reset_at=int(now + 86400))))
+    snap = SystemSnapshot(cloud={
+        "free_prov": CloudProviderState(provider="free_prov", models={"free/m": free_m}),
+        "prem_prov": CloudProviderState(provider="prem_prov", models={"prem/m": prem_m}),
+    })
+    snap.queue_profile = QueueProfile(total_ready_count=40, projected_calls=40)
+    model = SimpleNamespace(name="free/m", provider="free_prov", is_free=True,
+                            is_local=False, cap_score=7.0)
+    bd = snap.pressure_for(model, task_difficulty=3, est_per_task_tokens=2_000)
+    queue = bd.bucket_totals.get("queue", 0.0)
+    failures = []
+    if not (queue > -0.3):
+        failures.append(
+            f"pp13: small free model beside abundant premium must stay serviceable "
+            f"(queue bucket ~0), got queue={queue:.3f} — aggregate-÷-single leak"
+        )
+    return failures
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 POOL_PRESSURE_SCENARIOS = [
@@ -1591,6 +1631,7 @@ POOL_PRESSURE_SCENARIOS = [
     ("s6_conserve", pp1_fat_vs_tiny),
     ("rp5_overdraw_early_warning", rp5_overdraw_early_warning),
     ("pp12_btable_demand_reduces_floor", pp1_fat_vs_tiny),  # pressure-only
+    ("pp13_aggregate_vs_single_leak", pp1_fat_vs_tiny),  # pressure-only
 ]
 
 # Realistic-pool scenarios — distribution observation (no pass/fail
@@ -1621,4 +1662,5 @@ POOL_PRESSURE_ASSERTIONS: dict[str, Callable] = {
     "s6_conserve": lambda sc: assert_s6_conserve(),
     "rp5_overdraw_early_warning": lambda sc: assert_rp5(sc),
     "pp12_btable_demand_reduces_floor": lambda sc: assert_pp12_btable_demand_reduces_floor(),
+    "pp13_aggregate_vs_single_leak": lambda sc: assert_pp13_aggregate_vs_single_leak(),
 }

@@ -469,6 +469,57 @@ def format_conversation(task_context: dict, max_tokens: int) -> str:
 # Dependency fetch
 # ────────────────────────────────────────────────────────────────────────────
 
+def _line_safe_truncate(text: str, limit: int, marker: str) -> str:
+    """Truncate ``text`` to ~``limit`` chars on a line boundary, appending
+    ``marker``. Never cuts mid-line unless the text is a single oversized
+    line (then a hard cut is the only option, still marked). Avoids feeding
+    the model a result severed mid-structure (e.g. broken JSON)."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    nl = cut.rfind("\n")
+    if nl > limit // 2:  # keep most content AND end on a whole line
+        cut = cut[:nl]
+    return cut.rstrip("\n") + marker
+
+
+def _fit_dep_blocks(
+    intro: list[str],
+    blocks: list[tuple[str, str]],
+    budget_chars: int,
+    trunc_marker: str,
+) -> str:
+    """Assemble dependency blocks within ``budget_chars``, dep-granular.
+
+    Whole ``(header, body)`` blocks are kept in order until the budget is
+    reached; overflow blocks are dropped (counted in an honest omission
+    note) rather than byte-sliced mid-content. The FIRST block is always
+    placed — line-safe-truncated if it alone exceeds the budget — so the
+    deps section is never silently empty."""
+    out = list(intro)
+    used = sum(len(p) + 2 for p in out)
+    omitted = 0
+    placed = 0
+    for header, body in blocks:
+        block = f"{header}\n{body}"
+        cost = len(block) + 2
+        if placed == 0 and used + cost > budget_chars:
+            # Floor: show something. Truncate this body on a line boundary.
+            avail = max(200, budget_chars - used - len(header) - 2)
+            body = _line_safe_truncate(body, avail, trunc_marker)
+            block = f"{header}\n{body}"
+            cost = len(block) + 2
+        elif placed > 0 and used + cost > budget_chars:
+            omitted += 1
+            continue
+        out.append(block)
+        used += cost
+        placed += 1
+    if omitted:
+        out.append(f"_[{omitted} earlier result(s) omitted to fit budget]_")
+    return "\n\n".join(out)
+
+
 async def fetch_deps(profile, task: dict, max_tokens: int) -> str:
     """Fetch dependency results, truncated to budget.
 
@@ -539,34 +590,32 @@ async def fetch_deps(profile, task: dict, max_tokens: int) -> str:
             entries.append((art_name, form, value))
 
         if entries:
-            parts = [
+            intro = [
                 "## Results from Previous Steps",
-                "These ARE your input artifacts in full. Do NOT call any "
-                "read or fetch tool to re-read them — there is no other "
-                "copy on disk. Use the content below directly.",
+                "These are your input artifacts from prior steps. Use them "
+                "directly; do not call read/fetch tools for what is shown "
+                "here. Anything marked truncated can be fetched in full via "
+                "read_blackboard.",
             ]
-            budget_chars = max_tokens * 4
-            used = sum(len(p) for p in parts)
-            per_art = max(500, (budget_chars - used) // max(len(entries), 1))
-
+            blocks: list[tuple[str, str]] = []
             _form_log: list[str] = []
             for name, form, text in entries:
                 _cq = cq_assess(text)
                 if _cq.is_degenerate:
                     cleaned = cq_salvage(text)
                     text = cleaned if cleaned else "(artifact was degenerate — skipped)"
-                truncated = len(text) > per_art
-                if truncated:
-                    text = text[:per_art] + "\n... (truncated; fetch full via read_blackboard)"
-                parts.append(f"### {name} ({form}):\n{text}")
-                _form_log.append(f"{name}={form}{'+trunc' if truncated else ''}")
+                blocks.append((f"### {name} ({form}):", text))
+                _form_log.append(f"{name}={form}")
 
             logger.info(
                 f"[Task #{task.get('id','?')}] _fetch_deps artifact-mode: "
                 f"{len(entries)}/{len(_input_artifacts)} resolved "
                 f"({', '.join(_form_log)})"
             )
-            return truncate_to_tokens("\n".join(parts), max_tokens)
+            return _fit_dep_blocks(
+                intro, blocks, max_tokens * 4,
+                "\n... (truncated; fetch full via read_blackboard)",
+            )
         # No artifacts resolved — fall through to legacy path so the
         # block isn't silently empty when artifact_store missed.
 
@@ -586,30 +635,23 @@ async def fetch_deps(profile, task: dict, max_tokens: int) -> str:
     if not dep_results:
         return ""
 
-    parts = [
+    intro = [
         "## Results from Previous Steps",
-        "These ARE your input artifacts in full. Do NOT call read_file, "
-        "read_pdf, read_docx, or any fetch tool to re-read them — there "
-        "is no other copy on disk. Use the content below directly.",
+        "Outputs from the steps this task depends on. Use them directly; "
+        "do not re-read what is shown here. Blocks marked truncated/omitted "
+        "are larger than the context budget.",
     ]
-    budget_chars = max_tokens * 4
-    used = sum(len(p) for p in parts)
-    per_dep = max(500, (budget_chars - used) // max(len(dep_results), 1))
-
+    from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
+    blocks: list[tuple[str, str]] = []
     for dep_id, dep in dep_results.items():
         text = dep.get("result") or "(no result)"
-        from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
         _dep_cq = cq_assess(text)
         if _dep_cq.is_degenerate:
             cleaned = cq_salvage(text)
             text = cleaned if cleaned else "(dependency output was degenerate — skipped)"
-        if len(text) > per_dep:
-            text = text[:per_dep] + "\n... (truncated)"
-        parts.append(
-            f"### Step #{dep_id}: {dep.get('title', 'Unknown')}\n{text}"
-        )
+        blocks.append((f"### Step #{dep_id}: {dep.get('title', 'Unknown')}", text))
 
-    return truncate_to_tokens("\n".join(parts), max_tokens)
+    return _fit_dep_blocks(intro, blocks, max_tokens * 4, "\n... (truncated)")
 
 
 # ────────────────────────────────────────────────────────────────────────────

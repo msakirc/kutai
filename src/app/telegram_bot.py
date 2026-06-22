@@ -175,8 +175,8 @@ KB_SISTEM = _make_keyboard([
 ])
 
 KB_YUK_MODU = _make_keyboard([
-    ["⚡ Full", "🔋 Heavy", "⚖️ Shared"],
-    ["🔻 Minimal", "🤖 Otomatik"],
+    ["🤖 Otomatik", "🖥 Yerel Serbest"],
+    ["⚖️ Dengeli", "☁️ Sadece Bulut"],
     ["🔙 Geri"],
 ])
 
@@ -242,10 +242,9 @@ _BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     "🗑 Reset Tasks": ("special", "reset_tasks"),
     "☢️ Reset All": ("cmd", "reset_all"),
     # ── Yük Modu sub-buttons ──
-    "⚡ Full": ("special", "load_full"),
-    "🔋 Heavy": ("special", "load_heavy"),
-    "⚖️ Shared": ("special", "load_shared"),
-    "🔻 Minimal": ("special", "load_minimal"),
+    "🖥 Yerel Serbest": ("special", "load_full"),
+    "⚖️ Dengeli": ("special", "load_balanced"),
+    "☁️ Sadece Bulut": ("special", "load_minimal"),
     # ── Back ──
     "🔙 Geri": ("special", "back"),
 }
@@ -6758,7 +6757,7 @@ class TelegramInterface:
             logger.error("snapshot write failed for mission %d: %s", mission_id, e)
 
     async def cmd_load(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/load full|heavy|shared|minimal|auto — set GPU load mode"""
+        """/load full|balanced|minimal|auto — set GPU load mode"""
         args = context.args or []
         if not args:
             from src.infra.load_manager import get_load_mode, is_auto_managed_async
@@ -6766,11 +6765,10 @@ class TelegramInterface:
             auto_str = " (auto-managed)" if await is_auto_managed_async() else " (manual)"
             await self._reply(update,
                 f"Current load mode: *{current}*{auto_str}\n\n"
-                "Usage: `/load full|heavy|shared|minimal|auto`\n"
-                "• *full* — ignore desktop signals; send to local freely\n"
-                "• *heavy* — bias to cloud when you're active (1.5×)\n"
-                "• *shared* — stronger cloud bias when you're active (2×)\n"
-                "• *minimal* — cloud only; pause local\n"
+                "Usage: `/load full|balanced|minimal|auto`\n"
+                "• *full* (Yerel Serbest) — ignore desktop signals; send to local freely\n"
+                "• *balanced* (Dengeli) — strong cloud bias when you're active (2×)\n"
+                "• *minimal* (Sadece Bulut) — cloud only; pause local\n"
                 "• *auto* (Otomatik) — auto-pick mode from external GPU + presence",
                 parse_mode="Markdown",
             )
@@ -6958,6 +6956,12 @@ class TelegramInterface:
         # ═══════════════════════════════════════════════════════
         # PRIORITY -1: Reply-keyboard button taps → route via _BUTTON_ACTIONS
         # ═══════════════════════════════════════════════════════
+        # Otomatik label is shared by the workflow picker and the Yük Modu menu.
+        # In the load menu it means "auto-manage GPU load", not workflow-auto.
+        if text.strip() == "🤖 Otomatik" and self._kb_state.get(chat_id) == "yuk_modu":
+            self._pending_action.pop(chat_id, None)
+            await self._handle_special_button(update, context, "load_auto")
+            return
         btn_action = _BUTTON_ACTIONS.get(text.strip())
         if btn_action:
             # Clear any stale pending action — user tapped a new button
@@ -8536,7 +8540,7 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             )
         else:
             await self._reply(update,
-                "Use `/load full|heavy|shared|minimal|auto` to control GPU usage.",
+                "Use `/load full|balanced|minimal|auto` to control GPU usage.",
                 parse_mode="Markdown",
             )
 

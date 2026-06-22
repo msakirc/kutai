@@ -38,6 +38,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "verify_schema_version": "full",
     "verify_charter_shape": "full",
     "verify_reverse_pitch_shape": "full",
+    "verify_contains_product_name": "full",  # read-only presence check
     "verify_falsification_present": "full",
     "verify_non_goals_shape": "full",
     "check_against_non_goals": "full",

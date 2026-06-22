@@ -208,7 +208,7 @@ def test_minimal_veto_reads_client_seam_not_singleton(monkeypatch, real_exe):
 
 def test_fullscreen_shared_vetoes_local(monkeypatch, real_exe):
     monkeypatch.setattr("fatih_hoca.image_select._snapshot",
-                        lambda: _snap(image_resident=True, mode="shared",
+                        lambda: _snap(image_resident=True, mode="balanced",
                                       fullscreen=True))
     monkeypatch.setenv("HF_TOKEN", "x")
     pick = select_image(quality_tier="quality", failures=[], hf_available=True)
@@ -229,7 +229,7 @@ def test_fullscreen_full_mode_keeps_local(monkeypatch, real_exe):
 def test_external_gpu_heavy_vetoes_local(monkeypatch, real_exe):
     """S14 hard threshold: another process owns >=30% VRAM → veto local."""
     monkeypatch.setattr("fatih_hoca.image_select._snapshot",
-                        lambda: _snap(image_resident=True, mode="heavy",
+                        lambda: _snap(image_resident=True, mode="balanced",
                                       ext_gpu=0.4))
     monkeypatch.setenv("HF_TOKEN", "x")
     pick = select_image(quality_tier="quality", failures=[], hf_available=True)
@@ -248,7 +248,7 @@ def test_external_gpu_full_mode_keeps_local(monkeypatch, real_exe):
 
 def test_external_gpu_below_threshold_keeps_local(monkeypatch, real_exe):
     monkeypatch.setattr("fatih_hoca.image_select._snapshot",
-                        lambda: _snap(image_resident=True, mode="shared",
+                        lambda: _snap(image_resident=True, mode="balanced",
                                       ext_gpu=0.2))
     monkeypatch.setenv("HF_TOKEN", "x")
     pick = select_image(quality_tier="quality", failures=[], hf_available=True)

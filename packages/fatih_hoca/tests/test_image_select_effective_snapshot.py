@@ -71,7 +71,7 @@ def test_merged_view_composes_client_base_with_singleton_overlay(monkeypatch):
                                  SystemSnapshot)
     _set_client(monkeypatch, SystemSnapshot(
         vram_available_mb=5000,
-        load_mode="shared",
+        load_mode="balanced",
         foreground_fullscreen=True,
         external_gpu_fraction=0.4,
         local=LocalModelState(model_name="qwen2.5"),
@@ -86,7 +86,7 @@ def test_merged_view_composes_client_base_with_singleton_overlay(monkeypatch):
 
     merged = _effective_snapshot()
     # client-authoritative (sidecar receives the pushes / owns the sensors)
-    assert merged.load_mode == "shared"
+    assert merged.load_mode == "balanced"
     assert merged.foreground_fullscreen is True
     assert merged.external_gpu_fraction == 0.4
     assert merged.local.model_name == "qwen2.5"
@@ -103,7 +103,7 @@ def test_merge_does_not_mutate_client_cache(monkeypatch):
     """The overlay must happen on a copy — NOT on the client's cached
     snapshot object (other consumers read that cache)."""
     from nerd_herd.types import SystemSnapshot
-    c = _set_client(monkeypatch, SystemSnapshot(load_mode="heavy"))
+    c = _set_client(monkeypatch, SystemSnapshot(load_mode="balanced"))
     monkeypatch.setattr(
         "fatih_hoca.image_select._snapshot",
         lambda: _singleton_snap(image_resident=True, image_vram=4500))

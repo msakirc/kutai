@@ -2,7 +2,7 @@
 """Integration test: desktop-state signals flip local<->cloud placement.
 
 S13 (user-presence) fires a FULLSCREEN_VETO (-10.0) for local when
-foreground_fullscreen=True, amplified by M4 at load_mode="heavy" (×1.5).
+foreground_fullscreen=True, amplified by M4 at load_mode="balanced" (×2.0).
 The net negative pressure drives local's final composite below cloud's,
 so the selector picks cloud.
 
@@ -36,10 +36,10 @@ def _snap(**kw):
 
 
 def test_user_gaming_forces_cloud():
-    """Fullscreen + heavy mode → S13 FULLSCREEN_VETO amplified by M4 (1.5×)
+    """Fullscreen + balanced mode → S13 FULLSCREEN_VETO amplified by M4 (2.0×)
     → local composite deeply negative → cloud wins.  This is the core proof
     that desktop signals reach the ranking engine."""
-    snap = _snap(user_idle_s=1.0, foreground_fullscreen=True, load_mode="heavy")
+    snap = _snap(user_idle_s=1.0, foreground_fullscreen=True, load_mode="balanced")
     pick = select_for_simulation(
         task_name="coder",
         difficulty=4,

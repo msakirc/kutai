@@ -79,10 +79,9 @@ def M3_difficulty_weights(*, difficulty: int, model_is_paid: bool = False) -> di
 # VRAM-% cap. Minimal is handled upstream by selector eligibility
 # (load_mode_minimal), so it doesn't need a veto weight here — passthrough.
 _M4_BY_MODE: dict[str, float] = {
-    "full": 0.0,      # ignore the user — desktop signals silenced
-    "heavy": 1.5,     # cloud-bias strength: amplify desktop penalty
-    "shared": 2.0,    # stronger cloud bias
-    "minimal": 1.0,   # local already vetoed at eligibility; passthrough
+    "full": 0.0,       # ignore the user — desktop signals silenced
+    "balanced": 2.0,   # strong cloud bias when active (was shared)
+    "minimal": 1.0,    # local already vetoed at eligibility; passthrough
 }
 
 

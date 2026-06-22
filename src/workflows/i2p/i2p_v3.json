@@ -739,6 +739,28 @@
       "reversibility": "full"
     },
     {
+      "id": "0.0y",
+      "phase": "phase_0",
+      "name": "product_name_pick",
+      "agent": "analyst",
+      "difficulty": "easy",
+      "tools_hint": [],
+      "depends_on": [],
+      "may_need_clarification": false,
+      "input_artifacts": [ "raw_idea", "strategic_context" ],
+      "output_artifacts": [ "product_name" ],
+      "instruction": "Decide the ONE canonical product name for this idea, using raw_idea and strategic_context. Pick a single, real, memorable brand name (not a description, not a placeholder, not a code). Every later artifact will be forced to use this exact name, so choose deliberately. Do NOT search the web. Do NOT write any file. IMPORTANT: produce your answer as a JSON object in your final response; your response text IS the artifact. Emit exactly: {\"product_name\": \"<TheName>\"} with a non-empty name.",
+      "done_when": "A single non-empty product_name has been chosen.",
+      "artifact_schema": {
+        "product_name": {
+          "type": "object",
+          "required_fields": [ "product_name" ]
+        }
+      },
+      "context": { "estimated_output_tokens": 200 },
+      "reversibility": "full"
+    },
+    {
       "id": "0.0z",
       "phase": "phase_0",
       "name": "reverse_pitch_draft",
@@ -747,7 +769,7 @@
       "tools_hint": [
         "write_file"
       ],
-      "depends_on": [],
+      "depends_on": [ "0.0y" ],
       "may_need_clarification": false,
       "input_artifacts": [
         "raw_idea",
@@ -787,6 +809,13 @@
             "pitch_paths": [
               "mission_{mission_id}/.charter/reverse_pitch.md"
             ]
+          }
+        },
+        {
+          "kind": "verify_contains_product_name",
+          "payload": {
+            "action": "verify_contains_product_name",
+            "artifact_paths": [ "mission_{mission_id}/.charter/reverse_pitch.md" ]
           }
         }
       ]
@@ -963,6 +992,13 @@
             "min_solutions": 3,
             "max_solutions": 7,
             "min_brand_keywords": 5
+          }
+        },
+        {
+          "kind": "verify_contains_product_name",
+          "payload": {
+            "action": "verify_contains_product_name",
+            "artifact_paths": [ "mission_{mission_id}/.charter/product_charter.md" ]
           }
         }
       ]

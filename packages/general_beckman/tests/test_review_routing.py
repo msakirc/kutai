@@ -63,6 +63,35 @@ async def test_route_escalates_when_producer_exhausted():
 
 
 @pytest.mark.asyncio
+async def test_route_sends_one_card_when_multiple_producers_exhausted():
+    """Multiple exhausted producers in one review must yield exactly ONE
+    founder-halt card (not one per producer). Each card already renders the
+    FULL issues list + full producer-button set, so N cards = N identical
+    duplicates (the mission-89 19:37 triple-card bug)."""
+    from general_beckman.review_routing import route_review_failure
+    wf = {"steps": [
+        {"id": "0.1", "output_artifacts": ["product_charter"]},
+        {"id": "1.0c", "output_artifacts": ["prior_art_report"]},
+        {"id": "1.6", "output_artifacts": ["market_research_report"]},
+        {"id": "1.13", "input_artifacts": [
+            "product_charter", "prior_art_report", "market_research_report"],
+            "output_artifacts": ["research_review_result"]},
+    ]}
+    review_result = {"status": "fail", "issues": [
+        {"target_artifact": "product_charter", "severity": "blocker", "problem": "a"},
+        {"target_artifact": "prior_art_report", "severity": "blocker", "problem": "b"},
+        {"target_artifact": "market_research_report", "severity": "major", "problem": "c"},
+    ]}
+    with patch("general_beckman.review_routing._repend_producer", new=AsyncMock(return_value=False)), \
+         patch("general_beckman.review_routing._escalate_to_founder", new=AsyncMock()) as halt:
+        outcome = await route_review_failure(
+            mission_id=89, reviewer_id="1.13", review_result=review_result,
+            workflow=wf, reviewer_task_id=99)
+    halt.assert_awaited_once()  # 3 exhausted producers -> still ONE card
+    assert outcome["escalated"] is True
+
+
+@pytest.mark.asyncio
 async def test_escalate_parks_reviewer_on_all_unresolved():
     """An all-unresolved fail with a reviewer_task_id must PARK the reviewer
     (update_task status=waiting_human) and report escalated=True — the safety

@@ -238,17 +238,22 @@ async def route_review_failure(
         return {"routed": [], "escalated": True}
 
     routed: list[str] = []
-    escalated = False
+    exhausted: list[str] = []
     for pid, pissues in grouped.items():
         ok = await _repend_producer(mission_id, pid, _feedback_text(pissues))
         if ok:
             routed.append(pid)
         else:
-            escalated = True
-            await _escalate_to_founder(
-                mission_id=mission_id, reviewer_id=reviewer_id,
-                review_result=review_result, workflow=workflow,
-                reason="producer_exhausted", producer=pid,
-                reviewer_task_id=reviewer_task_id,
-            )
-    return {"routed": routed, "escalated": escalated}
+            exhausted.append(pid)
+    # ONE founder-halt card per escalation event, not one per exhausted
+    # producer. The card already renders the full issues list + a Regenerate
+    # button per producer, so a per-pid loop only emitted N byte-identical
+    # duplicates (the mission-89 triple-card spam).
+    if exhausted:
+        await _escalate_to_founder(
+            mission_id=mission_id, reviewer_id=reviewer_id,
+            review_result=review_result, workflow=workflow,
+            reason="producer_exhausted", producer=",".join(exhausted),
+            reviewer_task_id=reviewer_task_id,
+        )
+    return {"routed": routed, "escalated": bool(exhausted)}

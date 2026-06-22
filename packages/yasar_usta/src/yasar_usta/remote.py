@@ -122,8 +122,14 @@ async def start_claude_remote(
             kwargs["stderr"] = out_fh
 
         if sys.platform == "win32":
+            # CREATE_NO_WINDOW (not DETACHED_PROCESS): the child still needs a
+            # console to bring up its remote-control server. Claude Code CLI
+            # v2.1.179 produces a 0-byte log and never registers a session when
+            # fully detached (regressed 2026-06-22; older CLIs tolerated it).
+            # CREATE_NEW_PROCESS_GROUP is kept so the session still survives a
+            # guard restart (detached from the guard's Ctrl-C group).
             kwargs["creationflags"] = (
-                _sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS
+                _sp.CREATE_NEW_PROCESS_GROUP | _sp.CREATE_NO_WINDOW
             )
             kwargs["close_fds"] = True
 
@@ -195,6 +201,11 @@ async def start_claude_remote(
     return pid, session_url
 
 
+def _strip_ansi_codes(text: str) -> str:
+    """Remove ANSI escape sequences from text."""
+    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+
+
 async def _poll_log_for_url_or_error(
     log_path: Path, timeout: float = 60,
 ) -> tuple[str | None, str | None]:
@@ -219,6 +230,7 @@ async def _poll_log_for_url_or_error(
                 new_text = f.read()
             seen_bytes = size
             for line in new_text.splitlines():
+                line = _strip_ansi_codes(line)
                 line = line.strip("\x00 \t\r\n")
                 if not line:
                     continue

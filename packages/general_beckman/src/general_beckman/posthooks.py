@@ -503,6 +503,9 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         "verify_reverse_pitch_shape", "Reverse-pitch doc shape."),
     "verify_charter_shape": _shape_check_spec(
         "verify_charter_shape", "Product-charter doc shape (solutions, brand keywords)."),
+    "verify_contains_product_name": _shape_check_spec(
+        "verify_contains_product_name",
+        "Canonical product-name presence in reverse_pitch / product_charter."),
     "verify_non_goals_shape": _shape_check_spec(
         "verify_non_goals_shape", "Non-goals doc shape (item count bounds)."),
     "verify_competitive_positioning_shape": _shape_check_spec(

@@ -236,7 +236,7 @@ class TestButtonActionRouting:
         assert _BUTTON_ACTIONS["🖥 Yük Modu"] == ("category", "yuk_modu")
 
     def test_full_load_is_special(self):
-        assert _BUTTON_ACTIONS["⚡ Full"] == ("special", "load_full")
+        assert _BUTTON_ACTIONS["🖥 Yerel Serbest"] == ("special", "load_full")
 
     def test_hatirla_is_special_reminder(self):
         assert _BUTTON_ACTIONS["⏰ Hatırlat"] == ("special", "reminder")

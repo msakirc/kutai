@@ -47,11 +47,11 @@ async def test_get_load_mode(client, server):
 
 @pytest.mark.asyncio
 async def test_set_load_mode(client, server):
-    result = await client.set_load_mode("shared", source="test")
+    result = await client.set_load_mode("balanced", source="test")
     assert isinstance(result, str)
     # Server state should have changed
     mode = await client.get_load_mode()
-    assert mode == "shared"
+    assert mode == "balanced"
     # Restore
     await client.set_load_mode("full", source="test")
 
@@ -59,7 +59,7 @@ async def test_set_load_mode(client, server):
 @pytest.mark.asyncio
 async def test_enable_auto_management(client, server):
     # First set a manual mode to disable auto
-    await client.set_load_mode("shared", source="user")
+    await client.set_load_mode("balanced", source="user")
     # Re-enable auto
     await client.enable_auto_management()
     is_auto = await client.is_auto_managed()
@@ -260,11 +260,11 @@ def test_parse_snapshot_preserves_desktop_fields():
     client = NerdHerdClient.__new__(NerdHerdClient)  # no network
     data = {
         "vram_available_mb": 8000, "local": {}, "cloud": {},
-        "load_mode": "shared", "user_idle_s": 5.0, "foreground_fullscreen": True,
+        "load_mode": "balanced", "user_idle_s": 5.0, "foreground_fullscreen": True,
         "ram_available_mb": 4000, "ram_total_mb": 32000, "external_gpu_fraction": 0.7,
     }
     snap = client._parse_snapshot(data)
-    assert snap.load_mode == "shared"
+    assert snap.load_mode == "balanced"
     assert snap.user_idle_s == 5.0
     assert snap.foreground_fullscreen is True
     assert snap.ram_available_mb == 4000
@@ -346,7 +346,7 @@ def test_parse_snapshot_field_completeness_guard():
         recent_swap_count=2,
         image_server_resident=True,
         image_server_vram_mb=4500,
-        load_mode="shared",
+        load_mode="balanced",
         user_idle_s=5.0,
         foreground_fullscreen=True,
         ram_available_mb=4000,
@@ -407,7 +407,7 @@ def test_snapshot_overlay_passthrough_field_completeness():
         recent_swap_count=2,
         image_server_resident=True,
         image_server_vram_mb=4500,
-        load_mode="shared",
+        load_mode="balanced",
         user_idle_s=5.0,
         foreground_fullscreen=True,
         ram_available_mb=4000,

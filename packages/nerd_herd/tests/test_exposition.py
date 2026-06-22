@@ -85,11 +85,11 @@ async def test_post_mode_valid(running_nh):
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{BASE_URL}/api/mode",
-            json={"mode": "shared", "source": "user"},
+            json={"mode": "balanced", "source": "user"},
         ) as resp:
             assert resp.status == 200
             data = await resp.json()
-    assert data["mode"] == "shared"
+    assert data["mode"] == "balanced"
     assert "result" in data
 
 
@@ -121,7 +121,7 @@ async def test_post_mode_missing_field(running_nh):
 @pytest.mark.asyncio
 async def test_post_auto(running_nh):
     # First disable auto-management by setting mode via user
-    running_nh.set_load_mode("shared", source="user")
+    running_nh.set_load_mode("balanced", source="user")
     assert not running_nh._load.is_auto_managed()
 
     async with aiohttp.ClientSession() as session:

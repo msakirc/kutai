@@ -458,6 +458,60 @@ async def test_reset_workflow_step(fresh_db):
     assert r_confirm["status"] == "pending"
 
 
+@pytest.mark.asyncio
+async def test_reset_workflow_step_clears_checkpoint(fresh_db):
+    """Regenerate must clear the agent checkpoint (task_state) on the reset
+    writer + verify steps, else the re-dispatched react loop restores the
+    prior conversation and re-emits the IDENTICAL artifact.
+
+    Root cause (regen "same text" bug): reset zeroes worker_attempts, which
+    makes ``should_restore_messages(checkpoint, current=0)`` return True
+    (saved_attempts >= 0) for the COMPLETED writer's leftover checkpoint —
+    so the fresh attempt restores the old messages array (incl. the final
+    answer) and reproduces the same output. Clearing task_state on reset
+    makes the regen a genuine fresh generation.
+    """
+    db_path = fresh_db
+    import src.infra.db as db_module
+    from general_beckman import (
+        add_task, update_task, reset_workflow_step, save_task_checkpoint,
+    )
+
+    mid = await _add_mission(db_module)
+
+    writer_id = await add_task(
+        title="Writer", description="d", mission_id=mid,
+        context={"workflow_step_id": "3.draft"},
+    )
+    verify_id = await add_task(
+        title="Verify", description="d", mission_id=mid,
+        context={"workflow_step_id": "3.draft.verify"},
+    )
+    confirm_id = await add_task(title="Confirm", description="d", mission_id=mid)
+
+    # Completed writer/verify leave a checkpoint behind (production never
+    # clears it — clear_checkpoint_safe is unused; the saved_attempts
+    # discriminator is the only guard).
+    await update_task(writer_id, status="completed")
+    await update_task(verify_id, status="completed")
+    await update_task(confirm_id, status="completed")
+    await save_task_checkpoint(
+        writer_id, {"messages": [{"role": "assistant", "content": "stale"}],
+                    "saved_attempts": 0},
+    )
+    await save_task_checkpoint(
+        verify_id, {"messages": [{"role": "assistant", "content": "stale"}],
+                    "saved_attempts": 0},
+    )
+
+    await reset_workflow_step(mid, "3.draft", confirm_task_id=confirm_id)
+
+    r_writer = await _fetch_task(db_path, writer_id)
+    r_verify = await _fetch_task(db_path, verify_id)
+    assert r_writer["task_state"] is None, "writer checkpoint must be cleared on regen"
+    assert r_verify["task_state"] is None, "verify checkpoint must be cleared on regen"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # recover_startup_tasks
 # ──────────────────────────────────────────────────────────────────────────────

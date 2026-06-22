@@ -5969,9 +5969,17 @@ async def reset_workflow_step(
     full draft→verify→confirm cycle re-runs.
     """
     db = await get_db()
+    # task_state=NULL is load-bearing: a COMPLETED writer leaves its agent
+    # checkpoint behind (production never clears it — clear_checkpoint_safe is
+    # unused; the saved_attempts discriminator is the only guard). Regen zeroes
+    # worker_attempts, so should_restore_messages(checkpoint, current=0) would
+    # return True (saved_attempts >= 0) and the fresh attempt would restore the
+    # prior messages array (incl. the final answer) → re-emit the IDENTICAL
+    # artifact. Clearing the checkpoint forces a genuine fresh generation.
     reset_sql = (
         "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
-        "error_category=NULL, started_at=NULL, completed_at=NULL "
+        "error_category=NULL, started_at=NULL, completed_at=NULL, "
+        "task_state=NULL "
         "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?"
     )
     # Reset writer step and verify sibling only when step_id is known.

@@ -40,6 +40,7 @@ class NerdHerd:
             initial_mode=initial_load_mode,
             detect_interval=detect_interval,
             upgrade_delay=upgrade_delay,
+            presence_collector=self._presence,
         )
         self.registry.register("load", self._load)
 

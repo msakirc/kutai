@@ -44,9 +44,9 @@ def test_health_operations():
 
 def test_set_load_mode():
     nh = NerdHerd()
-    result = nh.set_load_mode("shared", source="user")
-    assert "shared" in result
-    assert nh.get_load_mode() == "shared"
+    result = nh.set_load_mode("balanced", source="user")
+    assert "balanced" in result
+    assert nh.get_load_mode() == "balanced"
 
 
 def test_register_custom_collector():
@@ -61,3 +61,9 @@ def test_prometheus_lines():
     nh = NerdHerd()
     lines = nh.prometheus_lines()
     assert isinstance(lines, str)
+
+
+def test_load_manager_gets_presence_collector():
+    from nerd_herd.nerd_herd import NerdHerd
+    nh = NerdHerd(metrics_port=0, llama_server_url="")
+    assert nh._load._presence is nh._presence

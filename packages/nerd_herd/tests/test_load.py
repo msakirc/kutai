@@ -21,8 +21,8 @@ def test_default_mode():
 
 def test_set_mode():
     lm = LoadManager(gpu_collector=MagicMock())
-    lm.set_load_mode("shared", source="user")
-    assert lm.get_load_mode() == "shared"
+    lm.set_load_mode("balanced", source="user")
+    assert lm.get_load_mode() == "balanced"
     assert not lm.is_auto_managed()
 
 
@@ -35,7 +35,7 @@ def test_invalid_mode():
 def test_vram_budget_fraction():
     lm = LoadManager(gpu_collector=MagicMock())
     assert lm.get_vram_budget_fraction() == 1.0
-    lm.set_load_mode("shared")
+    lm.set_load_mode("balanced")
     assert lm.get_vram_budget_fraction() == 0.5
     lm.set_load_mode("minimal")
     assert lm.get_vram_budget_fraction() == 0.0
@@ -43,9 +43,9 @@ def test_vram_budget_fraction():
 
 def test_vram_budget_mb(gpu_collector):
     lm = LoadManager(gpu_collector=gpu_collector)
-    assert lm.get_vram_budget_mb() == 8000  # full mode — raw free
-    lm.set_load_mode("shared")
-    assert lm.get_vram_budget_mb() == 8000  # shared mode — still raw free (no cap)
+    assert lm.get_vram_budget_mb() == 8000
+    lm.set_load_mode("balanced")
+    assert lm.get_vram_budget_mb() == 8000
 
 
 def test_local_inference_allowed():
@@ -57,7 +57,7 @@ def test_local_inference_allowed():
 
 def test_enable_auto_management():
     lm = LoadManager(gpu_collector=MagicMock())
-    lm.set_load_mode("shared", source="user")
+    lm.set_load_mode("balanced", source="user")
     assert not lm.is_auto_managed()
     lm.enable_auto_management()
     assert lm.is_auto_managed()
@@ -67,15 +67,14 @@ def test_on_mode_change_callback():
     lm = LoadManager(gpu_collector=MagicMock())
     calls = []
     lm.on_mode_change(lambda old, new, src: calls.append((old, new, src)))
-    lm.set_load_mode("heavy", source="auto")
-    assert calls == [("full", "heavy", "auto")]
+    lm.set_load_mode("balanced", source="auto")
+    assert calls == [("full", "balanced", "auto")]
 
 
 def test_suggest_mode():
     lm = LoadManager(gpu_collector=MagicMock())
     assert lm.suggest_mode_for_external_usage(0.05) == "full"
-    assert lm.suggest_mode_for_external_usage(0.20) == "heavy"
-    assert lm.suggest_mode_for_external_usage(0.45) == "shared"
+    assert lm.suggest_mode_for_external_usage(0.30) == "balanced"
     assert lm.suggest_mode_for_external_usage(0.70) == "minimal"
 
 
@@ -101,5 +100,32 @@ def test_vram_budget_mb_is_raw_free_regardless_of_mode():
             from nerd_herd.types import GPUState
             return GPUState(available=True, vram_total_mb=8000, vram_free_mb=8000)
     lm = LoadManager(gpu_collector=_G())
-    lm.set_load_mode("shared", source="user")   # would have been 0.5x before
-    assert lm.get_vram_budget_mb() == 8000       # no cap now
+    lm.set_load_mode("balanced", source="user")
+    assert lm.get_vram_budget_mb() == 8000
+
+
+def test_normalize_legacy_modes():
+    from nerd_herd.load import _normalize_mode
+    assert _normalize_mode("heavy") == "balanced"
+    assert _normalize_mode("shared") == "balanced"
+    assert _normalize_mode("full") == "full"
+    assert _normalize_mode("balanced") == "balanced"
+    assert _normalize_mode("minimal") == "minimal"
+    assert _normalize_mode("turbo") == "full"
+
+
+def test_set_legacy_mode_normalizes():
+    lm = LoadManager(gpu_collector=MagicMock())
+    msg = lm.set_load_mode("shared", source="user")
+    assert lm.get_load_mode() == "balanced"
+    assert "Unknown" not in msg
+
+
+def test_init_normalizes_legacy_initial_mode():
+    lm = LoadManager(gpu_collector=MagicMock(), initial_mode="heavy")
+    assert lm.get_load_mode() == "balanced"
+
+
+def test_load_modes_set():
+    from nerd_herd.load import LOAD_MODES
+    assert LOAD_MODES == ("full", "balanced", "minimal")

@@ -13,28 +13,39 @@ from nerd_herd.types import GPUState
 
 logger = get_logger("nerd_herd.load")
 
-LOAD_MODES = ("full", "heavy", "shared", "minimal")
-MODE_ORDER = ("minimal", "shared", "heavy", "full")
+LOAD_MODES = ("full", "balanced", "minimal")
+MODE_ORDER = ("minimal", "balanced", "full")
 
+# Legacy modes (pre-2026-06-22 4-mode set) normalize to the closest survivor.
+_LEGACY_ALIASES = {"heavy": "balanced", "shared": "balanced"}
+
+
+def _normalize_mode(mode: str) -> str:
+    """Map any input to a canonical mode. Legacy heavy/shared -> balanced;
+    unknown -> full. Idempotent on canonical values."""
+    if mode in LOAD_MODES:
+        return mode
+    return _LEGACY_ALIASES.get(mode, "full")
+
+
+# Observability only (feeds Prometheus nerd_herd_vram_budget_fraction -> Grafana).
+# NOT a VRAM cap — placement is owned by S13/S14 + --fit since 2026-06-09.
 VRAM_BUDGETS: dict[str, float] = {
     "full": 1.0,
-    "heavy": 0.9,
-    "shared": 0.5,
+    "balanced": 0.5,
     "minimal": 0.0,
 }
 
-# User-facing mode descriptions. Since 2026-06-09 (resource-signals) load mode
-# is placement, not a VRAM cap: it weights the desktop presence/contention
-# signals (S13/S14) that bias work cloud↔local. VRAM_BUDGETS fractions above are
-# advisory only (get_vram_budget_mb returns raw free).
+# User-facing mode descriptions. Load mode is placement, not a VRAM cap: it
+# weights the desktop presence/contention signals (S13/S14) that bias work
+# cloud↔local. VRAM_BUDGETS fractions above are advisory/observability only.
 DESCRIPTIONS: dict[str, str] = {
-    "full": "Full — ignore desktop signals; send to local freely",
-    "heavy": "Heavy — bias to cloud when you're active (1.5×)",
-    "shared": "Shared — stronger cloud bias when you're active (2×)",
-    "minimal": "Minimal — local inference disabled, cloud only",
+    "full": "Yerel Serbest — masaüstü sinyallerini yoksay; yerele serbest gönder",
+    "balanced": "Dengeli — sen aktifken güçlü bulut yönelimi (2×)",
+    "minimal": "Sadece Bulut — yerel çıkarım kapalı, yalnızca bulut",
 }
 
-_g_mode = Gauge("nerd_herd_load_mode", "Current GPU load mode (0=minimal,1=shared,2=heavy,3=full)")
+_g_mode = Gauge("nerd_herd_load_mode", "Current GPU load mode (0=minimal,1=balanced,2=full)")
 _g_mode_info = Gauge("nerd_herd_load_mode_info", "GPU load mode as label", ["mode"])
 _g_budget = Gauge("nerd_herd_vram_budget_fraction", "VRAM budget fraction 0.0-1.0")
 _g_auto = Gauge("nerd_herd_auto_managed", "Whether GPU mode is auto-managed")
@@ -46,7 +57,7 @@ def _mode_index(mode: str) -> int:
     try:
         return MODE_ORDER.index(mode)
     except ValueError:
-        return 3
+        return len(MODE_ORDER) - 1   # treat unknown as least-restrictive (full)
 
 
 class LoadManager:
@@ -62,7 +73,7 @@ class LoadManager:
         upgrade_delay: int = 300,
     ) -> None:
         self._gpu = gpu_collector
-        self._mode = initial_mode if initial_mode in LOAD_MODES else "full"
+        self._mode = _normalize_mode(initial_mode)
         self._auto_managed = True
         self._detect_interval = detect_interval
         self._upgrade_delay = upgrade_delay
@@ -74,9 +85,9 @@ class LoadManager:
         return self._mode
 
     def set_load_mode(self, mode: str, source: str = "user") -> str:
-        if mode not in LOAD_MODES:
+        if mode not in LOAD_MODES and mode not in _LEGACY_ALIASES:
             return f"Unknown mode '{mode}'. Choose: {', '.join(LOAD_MODES)}"
-
+        mode = _normalize_mode(mode)
         prev = self._mode
         if prev == mode:
             return f"Already in *{mode}* mode"
@@ -134,12 +145,11 @@ class LoadManager:
 
     @staticmethod
     def suggest_mode_for_external_usage(external_vram_fraction: float) -> str:
+        # External-GPU-only fallback (no presence). 3-mode set.
         if external_vram_fraction < 0.10:
             return "full"
-        elif external_vram_fraction < 0.30:
-            return "heavy"
         elif external_vram_fraction < 0.60:
-            return "shared"
+            return "balanced"
         else:
             return "minimal"
 
@@ -229,7 +239,7 @@ class LoadManager:
         }
 
     def prometheus_metrics(self) -> list:
-        mode_val = {"minimal": 0, "shared": 1, "heavy": 2, "full": 3}.get(self._mode, 3)
+        mode_val = {"minimal": 0, "balanced": 1, "full": 2}.get(self._mode, 2)
         _g_mode.set(mode_val)
         for m in LOAD_MODES:
             _g_mode_info.labels(mode=m).set(1 if m == self._mode else 0)

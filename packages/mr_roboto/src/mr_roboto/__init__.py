@@ -1126,6 +1126,49 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "verify_contains_product_name":
+        # Z1 — canonical product-name enforcement. Reads the pinned name from
+        # the artifact store (produced by step 0.0y) and whole-word-checks that
+        # the produced doc (reverse_pitch / product_charter) contains it.
+        from mr_roboto.verify_contains_product_name import (
+            verify_contains_product_name as _verify_pn,
+        )
+        try:
+            name = None
+            mid = task.get("mission_id")
+            if mid is not None:
+                from src.workflows.engine.hooks import get_artifact_store
+                raw = await get_artifact_store().retrieve(int(mid), "product_name")
+                if isinstance(raw, dict):
+                    name = raw.get("product_name")
+                elif isinstance(raw, str) and raw.strip():
+                    import json as _json
+                    try:
+                        _d = _json.loads(raw)
+                        name = _d.get("product_name") if isinstance(_d, dict) else raw
+                    except Exception:
+                        name = raw
+            texts: list[str] = []
+            for _p in (_resolve_path_list(payload.get("artifact_paths")) or []):
+                try:
+                    with open(_p, "r", encoding="utf-8") as _fh:
+                        texts.append(_fh.read())
+                except Exception:
+                    continue
+            res = _verify_pn(product_name=name, artifact_texts=texts)
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        "verify_contains_product_name: produced artifact does not "
+                        f"contain canonical product name {res.get('product_name')!r}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "verify_reverse_pitch_shape":
         # Z1 Tier 1 — Amazon working-backwards reverse_pitch.md validator.
         from mr_roboto.verify_reverse_pitch_shape import (

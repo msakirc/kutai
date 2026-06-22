@@ -501,6 +501,43 @@ def clear_mission_lessons_cache() -> None:
     _mission_lessons_cache.clear()
 
 
+def _product_name_block(name: "str | None") -> "str | None":
+    """The canonical-product-name prompt block, or None when no name is pinned."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    return (
+        "## Product Name (canonical)\n"
+        f"The product is named **{name}**. Use this name EXACTLY in every "
+        "artifact. Do NOT invent or vary the name."
+    )
+
+
+async def _load_product_name(mission_id) -> "str | None":
+    """Best-effort read of the pinned product name from the artifact store
+    (produced by i2p step 0.0y). Returns the stripped name or None. Never raises.
+    Mirrors inject_north_star._load_success_metrics."""
+    if mission_id is None:
+        return None
+    try:
+        from src.workflows.engine.hooks import get_artifact_store
+        raw = await get_artifact_store().retrieve(int(mission_id), "product_name")
+    except Exception:
+        return None
+    name = None
+    if isinstance(raw, dict):
+        name = raw.get("product_name")
+    elif isinstance(raw, str) and raw.strip():
+        import json as _json
+        try:
+            _d = _json.loads(raw)
+            name = _d.get("product_name") if isinstance(_d, dict) else raw
+        except Exception:
+            name = raw
+    name = (name or "").strip()
+    return name or None
+
+
 def seed_calibration_cache(rows: list[dict]) -> None:
     """Test hook: prime the cache directly without touching the DB."""
     global _calibration_cache_loaded
@@ -811,6 +848,17 @@ async def build_user_context(
             task_context = {}
     if not isinstance(task_context, dict):
         task_context = {}
+
+    # ── Canonical product name (i2p) — injected fresh from the store ──
+    try:
+        _pn = await _load_product_name(
+            task.get("mission_id") or task_context.get("mission_id")
+        )
+        _pn_block = _product_name_block(_pn)
+        if _pn_block:
+            parts.append(_pn_block)
+    except Exception:
+        pass
 
     # ── Task context fields (always injected if present) ──
     if "workspace_snapshot" in task_context:

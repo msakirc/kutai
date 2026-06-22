@@ -72,7 +72,8 @@ async def _load_mode_from_db(db_path: str) -> str:
             ) as cursor:
                 row = await cursor.fetchone()
                 if row:
-                    return row[0]
+                    from nerd_herd.load import _normalize_mode
+                    return _normalize_mode(row[0])
     except Exception:
         pass
     return "full"

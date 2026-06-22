@@ -71,8 +71,10 @@ class LoadManager:
         initial_mode: str = "full",
         detect_interval: int = 30,
         upgrade_delay: int = 300,
+        presence_collector=None,
     ) -> None:
         self._gpu = gpu_collector
+        self._presence = presence_collector
         self._mode = _normalize_mode(initial_mode)
         self._auto_managed = True
         self._detect_interval = detect_interval
@@ -153,6 +155,22 @@ class LoadManager:
         else:
             return "minimal"
 
+    # Presence-aware auto mode picker. presence is the dict from
+    # PresenceCollector.collect() or None (degrade to external-GPU only).
+    def _suggest_mode(self, external_vram_fraction: float, presence: dict | None) -> str:
+        from nerd_herd.signals.s13_presence import PRESENT_IDLE_S
+        if presence:
+            if presence.get("foreground_fullscreen"):
+                return "minimal"
+        if external_vram_fraction >= 0.60:
+            return "minimal"
+        present = bool(presence) and float(
+            presence.get("user_idle_s", PRESENT_IDLE_S)
+        ) < PRESENT_IDLE_S
+        if external_vram_fraction >= 0.10 or present:
+            return "balanced"
+        return "full"
+
     async def start_auto_detect(self, notify_fn: Callable | None = None) -> None:
         self._detect_task = asyncio.create_task(self._auto_detect_loop(notify_fn))
 
@@ -181,7 +199,13 @@ class LoadManager:
 
                 ext = self._gpu.detect_external_gpu_usage()
                 self._record_external(ext)
-                suggested = self.suggest_mode_for_external_usage(ext.external_vram_fraction)
+                presence = None
+                if self._presence is not None:
+                    try:
+                        presence = self._presence.collect()
+                    except Exception:
+                        presence = None
+                suggested = self._suggest_mode(ext.external_vram_fraction, presence)
                 current = self._mode
                 now = time.time()
 

@@ -129,3 +129,48 @@ def test_init_normalizes_legacy_initial_mode():
 def test_load_modes_set():
     from nerd_herd.load import LOAD_MODES
     assert LOAD_MODES == ("full", "balanced", "minimal")
+
+
+class _Presence:
+    def __init__(self, idle_s, fullscreen):
+        self._d = {"user_idle_s": idle_s, "foreground_fullscreen": fullscreen}
+    def collect(self):
+        return self._d
+
+
+def test_suggest_mode_fullscreen_forces_minimal():
+    lm = LoadManager(gpu_collector=MagicMock(),
+                     presence_collector=_Presence(idle_s=1.0, fullscreen=True))
+    assert lm._suggest_mode(0.0, lm._presence.collect()) == "minimal"
+
+
+def test_suggest_mode_high_external_minimal():
+    lm = LoadManager(gpu_collector=MagicMock(),
+                     presence_collector=_Presence(idle_s=1e9, fullscreen=False))
+    assert lm._suggest_mode(0.70, lm._presence.collect()) == "minimal"
+
+
+def test_suggest_mode_present_balanced():
+    lm = LoadManager(gpu_collector=MagicMock(),
+                     presence_collector=_Presence(idle_s=5.0, fullscreen=False))
+    assert lm._suggest_mode(0.0, lm._presence.collect()) == "balanced"
+
+
+def test_suggest_mode_away_idle_full():
+    lm = LoadManager(gpu_collector=MagicMock(),
+                     presence_collector=_Presence(idle_s=1e9, fullscreen=False))
+    assert lm._suggest_mode(0.05, lm._presence.collect()) == "full"
+
+
+def test_suggest_mode_mid_external_balanced_even_if_away():
+    lm = LoadManager(gpu_collector=MagicMock(),
+                     presence_collector=_Presence(idle_s=1e9, fullscreen=False))
+    assert lm._suggest_mode(0.20, lm._presence.collect()) == "balanced"
+
+
+def test_suggest_mode_no_presence_degrades_to_external_only():
+    lm = LoadManager(gpu_collector=MagicMock())
+    assert lm._presence is None
+    assert lm._suggest_mode(0.05, None) == "full"
+    assert lm._suggest_mode(0.30, None) == "balanced"
+    assert lm._suggest_mode(0.70, None) == "minimal"

@@ -32,21 +32,6 @@ from general_beckman.result_router import (
 from general_beckman.retry import decide_retry, DLQAction, RetryDecision
 
 
-def _ledger_reject(ctx: dict, attempt, reason, prev_output=None) -> None:
-    """Append a quality rejection to the conversation rejection ledger (T1).
-
-    Thin lazy wrapper over ``src.workflows.engine.hooks.append_rejection``
-    (lazy import avoids a package->src import cycle). Best-effort: a ledger
-    failure must never break the retry/DLQ path. ``out_hash`` lets the
-    Phase-3 repeat-detector spot identical re-attempts.
-    """
-    try:
-        from src.workflows.engine.hooks import append_rejection, _output_hash
-        append_rejection(ctx, attempt, reason, _output_hash(prev_output))
-    except Exception as _e:  # pragma: no cover - defensive
-        logger.debug("rejection-ledger append skipped", error=str(_e))
-
-
 def _mechanical_context(action: str, **payload_fields) -> dict:
     """Build the canonical context shape for a mechanical mr_roboto task.
 
@@ -882,10 +867,17 @@ def _record_failed_model(ctx: dict) -> None:
         ctx["failed_models"] = failed
 
 
-def _stamp_retry_feedback(ctx: dict, next_attempt: int) -> None:
-    """Prepare ``ctx`` for the next quality-retry attempt. Called by EVERY
-    quality re-pend branch (grade + all mechanical checks), so it is the single
-    place that guarantees the per-attempt invariants hold for all of them:
+def _stamp_retry_feedback(
+    ctx: dict,
+    next_attempt: int,
+    *,
+    reason=None,
+    prev_output=None,
+) -> bool:
+    """Prepare ``ctx`` for the next quality-retry attempt and report whether the
+    attempt is a degenerate repeat. Called by EVERY quality re-pend branch
+    (grade + all mechanical checks), so it is the single place that guarantees
+    the per-attempt invariants hold for all of them:
 
     1. Tag freshly-written ``_schema_error``/``_prev_output`` with the attempt
        number they were written FOR. Readers gate on this so stale feedback from
@@ -896,10 +888,47 @@ def _stamp_retry_feedback(ctx: dict, next_attempt: int) -> None:
        model-exclusion arm engages — not just the difficulty bump. This is a
        QUALITY-only chokepoint (availability/infra retries ride decide_retry,
        never this), so excluding the model is always correct here.
+    3. Append the rejection to the conversation rejection ledger (T1/GAP-1) so
+       EVERY quality re-pend — not just the 4 appliers that historically had a
+       scattered ``_ledger_reject`` — feeds the "Prior attempts (do not repeat)"
+       render in coulson/context.py. ``reason`` is the precise per-applier
+       attribution (e.g. ``"grade: …"``); when omitted it falls back to the
+       freshly-written ``_schema_error`` feedback text. ``prev_output`` is the
+       raw produced output (``source.get("result")``) — hashed the SAME way the
+       appliers and ``_retry_or_dlq`` hash it, so the ledger's ``out_hash`` is
+       apples-to-apples within an applier-driven loop.
+    4. Degenerate-repeat detection (T7/GAP-2): hash ``prev_output`` and compare
+       to the IMMEDIATELY-PRIOR ledger entry's ``out_hash`` BEFORE appending the
+       new entry (compare-then-append → a single attempt never self-matches).
+       Return ``True`` when the hashes are non-None and equal — the caller must
+       DLQ instead of re-pending a non-converging attempt. The verdict appliers
+       re-pend DIRECTLY (never via ``_retry_or_dlq``), so this is the only place
+       the detector can fire on the dominant grade/review/verify path.
+
+       LIMIT (F6): exact-hash only; semantic near-duplicates won't match.
+       Hash-parity caveat: the degenerate hooks path hashes the unwrapped
+       envelope, not the raw result — if a loop mixes both the detector
+       under-detects (never false-DLQs), which is the safe direction.
     """
     _record_failed_model(ctx)
     if "_schema_error" in ctx or "_prev_output" in ctx:
         ctx["_schema_error_for_attempt"] = int(next_attempt)
+
+    escalate = False
+    try:
+        from src.workflows.engine.hooks import append_rejection, _output_hash
+
+        cur = _output_hash(prev_output)
+        ledger = ctx.get("_rejection_ledger") or []
+        prior = ledger[-1].get("out_hash") if ledger else None
+        escalate = bool(cur) and bool(prior) and cur == prior
+        _reason = reason if reason is not None else (
+            ctx.get("_schema_error") or "quality rejection"
+        )
+        append_rejection(ctx, next_attempt, _reason, cur)
+    except Exception as _e:  # pragma: no cover - defensive
+        logger.debug("rejection-ledger append skipped", error=str(_e))
+    return escalate
 
 
 def _drop_stale_retry_feedback(ctx: dict, current_attempts: int) -> None:
@@ -2955,10 +2984,6 @@ async def _apply_grounding_verdict(
         "On retry: actually call the write_file tool for each declared "
         "path before final_answer. Do NOT just narrate the file contents."
     )
-    # Rejection ledger (T1): one entry per quality re-pend, before either
-    # the bonus arm or the normal arm — both re-dispatch the same step.
-    _ledger_reject(ctx, attempts, f"grounding: {error_str}", source.get("result"))
-
     if attempts >= max_attempts:
         from general_beckman.retry import _MAX_BONUS
         bonus_count = int(ctx.get("_bonus_count", 0))
@@ -2975,7 +3000,13 @@ async def _apply_grounding_verdict(
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
                 ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            _stamp_retry_feedback(ctx, attempts)
+            if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                await _dlq_write(
+                    source,
+                    error="degenerate repeat: identical output across attempts, not converging",
+                    category="quality", attempts=attempts,
+                )
+                return
             await update_task(
                 verdict.source_task_id,
                 status="pending",
@@ -3001,7 +3032,13 @@ async def _apply_grounding_verdict(
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
         ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-    _stamp_retry_feedback(ctx, attempts)
+    if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+        await _dlq_write(
+            source,
+            error="degenerate repeat: identical output across attempts, not converging",
+            category="quality", attempts=attempts,
+        )
+        return
     await update_task(
         verdict.source_task_id,
         status="pending",
@@ -3087,9 +3124,6 @@ async def _apply_verify_artifacts_verdict(
         "On retry: actually call the write_file tool for each declared path. "
         "Do not just emit JSON describing the file."
     )
-    # Rejection ledger (T1): one entry per quality re-pend (both arms).
-    _ledger_reject(ctx, attempts, f"verify_artifacts: {error_str}", source.get("result"))
-
     if attempts >= max_attempts:
         from general_beckman.retry import _MAX_BONUS
         bonus_count = int(ctx.get("_bonus_count", 0))
@@ -3106,7 +3140,13 @@ async def _apply_verify_artifacts_verdict(
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
                 ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            _stamp_retry_feedback(ctx, attempts)
+            if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                await _dlq_write(
+                    source,
+                    error="degenerate repeat: identical output across attempts, not converging",
+                    category="quality", attempts=attempts,
+                )
+                return
             await update_task(
                 verdict.source_task_id,
                 status="pending",
@@ -3132,7 +3172,13 @@ async def _apply_verify_artifacts_verdict(
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
         ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-    _stamp_retry_feedback(ctx, attempts)
+    if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+        await _dlq_write(
+            source,
+            error="degenerate repeat: identical output across attempts, not converging",
+            category="quality", attempts=attempts,
+        )
+        return
     await update_task(
         verdict.source_task_id,
         status="pending",
@@ -3222,9 +3268,6 @@ async def _apply_code_review_verdict(
         "Code review rejected your output. Fix these issues on retry, "
         "then re-emit:\n" + bullet_block
     )
-    # Rejection ledger (T1): one entry per quality re-pend (both arms).
-    _ledger_reject(ctx, attempts, f"code_review: {error_str}", source.get("result"))
-
     if attempts >= max_attempts:
         from general_beckman.retry import _MAX_BONUS
         bonus_count = int(ctx.get("_bonus_count", 0))
@@ -3241,7 +3284,13 @@ async def _apply_code_review_verdict(
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
                 ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            _stamp_retry_feedback(ctx, attempts)
+            if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                await _dlq_write(
+                    source,
+                    error="degenerate repeat: identical output across attempts, not converging",
+                    category="quality", attempts=attempts,
+                )
+                return
             await update_task(
                 verdict.source_task_id,
                 status="pending",
@@ -3267,7 +3316,13 @@ async def _apply_code_review_verdict(
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
         ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-    _stamp_retry_feedback(ctx, attempts)
+    if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+        await _dlq_write(
+            source,
+            error="degenerate repeat: identical output across attempts, not converging",
+            category="quality", attempts=attempts,
+        )
+        return
     await update_task(
         verdict.source_task_id,
         status="pending",
@@ -3396,7 +3451,13 @@ async def _apply_test_run_verdict(
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
                 ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            _stamp_retry_feedback(ctx, attempts)
+            if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                await _dlq_write(
+                    source,
+                    error="degenerate repeat: identical output across attempts, not converging",
+                    category="quality", attempts=attempts,
+                )
+                return
             await update_task(
                 verdict.source_task_id,
                 status="pending",
@@ -3418,7 +3479,13 @@ async def _apply_test_run_verdict(
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
         ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-    _stamp_retry_feedback(ctx, attempts)
+    if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+        await _dlq_write(
+            source,
+            error="degenerate repeat: identical output across attempts, not converging",
+            category="quality", attempts=attempts,
+        )
+        return
     await update_task(
         verdict.source_task_id,
         status="pending",
@@ -3690,7 +3757,13 @@ async def _apply_semgrep_blocker_verdict(
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
                 ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            _stamp_retry_feedback(ctx, attempts)
+            if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                await _dlq_write(
+                    source,
+                    error="degenerate repeat: identical output across attempts, not converging",
+                    category="quality", attempts=attempts,
+                )
+                return
             await update_task(
                 verdict.source_task_id,
                 status="pending",
@@ -3712,7 +3785,13 @@ async def _apply_semgrep_blocker_verdict(
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
         ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-    _stamp_retry_feedback(ctx, attempts)
+    if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+        await _dlq_write(
+            source,
+            error="degenerate repeat: identical output across attempts, not converging",
+            category="quality", attempts=attempts,
+        )
+        return
     await update_task(
         verdict.source_task_id,
         status="pending",
@@ -3896,7 +3975,13 @@ async def _apply_type_sync_verdict(
                 prev_output = source.get("result") or ""
                 if isinstance(prev_output, str) and prev_output.strip():
                     ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-                _stamp_retry_feedback(ctx, attempts)
+                if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                    await _dlq_write(
+                        source,
+                        error="degenerate repeat: identical output across attempts, not converging",
+                        category="quality", attempts=attempts,
+                    )
+                    return
                 await update_task(
                     verdict.source_task_id,
                     status="pending",
@@ -3918,7 +4003,13 @@ async def _apply_type_sync_verdict(
         prev_output = source.get("result") or ""
         if isinstance(prev_output, str) and prev_output.strip():
             ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-        _stamp_retry_feedback(ctx, attempts)
+        if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+            await _dlq_write(
+                source,
+                error="degenerate repeat: identical output across attempts, not converging",
+                category="quality", attempts=attempts,
+            )
+            return
         await update_task(
             verdict.source_task_id,
             status="pending",
@@ -4052,7 +4143,13 @@ async def _apply_migration_apply_verdict(
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
                 ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            _stamp_retry_feedback(ctx, attempts)
+            if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                await _dlq_write(
+                    source,
+                    error="degenerate repeat: identical output across attempts, not converging",
+                    category="quality", attempts=attempts,
+                )
+                return
             await update_task(
                 verdict.source_task_id,
                 status="pending",
@@ -4074,7 +4171,13 @@ async def _apply_migration_apply_verdict(
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
         ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-    _stamp_retry_feedback(ctx, attempts)
+    if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+        await _dlq_write(
+            source,
+            error="degenerate repeat: identical output across attempts, not converging",
+            category="quality", attempts=attempts,
+        )
+        return
     await update_task(
         verdict.source_task_id,
         status="pending",
@@ -4486,7 +4589,13 @@ async def _apply_review_verdict(
                 f"producer(s) {routed} were re-pended to fix it. Re-review the "
                 "corrected artifacts fresh."
             )
-            _stamp_retry_feedback(ctx, attempts)
+            # GAP-1 (ledger only): reason falls back to the _schema_error
+            # set just above. The escalate return is intentionally IGNORED
+            # here — this is a reviewer re-pend bounded by the producers'
+            # worker_attempts (route_review_failure escalates separately), not
+            # a degenerate producer-output loop, so a byte-identical prior
+            # verdict must not short-circuit the re-review.
+            _stamp_retry_feedback(ctx, attempts, prev_output=source.get("result"))
             await update_task(
                 verdict.source_task_id, status="pending",
                 worker_attempts=attempts, max_worker_attempts=max_attempts,
@@ -4638,7 +4747,13 @@ async def _apply_simple_blocker_verdict(
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
                 ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            _stamp_retry_feedback(ctx, attempts)
+            if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                await _dlq_write(
+                    source,
+                    error="degenerate repeat: identical output across attempts, not converging",
+                    category="quality", attempts=attempts,
+                )
+                return
             await update_task(
                 verdict.source_task_id, status="pending",
                 worker_attempts=attempts, max_worker_attempts=max_attempts,
@@ -4654,7 +4769,13 @@ async def _apply_simple_blocker_verdict(
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
         ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-    _stamp_retry_feedback(ctx, attempts)
+    if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+        await _dlq_write(
+            source,
+            error="degenerate repeat: identical output across attempts, not converging",
+            category="quality", attempts=attempts,
+        )
+        return
     await update_task(
         verdict.source_task_id, status="pending",
         worker_attempts=attempts, error=error_str, error_category="quality",
@@ -4758,7 +4879,13 @@ async def _apply_mobile_smoke_verdict(
             prev_output = source.get("result") or ""
             if isinstance(prev_output, str) and prev_output.strip():
                 ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            _stamp_retry_feedback(ctx, attempts)
+            if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+                await _dlq_write(
+                    source,
+                    error="degenerate repeat: identical output across attempts, not converging",
+                    category="quality", attempts=attempts,
+                )
+                return
             await update_task(
                 verdict.source_task_id, status="pending",
                 worker_attempts=attempts, max_worker_attempts=max_attempts,
@@ -4776,7 +4903,13 @@ async def _apply_mobile_smoke_verdict(
     prev_output = source.get("result") or ""
     if isinstance(prev_output, str) and prev_output.strip():
         ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-    _stamp_retry_feedback(ctx, attempts)
+    if _stamp_retry_feedback(ctx, attempts, reason=error_str, prev_output=source.get("result")):
+        await _dlq_write(
+            source,
+            error="degenerate repeat: identical output across attempts, not converging",
+            category="quality", attempts=attempts,
+        )
+        return
     await update_task(
         verdict.source_task_id, status="pending",
         worker_attempts=attempts, error=error_str, error_category="quality",
@@ -5052,15 +5185,6 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
         ctx["failed_models"] = worker_failed
         ctx["_pending_posthooks"] = []
 
-        # Rejection ledger (T1 / GAP1): the proven 48x competitive_positioning
-        # loop was a GRADE loop, but the ledger was only wired into the
-        # grounding/verify/code_review appliers — grade re-pended with no
-        # ledger entry, so the retry prompt's "Prior attempts" render stayed
-        # empty exactly where it mattered. Append here (after the availability
-        # masquerade guard above, before the terminal/re-pend split) so EVERY
-        # grade rejection is recorded — mirrors grounding (apply.py ~2960).
-        _ledger_reject(ctx, attempts, f"grade: {error_str}", source.get("result"))
-
         if attempts >= max_attempts:
             # Bonus: mirror _retry_or_dlq — if task made progress and
             # bonus budget remains, grant one more attempt. Otherwise DLQ.
@@ -5081,7 +5205,13 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
                 prev_output = source.get("result") or ""
                 if isinstance(prev_output, str) and prev_output.strip():
                     ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-                _stamp_retry_feedback(ctx, attempts)
+                if _stamp_retry_feedback(ctx, attempts, reason=f"grade: {error_str}", prev_output=source.get("result")):
+                    await _dlq_write(
+                        source,
+                        error="degenerate repeat: identical output across attempts, not converging",
+                        category="quality", attempts=attempts,
+                    )
+                    return
                 # error_category=quality so the next retry decision
                 # (decide_retry) takes the immediate path, not the
                 # availability backoff ladder. Grader rejection is a
@@ -5146,7 +5276,13 @@ async def _apply_posthook_verdict_locked(task: dict, a: PostHookVerdict) -> None
             except Exception:
                 pass
             ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-        _stamp_retry_feedback(ctx, attempts)
+        if _stamp_retry_feedback(ctx, attempts, reason=f"grade: {error_str}", prev_output=source.get("result")):
+            await _dlq_write(
+                source,
+                error="degenerate repeat: identical output across attempts, not converging",
+                category="quality", attempts=attempts,
+            )
+            return
         # error_category=quality so decide_retry takes the immediate
         # path, not the availability backoff ladder. Grader rejection
         # is a quality failure by definition. Mission 46 task 4047

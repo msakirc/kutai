@@ -384,7 +384,7 @@ async def test_verdict_real_findings_cascade_source():
         patch("src.infra.db.update_task", new_callable=AsyncMock) as mock_update,
         patch("general_beckman.apply._spawn_workflow_advance_if_mission",
               new_callable=AsyncMock),
-        patch("general_beckman.apply._stamp_retry_feedback"),
+        patch("general_beckman.apply._stamp_retry_feedback", return_value=False),
     ):
         await _apply_domain_layer_check_verdict(
             source=source, ctx=ctx, pending=pending, verdict=verdict,

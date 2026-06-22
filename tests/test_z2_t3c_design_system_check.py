@@ -250,7 +250,7 @@ async def test_verdict_warning_finding_blocks_retry():
     )
 
     with patch("src.infra.db.update_task", new_callable=AsyncMock) as mock_update, \
-         patch("general_beckman.apply._stamp_retry_feedback"):
+         patch("general_beckman.apply._stamp_retry_feedback", return_value=False):
         await _apply_design_system_check_verdict(
             source=source, ctx=ctx, pending=pending, verdict=verdict,
         )

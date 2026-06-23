@@ -2104,7 +2104,10 @@
       "difficulty": "medium",
       "tools_hint": [],
       "depends_on": [
-        "1.12b"
+        "1.12b",
+        "0.0c",
+        "1.0c",
+        "1.4a"
       ],
       "may_need_clarification": false,
       "input_artifacts": [

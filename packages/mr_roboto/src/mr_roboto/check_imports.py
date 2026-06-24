@@ -46,7 +46,7 @@ except ImportError:
     except ImportError:
         tomllib = None  # type: ignore[assignment]
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.check_imports")
 

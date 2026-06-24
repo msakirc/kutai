@@ -7,7 +7,7 @@ name = "mr_roboto"
 version = "0.1.0"
 description = "Mechanical dispatcher — non-LLM task executors (workspace snapshot, git commit)"
 requires-python = ">=3.10"
-dependencies = ["dabidabi"]
+dependencies = ["dabidabi", "yazbunu>=0.2.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

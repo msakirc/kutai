@@ -146,7 +146,7 @@ async def _run_image(task: dict, image_call: dict) -> dict:
                             from src.models.local_model_manager import get_local_manager
                             await get_local_manager().shutdown()
                         except Exception as _e:
-                            from src.infra.logging_config import get_logger
+                            from yazbunu import get_logger
                             get_logger("husam.image").warning(
                                 "local_image: dallama shutdown failed: %s", _e)
                         # 2. Poll free VRAM until the image model fits (or ~30s).
@@ -169,7 +169,7 @@ async def _run_image(task: dict, image_call: dict) -> dict:
                                     break
                                 await asyncio.sleep(2.0)
                         except Exception as _e:
-                            from src.infra.logging_config import get_logger
+                            from yazbunu import get_logger
                             get_logger("husam.image").warning(
                                 "local_image: vram poll failed: %s", _e)
                     # Start clair_obscur — ALWAYS, on both warm and cold paths.

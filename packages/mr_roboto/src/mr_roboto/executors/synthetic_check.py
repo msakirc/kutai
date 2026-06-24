@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.ops.perf_baselines import (
     has_regression,
     latest_green_baseline,

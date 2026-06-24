@@ -14,7 +14,7 @@ build_reflection_prompt(agent_name, iteration) -> str
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("coulson.reflection")
 

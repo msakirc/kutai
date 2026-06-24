@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from typing import Callable
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 from .react import run as _react_run
 

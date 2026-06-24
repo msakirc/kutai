@@ -15,7 +15,7 @@ import os
 from typing import Any
 
 from src.tools.workspace import get_mission_workspace
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.run_cmd")
 

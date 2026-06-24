@@ -41,7 +41,7 @@ from typing import Any, Callable, Iterable
 # otherwise fall back to a stdlib logger so this module is import-safe in
 # unit tests that don't have the full app wiring.
 try:
-    from src.infra.logging_config import get_logger as _get_logger
+    from yazbunu import get_logger as _get_logger
 except Exception:  # pragma: no cover
     import logging
 

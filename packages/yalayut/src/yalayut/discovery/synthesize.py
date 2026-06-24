@@ -87,7 +87,7 @@ async def llm_synthesize(raw_text: str, source_meta: dict) -> dict:
     """
     import json as _json
 
-    from src.infra.logging_config import get_logger as _gl
+    from yazbunu import get_logger as _gl
     _log = _gl("yalayut.synthesize")
 
     from finch import build_messages

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Coroutine
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("coulson.agent_handlers.registry")
 

@@ -14,7 +14,7 @@ import fatih_hoca
 from fatih_hoca.types import Failure, Pick
 from fatih_hoca.urgency import mid_task_urgency
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("coulson.dispatch")
 

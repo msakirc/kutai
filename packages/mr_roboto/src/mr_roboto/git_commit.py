@@ -47,7 +47,7 @@ from src.tools.git_ops import (
     git_head_sha,
 )
 from src.tools.workspace import get_mission_workspace_relative
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.git_commit")
 

@@ -45,7 +45,7 @@ Returns ``{"status": "enqueued", "task_id": int}`` on success.
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.ops.brand_voice import load_founder_voice
 
 logger = get_logger("mr_roboto.launch_drafts")

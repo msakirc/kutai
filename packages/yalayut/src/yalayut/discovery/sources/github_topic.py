@@ -12,7 +12,7 @@ from pathlib import Path
 import frontmatter
 import httpx
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from yalayut.contracts import ArtifactRef, SourceConfig
 
 logger = get_logger("yalayut.adapter.github_topic")

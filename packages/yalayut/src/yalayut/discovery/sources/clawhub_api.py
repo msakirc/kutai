@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from yalayut.contracts import ArtifactRef, SourceConfig
 
 logger = get_logger("yalayut.adapter.clawhub")

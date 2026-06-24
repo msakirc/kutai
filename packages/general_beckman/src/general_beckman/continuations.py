@@ -14,7 +14,7 @@ import asyncio
 import json
 from typing import Awaitable, Callable
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 _log = get_logger("beckman.continuations")
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import struct
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("intersect.binding")
 

@@ -35,7 +35,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.ops.escalation_policy import resolve_channel
 
 logger = get_logger("mr_roboto.escalate_to_founder")

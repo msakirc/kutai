@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.ops.brand_voice import load_founder_voice
 
 logger = get_logger("mr_roboto.outreach_draft")

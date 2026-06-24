@@ -12,7 +12,7 @@ Handler signature (canonical, from posthook_continuations.py):
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 # Mechanical helpers reused from the (now LLM-free) verb modules.
 from mr_roboto.reviews_classify import (

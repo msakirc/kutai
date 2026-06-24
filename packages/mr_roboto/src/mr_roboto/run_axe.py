@@ -30,7 +30,7 @@ import json
 import shutil
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 from .preview_url import is_real_url as _is_real_url
 

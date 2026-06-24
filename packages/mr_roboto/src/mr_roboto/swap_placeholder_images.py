@@ -49,7 +49,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 # Shared HTML primitives (one definition; aliased to the historical private
 # names this module exported — tests import them from here).

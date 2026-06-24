@@ -18,7 +18,7 @@ Returns:
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("beckman.posthooks.audit_completeness_check")
 

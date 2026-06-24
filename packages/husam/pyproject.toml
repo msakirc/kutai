@@ -7,7 +7,7 @@ name = "husam"
 version = "0.1.0"
 description = "kumandan hüsamettin — the non-agentic single-call worker (grader, summarizer, raw LLM dispatch)"
 requires-python = ">=3.10"
-dependencies = ["dabidabi"]
+dependencies = ["dabidabi", "yazbunu>=0.2.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

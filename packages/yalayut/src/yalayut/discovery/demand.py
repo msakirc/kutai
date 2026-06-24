@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 
 from dabidabi import get_db
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from dabidabi.times import utc_now, to_db
 
 logger = get_logger("yalayut.demand")

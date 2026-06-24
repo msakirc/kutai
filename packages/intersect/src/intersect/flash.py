@@ -29,7 +29,7 @@ PHASE2_PREEMPT_ENABLED: bool = True
 
 import json
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 from intersect import binding, budget, exposure, scoring, telemetry
 

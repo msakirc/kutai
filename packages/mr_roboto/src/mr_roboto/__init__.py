@@ -466,7 +466,7 @@ async def _surface_spec_patch_proposal(payload: dict, res: dict) -> None:
         })
     except Exception as exc:  # pragma: no cover - logged, never fatal
         try:
-            from src.infra.logging_config import get_logger as _gl
+            from yazbunu import get_logger as _gl
             _gl("mr_roboto.spec_patch").warning(
                 "spec-patch notify enqueue failed", error=str(exc))
         except Exception:
@@ -873,7 +873,7 @@ async def _run_dispatch(task: dict) -> Action:
                 return Action(status="needs_clarification",
                               result={"awaiting_critic": True, "action": "git_commit"})
             except Exception as e:
-                from src.infra.logging_config import get_logger as _gl
+                from yazbunu import get_logger as _gl
                 _gl("mr_roboto.critic_gate").warning(f"git_commit gate park failed: {e}")
                 return Action(status="failed",
                               error=f"critic gate could not be scheduled: {e}")
@@ -994,7 +994,7 @@ async def _run_dispatch(task: dict) -> Action:
                 )
                 (commit_info or {}).setdefault("green_tag", _green)
             except Exception as _green_exc:
-                from src.infra.logging_config import get_logger as _gl
+                from yazbunu import get_logger as _gl
                 _gl("mr_roboto.mark_green").warning(
                     f"mark_green from git_commit failed: {_green_exc}"
                 )
@@ -2288,7 +2288,7 @@ async def _run_dispatch(task: dict) -> Action:
                 return Action(status="needs_clarification",
                               result={"awaiting_critic": True, "action": "notify_user"})
             except Exception as e:
-                from src.infra.logging_config import get_logger as _gl
+                from yazbunu import get_logger as _gl
                 _gl("mr_roboto.critic_gate").warning(f"notify_user gate park failed: {e}")
                 return Action(status="failed",
                               error=f"critic gate could not be scheduled: {e}")
@@ -3543,7 +3543,7 @@ async def _run_dispatch(task: dict) -> Action:
                         source_task_id=payload.get("source_task_id"),
                     )
             except Exception as _lesson_exc:
-                from src.infra.logging_config import get_logger as _gl
+                from yazbunu import get_logger as _gl
                 _gl("mr_roboto.integration_bisect").debug(
                     "lesson emit skipped: %s", _lesson_exc
                 )
@@ -3828,7 +3828,7 @@ async def _run_dispatch(task: dict) -> Action:
                     })
                     alerts_sent += 1
                 except Exception as _ae:
-                    from src.infra.logging_config import get_logger as _gl
+                    from yazbunu import get_logger as _gl
                     _gl("mr_roboto.audit_completeness_check").error(
                         "audit_completeness_check: alert failed for gap %s: %s",
                         gap.get("vendor_call_id"), _ae,

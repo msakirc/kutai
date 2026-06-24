@@ -28,7 +28,7 @@ import re
 from typing import Any
 
 from src.tools.workspace import get_mission_workspace
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.verify_design_tokens_shape")
 

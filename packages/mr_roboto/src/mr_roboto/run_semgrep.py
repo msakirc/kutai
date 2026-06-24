@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from mr_roboto.run_cmd import run_cmd
 
 logger = get_logger("mr_roboto.run_semgrep")

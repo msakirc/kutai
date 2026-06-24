@@ -65,7 +65,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 _log = get_logger("mr_roboto.score_sunset")
 

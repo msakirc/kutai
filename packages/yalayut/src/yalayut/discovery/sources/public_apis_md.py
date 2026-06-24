@@ -11,7 +11,7 @@ from typing import Any
 
 import aiohttp
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("yalayut.adapter.public_apis")
 

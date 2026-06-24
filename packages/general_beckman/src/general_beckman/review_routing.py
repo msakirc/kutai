@@ -13,7 +13,7 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.workflows.engine.producer_index import build_producer_index
 from coulson.posthooks.review_router import map_tagged_issues
 

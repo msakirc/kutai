@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.inject_north_star")
 

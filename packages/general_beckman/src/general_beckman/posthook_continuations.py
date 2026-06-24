@@ -8,7 +8,7 @@ Handler bodies are filled in T5 (grade), T6 (code_review), T7 (summary).
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("beckman.posthook_continuations")
 

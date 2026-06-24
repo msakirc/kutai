@@ -9,7 +9,7 @@ Handler signature: async def handler(child_task_id: int, result: dict, state: di
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.executors.comms_continuations")
 

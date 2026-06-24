@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 
 from dabidabi import get_db
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from yalayut.discovery import demand as _demand
 
 logger = get_logger("yalayut.demand_drain")

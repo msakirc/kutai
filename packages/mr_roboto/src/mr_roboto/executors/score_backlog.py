@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 _log = get_logger("mr_roboto.score_backlog")
 

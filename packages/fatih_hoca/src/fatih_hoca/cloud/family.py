@@ -11,7 +11,7 @@ fall back to lower-cased provider-stripped form and are flagged via
 from __future__ import annotations
 
 import re
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("fatih_hoca.cloud.family")
 

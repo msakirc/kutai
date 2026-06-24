@@ -26,7 +26,7 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("beckman.posthooks.press_kit_freshness")
 

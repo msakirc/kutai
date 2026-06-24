@@ -14,7 +14,7 @@ import json
 import os
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.compliance_fingerprint_collection")
 

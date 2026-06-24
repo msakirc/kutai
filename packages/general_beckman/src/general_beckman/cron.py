@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from dabidabi.times import utc_now, to_db
 
 from general_beckman.apply import _mechanical_context

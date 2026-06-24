@@ -11,7 +11,7 @@ import json
 
 from general_beckman import update_task
 from dabidabi import get_task
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.critic_continuations")
 

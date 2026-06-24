@@ -6,7 +6,7 @@ import re
 
 def _get_logger():
     try:
-        from src.infra.logging_config import get_logger
+        from yazbunu import get_logger
         return get_logger("hallederiz_kadir.response")
     except Exception:
         import logging

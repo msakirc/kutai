@@ -25,7 +25,7 @@ import httpx
 from .config import ClairObscurConfig
 
 try:
-    from src.infra.logging_config import get_logger
+    from yazbunu import get_logger
 
     logger = get_logger("clair_obscur.server")
 except Exception:  # pragma: no cover - standalone fallback

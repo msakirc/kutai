@@ -19,7 +19,7 @@ import json
 import time
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from yalayut.shell_safety import ShellSafetyError, tokenize_cmd
 
 logger = get_logger("yalayut.mcp")

@@ -3,7 +3,7 @@ connection primitives. Schema A is canonical for model_stats."""
 import json
 
 from dabidabi import get_db
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("fatih_hoca.db")
 

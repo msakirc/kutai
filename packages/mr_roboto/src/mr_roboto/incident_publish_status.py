@@ -11,7 +11,7 @@ After publishing:
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.incident_publish_status")
 

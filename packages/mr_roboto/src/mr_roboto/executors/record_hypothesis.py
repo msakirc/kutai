@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import re
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 _log = get_logger("mr_roboto.record_hypothesis")
 

@@ -15,7 +15,7 @@ import yaml
 from datetime import timedelta
 
 from dabidabi import get_db
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from dabidabi.times import utc_now, to_db, from_db
 from yalayut.contracts import SourceConfig
 from yalayut.discovery.sources.github_path import GithubPathAdapter

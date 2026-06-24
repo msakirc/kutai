@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from .capabilities import TASK_PROFILES, Cap
 
 log = get_logger("auto_tuner")

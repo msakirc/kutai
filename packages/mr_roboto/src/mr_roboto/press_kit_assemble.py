@@ -37,7 +37,7 @@ import zipfile
 from datetime import datetime
 from typing import Any, Sequence
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.press_kit_assemble")
 

@@ -155,7 +155,7 @@ def _gemini_sanitize_response_format(response_format: dict) -> dict:
 
 def _get_logger():
     try:
-        from src.infra.logging_config import get_logger
+        from yazbunu import get_logger
         return get_logger("hallederiz_kadir")
     except Exception:
         import logging

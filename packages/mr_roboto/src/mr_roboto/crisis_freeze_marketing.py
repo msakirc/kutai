@@ -17,7 +17,7 @@ Returns ``{"status": "ok", "frozen": bool, "freeze_id": int|None}``.
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.crisis_freeze_marketing")
 

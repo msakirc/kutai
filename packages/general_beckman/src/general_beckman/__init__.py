@@ -93,7 +93,7 @@ def _estimate_task_tokens(agent_type: str, ctx_d, btable: dict) -> tuple[int, in
 async def notify_threshold(mission_id: int, pct: int, spent: float, ceiling: float):
     """Post threshold notify to mission thread."""
     import json as _json
-    from src.infra.logging_config import get_logger
+    from yazbunu import get_logger
     from dabidabi import get_db
 
     logger = get_logger(__name__)
@@ -551,7 +551,7 @@ async def next_task(lane: str | None = None):
     except Exception:
         fatih_hoca = None  # type: ignore
 
-    from src.infra.logging_config import get_logger
+    from yazbunu import get_logger
     _log = get_logger("beckman.admission")
 
     # Overlay in-process truth onto snapshot:
@@ -1093,7 +1093,7 @@ async def _post_completion_image_lane(task: dict, result: dict) -> None:
         clair_obscur.record_release_hint()
     except Exception as _e:
         try:
-            from src.infra.logging_config import get_logger
+            from yazbunu import get_logger
             get_logger("beckman.image_lane").warning(
                 "clair_obscur.record_release_hint failed", error=str(_e),
             )
@@ -1163,7 +1163,7 @@ async def on_task_finished(task_id, result: dict = None) -> None:
     from general_beckman.apply import apply_actions
     from general_beckman.task_context import parse_context
     from dabidabi import get_task
-    from src.infra.logging_config import get_logger
+    from yazbunu import get_logger
 
     log = get_logger("beckman.on_task_finished")
     task = await get_task(task_id)
@@ -1637,7 +1637,7 @@ async def block_mission(mission_id: int) -> bool:
     responsible for that gate (founder_actions.block_mission_if_needed still
     does the count check before calling this).
     """
-    from src.infra.logging_config import get_logger as _get_logger
+    from yazbunu import get_logger as _get_logger
     _logger = _get_logger("beckman.block_mission")
 
     from dabidabi import get_mission, update_mission_fields as _update_fields
@@ -1674,7 +1674,7 @@ async def unblock_mission(
     window between a caller's count check and this flip (every ``await`` on
     the shared single-pump loop yields).
     """
-    from src.infra.logging_config import get_logger as _get_logger
+    from yazbunu import get_logger as _get_logger
     _logger = _get_logger("beckman.unblock_mission")
 
     if require_actions_clear:
@@ -1904,7 +1904,7 @@ async def on_model_swap(old_model: str | None, new_model: str | None) -> None:
         from dabidabi import accelerate_retries
         await accelerate_retries("model_swap")
     except Exception as e:
-        from src.infra.logging_config import get_logger
+        from yazbunu import get_logger
         get_logger("beckman.on_model_swap").debug(
             f"accelerate_retries failed: {e}",
         )

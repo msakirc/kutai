@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from dabidabi.times import utc_now, db_now, to_db, from_db
 from general_beckman.task_context import parse_context
 

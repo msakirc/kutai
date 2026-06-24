@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import json
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.tools import TOOL_REGISTRY
 
 logger = get_logger("runtime.context")

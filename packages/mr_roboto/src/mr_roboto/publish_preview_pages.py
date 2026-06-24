@@ -25,7 +25,7 @@ import os
 import shutil
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from mr_roboto.init_mission_github_repo import (
     _run,
     _gh_available,

@@ -21,7 +21,7 @@ import json
 from datetime import timedelta
 from typing import Iterable
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from dabidabi.times import to_db, utc_now
 
 from general_beckman.result_router import (

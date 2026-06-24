@@ -31,7 +31,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.ops.playbooks import match_playbooks_for_stack, to_dict
 
 logger = get_logger("mr_roboto.generate_playbooks")

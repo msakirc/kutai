@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("beckman.posthooks.channel_rules_loader")
 

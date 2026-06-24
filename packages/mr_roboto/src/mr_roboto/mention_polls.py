@@ -62,7 +62,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote_plus
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.mention_polls")
 

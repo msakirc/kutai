@@ -15,7 +15,7 @@ import asyncio
 from pathlib import Path
 from typing import Callable, Mapping
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 from . import cache as cache_mod
 from .types import ProviderResult

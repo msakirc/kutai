@@ -40,7 +40,7 @@ from src.app.config import MAX_TOOL_OUTPUT_LENGTH
 from dabidabi import (
     load_task_checkpoint, record_model_call, record_cost, store_memory,
 )
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.tools import TOOL_REGISTRY, execute_tool
 
 from .actions import validate_action, validate_tool_args, validate_task_output

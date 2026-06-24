@@ -33,7 +33,7 @@ import os
 import time
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("mr_roboto.mark_green")
 

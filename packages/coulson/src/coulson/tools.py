@@ -21,7 +21,7 @@ build_litellm_tools(allowed_tools, exclude)  → list[dict] | None
 """
 from __future__ import annotations
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 from src.tools import TOOL_SCHEMAS
 
 logger = get_logger("runtime.tools")

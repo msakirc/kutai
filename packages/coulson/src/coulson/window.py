@@ -19,7 +19,7 @@ import litellm as _litellm
 
 from src.models.model_registry import get_registry
 from fatih_hoca.requirements import ModelRequirements
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
 
 logger = get_logger("runtime.window")
 

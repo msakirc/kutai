@@ -115,6 +115,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "todo_reminder": "irreversible",  # Telegram nudge — user sees it
     "price_watch_check": "irreversible",  # may trigger price-drop alert
     "clarify": "irreversible",  # Telegram clarification prompt to user
+    "resend_clarification": "irreversible",  # re-sends the clarify prompt to user
     "init_mission_github_repo": "irreversible",  # public repo creation visible to world
     "emit_preview_url": "irreversible",  # tunneled URL discoverable by share
     "kill_preview_url": "partial",  # tears tunnel down; URL was already published

@@ -40,6 +40,34 @@ async def _notify(message: str) -> None:
     )
 
 
+async def _resend_clarification(task_id: int) -> None:
+    """Re-send a waiting_human task's ORIGINAL interactive clarification.
+
+    A bare "Task #N needs your input" + title reminder is useless on its own:
+    to act, the founder had to scroll the whole chat history for the original
+    question and its options/buttons (e.g. 0.6a non_goals_confirm: the draft +
+    OK/Regenerate/Edit keyboard). Each escalation tier enqueues this so the
+    reminder is self-contained — the founder acts straight from it.
+
+    Goes through a mechanical ``resend_clarification`` task (same decoupling as
+    ``_notify``): mr_roboto loads the source task, reconstructs its clarify
+    payload, and re-runs the clarify executor — re-sending whatever interactive
+    message the gate first used. mr_roboto no-ops gracefully if the task has no
+    re-sendable clarification or the founder already answered.
+    """
+    from dabidabi import add_task
+    from general_beckman.apply import _mechanical_context
+    await add_task(
+        title=f"Re-send clarification: Task #{task_id}",
+        description="",
+        agent_type="mechanical",
+        context=_mechanical_context(
+            "resend_clarification", source_task_id=task_id,
+        ),
+        depends_on=[],
+    )
+
+
 async def sweep_queue() -> None:
     """Task-level recovery: stuck, ungraded, dep cascade, subtasks,
     overdue retry gates, waiting_human escalation, workflow timeouts."""
@@ -324,6 +352,9 @@ async def sweep_queue() -> None:
                 f"\U0001f4ac Gentle reminder: Task #{task['id']} needs your input.\n"
                 f"*{task['title']}*"
             )
+            # Re-send the original question + options/buttons so the founder
+            # acts from the reminder, not from scrolling history.
+            await _resend_clarification(task["id"])
 
     cursor_clar = await db.execute(
         """SELECT id, title, context, started_at FROM tasks
@@ -361,6 +392,7 @@ async def sweep_queue() -> None:
                 f"\u23f0 Task #{tid} has been waiting for "
                 f"clarification for 24h.\n*{ttitle}*"
             )
+            await _resend_clarification(tid)
         elif escalation_count == 1 and hours_waiting >= 48:
             # Tier 2: 48h urgent
             task_ctx["escalation_count"] = 2
@@ -376,6 +408,7 @@ async def sweep_queue() -> None:
                 f"_This task will be cancelled in 24h if no "
                 f"response is received._"
             )
+            await _resend_clarification(tid)
         elif escalation_count >= 2 and hours_waiting >= 72:
             # Tier 3: 72h cancel
             task_ctx["escalation_count"] = 3

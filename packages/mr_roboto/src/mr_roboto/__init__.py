@@ -2234,6 +2234,21 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "resend_clarification":
+        # Re-send a pending clarification's ORIGINAL interactive message
+        # (question + content + buttons) so sweep escalation reminders are
+        # self-contained — the founder acts straight from the reminder
+        # instead of scrolling history for the original prompt. Reuses the
+        # clarify executor verbatim (every gate kind re-sends as first sent).
+        # The resend row always completes; the waiting state lives on the
+        # source task it re-targets.
+        from mr_roboto.resend_clarification import resend_clarification
+        try:
+            res = await resend_clarification(task)
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "notify_user":
         # Z1 Tier 5C (B4) — Critic gate on `notify_user`, SP6 TWO-PASS self-park.
         # Send is irreversible (user sees the message); gate the text before

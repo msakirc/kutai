@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 from src.tools import TOOL_REGISTRY
 
 from .grounding import (
+    WRITE_TOOLS,
     build_grounding_message,
     extract_written_paths,
     unmatched_produces,
@@ -252,6 +253,7 @@ def check_sub_iter_guards(
             task=task,
             tool_calls=tool_calls,
             suppress_guards=False,  # already gated by caller
+            allowed_tools=profile.allowed_tools,
         )
         if grounding_correction is not None:
             return grounding_correction
@@ -331,6 +333,7 @@ def check_grounding_sub_iter(
     task: dict,
     tool_calls: list[dict],
     suppress_guards: bool = False,
+    allowed_tools: list[str] | None = None,
 ) -> GuardCorrection | None:
     """Path-aware grounding guard.
 
@@ -338,6 +341,7 @@ def check_grounding_sub_iter(
       - guards not suppressed
       - parsed action is final_answer
       - workflow step declares a non-empty ``produces`` list in context
+      - the agent actually HAS a write tool available (see below)
       - none of the produces entries match a successful write-tool call
         in ``tool_calls``
 
@@ -348,6 +352,17 @@ def check_grounding_sub_iter(
 
     Mechanical agents and zero-produces tasks are no-ops by virtue of
     the produces empty-check.
+
+    Write-capability gate (task #525001): a step that declares BOTH an
+    ``artifact_schema`` AND a ``produces`` path has its write tools
+    auto-stripped by ``_apply_auto_strip`` — the workflow engine persists
+    the ``result`` to the produces path itself, so write tools are
+    redundant. The agent is then physically unable to call write_file.
+    Demanding a write it cannot perform loops the step to max_iterations
+    and DLQs it (the file IS written, by the engine). So: when
+    ``allowed_tools`` is supplied and contains none of ``WRITE_TOOLS``,
+    grounding is moot — skip it. ``allowed_tools=None`` means "all tools"
+    (write available) → guard proceeds, preserving prior behaviour.
     """
     if suppress_guards:
         return None
@@ -355,6 +370,10 @@ def check_grounding_sub_iter(
         return None
     produces = _produces_from_task(task)
     if not produces:
+        return None
+    if allowed_tools is not None and not (set(allowed_tools) & WRITE_TOOLS):
+        # No write tool available — the engine materializes the result to
+        # disk. The agent cannot satisfy a write demand; do not fire.
         return None
     written = extract_written_paths(tool_calls or [])
     missing = unmatched_produces(produces, written)

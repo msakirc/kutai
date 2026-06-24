@@ -284,6 +284,51 @@ def test_guard_respects_suppress_flag():
     assert correction is None
 
 
+def test_guard_passes_when_write_tools_stripped():
+    """Regression (task #525001): a step with BOTH artifact_schema AND a
+    declared produces path has its write tools auto-stripped by
+    _apply_auto_strip (engine persists the result itself). The agent is
+    then left with only read_file and CANNOT call write_file. The grounding
+    guard must not demand an impossible write — otherwise the step loops to
+    max_iterations and DLQs even though the engine writes the file."""
+    correction = check_grounding_sub_iter(
+        parsed={"action": "final_answer", "result": "done"},
+        task=_task(produces=["mission_89/.research/prior_art_queries.json"]),
+        tool_calls=[
+            {"name": "read_file", "args": {"filepath": "brief.md"}, "ok": True},
+        ],
+        allowed_tools=["read_file"],
+    )
+    assert correction is None
+
+
+def test_guard_still_fires_when_write_tool_available():
+    """When a write tool IS available the guard must still catch the agent
+    that narrated final_answer without writing the declared path."""
+    correction = check_grounding_sub_iter(
+        parsed={"action": "final_answer", "result": "done"},
+        task=_task(produces=["backend/x.py"], title="impl X"),
+        tool_calls=[
+            {"name": "read_file", "args": {"filepath": "spec.md"}, "ok": True},
+        ],
+        allowed_tools=["read_file", "write_file"],
+    )
+    assert correction is not None
+    assert correction.guard_name == "grounding"
+
+
+def test_guard_fires_when_allowed_tools_none():
+    """allowed_tools=None means 'all tools' (write available) — back-compat:
+    the guard fires exactly as before."""
+    correction = check_grounding_sub_iter(
+        parsed={"action": "final_answer", "result": "done"},
+        task=_task(produces=["x.py"]),
+        tool_calls=[],
+        allowed_tools=None,
+    )
+    assert correction is not None
+
+
 def test_guard_decodes_string_context():
     """Beckman sometimes round-trips context as JSON string."""
     task = {

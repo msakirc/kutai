@@ -48,6 +48,33 @@ _WEB_TOOLS = frozenset({"web_search", "smart_search", "extract_url"})
 # output steps.
 _WRITE_TOOLS = frozenset({"write_file", "apply_diff", "edit_file", "patch_file"})
 
+# Artifact-schema types. Structured types (object/array) put the CLEAN
+# artifact directly in the final_answer ``result`` — write tools are then
+# safely redundant (the engine materializes result→disk). Free-form types
+# (markdown/string) are different: a narration-prone agent (e.g. analyst)
+# wraps the artifact in "## Analysis …" prose when forced down the
+# final_answer path, poisoning the materialized file — but writes a CLEAN
+# file via write_file. So write tools are KEPT for free-form schemas.
+# (task #524995, [0.0c] interview_script_generation.)
+_STRUCTURED_SCHEMA_TYPES = frozenset({"object", "array"})
+
+
+def _schema_is_structured_only(schema: dict) -> bool:
+    """True when EVERY artifact in *schema* is a structured type
+    (object/array) — the case where the ``result`` IS the clean artifact
+    and stripping write tools is safe. False when ANY artifact is free-form
+    (markdown/string), so write tools stay. Typeless entries default to
+    ``object`` (preserves prior behaviour for object schemas that omit an
+    explicit ``type``)."""
+    types = [
+        (v.get("type") or "object").lower()
+        for v in schema.values()
+        if isinstance(v, dict)
+    ]
+    if not types:
+        return True
+    return all(t in _STRUCTURED_SCHEMA_TYPES for t in types)
+
 
 async def execute(profile, task: dict, progress_callback: Callable | None = None) -> dict:
     """Drive one task to completion. Routes by profile.execution_pattern.
@@ -281,12 +308,17 @@ def _apply_auto_strip(profile, task_ctx: dict) -> None:
         _strip_set |= _FILE_TOOLS
     if task_ctx.get("_strip_web_tools"):
         _strip_set |= _WEB_TOOLS
-    # Auto-strip write tools when the step has a structured-output schema.
-    # Explicit opt-out via "_allow_write_tools" for the rare step that
-    # legitimately needs both schema'd result AND file side-effects.
+    # Auto-strip write tools when the step has a STRUCTURED-output schema
+    # (object/array): the final_answer result is the clean artifact and the
+    # engine materializes it. Free-form schemas (markdown/string) keep write
+    # tools — narration-prone agents emit clean files via write_file but wrap
+    # the final_answer result in prose that poisons the materialized file
+    # (task #524995). Explicit opt-out via "_allow_write_tools" for the rare
+    # step that legitimately needs both schema'd result AND file side-effects.
     _schema = task_ctx.get("artifact_schema")
     if (_schema and isinstance(_schema, dict)
-            and not task_ctx.get("_allow_write_tools")):
+            and not task_ctx.get("_allow_write_tools")
+            and _schema_is_structured_only(_schema)):
         _strip_set |= _WRITE_TOOLS
 
     if not _strip_set:

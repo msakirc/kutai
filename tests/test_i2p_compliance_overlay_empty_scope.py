@@ -58,3 +58,58 @@ def test_empty_overlay_fails_gate_when_fingerprint_has_jurisdictions():
     inputs = {"compliance_fingerprint": {"jurisdictions": ["US", "EU"]}}
     res = schema_gate(output_value=overlay, schema=schema, inputs=inputs)
     assert res["passed"] is False
+
+
+def test_absent_exempt_fields_pass_gate_when_fingerprint_has_no_jurisdictions():
+    """Task #525016 (mission 89): the analyst OMITS monitoring_obligations /
+    data_subject_rights_implementation entirely for an empty-scope overlay
+    (jurisdictions=[]). An absent exempt field must be treated like an empty
+    one — the prior fix only covered present-but-empty values, so the
+    missing-field branch DLQ'd ('missing required field')."""
+    schema = _step("1.11a")["artifact_schema"]
+    overlay = json.dumps({
+        "required_documents": [],
+        # monitoring_obligations + data_subject_rights_implementation OMITTED
+    })
+    inputs = {"compliance_fingerprint": {"jurisdictions": []}}
+    res = schema_gate(output_value=overlay, schema=schema, inputs=inputs)
+    assert res["passed"] is True, res["error"]
+
+
+def test_absent_exempt_field_fails_gate_when_fingerprint_has_jurisdictions():
+    """Real scope present → an omitted required field is a genuine failure."""
+    schema = _step("1.11a")["artifact_schema"]
+    overlay = json.dumps({"required_documents": []})
+    inputs = {"compliance_fingerprint": {"jurisdictions": ["US"]}}
+    res = schema_gate(output_value=overlay, schema=schema, inputs=inputs)
+    assert res["passed"] is False
+
+
+# ── is_empty_scope_artifact: skip the LLM grade for blessed empty scope ──
+# Task #525016 follow-up: overlay passed the schema gate but the scope-blind
+# LLM grader returned RELEVANT:NO/COMPLETE:NO/FAIL on the legitimately-empty
+# artifact. The grade branch skips the semantic grade when this returns True.
+from src.workflows.engine.schema_dialect import is_empty_scope_artifact
+
+
+def test_empty_scope_true_when_all_markers_granted():
+    schema = _step("1.11a")["artifact_schema"]
+    inputs = {"compliance_fingerprint": {"jurisdictions": []}}
+    assert is_empty_scope_artifact(schema, inputs) is True
+
+
+def test_empty_scope_false_when_jurisdictions_present():
+    schema = _step("1.11a")["artifact_schema"]
+    inputs = {"compliance_fingerprint": {"jurisdictions": ["US", "EU"]}}
+    assert is_empty_scope_artifact(schema, inputs) is False
+
+
+def test_empty_scope_false_without_inputs():
+    schema = _step("1.11a")["artifact_schema"]
+    assert is_empty_scope_artifact(schema, None) is False
+
+
+def test_empty_scope_false_when_schema_has_no_markers():
+    schema = {"plain": {"type": "object", "fields": {"x": {"type": "string"}}}}
+    inputs = {"anything": {"k": []}}
+    assert is_empty_scope_artifact(schema, inputs) is False

@@ -164,6 +164,35 @@ def _empty_exemption_granted(frule: dict, inputs: Optional[dict]) -> bool:
     return is_empty_required_value(val)
 
 
+def is_empty_scope_artifact(schema: Optional[dict], inputs: Optional[dict]) -> bool:
+    """True when the artifact is in a deterministically-blessed EMPTY SCOPE.
+
+    Returns True iff the schema declares one or more
+    ``empty_ok_when_input_empty`` field exemptions AND every one is GRANTED
+    (its upstream anchor resolves to an empty value). In that case the whole
+    artifact is legitimately empty/minimal — the deterministic schema gate
+    plus the step's done_when already bless it.
+
+    Callers use this to SKIP the semantic LLM grade: the grader is blind to
+    the upstream scope and false-rejects a correct empty artifact as
+    "incomplete" (task #525016 — empty compliance_overlay for
+    ``jurisdictions=[]`` got RELEVANT:NO/COMPLETE:NO/FAIL). The exemption is
+    an input-anchored proof a different task authored, so a lazy producer
+    can't self-grant it. Returns False when there are NO markers or ANY
+    marker is ungranted — so a non-empty scope is still graded normally."""
+    markers: list = []
+    for rules in (schema or {}).values():
+        if not isinstance(rules, dict):
+            continue
+        r = _normalize_rule(rules)
+        for frule in (r.get("fields") or {}).values():
+            if isinstance(frule, dict) and frule.get("empty_ok_when_input_empty"):
+                markers.append(frule)
+    if not markers:
+        return False
+    return all(_empty_exemption_granted(fr, inputs) for fr in markers)
+
+
 # ── Validation ──────────────────────────────────────────────────────────
 
 def validate_value(
@@ -205,6 +234,15 @@ def validate_value(
                 continue
             field_path = f"{path}.{fname}" if path else fname
             if fname not in value:
+                # An absent field is exempted on the same terms as an empty
+                # one: a field marked empty_ok_when_input_empty whose upstream
+                # scope is itself empty may be omitted entirely (task #525016 —
+                # analyst drops monitoring_obligations for a jurisdictions=[]
+                # overlay). Without this, the missing-field branch DLQ'd a
+                # correct empty-scope answer that the present-but-empty path
+                # already accepts.
+                if _empty_exemption_granted(frule, inputs):
+                    continue
                 return f"{field_path}: missing required field"
             fvalue = value[fname]
             if is_empty_required_value(fvalue):

@@ -1840,6 +1840,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         # _grader_verdict_text reads it) and skip the wasted LLM grade. The
         # grader then judges semantics only, on shape-valid artifacts.
         _art_schema = source_ctx.get("artifact_schema")
+        _gate_inputs = None  # upstream input artifacts for empty_ok exemption
         if isinstance(_art_schema, dict) and _art_schema:
             _draft = source.get("result")
             if isinstance(_draft, str) and _draft.strip():
@@ -1849,7 +1850,6 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                     # an empty_ok_when_input_empty exemption (no-op otherwise).
                     # Anchors the exemption to a DIFFERENT task's artifact so a
                     # lazy producer can't self-grant an empty-scope pass.
-                    _gate_inputs = None
                     try:
                         from src.workflows.engine.hooks import (
                             collect_empty_exemption_inputs as _cee,
@@ -1883,6 +1883,33 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 PostHookVerdict(source_task_id=source_id, kind="grade", passed=False,
                                 raw={"passed": False, "raw": built.raw}))
             return False  # verdict applied directly — no child spawned
+        # Blessed empty-scope short-circuit — placed AFTER build_grading_spec
+        # so its deterministic trivial/degeneracy auto-fail (dogru_mu_samet)
+        # has already run (a garbage artifact can't slip through this path).
+        # When EVERY empty_ok_when_input_empty exemption is granted (upstream
+        # scope genuinely empty — anchored to a DIFFERENT task's artifact, so a
+        # lazy producer cannot self-grant), completeness is a proven
+        # deterministic fact. The scope-blind LLM grader only ever false-rejects
+        # such an artifact as "incomplete" (task #525016: empty compliance_overlay
+        # for jurisdictions=[] → RELEVANT:NO/FAIL → DLQ). Skip the LLM grade —
+        # schema gate + done_when + degeneracy floor already cover it. Non-empty
+        # scope → not granted → graded normally (docs genuinely required).
+        try:
+            from src.workflows.engine.schema_dialect import (
+                is_empty_scope_artifact as _is_empty_scope,
+            )
+            if _is_empty_scope(_art_schema, _gate_inputs):
+                await _apply_posthook_verdict(
+                    {"id": source_id},
+                    PostHookVerdict(
+                        source_task_id=source_id, kind="grade", passed=True,
+                        raw={"passed": True,
+                             "raw": "empty-scope exempted (schema gate + "
+                                    "done_when + degeneracy floor pass); "
+                                    "LLM grade skipped"}))
+                return False  # blessed empty-scope — no LLM grade
+        except Exception:  # noqa: BLE001 — never let the skip break grade
+            pass
         cont_state = {"source_task_id": source_id, "kind": "grade",
                       "attempt": attempt, "exclusions": excl, "mission_id": mission_id}
 

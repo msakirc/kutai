@@ -1,12 +1,14 @@
 """Z6 T7D — thin helper for registering rendered artifacts.
 
+(Formerly src/infra/artifacts_register.py.)
+
 Several mechanical executors (T4A ``legal_document_render``, future
 Z6 deployments) want to insert / refresh a row in
 ``mission_artifacts_index`` without depending on the higher-level
 workflow engine. This module is that helper.
 
-Schema lives in :mod:`src.infra.db` (table
-``mission_artifacts_index``); this function only inserts.
+Schema lives in dabidabi (table ``mission_artifacts_index``); this
+function only inserts.
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ async def register_artifact(
     Failure modes (DB unavailable, schema drift) raise — callers wrap
     in try/except when they want best-effort behaviour.
     """
-    from .db import get_db
+    from dabidabi import get_db
     db = await get_db()
     keywords = list(domain_keywords or [])
     await db.execute(

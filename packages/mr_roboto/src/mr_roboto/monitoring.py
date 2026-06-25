@@ -1,6 +1,6 @@
-# infra/monitoring.py
+# mr_roboto/monitoring.py (formerly src/infra/monitoring.py — Phase 14.2)
 """
-Phase 14.2 — Proactive Monitoring
+Proactive Monitoring
 
 Background checks: configured URLs (uptime), GitHub repos (new issues/PRs).
 Pure helper functions — invoked by the mr_roboto monitoring_check executor
@@ -12,9 +12,9 @@ from __future__ import annotations
 import asyncio
 import os
 
-from .logging_config import get_logger
+from yazbunu import get_logger
 
-logger = get_logger("infra.monitoring")
+logger = get_logger("mr_roboto.monitoring")
 
 # State tracking to avoid re-alerting on the same URL being down across runs.
 # Shared dict mutated by the monitoring_check executor on each cycle.
@@ -70,5 +70,3 @@ async def check_github_repo(repo: str) -> list[dict]:
     except Exception as exc:
         logger.debug(f"GitHub check failed for {repo}: {exc}")
         return []
-
-

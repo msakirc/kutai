@@ -21,7 +21,7 @@ async def run(task: dict[str, Any]) -> dict[str, Any]:
     For each alert, enqueues a notify_user mechanical sub-task.
     Always returns a result dict — errors are caught and logged.
     """
-    from src.infra.monitoring import check_url_uptime, check_github_repo, _url_statuses
+    from mr_roboto.monitoring import check_url_uptime, check_github_repo, _url_statuses
     from general_beckman import add_task
     from general_beckman.apply import _mechanical_context
 

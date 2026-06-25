@@ -16,7 +16,7 @@ def _no_db_telemetry():
     from unittest.mock import MagicMock
     with patch("src.infra.db.record_call_tokens", new=AsyncMock()), \
          patch("src.infra.db.audit_log", new=AsyncMock(), create=True), \
-         patch("src.infra.audit.audit", new=AsyncMock(), create=True), \
+         patch("kara_kutu.audit.audit", new=AsyncMock(), create=True), \
          patch("src.infra.metrics.track_model_call_metrics", new=MagicMock(), create=True):
         yield
 

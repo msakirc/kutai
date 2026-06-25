@@ -279,7 +279,7 @@ def _record_metrics(model_name, cost, latency_ms, tokens):
 
 async def _record_audit(agent_type, model_litellm, task, cost, latency):
     try:
-        from src.infra.audit import audit, ACTOR_AGENT, ACTION_MODEL_CALL
+        from kara_kutu import audit, ACTOR_AGENT, ACTION_MODEL_CALL
         await audit(actor=f"{ACTOR_AGENT}:{agent_type or 'unknown'}", action=ACTION_MODEL_CALL,
                     target=model_litellm, details=f"task={task} cost=${cost:.4f} latency={latency:.1f}s")
     except Exception:

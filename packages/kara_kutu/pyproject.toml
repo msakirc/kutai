@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kara_kutu"
+version = "0.1.0"
+description = "Flight recorder — durable, append-only execution history: audit trail (who did what) + per-task traces (what one task did, at what cost). The event/history pillar, sibling to nerd_herd (live metrics) and yazbunu (logs)."
+requires-python = ">=3.10"
+dependencies = [
+    "dabidabi",
+    "yazbunu>=0.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"

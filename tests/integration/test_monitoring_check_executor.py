@@ -53,14 +53,14 @@ class TestMonitoringCheckExecutor:
                 return False, "Connection refused"
 
             # Ensure _url_statuses treats the URL as previously up so alert fires
-            import src.infra.monitoring as mon_mod
+            import mr_roboto.monitoring as mon_mod
             mon_mod._url_statuses.clear()  # start clean — default was_up=True
 
             with patch.dict(os.environ, {
                 "MONITOR_URLS": "http://nope.invalid",
                 "MONITOR_GITHUB_REPOS": "",
             }):
-                with patch("src.infra.monitoring.check_url_uptime", side_effect=fake_check_url):
+                with patch("mr_roboto.monitoring.check_url_uptime", side_effect=fake_check_url):
                     # Also mock notify_user send_notification to confirm no direct TG calls
                     mock_tg = MagicMock()
                     mock_tg.send_notification = AsyncMock()
@@ -136,7 +136,7 @@ class TestMonitoringCheckExecutor:
 
         async def _run():
             from src.infra.db import add_task, get_db
-            import src.infra.monitoring as mon_mod
+            import mr_roboto.monitoring as mon_mod
 
             # Pre-seed URL as down
             mon_mod._url_statuses["http://example.local"] = False
@@ -156,7 +156,7 @@ class TestMonitoringCheckExecutor:
                 "MONITOR_URLS": "http://example.local",
                 "MONITOR_GITHUB_REPOS": "",
             }):
-                with patch("src.infra.monitoring.check_url_uptime", side_effect=fake_up):
+                with patch("mr_roboto.monitoring.check_url_uptime", side_effect=fake_up):
                     from mr_roboto.executors.monitoring_check import run as exec_run
                     result = await exec_run(task)
 

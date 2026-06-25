@@ -222,10 +222,10 @@ async def legal_document_render(
     # Best-effort: register each rendered file as a named artifact so 12.1b
     # can resolve it. Failure is logged but does not flip ok. Z6 T7D
     # swapped the legacy ``src.infra.db.register_artifact`` (which never
-    # existed) for the dedicated helper in ``src.infra.artifacts_register``.
+    # existed) for the dedicated helper, now ``mr_roboto.artifacts_register``.
     if artifacts_to_register:
         try:
-            from src.infra.artifacts_register import register_artifact
+            from mr_roboto.artifacts_register import register_artifact
         except ImportError:  # pragma: no cover
             register_artifact = None  # type: ignore[assignment]
         if register_artifact is not None:

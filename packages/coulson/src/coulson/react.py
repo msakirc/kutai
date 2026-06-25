@@ -1387,7 +1387,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
 
                     # Phase 8.4: Audit log tool execution
                     try:
-                        from src.infra.audit import audit, ACTOR_AGENT, ACTION_TOOL_EXEC
+                        from kara_kutu import audit, ACTOR_AGENT, ACTION_TOOL_EXEC
                         _tid = int(task_id) if str(task_id).isdigit() else None
                         await audit(
                             actor=f"{ACTOR_AGENT}:{profile.name}",
@@ -1404,7 +1404,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
                     try:
                         _tid = int(task_id) if str(task_id).isdigit() else None
                         if _tid:
-                            from src.infra.tracing import append_trace
+                            from kara_kutu import append_trace
                             await append_trace(
                                 task_id=_tid,
                                 entry_type="tool",
@@ -1650,7 +1650,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
 
                 # Audit log
                 try:
-                    from src.infra.audit import audit, ACTOR_AGENT, ACTION_TOOL_EXEC
+                    from kara_kutu import audit, ACTOR_AGENT, ACTION_TOOL_EXEC
                     _tid = int(task_id) if str(task_id).isdigit() else None
                     await audit(
                         actor=f"{ACTOR_AGENT}:{profile.name}",

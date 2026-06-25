@@ -420,7 +420,7 @@ async def run(profile, task: dict, progress_callback: Callable | None = None) ->
     if mission_id is not None:
         try:
             from dabidabi import get_mission_quality_mode
-            from src.infra.cost_wiring import quality_mode_profile
+            from kuleden_donen_var import quality_mode_profile
             _qmode = await get_mission_quality_mode(int(mission_id))
             _qprof = quality_mode_profile(_qmode)
             _qmax = _qprof.get("max_retries")

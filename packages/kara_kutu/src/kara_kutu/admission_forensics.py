@@ -8,7 +8,7 @@ Beckman→Hoca→KDV pipeline rejecting a task post-admission is a
 now stuck. Don't tighten knobs reactively; collect evidence for offline
 tuning instead.
 
-Schema reference: src/infra/db.py :: admission_violations table.
+Schema reference: admission_violations table (registered via dabidabi).
 
 Sites that record:
     1. caller.py — KDV pre_call refused after admission (rate, canary,
@@ -25,9 +25,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from src.infra.logging_config import get_logger
+from yazbunu import get_logger
+from dabidabi import get_db
 
-logger = get_logger("infra.admission_forensics")
+logger = get_logger("kara_kutu.admission_forensics")
 
 
 async def record_admission_violation(
@@ -56,7 +57,6 @@ async def record_admission_violation(
     Telemetry only. Never raises; failures log at WARNING and return.
     """
     try:
-        from src.infra.db import get_db
         db = await get_db()
         await db.execute(
             "INSERT INTO admission_violations "

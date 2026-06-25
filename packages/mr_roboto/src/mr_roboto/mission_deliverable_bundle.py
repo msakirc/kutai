@@ -115,7 +115,7 @@ async def run(
     ``cost_text``, and the underlying sent message ids when available.
     """
     from src.app.telegram_topics import post_to_mission_thread
-    from src.infra.cost_wiring import format_mission_cost
+    from kuleden_donen_var import format_mission_cost
 
     if repo_path is None:
         from src.tools.workspace import get_mission_workspace

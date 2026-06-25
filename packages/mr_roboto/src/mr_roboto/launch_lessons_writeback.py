@@ -38,7 +38,7 @@ logger = get_logger("mr_roboto.launch_lessons_writeback")
 
 async def upsert_mission_lesson(**kwargs) -> int:
     """Thin import wrapper — allows monkeypatching in tests."""
-    from src.infra.mission_lessons import upsert_mission_lesson as _upsert
+    from kara_kutu import upsert_mission_lesson as _upsert
     return await _upsert(**kwargs)
 
 

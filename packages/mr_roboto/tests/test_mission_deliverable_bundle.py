@@ -72,7 +72,7 @@ async def test_deliverable_bundle_thread_path(tmp_path, monkeypatch):
     async def _fake_cost(mid):
         return f"Mission {mid} — cost\nTotal: $0.42"
     monkeypatch.setattr(
-        "src.infra.cost_wiring.format_mission_cost", _fake_cost
+        "kuleden_donen_var.format_mission_cost", _fake_cost
     )
 
     monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "12345")
@@ -128,7 +128,7 @@ async def test_deliverable_bundle_flat_fallback(tmp_path, monkeypatch):
     async def _fake_cost(mid):
         return f"Mission {mid} — cost\nTotal: $0.10"
     monkeypatch.setattr(
-        "src.infra.cost_wiring.format_mission_cost", _fake_cost
+        "kuleden_donen_var.format_mission_cost", _fake_cost
     )
 
     monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "12345")

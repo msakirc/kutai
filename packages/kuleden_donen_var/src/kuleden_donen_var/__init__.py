@@ -11,6 +11,12 @@ from .in_flight import InFlightHandle, InFlightTracker
 from .kdv import KuledenDonenVar
 from . import schema as _schema  # noqa: F401  registers kdv_state DDL with dabidabi
 from . import persistence  # noqa: F401  kdv_state read/write helpers (save/load/load_sync)
+from .cost_wiring import (
+    format_mission_cost,
+    quality_mode_profile,
+    open_cost_decision_confirmation,
+    await_cost_decision_verdict,
+)
 
 __all__ = [
     "KuledenDonenVar",
@@ -28,6 +34,10 @@ __all__ = [
     "in_flight_count",
     "configure_in_flight_push",
     "persistence",
+    "format_mission_cost",
+    "quality_mode_profile",
+    "open_cost_decision_confirmation",
+    "await_cost_decision_verdict",
 ]
 
 _in_flight_tracker: InFlightTracker | None = None

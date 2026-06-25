@@ -351,7 +351,7 @@ async def _emit_bisect_lesson(
     source_ref records breaking_pair / cluster / shortstat / subject for
     later forensics.
     """
-    from src.infra.mission_lessons import upsert_mission_lesson
+    from kara_kutu import upsert_mission_lesson
 
     pair = bisect_result.get("breaking_pair") or []
     if len(pair) != 2:
@@ -2383,7 +2383,7 @@ async def _run_dispatch(task: dict) -> Action:
 
     if action == "emit_dlq_lessons":
         # Z2 T4B + Item-1 followup — daily DLQ→mission_lessons emitter.
-        from src.infra.mission_lessons import emit_lessons_from_dlq_patterns
+        from kara_kutu import emit_lessons_from_dlq_patterns
         try:
             count = await emit_lessons_from_dlq_patterns()
             return Action(

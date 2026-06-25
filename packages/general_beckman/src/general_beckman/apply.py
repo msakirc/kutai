@@ -254,7 +254,7 @@ async def _apply_complete(task: dict, a) -> None:
             )
             mission_id = task.get("mission_id")
             if recipe_picks_path and mission_id:
-                from src.infra.recipes import pin_recipes_from_artifact
+                from yalayut.recipes import pin_recipes_from_artifact
                 count = await pin_recipes_from_artifact(
                     mission_id=int(mission_id),
                     recipe_picks_path=recipe_picks_path,
@@ -690,7 +690,7 @@ async def _maybe_emit_lesson_from_posthook_fail(
     cascade into the verdict path. Idempotent via dedup_key.
     """
     try:
-        from src.infra.mission_lessons import upsert_mission_lesson
+        from kara_kutu import upsert_mission_lesson
         from dabidabi import get_db
         import json as _json
 

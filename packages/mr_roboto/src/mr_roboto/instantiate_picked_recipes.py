@@ -51,7 +51,7 @@ async def instantiate_picked_recipes(
 ) -> dict[str, Any]:
     """Walk recipe_picks.json, instantiate each pick, write manifest."""
     from src.tools.workspace import get_mission_workspace
-    from src.infra.recipes import load_recipe, instantiate_recipe
+    from yalayut.recipes import load_recipe, instantiate_recipe
 
     if mission_id is None:
         return {"ok": False, "instantiations": [], "failures": [],

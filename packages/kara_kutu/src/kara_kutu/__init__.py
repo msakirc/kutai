@@ -28,6 +28,13 @@ from .audit import (
     ACTION_TASK_COMPLETE,
 )
 from .tracing import append_trace, get_trace, format_trace
+from .admission_forensics import record_admission_violation
+from .mission_lessons import (
+    upsert_mission_lesson,
+    top_mission_lessons,
+    suppress_mission_lesson,
+    emit_lessons_from_dlq_patterns,
+)
 
 __all__ = [
     # audit
@@ -50,4 +57,11 @@ __all__ = [
     "append_trace",
     "get_trace",
     "format_trace",
+    # admission forensics
+    "record_admission_violation",
+    # mission lessons
+    "upsert_mission_lesson",
+    "top_mission_lessons",
+    "suppress_mission_lesson",
+    "emit_lessons_from_dlq_patterns",
 ]

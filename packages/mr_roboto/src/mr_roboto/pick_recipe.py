@@ -53,7 +53,7 @@ async def pick_recipe(
     -------
     dict with keys: ok, picked, candidates, reason.
     """
-    from src.infra.recipes import list_recipes, match_recipe
+    from yalayut.recipes import list_recipes, match_recipe
 
     try:
         all_recipes = list_recipes(recipes_dir)

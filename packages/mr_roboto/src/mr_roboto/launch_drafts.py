@@ -107,7 +107,7 @@ async def fetch_launch_lessons(product_id: str, *, limit: int = 5) -> list[dict]
 
     stack = f"launch/{product_id}"
     try:
-        from src.infra.mission_lessons import top_mission_lessons
+        from kara_kutu import top_mission_lessons
         lessons = await top_mission_lessons(stack=stack, domain=None, limit=limit)
         return lessons or []
     except Exception as exc:

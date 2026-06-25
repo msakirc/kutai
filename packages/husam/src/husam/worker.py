@@ -460,7 +460,7 @@ async def run(task: dict) -> dict:
         task_desc = task_name or agent_type or category.value
         # Forensics: pool drained mid-task (see _do_dispatch rationale).
         try:
-            from src.infra.admission_forensics import record_admission_violation
+            from kara_kutu import record_admission_violation
             _t_id_forensic = (
                 _task_obj_kw.get("id") if isinstance(_task_obj_kw, dict) else None
             )

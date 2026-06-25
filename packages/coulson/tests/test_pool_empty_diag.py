@@ -64,7 +64,7 @@ def test_record_pool_empty_forensics_writes_diag_into_summary(monkeypatch):
         captured.update(kw)
 
     monkeypatch.setattr(
-        "src.infra.admission_forensics.record_admission_violation",
+        "kara_kutu.record_admission_violation",
         fake_record,
     )
 

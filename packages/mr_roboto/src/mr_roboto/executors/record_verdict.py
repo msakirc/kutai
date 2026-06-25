@@ -131,7 +131,7 @@ async def _mirror_to_lessons(
     if verdict == "confirmed":
         return
     try:
-        from src.infra.mission_lessons import upsert_mission_lesson
+        from kara_kutu import upsert_mission_lesson
 
         pattern = (
             f"Hypothesis for '{feature}' predicting a {predicted_lift:+.1%} "

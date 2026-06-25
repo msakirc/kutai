@@ -7,7 +7,7 @@ name = "coulson"
 version = "0.1.0"
 description = "Agent runtime — multi-call orchestration (ReAct loop, single-shot, tool VM, context, guards) for Profile-shaped agents"
 requires-python = ">=3.10"
-dependencies = ["fatih_hoca", "hallederiz_kadir", "dallama", "nerd_herd", "dabidabi", "kara_kutu", "yazbunu>=0.2.0"]
+dependencies = ["fatih_hoca", "hallederiz_kadir", "dallama", "nerd_herd", "dabidabi", "kara_kutu", "kuleden_donen_var", "yazbunu>=0.2.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

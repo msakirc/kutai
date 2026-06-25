@@ -45,7 +45,7 @@ def _recipe_domains() -> list[str]:
     agent prompt tolerates (it falls back to a general slug).
     """
     try:
-        from src.infra.recipes import list_recipes
+        from yalayut.recipes import list_recipes
 
         domains = sorted(
             {r.lessons_domain for r in list_recipes() if r.lessons_domain}

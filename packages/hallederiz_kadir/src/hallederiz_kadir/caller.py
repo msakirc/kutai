@@ -789,7 +789,7 @@ async def call(
             # "All models failed: Daily limit exhausted for gemini/X"
             # short-circuited before any other candidate was tried.
             try:
-                from src.infra.admission_forensics import record_admission_violation
+                from kara_kutu import record_admission_violation
                 _t_id_forensic = task_obj.get("id") if isinstance(task_obj, dict) else None
                 _t_agent_forensic = task_obj.get("agent_type") if isinstance(task_obj, dict) else None
                 await record_admission_violation(
@@ -823,7 +823,7 @@ async def call(
             # didn't predict this. Capture full context for offline tuning
             # rather than reactively tightening admission knobs.
             try:
-                from src.infra.admission_forensics import record_admission_violation
+                from kara_kutu import record_admission_violation
                 _t_id_forensic = task_obj.get("id") if isinstance(task_obj, dict) else None
                 _t_agent_forensic = task_obj.get("agent_type") if isinstance(task_obj, dict) else None
                 await record_admission_violation(

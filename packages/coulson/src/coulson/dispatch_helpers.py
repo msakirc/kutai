@@ -198,7 +198,7 @@ async def record_pool_empty_forensics(
     the pool so the DB row is actionable instead of blank.
     """
     try:
-        from src.infra.admission_forensics import record_admission_violation
+        from kara_kutu import record_admission_violation
         t_id = task.get("id") if isinstance(task, dict) else None
         t_agent = task.get("agent_type") if isinstance(task, dict) else None
         extra = {

@@ -59,7 +59,7 @@ async def instantiate_recipe_verb(
     dict with keys: ok, files_written, params_used, skipped, error.
     """
     from pathlib import Path
-    from src.infra.recipes import load_recipe, instantiate_recipe
+    from yalayut.recipes import load_recipe, instantiate_recipe
 
     if not recipe_name or not version or not target_dir:
         return {

@@ -1828,6 +1828,26 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
     gen_model = source_ctx.get("generating_model") or ""
 
     if kind == "grade":
+        # ── Single source of truth: grade the CANONICAL produces artifact ──
+        # For a step that declares a single ``produces`` path the artifact is
+        # what ``materialize_produces`` wrote to disk (unconditionally), NOT
+        # ``source['result']``. Schema'd steps strip ``write_file``, so the
+        # agent NARRATES ("Wrote X.md containing …") instead of emitting the
+        # body — leaving ``tasks.result`` with no ``##`` headers. Both readers
+        # below (the deterministic schema gate at ``_draft`` and the LLM grader
+        # via ``build_grading_spec`` → ``source.get('result')``) would then
+        # false-reject a correct on-disk artifact and loop to a degenerate-repeat
+        # DLQ (task 567373 [0.1] product_charter). Resolve the disk canonical
+        # ONCE and override the in-memory source for the whole grade chain so it
+        # judges the same artifact ``verify_charter_shape`` + downstream consumers
+        # already read. ``None`` → non-produces step, keep ``source['result']``.
+        try:
+            from src.workflows.engine.hooks import resolve_produces_artifact
+            _canon = resolve_produces_artifact(source, source_ctx)
+            if isinstance(_canon, str) and _canon.strip():
+                source = {**source, "result": _canon}  # local copy, never mutate caller
+        except Exception:  # noqa: BLE001 — never let canonical resolution break grade
+            pass
         # Fix #1 — deterministic artifact-schema gate BEFORE the LLM grade.
         # ``grade`` is the terminal chain entry, so any constrained_emit /
         # self_reflect rewrite has already landed on ``source.result``. Shape

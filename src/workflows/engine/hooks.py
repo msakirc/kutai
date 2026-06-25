@@ -421,6 +421,51 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
     return canonical_out
 
 
+def resolve_produces_artifact(source: dict, source_ctx: dict):
+    """Single source of truth for a produces-step's artifact at GRADE time.
+
+    The artifact a step produces is the CANONICAL form ``materialize_produces``
+    wrote to disk — written UNCONDITIONALLY for every declared single produces
+    path — NOT ``tasks.result``. On a schema'd step ``_apply_auto_strip`` removes
+    ``write_file``, so the agent cannot write disk and instead NARRATES its
+    final_answer ("Wrote X.md containing …"); ``tasks.result`` then holds that
+    narration, which carries no artifact body. The grade chain (deterministic
+    schema gate + LLM grader, which both read ``source['result']``) must judge
+    the disk artifact — exactly as ``verify_charter_shape`` and downstream
+    consumers (``coulson/context.py``) already do — instead of false-rejecting a
+    correct on-disk artifact (task 567373 [0.1] product_charter: disk had all 5
+    ``##`` sections, result was a 570-char narration → "missing all 5 sections"
+    → degenerate-repeat DLQ).
+
+    Returns the fence-unwrapped disk content for a SINGLE-``produces`` step, or
+    ``None`` when the step is not single-produces or the disk file is absent /
+    empty (caller keeps ``source['result']``). Pull, not push: every reader
+    resolves the one materialized source rather than relying on a fragile
+    canonical→``tasks.result`` back-write surviving every persistence path.
+    """
+    produces = source_ctx.get("produces") or []
+    if not _single_produces(produces):
+        return None
+    mission_id = source.get("mission_id") or source_ctx.get("mission_id")
+    import src.tools.workspace as _ws
+    from coulson.grounding import unwrap_fenced_artifact
+    for entry in produces:
+        if not (isinstance(entry, str) and entry.endswith((".md", ".json"))):
+            continue
+        rel = entry.replace("{mission_id}", str(mission_id)) if mission_id is not None else entry
+        abs_path = rel if os.path.isabs(rel) else os.path.join(_ws.WORKSPACE_DIR, rel)
+        try:
+            with open(abs_path, encoding="utf-8") as fh:
+                disk = fh.read()
+        except OSError:
+            return None
+        if not (isinstance(disk, str) and disk.strip()):
+            return None
+        u = unwrap_fenced_artifact(disk)
+        return u if (isinstance(u, str) and u.strip()) else disk
+    return None
+
+
 def _top_level_required_field_names(rule: dict) -> list[str]:
     """Return required (non-optional) top-level field names from an object rule.
 

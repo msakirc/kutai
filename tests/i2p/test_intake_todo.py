@@ -1,8 +1,9 @@
 """Z1 Tier 1 — generate_intake_todo contract tests.
 
 Verifies the deterministic builder path emits the canonical clarify-shape
-that general_beckman.result_router treats as needs_clarification + keeps
-waiting_human (per its 148-180 branch).
+(needs_clarification + keyboard_sent) AND self-parks its row as
+waiting_human — the orchestrator skips result_router for mechanical
+needs_clarification, so the executor must park its own row.
 """
 from __future__ import annotations
 
@@ -164,6 +165,61 @@ def test_no_draft_still_full_canonical():
         body = Path(r["todo_path_abs"]).read_text(encoding="utf-8")
         assert "Specialised" not in body
         assert r["item_count"] >= 14
+
+
+def test_intake_todo_self_parks_row_waiting_human_when_keyboard_sent():
+    """Regression (task 567372 / mission 90): a successfully-sent intake-todo
+    keyboard MUST flip its own task row to ``waiting_human``.
+
+    The orchestrator special-cases mechanical ``needs_clarification`` and
+    skips ``on_task_finished`` (so ``result_router`` never runs — the
+    docstring's "result_router keeps it waiting_human" contract is stale).
+    If the executor doesn't park its own row, it stays ``processing`` and the
+    queue sweep (Section 1, status='processing' >5min) flips it back to
+    pending → re-admit → the keyboard is re-sent every backoff interval,
+    spamming the founder with 6-7 full-text reminders/hour. Mirror
+    request_interview_data, which self-parks."""
+    with tempfile.TemporaryDirectory() as tmp:
+        task = _make_task(tmp, mission_id=90)
+        task["id"] = 567372
+        upd = AsyncMock()
+        with _patch_telegram_available(), patch(
+            "general_beckman.update_task", new=upd
+        ):
+            result = asyncio.run(generate_intake_todo(task))
+        assert result["keyboard_sent"] is True
+        upd.assert_awaited_once_with(567372, status="waiting_human")
+
+
+def test_intake_todo_fails_closed_when_keyboard_unsent():
+    """No keyboard sent (no chat_id / Telegram down) → fail-closed, NOT park.
+
+    This is a founder-confirmation gate with no automated fallback. Returning
+    needs_clarification with keyboard_sent=False makes the dispatch wrapper
+    COMPLETE the row (advancing the mission with no founder approval of the
+    intake scope). Mirror clarify.py artifact_confirm / surface_choice: return
+    status='failed' so the mission halts at the gate (DLQ → founder fixes the
+    chat wiring and retries), and never self-park (no keyboard to act on)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        task = _make_task(tmp, mission_id=91)
+        task["id"] = 999
+        upd = AsyncMock()
+        # chat_id resolves, but Telegram is down → keyboard send fails.
+        with patch(
+            "src.collaboration.blackboard.read_blackboard",
+            new=AsyncMock(return_value={"chat_id": 555}),
+        ), patch(
+            "src.app.telegram_bot.get_telegram", return_value=None,
+        ), patch(
+            "general_beckman.update_task", new=upd
+        ):
+            result = asyncio.run(generate_intake_todo(task))
+        assert result["status"] == "failed"
+        assert result["keyboard_sent"] is False
+        upd.assert_not_awaited()
+        # File was still written before the (failed) send — keep the path so a
+        # post-fix retry/inspection can find the draft.
+        assert os.path.exists(result["todo_path_abs"])
 
 
 def test_dispatch_via_mr_roboto_run_returns_needs_clarification():

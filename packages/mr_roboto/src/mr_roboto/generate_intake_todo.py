@@ -16,10 +16,15 @@ Behaviour:
      or hallucinate extra slots.
   3. Write ``mission_{mission_id}/.intake/intake_todo.md`` (always the 14
      canonical items, optionally specialised).
-  4. Return ``status="needs_clarification"`` with ``keyboard_sent=True`` so
-     :mod:`general_beckman.result_router` keeps the row as ``waiting_human``
-     (per its 148-180 branch). Founder confirms via Telegram → step
-     completes; founder edits → todo regenerates on the next pass.
+  4. Flip the task row to ``waiting_human`` (self-park) and return
+     ``status="needs_clarification"`` with ``keyboard_sent=True``. Self-park
+     is mandatory: the orchestrator special-cases mechanical
+     ``needs_clarification`` and skips ``on_task_finished``, so
+     ``result_router`` never runs — nothing else parks the row, and a row
+     left in ``processing`` is bounced back to pending by the queue sweep,
+     re-running this step (re-sending the keyboard) every backoff tick.
+     Founder confirms via Telegram → step completes; founder edits → todo
+     regenerates on the next pass.
 
 This step makes NO LLM call itself — generation lives in the upstream
 analyst step ``0.0a.draft`` (per ``feedback_no_direct_dispatcher``: a
@@ -299,12 +304,55 @@ async def generate_intake_todo(task: dict) -> dict[str, Any]:
                 keyboard_sent = True
     except Exception as exc:
         logger.warning("intake_todo: artifact-confirm keyboard send failed: %s", exc)
+
+    item_count = sum(1 for line in body.splitlines() if line.startswith("- [ ]"))
+
+    # Keyboard could NOT be sent (no chat_id / Telegram down). This is a
+    # founder-confirmation gate with NO automated fallback: returning
+    # needs_clarification with keyboard_sent=False makes the dispatch wrapper
+    # (mr_roboto.run) complete the row, advancing the mission with no founder
+    # approval of the intake scope. Fail-closed so the mission halts at the
+    # gate (DLQ); the founder fixes the chat wiring and retries. Mirrors
+    # clarify.py's artifact_confirm / surface_choice fail-closed paths. The
+    # todo file was already written above — keep its path for inspection/retry.
+    if not keyboard_sent:
+        return {
+            "status": "failed",
+            "kind": "intake_todo",
+            "error": (
+                "intake_todo gate could not reach the founder "
+                f"(chat_id unresolved / Telegram down for mission {mission_id}); "
+                "human intake-confirmation gate cannot be skipped"
+            ),
+            "todo_path": relative_path,
+            "todo_path_abs": todo_path,
+            "item_count": item_count,
+            "keyboard_sent": False,
+        }
+
+    # Self-park the row as waiting_human (keyboard_sent is True here). The
+    # orchestrator special-cases mechanical needs_clarification and SKIPS
+    # on_task_finished (so result_router never runs — its "keeps the row
+    # waiting_human" branch no longer exists). If we don't flip our own row
+    # it stays 'processing'; the queue sweep (Section 1, processing >5min)
+    # then bounces it back to pending → re-admit → the keyboard is re-sent on
+    # every backoff tick, spamming the founder with repeated full-text
+    # reminders (task 567372 / mission 90). Mirrors request_interview_data +
+    # clarify.py's other artifact-confirm path.
+    try:
+        from general_beckman import update_task
+        await update_task(task["id"], status="waiting_human")
+    except Exception as exc:
+        logger.warning(
+            "intake_todo: update_task waiting_human failed: %s", exc
+        )
+
     return {
         "status": "needs_clarification",
         "kind": "intake_todo",
         "todo_path": relative_path,
         "todo_path_abs": todo_path,
-        "item_count": sum(1 for line in body.splitlines() if line.startswith("- [ ]")),
+        "item_count": item_count,
         "keyboard_sent": keyboard_sent,
         "prompt": (
             "I drafted an intake todo at "

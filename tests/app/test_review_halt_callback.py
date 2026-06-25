@@ -1,3 +1,4 @@
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -99,3 +100,77 @@ async def test_review_halt_regen_missing_step_noop():
     update.callback_query.answer.assert_awaited_once()
     rp.assert_not_awaited()
     upd.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Re-surfacing a parked review halt (restart-restore + sweep-nudge use this).
+# ---------------------------------------------------------------------------
+
+
+def test_build_review_halt_args_prefers_persisted_payload():
+    from src.app.telegram_bot import TelegramInterface
+    task = {
+        "id": 525019, "mission_id": 89,
+        "context": json.dumps({
+            "step_name": "research_quality_review",
+            "_review_halt": {
+                "reviewer_name": "1.13",
+                "issues": [{"severity": "blocker", "problem": "naming drift"}],
+                "producers": ["0.0z", "1.0a"],
+            },
+        }),
+    }
+    name, issues, producers = TelegramInterface._build_review_halt_args(task)
+    assert name == "1.13"
+    assert issues[0]["problem"] == "naming drift"
+    assert producers == ["0.0z", "1.0a"]
+
+
+def test_build_review_halt_args_falls_back_to_result_json():
+    """Legacy reviewer parked BEFORE the persist fix has no _review_halt —
+    reconstruct issues from the reviewer's fenced-JSON result; producers
+    unknown (empty) but the Accept-anyway card still renders."""
+    from src.app.telegram_bot import TelegramInterface
+    result = (
+        "Here is my verdict:\n```json\n"
+        + json.dumps({"verdict": "fail",
+                      "issues": [{"severity": "blocker", "problem": "no prior art"}]})
+        + "\n```\n"
+    )
+    task = {
+        "id": 525019, "mission_id": 89,
+        "context": json.dumps({"workflow_step_id": "1.13"}),
+        "result": result,
+    }
+    name, issues, producers = TelegramInterface._build_review_halt_args(task)
+    assert name == "1.13"
+    assert issues[0]["problem"] == "no prior art"
+    assert producers == []
+
+
+@pytest.mark.asyncio
+async def test_resurface_review_halt_renders_card():
+    import src.app.telegram_bot as tb
+    iface = tb.TelegramInterface.__new__(tb.TelegramInterface)
+    iface.send_review_halt_keyboard = AsyncMock()
+    task = {
+        "id": 525019, "mission_id": 89,
+        "context": json.dumps({
+            "_review_halt": {
+                "reviewer_name": "1.13",
+                "issues": [{"severity": "blocker", "problem": "p"}],
+                "producers": ["0.0z"],
+            },
+        }),
+    }
+    with patch.object(tb, "TELEGRAM_ADMIN_CHAT_ID", "42"):
+        ok = await iface.resurface_review_halt(task)
+
+    assert ok is True
+    iface.send_review_halt_keyboard.assert_awaited_once()
+    kw = iface.send_review_halt_keyboard.await_args.kwargs
+    assert kw["chat_id"] == 42
+    assert kw["mission_id"] == 89
+    assert kw["reviewer_task_id"] == 525019
+    assert kw["reviewer_name"] == "1.13"
+    assert kw["producers"] == ["0.0z"]

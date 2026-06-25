@@ -148,6 +148,7 @@ async def _escalate_to_founder(
     reason: str | None = None,
     reviewer_task_id: int | None = None,
     producer: str | None = None,
+    reviewer_ctx: dict | None = None,
 ) -> None:
     """Founder-halt: PARK the reviewer + send a Telegram halt card. MUST NOT raise.
 
@@ -156,18 +157,54 @@ async def _escalate_to_founder(
     reviewer task in ``waiting_human`` so the mission stops auto-advancing on
     an unlocalisable / exhausted reviewer failure.
 
-    Then, best-effort (never raising): resolve the founder chat_id and the
-    producer set the reviewer reviews, and send the founder-halt card with
-    one Regenerate-producer button per producer plus an Accept-anyway button.
-    If Telegram is unavailable the parking still stands.
+    When the caller hands us the reviewer task's context (``reviewer_ctx``),
+    the SAME parking write also persists a self-contained ``_review_halt``
+    payload (reviewer name + issues + producers) merged into that context, so
+    restart-restore and the sweep nudge can re-render the founder-halt card
+    WITHOUT re-deriving from the (fragile) workflow graph. No extra DB read —
+    the merge is in-memory, written by the one parking update_task.
+
+    Then, best-effort (never raising): resolve the founder chat_id and send the
+    founder-halt card with one Regenerate-producer button per producer plus an
+    Accept-anyway button. If Telegram is unavailable the parking still stands.
     """
     reason = reason or "unspecified"
+    # Reconstruct the card inputs (producers + issues) ONCE — used both for the
+    # persisted _review_halt payload and the live card.
+    producers: list[str] = []
+    try:
+        if workflow is not None and reviewer_id is not None:
+            from src.workflows.engine.producer_index import producers_for_reviewer
+            producers = producers_for_reviewer(workflow, reviewer_id)
+    except Exception as exc:  # noqa: BLE001 — producer derivation best-effort
+        logger.warning(
+            "review escalation: could not derive producers",
+            reviewer_id=reviewer_id, error=str(exc),
+        )
+        producers = []
+    issues = (review_result or {}).get("issues") or []
+    reviewer_name = str(reviewer_id or "reviewer")
+
     # 1. Park the reviewer (the key safety fix) — must happen even if telegram
-    #    is down. update_task failure is logged but never raised.
+    #    is down. When we have the reviewer context, merge + persist the
+    #    _review_halt payload in the SAME write; otherwise park status-only.
     try:
         if reviewer_task_id is not None:
             from dabidabi import update_task
-            await update_task(int(reviewer_task_id), status="waiting_human")
+            if reviewer_ctx is not None:
+                merged = dict(reviewer_ctx)
+                merged["_review_halt"] = {
+                    "reviewer_name": reviewer_name,
+                    "issues": issues,
+                    "producers": producers,
+                }
+                await update_task(
+                    int(reviewer_task_id),
+                    status="waiting_human",
+                    context=_json.dumps(merged),
+                )
+            else:
+                await update_task(int(reviewer_task_id), status="waiting_human")
     except Exception as exc:  # noqa: BLE001 — escalation must never raise
         logger.warning(
             "review escalation: could not park reviewer task",
@@ -176,21 +213,16 @@ async def _escalate_to_founder(
 
     # 2. Best-effort founder-halt card. Never raises.
     try:
-        producers: list[str] = []
-        if workflow is not None and reviewer_id is not None:
-            from src.workflows.engine.producer_index import producers_for_reviewer
-            producers = producers_for_reviewer(workflow, reviewer_id)
         chat_id = await _resolve_founder_chat_id(mission_id)
         if chat_id is not None and reviewer_task_id is not None:
             from src.app.telegram_bot import get_telegram
             tg = get_telegram()
             if tg is not None:
-                issues = (review_result or {}).get("issues") or []
                 await tg.send_review_halt_keyboard(
                     chat_id=int(chat_id),
                     mission_id=mission_id,
                     reviewer_task_id=int(reviewer_task_id),
-                    reviewer_name=str(reviewer_id or "reviewer"),
+                    reviewer_name=reviewer_name,
                     issues=issues,
                     producers=producers,
                 )
@@ -210,7 +242,7 @@ async def _escalate_to_founder(
 
 async def route_review_failure(
     *, mission_id: int, reviewer_id: str, review_result: dict, workflow: dict,
-    reviewer_task_id: int | None = None,
+    reviewer_task_id: int | None = None, reviewer_ctx: dict | None = None,
 ) -> dict[str, Any]:
     issues = review_result.get("issues") or []
     index = build_producer_index(workflow)
@@ -234,6 +266,7 @@ async def route_review_failure(
             mission_id=mission_id, reviewer_id=reviewer_id,
             review_result=review_result, workflow=workflow,
             reason="no_localisable_target", reviewer_task_id=reviewer_task_id,
+            reviewer_ctx=reviewer_ctx,
         )
         return {"routed": [], "escalated": True}
 
@@ -254,6 +287,6 @@ async def route_review_failure(
             mission_id=mission_id, reviewer_id=reviewer_id,
             review_result=review_result, workflow=workflow,
             reason="producer_exhausted", producer=",".join(exhausted),
-            reviewer_task_id=reviewer_task_id,
+            reviewer_task_id=reviewer_task_id, reviewer_ctx=reviewer_ctx,
         )
     return {"routed": routed, "escalated": bool(exhausted)}

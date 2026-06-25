@@ -127,6 +127,41 @@ async def test_resend_plain_question_path():
 
 
 @pytest.mark.asyncio
+async def test_resend_review_halt_path():
+    """A parked reviewer (escalated review) has no clarify payload and no
+    _clarification_question — re-render the founder-halt KEYBOARD instead of
+    no-op'ing. Covers the sweep-nudge surface for review halts."""
+    row = _src_row(
+        agent_type="reviewer",
+        title="[1.13] research_quality_review",
+        context=json.dumps({
+            "_review_halt": {
+                "reviewer_name": "1.13",
+                "issues": [{"severity": "blocker", "problem": "p"}],
+                "producers": ["0.0z"],
+            },
+        }),
+    )
+    fake_tg = AsyncMock()
+    fake_tg.resurface_review_halt = AsyncMock(return_value=True)
+    with patch("mr_roboto.resend_clarification.get_task",
+               AsyncMock(return_value=row)), \
+         patch("mr_roboto.resend_clarification.clarify", AsyncMock()), \
+         patch("mr_roboto.resend_clarification.get_telegram",
+               return_value=fake_tg):
+        from mr_roboto import run
+        action = await run({
+            "id": 525050,
+            "payload": {"action": "resend_clarification",
+                        "source_task_id": 525019},
+        })
+
+    assert action.status == "completed"
+    fake_tg.resurface_review_halt.assert_awaited_once()
+    assert action.result.get("via") == "review_halt"
+
+
+@pytest.mark.asyncio
 async def test_resend_missing_source_task_id_fails():
     from mr_roboto import run
     action = await run({

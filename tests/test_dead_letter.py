@@ -151,27 +151,34 @@ class TestDLQOperations:
 
 
 class TestMissionHealthCheck:
-    def test_mission_paused_on_threshold(self):
-        """Mission should be paused when DLQ threshold is reached."""
+    def test_mission_alerts_on_threshold_without_pausing(self):
+        """Alert-only policy (2026-06-25): at/above the DLQ threshold, send the
+        Telegram alert but DO NOT write status='paused'. The pump gates on
+        ``lifecycle_state``, so status='paused' was a no-op that only confused
+        operators — drop the fake pause, keep the alert."""
         mock_db, cursor = _make_mock_db()
         cursor.fetchone = AsyncMock(return_value=(MISSION_DLQ_THRESHOLD,))
 
         mock_update_mission = AsyncMock()
 
-        # Mock get_bot at the import site inside _check_mission_health
+        mock_bot = MagicMock()
+        mock_bot.send_notification = AsyncMock()
         mock_telegram = MagicMock()
-        mock_telegram.get_bot = MagicMock(return_value=None)
+        mock_telegram.get_telegram = MagicMock(return_value=mock_bot)
 
         import sys
         sys.modules.setdefault("telegram", MagicMock())
         sys.modules.setdefault("telegram.ext", MagicMock())
 
         with patch(DB_PATCH, AsyncMock(return_value=mock_db)):
-            with patch("src.infra.db.update_mission", mock_update_mission):
-                # Patch at the point where _check_mission_health imports it
+            with patch("general_beckman.update_mission", mock_update_mission):
                 with patch.dict("sys.modules", {"src.app.telegram_bot": mock_telegram}):
                     _run(_check_mission_health(mission_id=10))
-                    mock_update_mission.assert_called_once_with(10, status="paused")
+
+        # No fake pause write.
+        mock_update_mission.assert_not_called()
+        # Alert still sent.
+        mock_bot.send_notification.assert_awaited_once()
 
     def test_mission_not_paused_below_threshold(self):
         """Mission should NOT be paused when below threshold."""

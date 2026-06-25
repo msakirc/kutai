@@ -141,6 +141,52 @@ async def test_escalate_to_founder_never_raises(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_escalate_persists_review_halt_payload(tmp_path, monkeypatch):
+    """Escalation must persist a self-contained ``_review_halt`` payload onto
+    the parked reviewer task so the founder-halt card can be re-rendered on
+    restart / nudge WITHOUT re-deriving from the (fragile) workflow graph."""
+    db_path = str(tmp_path / "kutai.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    _reset_db_singleton(db_path)
+    from src.infra.db import init_db
+    await init_db()
+    _reset_db_singleton(db_path)
+
+    rid = await _seed_producer(
+        db_path, mission_id=3, step_id="1.13", worker_attempts=1,
+        status="ungraded",
+    )
+
+    from general_beckman.review_routing import _escalate_to_founder
+    await _escalate_to_founder(
+        mission_id=3, reviewer_id="1.13",
+        review_result={"issues": [
+            {"severity": "blocker", "problem": "missing boundaries",
+             "target_artifact": "product_charter"},
+        ]},
+        workflow=None, reviewer_task_id=rid, reason="producer_exhausted",
+        # The caller (apply.py) hands the reviewer context down; the parking
+        # write merges _review_halt into it (no clobber, no extra DB read).
+        reviewer_ctx={"workflow_step_id": "1.13", "is_workflow_step": True},
+    )
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        row = dict(await (await db.execute(
+            "SELECT * FROM tasks WHERE id=?", (rid,))).fetchone())
+    assert row["status"] == "waiting_human"
+    ctx = json.loads(row["context"])
+    # Existing context keys preserved (merge, not clobber).
+    assert ctx["workflow_step_id"] == "1.13"
+    halt = ctx["_review_halt"]
+    assert halt["reviewer_name"] == "1.13"
+    assert halt["issues"][0]["problem"] == "missing boundaries"
+    # workflow=None -> producers cannot be derived -> empty (card still has
+    # the Accept-anyway button; per-producer regen buttons just absent).
+    assert halt["producers"] == []
+
+
+@pytest.mark.asyncio
 async def test_assign_unresolved_returns_empty_for_now():
     from general_beckman.review_routing import _assign_unresolved
     out = await _assign_unresolved(

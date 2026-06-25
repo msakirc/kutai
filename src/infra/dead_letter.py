@@ -141,15 +141,15 @@ async def _check_mission_health(mission_id: int) -> None:
     count = row[0] if row else 0
 
     if count >= MISSION_DLQ_THRESHOLD:
+        # Alert-only (2026-06-25): we DO NOT write status='paused'. The pump
+        # gates on missions.lifecycle_state, not status, so that write was a
+        # no-op that only mislabeled the mission as paused for operators.
+        # Surface the DLQ pile-up; leave the mission running (its own DLQ
+        # recovery / founder gates decide what happens next).
         logger.warning(
             f"[DLQ] Mission #{mission_id} has {count} quarantined tasks — "
-            f"auto-pausing mission"
+            f"alerting founder (mission left running)"
         )
-        try:
-            from general_beckman import update_mission as _bk_update_mission
-            await _bk_update_mission(mission_id, status="paused")
-        except Exception as e:
-            logger.error(f"[DLQ] Failed to pause mission #{mission_id}: {e}")
 
         # Notify via Telegram
         try:

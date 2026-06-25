@@ -4553,12 +4553,24 @@ async def _apply_review_verdict(
         }
         try:
             from general_beckman.review_routing import route_review_failure
+            # Hand the reviewer's context down so escalation can persist the
+            # _review_halt payload (for restart/nudge re-rendering) in the same
+            # parking write — no extra DB read.
+            _rev_ctx = source.get("context")
+            if isinstance(_rev_ctx, str):
+                try:
+                    _rev_ctx = _json.loads(_rev_ctx) if _rev_ctx else {}
+                except (ValueError, TypeError):
+                    _rev_ctx = {}
+            if not isinstance(_rev_ctx, dict):
+                _rev_ctx = {}
             outcome = await route_review_failure(
                 mission_id=int(mission_id),
                 reviewer_id=str(reviewer_id),
                 review_result=review_result,
                 workflow=wf,
                 reviewer_task_id=source["id"],
+                reviewer_ctx=_rev_ctx,
             )
             logger.info(
                 "review verdict FAIL routed to producers",

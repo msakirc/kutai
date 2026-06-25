@@ -638,7 +638,8 @@ class TelegramInterface:
         try:
             db = await get_db()
             cursor = await db.execute(
-                """SELECT id, title, context FROM tasks
+                """SELECT id, title, context, agent_type, mission_id, result
+                   FROM tasks
                    WHERE status = 'waiting_human'
                    ORDER BY created_at DESC"""
             )
@@ -651,19 +652,40 @@ class TelegramInterface:
             if not chat_id:
                 return
 
+            restored_clar = False
             for row in rows:
                 task = dict(row)
                 task_id = task["id"]
                 title = task.get("title", "")
-                self._pending_clarifications[chat_id] = task_id
 
-                # Check for persisted Q&A queue
                 ctx = task.get("context", "{}")
                 if isinstance(ctx, str):
                     try:
                         ctx = _json.loads(ctx)
                     except (ValueError, TypeError):
                         ctx = {}
+                if not isinstance(ctx, dict):
+                    ctx = {}
+
+                # Parked reviewer halt (escalated review). The founder-halt card
+                # is stateless (callback_data carries the ids), so re-render ALL
+                # of them — they do NOT use the single in-memory clarification
+                # slot. (Pre-fix this loop handled clarifications only and broke
+                # after the first row, so a review halt was silently dropped on
+                # every restart.)
+                if task.get("agent_type") == "reviewer" or ctx.get("_review_halt"):
+                    task["context"] = ctx
+                    await self.resurface_review_halt(task)
+                    continue
+
+                # Clarifications share a single in-memory slot
+                # (_pending_clarifications + the sequential Q&A queue), so
+                # restore exactly ONE — but no longer drop the rest of the scan
+                # (a clarification sitting behind a review halt used to vanish).
+                if restored_clar:
+                    continue
+                restored_clar = True
+                self._pending_clarifications[chat_id] = task_id
 
                 qa_state = ctx.get("_clarification_queue")
                 if qa_state and isinstance(qa_state, dict):
@@ -689,7 +711,6 @@ class TelegramInterface:
                         logger.info("Restored sequential Q&A state",
                                     task_id=task_id, current=current,
                                     total=len(questions))
-                        break  # Only one Q&A queue at a time
                 else:
                     # Single question — re-send the original question
                     # Single-saved question OR recovered from mechanical
@@ -712,7 +733,6 @@ class TelegramInterface:
                     else:
                         logger.info("Found waiting_human task without "
                                     "saved question", task_id=task_id)
-                break  # One clarification at a time
 
         except Exception as e:
             logger.exception(
@@ -10745,6 +10765,71 @@ Or: {{"type": "task", "confidence": 0.8}}"""
             reply_markup=markup,
             parse_mode="Markdown",
         )
+
+    @staticmethod
+    def _build_review_halt_args(task: dict) -> "tuple[str, list, list]":
+        """Reconstruct ``(reviewer_name, issues, producers)`` for re-rendering a
+        parked review-halt card. Prefers the persisted ``_review_halt`` payload
+        (exact, workflow-independent); falls back to parsing the reviewer's
+        JSON ``result`` for legacy tasks parked before the persist fix (producers
+        then unknown → empty, but the Accept-anyway card still renders)."""
+        import json as _json
+        import re as _re
+        ctx = task.get("context") or {}
+        if isinstance(ctx, str):
+            try:
+                ctx = _json.loads(ctx) if ctx else {}
+            except (ValueError, TypeError):
+                ctx = {}
+        if not isinstance(ctx, dict):
+            ctx = {}
+        halt = ctx.get("_review_halt")
+        if isinstance(halt, dict):
+            name = str(halt.get("reviewer_name")
+                       or ctx.get("step_name")
+                       or ctx.get("workflow_step_id") or "reviewer")
+            return name, list(halt.get("issues") or []), list(halt.get("producers") or [])
+        # Legacy fallback: parse issues out of the reviewer's result verdict.
+        name = str(ctx.get("step_name") or ctx.get("workflow_step_id") or "reviewer")
+        issues: list = []
+        result = task.get("result")
+        if isinstance(result, dict):
+            issues = result.get("issues") or []
+        elif result:
+            m = _re.search(r"\{.*\}", str(result), _re.DOTALL)
+            if m:
+                try:
+                    obj = _json.loads(m.group(0))
+                    if isinstance(obj, dict):
+                        issues = obj.get("issues") or []
+                except (ValueError, TypeError):
+                    issues = []
+        return name, list(issues), []
+
+    async def resurface_review_halt(self, task: dict) -> bool:
+        """Re-render a parked review-halt card to the founder. Used by both
+        restart-restore and the sweep nudge. Stateless (callback_data carries
+        the ids) → safe to re-send any number of times. Never raises."""
+        try:
+            rtid = task.get("id")
+            if rtid is None:
+                return False
+            name, issues, producers = self._build_review_halt_args(task)
+            chat_id = int(TELEGRAM_ADMIN_CHAT_ID) if TELEGRAM_ADMIN_CHAT_ID else None
+            if chat_id is None:
+                return False
+            await self.send_review_halt_keyboard(
+                chat_id=chat_id,
+                mission_id=task.get("mission_id"),
+                reviewer_task_id=int(rtid),
+                reviewer_name=name,
+                issues=issues,
+                producers=producers,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 — re-surface is best-effort
+            logger.warning("resurface_review_halt failed: %s", exc)
+            return False
 
     async def _handle_review_halt(self, update, context):
         """Founder acted on a parked (escalated) reviewer.

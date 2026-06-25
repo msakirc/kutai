@@ -86,6 +86,21 @@ async def resend_clarification(task: dict) -> dict:
             "result": res,
         }
 
+    # Path C — parked reviewer halt (escalated review). No clarify payload and
+    # no _clarification_question; re-render the founder-halt KEYBOARD via the
+    # telegram interface so the reminder carries actionable Regenerate/Accept
+    # buttons instead of dead-ending as a no-op text nudge.
+    if src.get("agent_type") == "reviewer" or ctx.get("_review_halt"):
+        tg = get_telegram()
+        if tg is None:
+            logger.info(
+                "resend_clarification: telegram unavailable for review halt "
+                "task %s", source_task_id,
+            )
+            return {"resent": False, "reason": "telegram_unavailable"}
+        ok = await tg.resurface_review_halt(src)
+        return {"resent": bool(ok), "via": "review_halt"}
+
     # Path B — LLM-agent plain clarification. No clarify payload; the question
     # lives in _clarification_question (or the current item of a numbered Q&A
     # queue). Re-send via the same request_clarification path used on the

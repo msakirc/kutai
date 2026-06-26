@@ -139,35 +139,62 @@ def _extract_quotes(text: str) -> list[str]:
 
 
 def _distinctive(span: str) -> bool:
-    """A quoted span specific enough that its absence is meaningful.
+    """A quoted span that is *prose evidence* — text the model claims to have
+    read in the artifact, specific enough that its absence is meaningful.
 
-    Require >=6 chars and either a space (multi-word) or >=10 chars — filters
-    out short common tokens ("active") whose incidental presence would create
-    false 'evidence present' matches.
+    Require >=6 chars AND a space (multi-word). A single token — a snake_case /
+    camelCase identifier, a JSON field name, or a config ENUM value like
+    ``public_launch`` / ``graveyard_count`` / ``inconclusive`` — is a
+    *reference*, not text claimed to be in the artifact. Treating such a token
+    as evidence wrongly drops a genuine structured finding whose quote merely
+    names a mission-config value (mission-90 Check 14, Check 17). Erring toward
+    KEEP here is correct: a real single-word fabricated quote is rare and merely
+    survives to the Tier-2 refuter, whereas dropping a real blocker is the
+    failure this whole pass exists to prevent.
     """
     s = span.strip()
-    if len(s) < 6:
-        return False
-    return (" " in s) or (len(s) >= 10)
+    return len(s) >= 6 and " " in s
+
+
+def _norm_phrase(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+def _header_title(line: str) -> str | None:
+    """Normalized title of a markdown header / bold-label line, else None.
+
+    Handles both ``## Section`` (title = whole line) and ``**Label:** body``
+    (title = the label PREFIX + body, matched by prefix below). Leading ``#``,
+    ``*`` and numbering (``1.``) are stripped."""
+    stripped = line.strip()
+    if not (stripped.startswith("#") or stripped.startswith("**")):
+        return None
+    low = re.sub(r"^[#*\s]+", "", stripped.lower())
+    low = re.sub(r"^\d+[.)]\s*", "", low)  # numbered header "1. Landscape"
+    return _norm_phrase(low)
 
 
 def _present_as_section_or_field(content: str, name: str) -> bool:
-    """True iff *name* is present as a markdown header / bold label, or as a
-    non-empty JSON/YAML field key, in *content*. Used both to confirm a
-    false-absence claim and to exclude section-NAME quotes from the evidence
-    set (a quoted section name is a reference, not an evidence claim)."""
-    words = [w for w in re.split(r"[^a-z0-9]+", name.lower()) if w]
-    if not words:
+    """True iff *name* is present as a markdown header / bold label (the name is
+    the LEADING phrase of the header/label line), or as a non-empty JSON/YAML
+    field key. Used both to confirm a false-absence claim and to exclude
+    section-NAME quotes from the evidence set.
+
+    PREFIX match (not loose word-subset): a header that merely CONTAINS the
+    section's words elsewhere (``## Important Notes On The Landscape`` for
+    "Notes") does NOT count as present — loose subset over-drops a real
+    missing-section finding (review MAJOR #2). Prefix also handles inline bold
+    labels with trailing body text (``**Guiding principles:** Make streaks…``).
+    Erring toward "absent" is safe (Rule A then simply doesn't fire)."""
+    nm = _norm_phrase(name)
+    if not nm:
         return False
-    name_words = set(words)
     for line in content.splitlines():
-        low = line.strip().lower()
-        if low.startswith("#") or low.startswith("**"):
-            line_words = {w for w in re.split(r"[^a-z0-9]+", low) if w}
-            if name_words <= line_words:
-                return True
+        title = _header_title(line)
+        if title is not None and (title == nm or title.startswith(nm + " ")):
+            return True
     # JSON/YAML field key with a non-empty value.
-    key = "_".join(words)
+    key = "_".join(nm.split())
     m = re.search(
         re.escape(key) + r"\s*[:=]\s*(\[[^\]]*\]|\{[^}]*\}|\"[^\"]*\"|'[^']*'|[^\s,}\]]+)",
         content.lower(),

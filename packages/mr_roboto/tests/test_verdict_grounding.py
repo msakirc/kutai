@@ -141,6 +141,40 @@ def test_real_quote_present_kept_confirmed():
 
 # ── Fail-safe · never drop when the artifact cannot be loaded ─────────────────
 
+def test_config_enum_quote_not_evidence_kept():
+    """Review MAJOR #1 / mission-90 Check 14: the only quoted span is a mission
+    CONFIG enum (`"public_launch"`), not text the model claims to have read in
+    the artifact. A single identifier token must NOT be treated as a fabricated
+    evidence quote — that would drop a genuine structured blocker."""
+    problem = ('Check 14 - Interview-script grounding: No interview transcripts exist '
+               '(interview_count == 0) while the mission ambition is set to '
+               '"public_launch", triggering a hard-reject condition.')
+    content = "# Interview Script\nQ1. Tell me about your day.\nQ2. ...\n"
+    assert classify_issue_grounding(problem, content) != "drop"
+
+
+def test_snake_case_field_quotes_not_evidence_kept():
+    """Check 17: quotes are JSON field/enum identifiers (graveyard_count,
+    inconclusive) — references, not prose evidence. Must not drop."""
+    problem = ('Check 17 - verdict field must NOT be "inconclusive" when '
+               '"graveyard_count" >= 3; the report does not provide a '
+               '"graveyard_count" field.')
+    content = '{"verdict": "graveyard_well_populated", "attempted_solutions": []}'
+    assert classify_issue_grounding(problem, content) != "drop"
+
+
+def test_rule_a_word_collision_does_not_false_present():
+    """Review MAJOR #2: unrelated headers that merely CONTAIN the section words
+    must not count as 'all sections present'. Loose word-subset matching would
+    over-drop a real missing-section finding."""
+    doc = ("## Important Landscape Overview Notes\nx\n"
+           "## Value Thesis Differentiators Our Edge\ny\n"
+           "## Strengths Weaknesses Switching Costs Risks\nz\n")
+    problem = ('does not contain all six required sections (Landscape, Value Thesis, '
+               'Strengths-Weaknesses, Our Differentiators, Switching Costs & Risks, Notes).')
+    assert classify_issue_grounding(problem, doc) != "drop"
+
+
 def test_unresolvable_artifact_kept():
     problem = 'The headline promises "completely free forever".'
     assert classify_issue_grounding(problem, None) == "keep_unverifiable"

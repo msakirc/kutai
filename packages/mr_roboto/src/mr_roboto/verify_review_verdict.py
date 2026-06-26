@@ -26,7 +26,13 @@ Two reviewer output shapes are accepted:
 """
 from __future__ import annotations
 
+import os
+import re
 from typing import Any
+
+from yazbunu import get_logger
+
+logger = get_logger("mr_roboto.verify_review_verdict")
 
 _PASS_CLASS = {"pass", "approved", "needs_minor_fixes"}
 _FAIL_CLASS = {"fail"}
@@ -91,6 +97,311 @@ def findings_to_issues(findings: list[dict]) -> list[dict]:
             "problem": f.get("description") or f.get("check") or "",
         })
     return issues
+
+
+# ── Tier-1 deterministic grounding (2026-06-26) ──────────────────────────────
+# A single reviewer LLM confabulates findings (invented verbatim quotes,
+# rubric-example echoes, false "missing section" claims). Before a `fail` halts
+# the mission, each finding is checked against its target artifact and DROPPED
+# only when its cited evidence is *provably* not present/absent as claimed.
+# HIGH-PRECISION: drop only on certainty; any doubt / unreadable artifact /
+# exception → KEEP (never silently drop a real finding, never crash the gate).
+
+# Absence/incompleteness claim markers ("missing X", "lacks X", "X is empty").
+_ABSENCE_MARKERS = re.compile(
+    r"\b(missing|does not contain|do not contain|doesn't contain|lacks?|absent|"
+    r"empty|without|not present|fails? to (?:include|contain)|incomplete|"
+    r"no\s+\w)\b",
+    re.IGNORECASE,
+)
+
+# Quoted spans the model presents as evidence: "...", '...', smart quotes, `...`.
+_QUOTE_RE = re.compile(
+    r'"([^"\n]{3,200})"'
+    r"|'([^'\n]{3,200})'"
+    r"|“([^”\n]{3,200})”"
+    r"|‘([^’\n]{3,200})’"
+    r"|`([^`\n]{3,200})`"
+)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s).lower()).strip()
+
+
+def _extract_quotes(text: str) -> list[str]:
+    out: list[str] = []
+    for m in _QUOTE_RE.finditer(text):
+        span = next((g for g in m.groups() if g), None)
+        if span and span.strip():
+            out.append(span.strip())
+    return out
+
+
+def _distinctive(span: str) -> bool:
+    """A quoted span specific enough that its absence is meaningful.
+
+    Require >=6 chars and either a space (multi-word) or >=10 chars — filters
+    out short common tokens ("active") whose incidental presence would create
+    false 'evidence present' matches.
+    """
+    s = span.strip()
+    if len(s) < 6:
+        return False
+    return (" " in s) or (len(s) >= 10)
+
+
+def _present_as_section_or_field(content: str, name: str) -> bool:
+    """True iff *name* is present as a markdown header / bold label, or as a
+    non-empty JSON/YAML field key, in *content*. Used both to confirm a
+    false-absence claim and to exclude section-NAME quotes from the evidence
+    set (a quoted section name is a reference, not an evidence claim)."""
+    words = [w for w in re.split(r"[^a-z0-9]+", name.lower()) if w]
+    if not words:
+        return False
+    name_words = set(words)
+    for line in content.splitlines():
+        low = line.strip().lower()
+        if low.startswith("#") or low.startswith("**"):
+            line_words = {w for w in re.split(r"[^a-z0-9]+", low) if w}
+            if name_words <= line_words:
+                return True
+    # JSON/YAML field key with a non-empty value.
+    key = "_".join(words)
+    m = re.search(
+        re.escape(key) + r"\s*[:=]\s*(\[[^\]]*\]|\{[^}]*\}|\"[^\"]*\"|'[^']*'|[^\s,}\]]+)",
+        content.lower(),
+    )
+    if m:
+        val = m.group(1).strip()
+        if val not in ("[]", "{}", '""', "''", "null", "none", "0", ""):
+            return True
+    return False
+
+
+def _enumerated_sections(problem: str) -> list[str]:
+    """Section names enumerated in a parenthesized comma list, e.g.
+    "(Landscape, Value Thesis, ... , Notes)". Strips leading e.g./such-as."""
+    names: list[str] = []
+    for m in re.finditer(r"\(([^()]{6,})\)", problem):
+        inner = m.group(1)
+        parts = [p.strip() for p in inner.split(",")]
+        cleaned: list[str] = []
+        for p in parts:
+            p = re.sub(r'^(?:e\.?g\.?|such as|i\.?e\.?)[,:]?\s*', "", p, flags=re.IGNORECASE)
+            p = p.strip().strip('"\'`')
+            if p and len(p) >= 3:
+                cleaned.append(p)
+        if len(cleaned) >= 2:
+            names.extend(cleaned)
+    return names
+
+
+def classify_issue_grounding(problem: str, artifact_content: str | None) -> str:
+    """Deterministically ground one reviewer finding against its artifact.
+
+    Returns one of:
+      * ``"drop"``             — confabulation proven (false-absence claim whose
+                                 sections are all present, OR an evidence quote
+                                 the artifact does not contain).
+      * ``"keep_confirmed"``   — the finding's quoted evidence IS present in the
+                                 artifact — it is grounded, keep without Tier 2.
+      * ``"keep_unverifiable"``— no deterministic signal (no checkable quote or
+                                 section). Keep; a blocking one is a Tier-2
+                                 refuter candidate.
+
+    Fail-safe: unreadable artifact / empty problem / any ambiguity → keep.
+    """
+    try:
+        if not isinstance(problem, str) or not problem.strip():
+            return "keep_unverifiable"
+        if not isinstance(artifact_content, str) or not artifact_content.strip():
+            return "keep_unverifiable"
+
+        has_absence = bool(_ABSENCE_MARKERS.search(problem))
+
+        # Rule A — false-absence: the finding claims a set of sections is missing,
+        # but EVERY enumerated section is actually present. (>=3 to be safe.)
+        sections = _enumerated_sections(problem)
+        if has_absence and len(sections) >= 3:
+            if all(_present_as_section_or_field(artifact_content, s) for s in sections):
+                return "drop"
+
+        # Rule B — fabricated quote: the finding embeds distinctive evidence
+        # quotes (excluding ones that are present section/field NAMES, which are
+        # references). If NONE of the evidence quotes appear → fabricated → drop;
+        # all present → confirmed; mixed → unverifiable (Tier 2 decides).
+        quotes = [q for q in _extract_quotes(problem) if _distinctive(q)]
+        evidence = [
+            q for q in quotes if not _present_as_section_or_field(artifact_content, q)
+        ]
+        if evidence:
+            norm_content = _norm(artifact_content)
+            present = [q for q in evidence if _norm(q) in norm_content]
+            if not present:
+                return "drop"
+            if len(present) == len(evidence):
+                return "keep_confirmed"
+            return "keep_unverifiable"
+
+        return "keep_unverifiable"
+    except Exception:  # noqa: BLE001 — grounding must never crash the gate
+        return "keep_unverifiable"
+
+
+# Explicitly-minor severities — the ONLY ones that let a survived `fail`
+# downgrade. Anything else (blocker/major/critical/high OR a missing/unknown
+# severity) is treated as blocking: we re-derive `pass` only when confabulated
+# findings were dropped, never on a severity technicality.
+_NON_BLOCKING_SEVERITIES = {"minor", "medium", "low", "info", "trivial", "nit"}
+
+
+def _is_blocking_issue(issue: dict) -> bool:
+    return str(issue.get("severity") or "").lower() not in _NON_BLOCKING_SEVERITIES
+
+
+async def _maybe_await(value):
+    import inspect
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _strip_ext(name: str) -> str:
+    return re.sub(r"\.[a-z0-9]+$", "", name, flags=re.IGNORECASE)
+
+
+def _read_from_workspace(mission_id, target_artifact: str) -> str | None:
+    """Bounded basename match under the mission workspace.
+
+    Reviewer findings name a bare filename (``competitive_positioning.md``) but
+    artifacts live in dotted subdirs (``.charter/`` ``.prd/`` ``.research/``
+    ``.intake/``) or at the root. Walk the workspace ROOT + only dotted subdirs
+    (never the generated code tree) and return the first file whose basename
+    (or stem) matches. Disk = canonical truth."""
+    try:
+        from src.tools.workspace import get_mission_workspace
+        ws = str(get_mission_workspace(mission_id))
+    except Exception:  # noqa: BLE001
+        return None
+    if not ws or not os.path.isdir(ws):
+        return None
+    basename = os.path.basename(target_artifact.replace("\\", "/"))
+    if not basename:
+        return None
+    want = basename.lower()
+    want_stem = _strip_ext(want)
+    for root, dirs, files in os.walk(ws):
+        # Prune: at the workspace top level descend ONLY into dotted artifact
+        # dirs (.charter/.prd/.research/.intake/.adr). Skip the generated code
+        # tree (backend/, app/, …) so a same-named code file can't shadow the
+        # real artifact and the walk stays cheap.
+        if os.path.realpath(root) == os.path.realpath(ws):
+            dirs[:] = [d for d in dirs if d.startswith(".")]
+        for f in files:
+            fl = f.lower()
+            if fl == want or _strip_ext(fl) == want_stem:
+                try:
+                    with open(os.path.join(root, f), encoding="utf-8") as fh:
+                        return fh.read()
+                except Exception:  # noqa: BLE001
+                    continue
+    return None
+
+
+async def _resolve_artifact_content(mission_id, target_artifact) -> str | None:
+    """Production resolver: ``target_artifact`` filename -> on-disk content.
+
+    Disk is the canonical truth — the reviewer's input artifacts are
+    materialized to ``<mission_workspace>/...`` by the produces pipeline. We do
+    NOT fall back to the ArtifactStore (a blackboard read can open the prod DB
+    and is unnecessary — disk is the single source of truth). Returns None when
+    the file does not resolve; the grounding then KEEPS the finding and routes
+    it normally (never drops, never sends empty content to the refuter)."""
+    if not target_artifact or not isinstance(target_artifact, str):
+        return None
+    content = _read_from_workspace(mission_id, target_artifact)
+    if content and content.strip():
+        return content
+    return None
+
+
+def make_disk_resolver(mission_id):
+    """Bind the production disk/store resolver to a mission for ground_review_verdict."""
+    async def _resolve(target_artifact):
+        return await _resolve_artifact_content(mission_id, target_artifact)
+    return _resolve
+
+
+async def ground_review_verdict(
+    *, review_result: Any, resolve_artifact
+) -> dict[str, Any]:
+    """Tier-1 grounding over a whole reviewer verdict.
+
+    Classifies the verdict, and — ONLY when it is ``fail`` (only ``fail``
+    halts) — grounds every issue against its ``target_artifact`` via the
+    ``resolve_artifact(name)`` callable (sync or async, returns content or
+    None). Confabulated issues (``classify_issue_grounding`` == "drop") are
+    removed; the verdict is re-derived from the survivors (no blocking issue
+    left → ``pass``). Unverifiable-but-blocking survivors are surfaced as
+    Tier-2 refuter candidates.
+
+    Returns ``{ok, verdict_class, issues, dropped, tier2_candidates}``.
+    Fail-safe throughout — a resolver error or any exception keeps the issue
+    (never silently drops a real finding, never crashes the gate).
+    """
+    base = verify_review_verdict(review_result=review_result)
+    if base.get("verdict_class") != "fail":
+        return {**base, "dropped": [], "tier2_candidates": []}
+
+    issues = base.get("issues") or []
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    tier2: list[dict] = []
+
+    for issue in issues:
+        if not isinstance(issue, dict):
+            kept.append(issue)
+            continue
+        target = issue.get("target_artifact")
+        problem = str(issue.get("problem") or "")
+        content = None
+        try:
+            content = await _maybe_await(resolve_artifact(target))
+        except Exception:  # noqa: BLE001 — resolver failure must never drop
+            content = None
+
+        decision = classify_issue_grounding(problem, content)
+        if decision == "drop":
+            dropped.append({**issue, "_drop_reason": "cited evidence not found in artifact"})
+            logger.info(
+                "[verdict-verify] dropped finding — evidence not found",
+                target_artifact=target, problem=problem[:160],
+            )
+            continue
+
+        kept.append(issue)
+        # A Tier-2 refuter candidate requires that the artifact actually
+        # RESOLVED — if we could not load it, Tier-1 could not ground it and the
+        # refuter could not judge it either (it would see empty content and
+        # wrongly mark a real finding UNSUPPORTED). Keep it and route normally.
+        if (
+            decision == "keep_unverifiable"
+            and _is_blocking_issue(issue)
+            and isinstance(content, str)
+            and content.strip()
+        ):
+            tier2.append(issue)
+
+    blocking_left = any(_is_blocking_issue(i) for i in kept if isinstance(i, dict))
+    verdict_class = "fail" if blocking_left else "pass"
+    return {
+        "ok": verdict_class != "fail",
+        "verdict_class": verdict_class,
+        "issues": kept,
+        "dropped": dropped,
+        "tier2_candidates": tier2,
+    }
 
 
 def verify_review_verdict(*, review_result: Any) -> dict[str, Any]:

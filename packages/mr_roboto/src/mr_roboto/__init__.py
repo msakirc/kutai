@@ -1519,8 +1519,27 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "verify_review_verdict":
-        from mr_roboto.verify_review_verdict import verify_review_verdict
-        res = verify_review_verdict(review_result=payload.get("review_result"))
+        # Tier-1 verdict verification (2026-06-26): ground each reviewer finding
+        # against its target artifact and DROP the confabulated ones (invented
+        # quotes, rubric-example echoes, false "missing section" claims) before
+        # a `fail` halts the mission. The kill switch KUTAI_VERDICT_VERIFY=off
+        # restores the pure classifier (no grounding). Tier-2 (admitted refuter
+        # over the surviving unverifiable blockers) runs at the apply layer,
+        # which reads result["tier2_candidates"].
+        import os
+        import mr_roboto.verify_review_verdict as _vv
+        review_result = payload.get("review_result")
+        opt_out = (os.environ.get("KUTAI_VERDICT_VERIFY") or "").strip().lower() in {
+            "off", "0", "false", "no",
+        }
+        if opt_out:
+            res = _vv.verify_review_verdict(review_result=review_result)
+        else:
+            res = await _vv.ground_review_verdict(
+                review_result=review_result,
+                resolve_artifact=lambda name: _vv._resolve_artifact_content(
+                    task.get("mission_id"), name),
+            )
         if res["verdict_class"] == "pass":
             return Action(status="completed", result=res)
         # fail or malformed: surface so general_beckman routes it

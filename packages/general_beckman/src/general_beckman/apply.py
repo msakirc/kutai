@@ -4509,6 +4509,256 @@ async def _load_mission_workflow(mission_id: int) -> dict | None:
         return None
 
 
+def _verdict_verify_opt_out() -> bool:
+    """KUTAI_VERDICT_VERIFY=off disables Tier-2 refutation (Tier-1 grounding
+    still runs in the mechanical verifier)."""
+    import os
+    return (os.environ.get("KUTAI_VERDICT_VERIFY") or "").strip().lower() in {
+        "off", "0", "false", "no",
+    }
+
+
+async def _spawn_verdict_refuter(
+    *, source: dict, mission_id, reviewer_id: str,
+    kept_issues: list[dict], candidates: list[dict],
+) -> bool:
+    """Spawn the admitted Tier-2 refuter child for the surviving candidates.
+
+    Resolves each candidate's artifact from disk, builds the batched refuter
+    spec, and enqueues it as an OVERHEAD oneshot child parented to the reviewer
+    with a durable ``posthook.verdict_verify.*`` continuation (so the reviewer
+    stays parked until the refuter resumes). Returns True on enqueue, False on
+    any failure (the caller then routes without Tier 2 — fail-safe)."""
+    global enqueue
+    if enqueue is None:  # lazy bind: avoid __init__<->apply cycle
+        from general_beckman import enqueue as _enqueue
+        enqueue = _enqueue
+    try:
+        from mr_roboto.verify_review_verdict import _resolve_artifact_content
+        from mr_roboto.verdict_refuter import build_refuter_spec
+        enriched: list[dict] = []
+        for c in candidates:
+            ta = c.get("target_artifact")
+            content = await _resolve_artifact_content(mission_id, ta)
+            enriched.append({
+                "target_artifact": ta,
+                "problem": c.get("problem"),
+                "content": content or "",
+            })
+        spec = build_refuter_spec(enriched)
+        cont_state = {
+            "source_task_id": source["id"],
+            "kind": "verdict_verify",
+            "mission_id": mission_id,
+            "reviewer_id": reviewer_id,
+            "kept_issues": kept_issues,
+            "candidates": [
+                {"target_artifact": c.get("target_artifact"), "problem": c.get("problem")}
+                for c in candidates
+            ],
+        }
+        await enqueue(
+            spec, parent_id=source["id"],
+            on_complete="posthook.verdict_verify.resume",
+            on_error="posthook.verdict_verify.resume_err",
+            cont_state=cont_state, lane="oneshot",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — never let a spawn failure halt routing
+        logger.warning(
+            "verdict refuter spawn failed — routing without Tier 2",
+            source_id=source.get("id"), error=str(exc),
+        )
+        return False
+
+
+async def _route_review_fail(
+    *, source: dict, ctx: dict, pending: list[str], mission_id,
+    reviewer_id: str, issues: list[dict], source_task_id,
+) -> None:
+    """Route a reviewer FAIL (issues already Tier-1/Tier-2 filtered) to the
+    at-fault producer(s). Extracted verbatim from the original
+    _apply_review_verdict fail tail so both the inline path and the refuter
+    resume share one routing implementation."""
+    import json as _json
+    from dabidabi import update_task
+
+    wf = await _load_mission_workflow(mission_id) if mission_id is not None else None
+    if wf is None:
+        # Can't localise without the workflow graph — fall back to a reviewer DLQ
+        # so the mission doesn't silently swallow the rejection.
+        logger.warning(
+            "review verdict FAIL but no workflow — DLQ reviewer",
+            source_id=source_task_id, mission_id=mission_id,
+        )
+        new_pending = [k for k in pending if k != "verify_review_verdict"]
+        ctx["_pending_posthooks"] = new_pending
+        await update_task(source_task_id, context=_json.dumps(ctx))
+        await _retry_or_dlq(
+            source, category="quality",
+            error="reviewer rejected artifact but workflow graph unavailable",
+        )
+        return
+
+    review_result = {"status": "fail", "issues": issues or []}
+    try:
+        from general_beckman.review_routing import route_review_failure
+        # Hand the reviewer's context down so escalation can persist the
+        # _review_halt payload (for restart/nudge re-rendering) in the same
+        # parking write — no extra DB read.
+        _rev_ctx = source.get("context")
+        if isinstance(_rev_ctx, str):
+            try:
+                _rev_ctx = _json.loads(_rev_ctx) if _rev_ctx else {}
+            except (ValueError, TypeError):
+                _rev_ctx = {}
+        if not isinstance(_rev_ctx, dict):
+            _rev_ctx = {}
+        outcome = await route_review_failure(
+            mission_id=int(mission_id),
+            reviewer_id=str(reviewer_id),
+            review_result=review_result,
+            workflow=wf,
+            reviewer_task_id=source["id"],
+            reviewer_ctx=_rev_ctx,
+        )
+        logger.info(
+            "review verdict FAIL routed to producers",
+            source_id=source_task_id, mission_id=mission_id,
+            reviewer_id=reviewer_id, outcome=outcome,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("review routing raised — DLQ reviewer",
+                       source_id=source_task_id, error=str(exc))
+        new_pending = [k for k in pending if k != "verify_review_verdict"]
+        ctx["_pending_posthooks"] = new_pending
+        await update_task(source_task_id, context=_json.dumps(ctx))
+        await _retry_or_dlq(
+            source, category="quality",
+            error=f"review routing failed: {str(exc)[:200]}",
+        )
+        return
+
+    # Drain the reviewer's verify_review_verdict kind regardless of outcome.
+    new_pending = [k for k in pending if k != "verify_review_verdict"]
+    ctx["_pending_posthooks"] = new_pending
+
+    routed = list(outcome.get("routed") or [])
+    escalated = bool(outcome.get("escalated"))
+
+    # Close the review loop: when at least one producer was actually re-pended
+    # (routed non-empty AND nothing escalated), RE-PEND THE REVIEWER ITSELF back
+    # to `pending` so it re-reviews the FIXED artifacts (a COMPLETED reviewer
+    # never re-runs when its producer re-completes). Bounded by the producers'
+    # worker_attempts cap (primary) + the reviewer's own bump (backstop).
+    if routed and not escalated:
+        attempts = int(source.get("worker_attempts") or 0) + 1
+        max_attempts = int(source.get("max_worker_attempts") or 15)
+        prev_output = source.get("result") or ""
+        if isinstance(prev_output, str) and prev_output.strip():
+            ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
+        ctx["_schema_error"] = (
+            "Previous review REJECTED upstream artifact(s); the "
+            f"producer(s) {routed} were re-pended to fix it. Re-review the "
+            "corrected artifacts fresh."
+        )
+        _stamp_retry_feedback(ctx, attempts, prev_output=source.get("result"))
+        await update_task(
+            source_task_id, status="pending",
+            worker_attempts=attempts, max_worker_attempts=max_attempts,
+            context=_json.dumps(ctx),
+            result=None,
+            error="reviewer rejected artifact — re-pended to re-review after producer fix",
+            error_category="quality", next_retry_at=None,
+            retry_reason=None, failed_in_phase=None,
+        )
+        logger.info(
+            "review verdict FAIL — re-pended reviewer to re-review after producer fix",
+            source_id=source_task_id, mission_id=mission_id,
+            reviewer_id=reviewer_id, routed=routed, worker_attempts=attempts,
+        )
+        return
+
+    # Escalated / nothing localisable: route_review_failure has escalated to the
+    # founder-halt AND already PARKED the reviewer in ``waiting_human``. Persist
+    # the drained _pending_posthooks; the reviewer keeps its parked status and
+    # the founder-halt card owns resumption.
+    await update_task(source_task_id, context=_json.dumps(ctx))
+    return
+
+
+async def _complete_review_pass(
+    *, source: dict, ctx: dict, pending: list[str], source_task_id,
+    raw: dict, mission_id, reviewer_id: str,
+) -> None:
+    """Complete a reviewer whose (possibly Tier-2 filtered) verdict is a pass:
+    drain the verify kind, complete-if-empty, advance the mission."""
+    import json as _json
+    from dabidabi import update_task
+
+    new_pending = [k for k in pending if k != "verify_review_verdict"]
+    ctx["_pending_posthooks"] = new_pending
+    if not new_pending:
+        await update_task(
+            source_task_id, status="completed",
+            context=_json.dumps(ctx),
+            error=None, error_category=None, next_retry_at=None,
+            retry_reason=None, failed_in_phase=None,
+        )
+        await _spawn_workflow_advance_if_mission(source, raw)
+        try:
+            from general_beckman import _send_step_progress
+            from dabidabi import get_task
+            fresh = await get_task(source_task_id)
+            if fresh:
+                await _send_step_progress(fresh, "completed", raw)
+        except Exception:
+            pass
+    else:
+        await update_task(source_task_id, context=_json.dumps(ctx))
+    logger.info(
+        "review verdict PASS — reviewer completed",
+        source_id=source_task_id, mission_id=mission_id, reviewer_id=reviewer_id,
+    )
+
+
+async def _finish_review_after_refuter(
+    *, source_task_id, reviewer_id: str, mission_id, final_issues: list[dict],
+) -> None:
+    """Re-derive + apply the verdict after the Tier-2 refuter resolved.
+
+    Loads the parked reviewer, and routes the surviving issues to producers
+    (still blocking) or completes the reviewer as pass (the refuter dropped
+    every blocking finding — the mission is NOT halted on confabulation)."""
+    from dabidabi import get_task
+    from mr_roboto.verify_review_verdict import _is_blocking_issue
+
+    source = await get_task(source_task_id)
+    if source is None:
+        logger.warning("verdict-verify finish: reviewer task missing",
+                       source_id=source_task_id)
+        return
+    ctx = _parse_ctx(source)
+    pending = list(ctx.get("_pending_posthooks") or [])
+    final_issues = final_issues or []
+    blocking = any(_is_blocking_issue(i) for i in final_issues if isinstance(i, dict))
+    if blocking:
+        await _route_review_fail(
+            source=source, ctx=ctx, pending=pending, mission_id=mission_id,
+            reviewer_id=str(reviewer_id), issues=final_issues,
+            source_task_id=source_task_id,
+        )
+    else:
+        logger.info(
+            "verdict-verify: all blocking findings dropped by refuter — passing",
+            source_id=source_task_id, mission_id=mission_id,
+        )
+        await _complete_review_pass(
+            source=source, ctx=ctx, pending=pending, source_task_id=source_task_id,
+            raw={}, mission_id=mission_id, reviewer_id=str(reviewer_id),
+        )
+
+
 async def _apply_review_verdict(
     *, source: dict, ctx: dict, pending: list[str], verdict: PostHookVerdict,
 ) -> None:
@@ -4549,174 +4799,45 @@ async def _apply_review_verdict(
     mission_id = source.get("mission_id")
 
     if verdict_class == "fail":
-        wf = await _load_mission_workflow(mission_id) if mission_id is not None else None
-        if wf is None:
-            # Can't localise without the workflow graph — escalate via the
-            # router's own founder-halt path by falling back to a reviewer DLQ
-            # so the mission doesn't silently swallow the rejection.
-            logger.warning(
-                "review verdict FAIL but no workflow — DLQ reviewer",
-                source_id=verdict.source_task_id, mission_id=mission_id,
+        issues = raw.get("issues") or []
+        tier2 = raw.get("tier2_candidates") or []
+        # Tier-2 verdict verification (2026-06-26): before halting on findings a
+        # single reviewer flagged but that Tier-1 grounding (mr_roboto) could not
+        # refute deterministically, spawn ONE admitted adversarial refuter to
+        # drop the findings it cannot support. The reviewer stays parked
+        # (ungraded) on the in-flight refuter continuation; its resume routes the
+        # survivors / completes the reviewer. KUTAI_VERDICT_VERIFY=off disables
+        # Tier 2 (Tier 1 still ran in the mechanical verifier).
+        if tier2 and mission_id is not None and not _verdict_verify_opt_out():
+            spawned = await _spawn_verdict_refuter(
+                source=source, mission_id=mission_id, reviewer_id=reviewer_id,
+                kept_issues=issues, candidates=tier2,
             )
-            new_pending = [k for k in pending if k != "verify_review_verdict"]
-            ctx["_pending_posthooks"] = new_pending
-            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
-            await _retry_or_dlq(
-                source, category="quality",
-                error="reviewer rejected artifact but workflow graph unavailable",
-            )
-            return
-
-        review_result = {
-            "status": "fail",
-            "issues": raw.get("issues") or [],
-        }
-        try:
-            from general_beckman.review_routing import route_review_failure
-            # Hand the reviewer's context down so escalation can persist the
-            # _review_halt payload (for restart/nudge re-rendering) in the same
-            # parking write — no extra DB read.
-            _rev_ctx = source.get("context")
-            if isinstance(_rev_ctx, str):
-                try:
-                    _rev_ctx = _json.loads(_rev_ctx) if _rev_ctx else {}
-                except (ValueError, TypeError):
-                    _rev_ctx = {}
-            if not isinstance(_rev_ctx, dict):
-                _rev_ctx = {}
-            outcome = await route_review_failure(
-                mission_id=int(mission_id),
-                reviewer_id=str(reviewer_id),
-                review_result=review_result,
-                workflow=wf,
-                reviewer_task_id=source["id"],
-                reviewer_ctx=_rev_ctx,
-            )
-            logger.info(
-                "review verdict FAIL routed to producers",
-                source_id=verdict.source_task_id, mission_id=mission_id,
-                reviewer_id=reviewer_id, outcome=outcome,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("review routing raised — DLQ reviewer",
-                           source_id=verdict.source_task_id, error=str(exc))
-            new_pending = [k for k in pending if k != "verify_review_verdict"]
-            ctx["_pending_posthooks"] = new_pending
-            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
-            await _retry_or_dlq(
-                source, category="quality",
-                error=f"review routing failed: {str(exc)[:200]}",
-            )
-            return
-
-        # Drain the reviewer's verify_review_verdict kind regardless of outcome.
-        new_pending = [k for k in pending if k != "verify_review_verdict"]
-        ctx["_pending_posthooks"] = new_pending
-
-        routed = list(outcome.get("routed") or [])
-        escalated = bool(outcome.get("escalated"))
-
-        # Close the review loop. advance.py pre-expands every task and only
-        # unblocks a step once its depends_on rows are completed; a COMPLETED
-        # reviewer never re-runs when its producer re-completes. So completing
-        # the reviewer here would let the mission flow PAST an unsatisfied
-        # review (producers fixed, but the artifact never re-reviewed).
-        #
-        # Instead: when at least one producer was actually re-pended (routed
-        # non-empty AND nothing escalated), RE-PEND THE REVIEWER ITSELF back to
-        # `pending`. The reviewer `depends_on` its producers, so get_ready_tasks
-        # runs the producers first (their deps are satisfied) then re-runs the
-        # reviewer once they re-complete → it re-reviews the FIXED artifacts.
-        # The loop's primary bound is the producers' existing worker_attempts
-        # cap (when they exhaust, route_review_failure escalates — handled by
-        # the `escalated` branch below). The reviewer also takes its own
-        # worker_attempts bump as a backstop bound against a producer that can
-        # never satisfy it.
-        if routed and not escalated:
-            attempts = int(source.get("worker_attempts") or 0) + 1
-            max_attempts = int(source.get("max_worker_attempts") or 15)
-            # Reset the reviewer's prior verdict so it re-reviews fresh: stash
-            # the rejected verdict as prev-output context, mirror the producer
-            # re-pend feedback mechanics (_stamp_retry_feedback), and flip back
-            # to pending. The mission is NOT advanced — the re-run gates on the
-            # producers via depends_on.
-            prev_output = source.get("result") or ""
-            if isinstance(prev_output, str) and prev_output.strip():
-                ctx["_prev_output"] = prev_output[:6000]  # fallback only — artifact-backed continuation reads full draft (T3)
-            ctx["_schema_error"] = (
-                "Previous review REJECTED upstream artifact(s); the "
-                f"producer(s) {routed} were re-pended to fix it. Re-review the "
-                "corrected artifacts fresh."
-            )
-            # GAP-1 (ledger only): reason falls back to the _schema_error
-            # set just above. The escalate return is intentionally IGNORED
-            # here — this is a reviewer re-pend bounded by the producers'
-            # worker_attempts (route_review_failure escalates separately), not
-            # a degenerate producer-output loop, so a byte-identical prior
-            # verdict must not short-circuit the re-review.
-            _stamp_retry_feedback(ctx, attempts, prev_output=source.get("result"))
-            await update_task(
-                verdict.source_task_id, status="pending",
-                worker_attempts=attempts, max_worker_attempts=max_attempts,
-                context=_json.dumps(ctx),
-                result=None,
-                error="reviewer rejected artifact — re-pended to re-review after producer fix",
-                error_category="quality", next_retry_at=None,
-                retry_reason=None, failed_in_phase=None,
-            )
-            logger.info(
-                "review verdict FAIL — re-pended reviewer to re-review after producer fix",
-                source_id=verdict.source_task_id, mission_id=mission_id,
-                reviewer_id=reviewer_id, routed=routed,
-                worker_attempts=attempts,
-            )
-            return
-
-        # Escalated / nothing localisable: the producers can't carry the fix
-        # (no target, or a producer hit its cap), so route_review_failure has
-        # escalated to the founder-halt AND already PARKED the reviewer in
-        # ``waiting_human`` (the safety park — an escalated review must NOT
-        # advance unreviewed). Do NOT re-pend (it would spin on an
-        # unsatisfiable rejection) and do NOT complete/advance the mission —
-        # that would flow past the unreviewed artifact. The founder-halt card
-        # (Regenerate producer / Accept anyway) owns resumption from here:
-        # Accept completes the reviewer (override → advance), Regenerate
-        # re-pends the producer + reviewer to close the loop. We only persist
-        # the drained ``_pending_posthooks`` context so the kind doesn't
-        # re-fire; the reviewer keeps its parked status.
-        await update_task(verdict.source_task_id, context=_json.dumps(ctx))
+            if spawned:
+                logger.info(
+                    "review verdict FAIL — deferred to Tier-2 refuter",
+                    source_id=verdict.source_task_id, mission_id=mission_id,
+                    candidates=len(tier2),
+                )
+                return
+            # spawn failed → fall through and route now (fail-safe).
+        await _route_review_fail(
+            source=source, ctx=ctx, pending=pending, mission_id=mission_id,
+            reviewer_id=reviewer_id, issues=issues,
+            source_task_id=verdict.source_task_id,
+        )
         return
 
     if verdict_class == "pass":
         # Happy path: the reviewer accepted the artifact. Drain the
         # verify_review_verdict kind; when nothing else is pending on the
-        # reviewer, COMPLETE it and advance the mission so the workflow flows
-        # past the satisfied review. Mirrors _apply_simple_blocker_verdict's
-        # pass path (drain → complete-if-empty → _spawn_workflow_advance).
-        new_pending = [k for k in pending if k != "verify_review_verdict"]
-        ctx["_pending_posthooks"] = new_pending
-        if not new_pending:
-            await update_task(
-                verdict.source_task_id, status="completed",
-                context=_json.dumps(ctx),
-                error=None, error_category=None, next_retry_at=None,
-                retry_reason=None, failed_in_phase=None,
-            )
-            await _spawn_workflow_advance_if_mission(source, raw)
-            try:
-                from general_beckman import _send_step_progress
-                from dabidabi import get_task
-                fresh = await get_task(verdict.source_task_id)
-                if fresh:
-                    await _send_step_progress(fresh, "completed", raw)
-            except Exception:
-                pass
-        else:
-            await update_task(verdict.source_task_id, context=_json.dumps(ctx))
-        logger.info(
-            "review verdict PASS — reviewer completed",
-            source_id=verdict.source_task_id, mission_id=mission_id,
-            reviewer_id=reviewer_id,
+        # reviewer, COMPLETE it and advance the mission. Shared with the Tier-2
+        # refuter resume (which completes a reviewer whose blocking findings were
+        # all dropped) via _complete_review_pass.
+        await _complete_review_pass(
+            source=source, ctx=ctx, pending=pending,
+            source_task_id=verdict.source_task_id, raw=raw,
+            mission_id=mission_id, reviewer_id=reviewer_id,
         )
         return
 

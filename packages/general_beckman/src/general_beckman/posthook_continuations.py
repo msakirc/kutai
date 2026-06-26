@@ -487,6 +487,95 @@ async def _critic_resume_err(child_task_id: int, result: dict, state: dict) -> N
     )
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Verdict verification (2026-06-26) — Tier-2 adversarial refuter resume.
+# The reviewer (source) is parked ungraded on this continuation while the
+# admitted refuter child runs. On resume we drop the candidate findings the
+# refuter could not support (fail-closed against a refuter that confabulates its
+# OWN quote) and hand the survivors back to the apply layer to route/complete.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def _finish_review_after_refuter(source_task_id, reviewer_id, mission_id,
+                                       final_issues) -> None:
+    """Re-enter the apply-layer finisher. Module-level so tests can patch it."""
+    from general_beckman.apply import _finish_review_after_refuter as _impl
+    await _impl(
+        source_task_id=source_task_id, reviewer_id=reviewer_id,
+        mission_id=mission_id, final_issues=final_issues,
+    )
+
+
+def _filter_refuted(kept_issues: list, candidates: list, parsed) -> list:
+    """Build the surviving issue list. ``parsed`` is the refuter verdict map, or
+    None on a whole-output parse failure (then keep ALL candidates — a refuter
+    outage must not silently disable the halt). Drops are matched back to
+    kept_issues by (target_artifact, problem)."""
+    from mr_roboto.verdict_refuter import refuter_keep
+
+    dropped_keys: set = set()
+    if parsed is not None:
+        # NB: re-grounding the refuter's own quote needs the artifact content;
+        # the caller resolves it per candidate and passes it via `_contents`.
+        for i, cand in enumerate(candidates):
+            content = (cand or {}).get("_content")
+            if not refuter_keep(parsed.get(i), content):
+                dropped_keys.add(((cand or {}).get("target_artifact"),
+                                  (cand or {}).get("problem")))
+    return [
+        iss for iss in (kept_issues or [])
+        if (iss.get("target_artifact"), iss.get("problem")) not in dropped_keys
+    ]
+
+
+async def _verdict_verify_resume(child_task_id: int, result: dict, state: dict) -> None:
+    from mr_roboto.verdict_refuter import parse_refuter_output
+    from mr_roboto.verify_review_verdict import _resolve_artifact_content
+
+    candidates = list(state.get("candidates") or [])
+    kept_issues = list(state.get("kept_issues") or [])
+    mission_id = state.get("mission_id")
+    raw_text = _extract_content(result)
+    parsed = parse_refuter_output(raw_text, len(candidates))
+
+    # Re-resolve each candidate's artifact so refuter_keep can re-ground the
+    # refuter's OWN supporting quote (fail-closed against a confabulating refuter).
+    if parsed is not None:
+        for cand in candidates:
+            try:
+                cand["_content"] = await _resolve_artifact_content(
+                    mission_id, cand.get("target_artifact"))
+            except Exception:  # noqa: BLE001
+                cand["_content"] = None
+
+    final = _filter_refuted(kept_issues, candidates, parsed)
+    logger.info(
+        "verdict-verify resume: refuter filtered findings",
+        source_id=state.get("source_task_id"),
+        kept=len(kept_issues), survivors=len(final),
+        parsed=(parsed is not None),
+    )
+    await _finish_review_after_refuter(
+        state.get("source_task_id"), state.get("reviewer_id"),
+        mission_id, final,
+    )
+
+
+async def _verdict_verify_resume_err(child_task_id: int, result: dict, state: dict) -> None:
+    """The refuter child failed terminally (no candidates / infra). Keep ALL
+    candidates and route normally — an outage must NOT silently disable the
+    safety halt."""
+    err = (result or {}).get("error", "unknown")
+    logger.warning(
+        "verdict-verify refuter failed terminally — keeping all findings (route)",
+        source_id=state.get("source_task_id"), error=str(err)[:200],
+    )
+    await _finish_review_after_refuter(
+        state.get("source_task_id"), state.get("reviewer_id"),
+        state.get("mission_id"), list(state.get("kept_issues") or []),
+    )
+
+
 def register_continuations() -> None:
     """Register SP3 post-hook CPS handlers. Idempotent."""
     try:
@@ -505,6 +594,9 @@ def register_continuations() -> None:
         # SP6 — critic_gate admitted LLM child (fail-closed).
         register_resume("posthook.critic.resume", _critic_resume)
         register_resume("posthook.critic.resume_err", _critic_resume_err)
+        # Verdict verification (2026-06-26) — Tier-2 adversarial refuter.
+        register_resume("posthook.verdict_verify.resume", _verdict_verify_resume)
+        register_resume("posthook.verdict_verify.resume_err", _verdict_verify_resume_err)
     except Exception as exc:  # noqa: BLE001
         logger.debug("posthook continuation registration deferred", error=str(exc))
 

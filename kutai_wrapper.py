@@ -155,6 +155,7 @@ config = GuardConfig(
     auto_restart="--no-auto-restart" not in sys.argv,
 
     claude_enabled=True,
+    claude_cmd=str(Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd") if os.environ.get("APPDATA") else None,
     claude_name="Kutay",
     claude_signal_file=str(PROJECT_ROOT / "logs" / "claude_remote.signal"),
 

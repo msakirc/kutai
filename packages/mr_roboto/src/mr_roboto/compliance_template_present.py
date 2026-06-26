@@ -94,14 +94,16 @@ def compliance_template_present(
             try:
                 with open(resolved, "r", encoding="utf-8") as fh:
                     overlay_obj = json.load(fh)
-            except Exception as e:
-                return {
-                    "ok": False,
-                    "error": f"could not read overlay {resolved!r}: {e}",
-                    "missing": [],
-                    "checked": [],
-                    "root": root,
-                }
+            except Exception:
+                # A prose / malformed / missing overlay is NOT this gate's call
+                # to reject — verifying template PRESENCE is not overlay
+                # validity (the schema gate owns that; this gate must not crash
+                # on top of a malformed overlay — #166124 / #166560). Fall
+                # through: no parseable required_documents → nothing to check →
+                # ok. (mission 90 [1.11a] empty-scope: the analyst wrote a prose
+                # overlay → json.load raised → false DLQ here while the schema
+                # gate had already blessed the empty scope.)
+                overlay_obj = None
         if overlay_obj:
             # required_documents SHOULD be a list of {template_id, ...} dicts.
             # A thin/placeholder analyst overlay (#166124) put a prose STRING

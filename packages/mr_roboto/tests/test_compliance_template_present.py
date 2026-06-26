@@ -24,6 +24,25 @@ def template_root(tmp_path):
     return str(root)
 
 
+def test_prose_overlay_is_not_this_gates_call_to_reject(tmp_path, template_root):
+    """A prose / non-JSON overlay must NOT fail this gate. Verifying template
+    PRESENCE is not overlay-validity — the schema gate owns that, and this gate
+    must not crash on a malformed overlay (#166124 / #166560). No parseable
+    required_documents → nothing to check → ok. Mission 90 [1.11a] empty-scope:
+    the analyst wrote a prose markdown overlay → json.load raised → false DLQ
+    'compliance_template_present: could not read overlay'."""
+    p = tmp_path / "compliance_overlay.json"
+    p.write_text(
+        "## Analysis: Compliance Overlay\n\nNo jurisdictions specified.\n",
+        encoding="utf-8",
+    )
+    res = compliance_template_present(
+        overlay_path=str(p), template_root=template_root,
+    )
+    assert res["ok"] is True, res
+    assert res["missing"] == []
+
+
 def test_returns_ok_when_no_ids_to_check(template_root):
     res = compliance_template_present(template_ids=[], template_root=template_root)
     assert res["ok"] is True

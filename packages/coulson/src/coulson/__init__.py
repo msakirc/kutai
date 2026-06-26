@@ -48,7 +48,7 @@ _WEB_TOOLS = frozenset({"web_search", "smart_search", "extract_url"})
 # output steps.
 _WRITE_TOOLS = frozenset({"write_file", "apply_diff", "edit_file", "patch_file"})
 
-# Artifact-schema types. Structured types (object/array) put the CLEAN
+# Artifact-schema types. Structured types (object/array/json) put the CLEAN
 # artifact directly in the final_answer ``result`` — write tools are then
 # safely redundant (the engine materializes result→disk). Free-form types
 # (markdown/string) are different: a narration-prone agent (e.g. analyst)
@@ -56,12 +56,21 @@ _WRITE_TOOLS = frozenset({"write_file", "apply_diff", "edit_file", "patch_file"}
 # final_answer path, poisoning the materialized file — but writes a CLEAN
 # file via write_file. So write tools are KEPT for free-form schemas.
 # (task #524995, [0.0c] interview_script_generation.)
-_STRUCTURED_SCHEMA_TYPES = frozenset({"object", "array"})
+#
+# ``json`` is a structured type too (the only live one is [0.0a.draft]
+# intake_todo_draft, whose instruction explicitly says "do NOT call write_file
+# (the tool is intentionally unavailable for this step); your returned JSON IS
+# the artifact"). It was omitted here, so _apply_auto_strip left write_file
+# available — contradicting the step's own contract and the intake #73 design
+# (engine is the sole writer of schema'd produces paths). Including it keeps
+# this predicate, materialize_produces.write_stripped, and the step instruction
+# all in agreement.
+_STRUCTURED_SCHEMA_TYPES = frozenset({"object", "array", "json"})
 
 
 def _schema_is_structured_only(schema: dict) -> bool:
     """True when EVERY artifact in *schema* is a structured type
-    (object/array) — the case where the ``result`` IS the clean artifact
+    (object/array/json) — the case where the ``result`` IS the clean artifact
     and stripping write tools is safe. False when ANY artifact is free-form
     (markdown/string), so write tools stay. Typeless entries default to
     ``object`` (preserves prior behaviour for object schemas that omit an

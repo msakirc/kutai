@@ -82,6 +82,50 @@ def test_missing_produces_key_returns_none():
     assert result is None
 
 
+def test_skips_when_write_tools_stripped():
+    """Task 567381 ([1.0a] prior_art_query_plan, object schema → write_file
+    auto-stripped). The self-critique guard must NOT nag 'Call write_file' when
+    the agent physically cannot write (mirrors the grounding guard's skip at
+    guards.py). For a write-stripped step the artifact IS the final_answer and
+    the engine materializes it — the file-existence premise is moot, and the
+    impossible re-emit demand loops the agent to max_iterations."""
+    result = check_self_critique_sub_iter(
+        _parsed_final(),
+        task=_task(produces=["mission_90/.research/prior_art_queries.json"]),
+        agent_type="query_planner",
+        self_critique_passes=0,
+        tool_calls=None,
+        allowed_tools=["read_file", "smart_search"],   # no write tools
+    )
+    assert result is None
+
+
+def test_fires_when_write_tools_present():
+    """Self-critique still fires for a markdown/non-stripped step that keeps
+    write_file (the agent CAN re-write the declared path)."""
+    result = check_self_critique_sub_iter(
+        _parsed_final(),
+        task=_task(produces=["mission_90/.charter/non_goals.md"]),
+        agent_type="writer",
+        self_critique_passes=0,
+        tool_calls=_write_calls(["mission_90/.charter/non_goals.md"]),
+        allowed_tools=["read_file", "write_file"],
+    )
+    assert result is not None
+
+
+def test_all_tools_default_none_still_fires():
+    """allowed_tools=None means 'all tools' (write present) — guard unchanged."""
+    result = check_self_critique_sub_iter(
+        _parsed_final(),
+        task=_task(produces=["mission_90/.charter/non_goals.md"]),
+        agent_type="writer",
+        self_critique_passes=0,
+        tool_calls=_write_calls(["mission_90/.charter/non_goals.md"]),
+    )
+    assert result is not None
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Non-final_answer action → None
 # ────────────────────────────────────────────────────────────────────────────

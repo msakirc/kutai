@@ -268,6 +268,7 @@ def check_sub_iter_guards(
         agent_type=profile.name,
         self_critique_passes=self_critique_passes,
         tool_calls=tool_calls,
+        allowed_tools=profile.allowed_tools,
     )
     if sc_correction is not None:
         return sc_correction

@@ -21,6 +21,7 @@ import json
 from dataclasses import dataclass
 
 from .guards import GuardCorrection
+from .grounding import WRITE_TOOLS
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -143,6 +144,7 @@ def check_self_critique_sub_iter(
     agent_type: str,
     self_critique_passes: int,
     tool_calls: list[dict] | None = None,
+    allowed_tools: list[str] | None = None,
 ) -> GuardCorrection | None:
     """Self-critique sub-iteration guard.
 
@@ -150,9 +152,20 @@ def check_self_critique_sub_iter(
       - agent_type not in SELF_CRITIQUE_OPT_OUT_AGENT_TYPES
       - parsed action is final_answer
       - task context declares a non-empty produces list
+      - write tools are available (not auto-stripped — see below)
       - self_critique_passes < MAX_SELF_CRITIQUE_PASSES
 
     Returns None otherwise (guard doesn't apply or budget exhausted).
+
+    ``allowed_tools`` is the agent's live tool set. When it is supplied and
+    contains NO write tool, the step is write-stripped (``_apply_auto_strip``
+    removes write tools for structured-output schemas) — the artifact IS the
+    final_answer and the engine materializes it. The critic's "did you write
+    the declared files?" premise is then moot, and its "Call write_file"
+    re-emit instruction is physically impossible → the agent loops to
+    max_iterations (task 567381 [1.0a] prior_art_query_plan). Mirror the
+    grounding guard and skip. ``allowed_tools=None`` means "all tools" (write
+    present) — guard applies as before.
 
     Counter management: the caller is responsible for incrementing
     ``self_critique_passes`` after consuming the returned GuardCorrection,
@@ -167,6 +180,10 @@ def check_self_critique_sub_iter(
 
     produces = _produces_from_task(task)
     if not produces:
+        return None
+
+    # Write-stripped step → final_answer is the artifact; nothing to re-write.
+    if allowed_tools is not None and not (set(allowed_tools) & WRITE_TOOLS):
         return None
 
     if self_critique_passes >= MAX_SELF_CRITIQUE_PASSES:

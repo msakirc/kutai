@@ -369,7 +369,22 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
     # attempt. The fresh output_value (this run's final_answer) must outrank it,
     # even when the stale file is itself schema-valid (task 524364: a gate-failed
     # 'dead' report kept being resurrected over the corrected 'active' result).
-    write_stripped = isinstance(schema, dict) and bool(schema) and not ctx.get("_allow_write_tools")
+    #
+    # CRITICAL: this predicate MUST match _apply_auto_strip, which strips write
+    # tools ONLY for STRUCTURED-only schemas (object/array) — markdown/string
+    # schemas KEEP write tools. A markdown step's disk file is therefore the
+    # agent's FRESH write (not stale) and must outrank the narration-prone
+    # final_answer. Treating any non-empty schema as write-stripped was a
+    # predicate drift that flipped markdown order to [output_value, disk] and
+    # let a narration clobber the agent's clean file (task 567379 [0.6a.draft]
+    # non_goals_draft: writer wrote a real non_goals.md, narrated final_answer,
+    # materializer overwrote disk with the narration).
+    from coulson import _schema_is_structured_only
+    write_stripped = (
+        isinstance(schema, dict) and bool(schema)
+        and _schema_is_structured_only(schema)
+        and not ctx.get("_allow_write_tools")
+    )
     canonical_out = output_value
     for entry in produces:
         if not (isinstance(entry, str) and entry.endswith((".md", ".json"))):
@@ -877,6 +892,22 @@ def validate_artifact_schema(
             # Parse failed — fall back for small LLMs that emit prose.
             if schema_type == "object":
                 required = _top_level_required_field_names(rules)
+                # Honor the empty-scope exemption EXACTLY as the JSON-parsed
+                # dialect path does (line above): a field marked
+                # empty_ok_when_input_empty whose upstream input is empty is
+                # legitimately absent and must NOT be flagged "missing content
+                # about" (task 567396 [1.11a] compliance_overlay: analyst emitted
+                # PROSE for an empty-scope overlay, jurisdictions=[]; the prose
+                # fallback ignored the exemption the JSON path honors → DLQ).
+                if required:
+                    from src.workflows.engine.schema_dialect import (
+                        _empty_exemption_granted, _normalize_rule,
+                    )
+                    _nfields = _normalize_rule(rules).get("fields") or {}
+                    required = [
+                        f for f in required
+                        if not _empty_exemption_granted(_nfields.get(f, {}), inputs)
+                    ]
                 if required:
                     import re as _re_obj
                     def _norm(s):
@@ -940,15 +971,22 @@ def validate_artifact_schema(
                 flags=_re.MULTILINE,
             )
             # Check for actual markdown headers (## Section or ### Section),
-            # not just substring mentions like "Vision (streamlining...)"
+            # not just substring mentions like "Vision (streamlining...)".
+            # The header MUST start a line (MULTILINE ^) — an inline / backticked
+            # prose mention such as "a `# Non-goals` body section" must NOT count
+            # (task 567379: a narration that *described* writing the doc passed
+            # the old `f"# {s}" in text` substring check and validated as a real
+            # artifact, clobbering the writer's clean on-disk file).
             missing = []
             for s in required_sections:
                 s_lower = s.lower()
-                # Accept: ## Vision, ### Vision, # Vision, **Vision**, Vision\n---
-                has_header = (
-                    f"# {s_lower}" in text_normalized
-                    or f"**{s_lower}**" in text_normalized
-                    or f"\n{s_lower}\n" in text_normalized
+                s_esc = _re.escape(s_lower)
+                # Accept (all line-anchored): ## Vision / ### Vision / # Vision,
+                # **Vision**, and a bare/setext title line "Vision" / "Vision\n---".
+                has_header = bool(
+                    _re.search(rf'^\s*#{{1,4}}\s*{s_esc}\b', text_normalized, _re.MULTILINE)
+                    or _re.search(rf'^\s*\*\*{s_esc}\*\*', text_normalized, _re.MULTILINE)
+                    or _re.search(rf'^\s*{s_esc}\s*$', text_normalized, _re.MULTILINE)
                 )
                 if not has_header:
                     missing.append(s)

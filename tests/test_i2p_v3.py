@@ -246,6 +246,78 @@ class TestArtifactSchemaValidation:
         ok, err = validate_artifact_schema("anything", None)
         assert ok
 
+    # ── A2: section header must be a REAL line-anchored heading, not a prose
+    # mention. Task 567379 ([0.6a.draft] non_goals_draft): the writer narrated
+    # "a `# Non-goals` body section …" — the old substring check (`f"# {s}" in
+    # text`) matched the backticked mention and let the NARRATION validate as a
+    # real artifact, clobbering the writer's clean on-disk file.
+    def test_markdown_rejects_backticked_section_mention(self):
+        narration = (
+            "---\nmission_id: 90\n---\n\n"
+            "Drafted `mission_90/.charter/non_goals.md` with a `# Non-goals` "
+            "body section mirroring the bullets. Ready for founder review."
+        )
+        ok, err = validate_artifact_schema(
+            narration,
+            {"non_goals": {"type": "markdown", "required_sections": ["Non-goals"]}},
+        )
+        assert not ok
+        assert "Non-goals" in err
+
+    def test_markdown_accepts_real_atx_heading(self):
+        doc = "---\nmission_id: 90\n---\n\n# Non-goals\n\n- No multiplayer\n- Web only\n"
+        ok, err = validate_artifact_schema(
+            doc,
+            {"non_goals": {"type": "markdown", "required_sections": ["Non-goals"]}},
+        )
+        assert ok, err
+
+    def test_markdown_accepts_bold_and_setext_headers(self):
+        body = (
+            "**Overview**\n\nsome text\n\n"
+            "Problem Statement\n-----------------\n\ndetails"
+        )
+        ok, err = validate_artifact_schema(
+            body,
+            {"art": {"type": "markdown",
+                     "required_sections": ["Overview", "Problem Statement"]}},
+        )
+        assert ok, err
+
+    # ── C: the object PROSE text-fallback must honor empty_ok_when_input_empty
+    # exactly as the JSON-parsed path does. Task 567396 ([1.11a] compliance_overlay):
+    # analyst emitted prose (not JSON) for an empty-scope overlay
+    # (compliance_fingerprint.jurisdictions == []); the fallback false-rejected
+    # the exempt fields as "missing content about".
+    _OVERLAY_SCHEMA = {"compliance_overlay": {"type": "object", "fields": {
+        "required_documents": {
+            "type": "array",
+            "empty_ok_when_input_empty": "compliance_fingerprint.jurisdictions"},
+        "monitoring_obligations": {
+            "empty_ok_when_input_empty": "compliance_fingerprint.jurisdictions"},
+        "data_subject_rights_implementation": {
+            "empty_ok_when_input_empty": "compliance_fingerprint.jurisdictions"},
+    }}}
+
+    def test_object_prose_fallback_respects_empty_scope_exemption(self):
+        prose = ("## Analysis: Compliance Overlay\n\nNo jurisdictions specified; "
+                 "no required documents identified at this time.")
+        ok, err = validate_artifact_schema(
+            prose, self._OVERLAY_SCHEMA,
+            inputs={"compliance_fingerprint": {"jurisdictions": []}},
+        )
+        assert ok, err
+
+    def test_object_prose_fallback_still_fails_when_scope_nonempty(self):
+        prose = ("## Analysis: Compliance Overlay\n\nNo required documents listed.")
+        ok, err = validate_artifact_schema(
+            prose, self._OVERLAY_SCHEMA,
+            inputs={"compliance_fingerprint": {"jurisdictions": ["US", "EU"]}},
+        )
+        assert not ok
+        assert ("monitoring_obligations" in err
+                or "data_subject_rights_implementation" in err)
+
 
 # ── skip_when ─────────────────────────────────────────────────────────────────
 

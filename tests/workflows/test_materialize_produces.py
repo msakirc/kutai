@@ -197,6 +197,69 @@ async def test_schema_strip_invalid_fresh_output_keeps_valid_disk(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_markdown_keeps_agent_written_file_over_narration(tmp_path, monkeypatch):
+    """Task 567379 (mission 90, [0.6a.draft] non_goals_draft).
+
+    For a MARKDOWN produces step, ``_apply_auto_strip`` does NOT strip
+    write_file (only structured-only object/array schemas are stripped), so the
+    writer writes the real doc to disk AND narrates its final_answer. The
+    materializer must keep the agent's on-disk file, not overwrite it with the
+    narration. Pre-fix ``materialize_produces.write_stripped`` was True for ANY
+    non-empty schema — a predicate drift vs ``_apply_auto_strip`` — flipping the
+    candidate order to ``[output_value, disk]`` so the narration (which
+    spuriously passed the old substring section check) clobbered the clean
+    file."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    rel = "mission_90/.charter/non_goals.md"
+    abs_p = tmp_path / rel
+    abs_p.parent.mkdir(parents=True, exist_ok=True)
+    clean = ("# Non-goals\n\n- No real-time multiplayer or co-habit features.\n"
+             "- No mobile native app; web-only at launch.\n"
+             "- No support for under-13 users.\n")
+    abs_p.write_text(clean, encoding="utf-8")
+    schema = {"non_goals": {"type": "markdown", "required_sections": ["Non-goals"]}}
+    ctx = _ctx([rel], schema)
+    task = {"mission_id": 90, "agent_type": "writer"}
+    narration = ("Drafted `mission_90/.charter/non_goals.md` with a `# Non-goals` "
+                 "body section mirroring the bullets. Ready for founder review.")
+
+    out = await materialize_produces(ctx, task, {"result": narration}, narration)
+
+    disk = abs_p.read_text(encoding="utf-8")
+    assert "No real-time multiplayer" in disk    # agent's clean file kept
+    assert "Drafted" not in disk                  # narration did NOT clobber it
+    assert "No real-time multiplayer" in out      # returned == on-disk (gate parity)
+
+
+@pytest.mark.asyncio
+async def test_markdown_rich_disk_file_preserved_over_thinner_result(tmp_path, monkeypatch):
+    """Predicate-drift regression (intake #73 intent). For a markdown step
+    write_file is NOT stripped, so disk is the agent's fresh write and must
+    outrank ``output_value``. Pre-fix ``write_stripped`` was True for any
+    non-empty schema → ``[output_value, disk]`` → a thinner (but still valid)
+    final_answer could clobber a richer written file. Both candidates here pass
+    the schema, so only the candidate ORDER decides the winner."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    rel = "mission_90/.charter/non_goals.md"
+    abs_p = tmp_path / rel
+    abs_p.parent.mkdir(parents=True, exist_ok=True)
+    rich = ("# Non-goals\n\n- No multiplayer.\n- Web-only.\n- No under-13.\n"
+            "- No AI recs.\n- No vendor onboarding.\n")
+    abs_p.write_text(rich, encoding="utf-8")
+    schema = {"non_goals": {"type": "markdown", "required_sections": ["Non-goals"]}}
+    thinner = "# Non-goals\n\n- No multiplayer.\n"   # valid but thinner
+
+    await materialize_produces(
+        _ctx([rel], schema), {"mission_id": 90, "agent_type": "writer"},
+        {"result": thinner}, thinner)
+
+    disk = abs_p.read_text(encoding="utf-8")
+    assert "No vendor onboarding" in disk     # rich written file preserved
+    assert "Web-only" in disk                 # rich-only content (thinner lacks it)
+    assert "No AI recs" in disk
+
+
+@pytest.mark.asyncio
 async def test_mission81_289715_regression(tmp_path, monkeypatch):
     """The real failure: agent wrote a narration report to the produces path
     while the correct doc sat in a ```yaml fence in result. Materializer must

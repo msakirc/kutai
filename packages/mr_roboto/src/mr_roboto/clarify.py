@@ -296,20 +296,124 @@ async def _derive_surface_choice(task: dict) -> dict | None:
     }
 
 
+async def _resolve_surface_choice(task: dict) -> dict | None:
+    """Smart surface gate — founder words win, always offer a correction card.
+
+    Precedence (founder decision 2026-06-26, "my words always win + card"):
+      1. The founder's own description (``infer_surfaces``) is AUTHORITATIVE.
+         A high OR medium signal drives the surfaces and is NEVER overridden by
+         the LLM tech-analysis (3.6 ``target_platform``). This fixes the bug
+         where a mission the founder labelled "app" was silently locked to
+         whatever 3.6 derived (e.g. "web") and no card was ever sent.
+      2. Only when the founder text says nothing about a platform do we derive
+         from the canonical build signal (3.6 ``target_platform`` + 3.5z
+         ``surface_signal``).
+    Either branch writes ``surfaces.json`` and sends a NON-BLOCKING
+    "assumed X — tap to change" card so the founder keeps a one-tap override on
+    every mission. Returns the completed result, or ``None`` when nothing could
+    be resolved (caller asks via the blocking keyboard).
+
+    Runs BEFORE the attention-budget gate: ``surfaces.json`` must always be
+    written (a deferred write would DLQ at ``verify_surfaces_shape``); the
+    correction card is non-blocking so it need not respect the budget.
+    """
+    mission_id = task.get("mission_id")
+    options = (task.get("payload") or {}).get("options") or []
+
+    from mr_roboto.surface_infer import infer_surfaces, surfaces_label
+
+    # 1. Founder words win.
+    text = await _gather_mission_text(task, mission_id)
+    inf = infer_surfaces(text)
+    if inf["surfaces"] and inf["confidence"] in ("high", "medium"):
+        try:
+            from mr_roboto.surfaces_persist import write_surfaces_json
+            await write_surfaces_json(
+                mission_id=mission_id,
+                option_label=surfaces_label(inf["surfaces"]),
+                primary_surface=inf["primary_surface"],
+                source="inferred",
+                confidence=inf["confidence"],
+            )
+        except Exception as exc:
+            # Write failed — DON'T guess silently; let the caller ask via the
+            # blocking keyboard so the founder still decides.
+            logger.warning(
+                "surface_choice: inferred write failed for mission=%s "
+                "(surfaces=%s): %s — falling back to keyboard",
+                mission_id, inf["surfaces"], exc,
+            )
+            return None
+        logger.info(
+            "surface_choice: founder text → surfaces=%s (%s) for mission=%s "
+            "— founder words win, no pause",
+            inf["surfaces"], inf["confidence"], mission_id,
+        )
+        await _offer_surface_correction(task, mission_id, options, inf["surfaces"])
+        return {
+            "status": "completed",
+            "kind": "surface_choice",
+            "inferred": True,
+            "surfaces": inf["surfaces"],
+            "confidence": inf["confidence"],
+        }
+
+    # 2. No founder signal → derive from the canonical 3.6 build signal.
+    derived = await _derive_surface_choice(task)
+    if derived is not None:
+        await _offer_surface_correction(
+            task, mission_id, options, derived.get("surfaces") or [],
+        )
+        return derived
+
+    # 3. Nothing to resolve — caller falls back to the blocking keyboard.
+    return None
+
+
+async def _offer_surface_correction(
+    task: dict,
+    mission_id: int | None,
+    options: list,
+    surfaces: list,
+) -> None:
+    """Send the NON-BLOCKING "🤖 assumed X — tap to change" surface card.
+
+    Best-effort: the surface is already written and the task completes whether
+    or not this card reaches Telegram (a failed send only costs the founder the
+    one-tap override, never the mission). Never raises.
+    """
+    try:
+        chat_id = await _resolve_chat_id(task, mission_id)
+        guess = " + ".join(surfaces) if surfaces else "?"
+        await send_surface_keyboard(
+            mission_id, task["id"], chat_id, options,
+            prompt=(
+                f"🤖 Bunu *{guess}* olarak varsaydım (açıklamandan). "
+                "Yanlışsa değiştir:"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — correction card is best-effort
+        logger.warning(
+            "surface_choice: correction card send failed for mission=%s: %s",
+            mission_id, exc,
+        )
+
+
 async def clarify(task: dict) -> dict:
     payload = task.get("payload") or {}
     kind = payload.get("kind")
 
-    # SMART GATE (single source of truth) — for surface_choice, derive from the
-    # canonical build signal BEFORE the attention gate: a derived surface needs
-    # no founder attention, so it must not be deferred by an exhausted budget
-    # (which would complete the task without writing surfaces.json → DLQ at
-    # verify_surfaces_shape). Only the text-inference/keyboard fallback (genuine
-    # ambiguity, founder pause) is subject to the attention gate below.
+    # SMART GATE (founder words win) — for surface_choice, resolve the surface
+    # BEFORE the attention gate: an auto-resolved surface (founder text or 3.6
+    # derive) needs no founder attention, so it must not be deferred by an
+    # exhausted budget (which would complete the task without writing
+    # surfaces.json → DLQ at verify_surfaces_shape). Only the genuinely-ambiguous
+    # blocking-keyboard fallback (real founder pause) is subject to the gate
+    # below.
     if kind == "surface_choice":
-        early = await _derive_surface_choice(task)
-        if early is not None:
-            return early
+        resolved = await _resolve_surface_choice(task)
+        if resolved is not None:
+            return resolved
 
     # Z1 Tier 5A (A5) — founder attention budget gate.
     # When the mission has a budget set AND remaining < reserve_minutes
@@ -354,76 +458,15 @@ async def clarify(task: dict) -> dict:
             logger.warning("clarify: attention_check failed: %s", exc)
 
     if kind == "surface_choice":
-        # 5.0b surfaces_lock — which platforms does this product target?
-        #
-        # SMART GATE: unconditionally asking is dumb when the mission text
-        # already says "build an app" / "a website". Infer the surface from
-        # the mission description (+ PRD) first:
-        #   high   → write surfaces.json (source=inferred), advance. No pause.
-        #   medium → write best guess, advance, AND fire a non-blocking
-        #            "assumed X — tap to change" keyboard (founder keeps the
-        #            override, mission never stops).
-        #   low    → genuinely ambiguous → the original blocking keyboard.
+        # Reached only when _resolve_surface_choice (run BEFORE the attention
+        # gate) returned None — i.e. the founder text carries no surface signal
+        # AND 3.6 has no target_platform to derive from. Genuinely ambiguous →
+        # ask the founder via the original blocking keyboard (a real founder
+        # pause, correctly subject to the attention gate above). Mirror
+        # variant_choice: send a keyboard, park the task; the Telegram callback
+        # writes surfaces.json + completes the task.
         mission_id = task.get("mission_id")
         options = payload.get("options") or []
-
-        from mr_roboto.surface_infer import infer_surfaces, surfaces_label
-
-        # Reached only when _derive_surface_choice (run before the attention
-        # gate) returned None — i.e. platform_requirements is missing/garbage
-        # (3.6 didn't run or produced no target_platform). FALLBACK: infer from
-        # mission text (2026-06-16 smart gate); ask the founder only on genuine
-        # ambiguity.
-        text = await _gather_mission_text(task, mission_id)
-        inf = infer_surfaces(text)
-        if inf["surfaces"] and inf["confidence"] in ("high", "medium"):
-            try:
-                from mr_roboto.surfaces_persist import write_surfaces_json
-                await write_surfaces_json(
-                    mission_id=mission_id,
-                    option_label=surfaces_label(inf["surfaces"]),
-                    primary_surface=inf["primary_surface"],
-                    source="inferred",
-                    confidence=inf["confidence"],
-                )
-            except Exception as exc:
-                # Inference write failed — fall through to the keyboard path
-                # so the founder still decides (never silently skip the gate).
-                logger.warning(
-                    "surface_choice: inferred write failed for mission=%s "
-                    "(surfaces=%s): %s — falling back to keyboard",
-                    mission_id, inf["surfaces"], exc,
-                )
-            else:
-                logger.info(
-                    "surface_choice: inferred surfaces=%s (%s) for mission=%s "
-                    "— no founder pause",
-                    inf["surfaces"], inf["confidence"], mission_id,
-                )
-                # MEDIUM: offer a one-tap correction but DO NOT park — the
-                # task completes and the mission advances. A later tap rewrites
-                # surfaces.json via the existing callback.
-                if inf["confidence"] == "medium":
-                    chat_id = await _resolve_chat_id(task, mission_id)
-                    guess = " + ".join(inf["surfaces"])
-                    await send_surface_keyboard(
-                        mission_id, task["id"], chat_id, options,
-                        prompt=(
-                            f"🤖 Bunu *{guess}* olarak varsaydım (açıklamandan). "
-                            "Yanlışsa değiştir:"
-                        ),
-                    )
-                return {
-                    "status": "completed",
-                    "kind": "surface_choice",
-                    "inferred": True,
-                    "surfaces": inf["surfaces"],
-                    "confidence": inf["confidence"],
-                }
-
-        # LOW confidence (no surface signal in the text): ask the founder.
-        # Mirror variant_choice: send a keyboard, park the task; the Telegram
-        # callback writes surfaces.json + completes the task.
         chat_id = await _resolve_chat_id(task, mission_id)
         sent = await send_surface_keyboard(mission_id, task["id"], chat_id, options)
         if sent:

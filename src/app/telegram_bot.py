@@ -2366,6 +2366,10 @@ class TelegramInterface:
         self.app.add_handler(CallbackQueryHandler(
             self._handle_artifact_confirm_callback, pattern=r"^rpc:",
         ))
+        # /queue 'Waiting on you' [Open] — re-surface a parked task's card.
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_queue_open, pattern=r"^wq:open:",
+        ))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.handle_location))
         # B7+C16: founder photo upload → mission .intake/visuals/ + clarify-shape
@@ -2661,6 +2665,77 @@ class TelegramInterface:
         )
 
 
+    @staticmethod
+    def _format_waiting_human_section(waiting: list) -> str:
+        """Render the '⏸ Waiting on you' /queue section for parked
+        (waiting_human) tasks. Empty list → '' (section omitted)."""
+        if not waiting:
+            return ""
+        total = len(waiting)
+        lines = [f"⏸ Waiting on you ({total}):"]
+        for t in waiting[:8]:
+            title = str(t.get("title") or "")[:45]
+            lines.append(f"  #{t['id']} {title}")
+        if total > 8:
+            lines.append(f"  … +{total - 8} more")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _build_waiting_open_markup(waiting: list):
+        """One ▶️ Open button per parked task (callback ``wq:open:{id}``) so the
+        founder re-surfaces the original card straight from /queue. None when
+        there is nothing waiting."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        rows = [
+            [InlineKeyboardButton(
+                f"▶️ Open #{t['id']}", callback_data=f"wq:open:{t['id']}")]
+            for t in waiting[:8]
+        ]
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    async def _handle_queue_open(self, update, context):
+        """[Open] on the /queue 'Waiting on you' section — re-surface a parked
+        task's ORIGINAL interactive card. Reviewer halts re-render directly
+        (instant, stateless callback_data); every other clarification goes back
+        through the mechanical resend (same path the sweep nudge uses)."""
+        import json as _json
+        query = update.callback_query
+        parts = (query.data or "").split(":")
+        try:
+            task_id = int(parts[2])
+        except (IndexError, ValueError):
+            try:
+                await query.answer("Bad id")
+            except Exception:
+                pass
+            return
+        from src.infra.db import get_task
+        task = await get_task(task_id)
+        if not task or task.get("status") != "waiting_human":
+            try:
+                await query.answer("✓ No longer waiting")
+            except Exception:
+                pass
+            return
+        try:
+            await query.answer("📤 Re-sending card…")
+        except Exception:
+            pass
+        ctx = task.get("context") or {}
+        if isinstance(ctx, str):
+            try:
+                ctx = _json.loads(ctx) if ctx else {}
+            except (ValueError, TypeError):
+                ctx = {}
+        if not isinstance(ctx, dict):
+            ctx = {}
+        if task.get("agent_type") == "reviewer" or ctx.get("_review_halt"):
+            task["context"] = ctx
+            await self.resurface_review_halt(task)
+            return
+        from general_beckman.sweep import _resend_clarification
+        await _resend_clarification(task_id)
+
     async def cmd_view_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         from src.infra.db import get_db
         db = await get_db()
@@ -2688,6 +2763,17 @@ class TelegramInterface:
                 LIMIT 500"""
         )
         retry_pending = [dict(row) for row in await cursor_retry.fetchall()]
+        # Fetch waiting_human (parked on the founder). These never appeared on
+        # /queue before — they only surfaced as cards + sweep nudges, so a
+        # mission stalled on the founder looked idle here.
+        cursor_waiting = await db.execute(
+            """SELECT id, title, agent_type, mission_id
+                 FROM tasks
+                WHERE status = 'waiting_human'
+                ORDER BY created_at DESC
+                LIMIT 500"""
+        )
+        waiting = [dict(row) for row in await cursor_waiting.fetchall()]
         # Fetch blocked task summary
         blocked_summary = await get_blocked_task_summary()
         blocked_count = blocked_summary["blocked_count"]
@@ -2697,7 +2783,7 @@ class TelegramInterface:
         blocked_count = max(0, blocked_count - len(retry_ids))
 
         if (not processing and not ready and not retry_pending
-                and blocked_count == 0):
+                and not waiting and blocked_count == 0):
             await self._reply(update, "No pending tasks. System is idle.")
             return
 
@@ -2734,6 +2820,9 @@ class TelegramInterface:
             if ready_total > 5:
                 msg += f"  … +{ready_total - 5} more\n"
             msg += "\n"
+        waiting_section = self._format_waiting_human_section(waiting)
+        if waiting_section:
+            msg += waiting_section + "\n"
         if retry_pending:
             retry_total = len(retry_pending)
             msg += f"🔁 Retry pending ({retry_total}):\n"
@@ -2771,7 +2860,14 @@ class TelegramInterface:
             if top_blockers:
                 blocker_parts = [f"#{tid} ({cnt} tasks)" for tid, cnt in top_blockers]
                 msg += f"  Top blockers: {', '.join(blocker_parts)}\n"
-        await self._reply(update, msg)
+        open_markup = self._build_waiting_open_markup(waiting)
+        if open_markup is not None:
+            # Inline [Open] buttons can't co-exist with the persistent reply
+            # keyboard on one message; the reply keyboard stays put from prior
+            # messages, so sending inline-only here is safe.
+            await self._reply(update, msg, reply_markup=open_markup)
+        else:
+            await self._reply(update, msg)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = await get_daily_stats()
@@ -10678,7 +10774,11 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         writer, then completes the parked 5.0b task so the workflow
         advances and ``verify_surfaces_shape`` finds a conforming file.
         """
-        await update.callback_query.answer()
+        # Instant toast feedback (the message edit below carries the detail).
+        try:
+            await update.callback_query.answer("✅ Seçim alındı")
+        except Exception:
+            pass
         data = update.callback_query.data or ""
         parts = data.split(":")
         if len(parts) != 4:
@@ -10841,13 +10941,22 @@ Or: {{"type": "task", "confidence": 0.8}}"""
         advances) and record a ``review_override`` audit event.
         Malformed callback_data is a no-op.
         """
-        await update.callback_query.answer()
         data = update.callback_query.data or ""
         parts = data.split(":")
         # rr:regen:mid:rtid:step  (5)  |  rr:accept:mid:rtid  (4)
+        verb = parts[1] if len(parts) > 1 else ""
+        # Instant toast — feedback the moment the founder taps (the message
+        # edit below carries the detail on the happy path).
+        toast = {
+            "regen": "♻️ Yeniden üretiliyor…",
+            "accept": "✅ Kabul edildi",
+        }.get(verb, "")
+        try:
+            await update.callback_query.answer(toast)
+        except Exception:
+            pass
         if len(parts) < 4:
             return
-        verb = parts[1]
         try:
             mission_id = int(parts[2])
             reviewer_task_id = int(parts[3])
@@ -11023,15 +11132,23 @@ Or: {{"type": "task", "confidence": 0.8}}"""
     async def _handle_artifact_confirm_callback(self, update, context):
         """Dispatch rpc:OK / rpc:RE / rpc:ED for artifact-confirm flow."""
         query = update.callback_query
-        try:
-            await query.answer()
-        except Exception:
-            pass
         data = query.data or ""
         parts = data.split(":")
+        verb = parts[1] if len(parts) > 1 else ""
+        # Instant toast — the reliable feedback. It shows the moment the founder
+        # taps, independent of the follow-up edit/send landing (a failed edit
+        # used to swallow the confirmation and make OK look like a no-op).
+        toast = {
+            "OK": "✅ Confirmed",
+            "RE": "♻️ Regenerating…",
+            "ED": "✏️ Send your edit",
+        }.get(verb, "")
+        try:
+            await query.answer(toast)
+        except Exception:
+            pass
         if len(parts) < 4 or parts[0] != "rpc":
             return
-        verb = parts[1]
         try:
             mission_id = int(parts[2])
             task_id = int(parts[3])
@@ -11066,8 +11183,22 @@ Or: {{"type": "task", "confidence": 0.8}}"""
 
         if verb == "OK":
             await update_task(task_id, status="completed", result='{"confirmed": true}')
-            await query.edit_message_reply_markup(reply_markup=None)
-            await self.app.bot.send_message(chat_id=chat_id, text=f"✅ Confirmed task #{task_id}. Mission advancing.")
+            # Belt-and-suspenders confirmation. The toast above is the primary
+            # feedback; these are best-effort so a stale/uneditable card can't
+            # swallow the acknowledgement (the original silent-OK bug).
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            try:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ Confirmed task #{task_id}. Mission advancing.",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "rpc:OK confirmation send failed for #%s: %s", task_id, exc
+                )
             self._pending_action.pop(chat_id, None)
             return
 

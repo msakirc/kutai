@@ -31,6 +31,49 @@ _SENSITIVITY_RE = re.compile(
 )
 
 
+async def _estimate_full_artifact_tokens(task: dict, task_ctx: dict) -> int:
+    """Sum the FULL-form token sizes of a step's declared ``input_artifacts``.
+
+    Review steps inject these in full (``coulson.context.fetch_deps``), so the
+    input estimate must account for their real size — not the summary-fed btable
+    value — so model selection picks a model whose context can hold them.
+    ``char // 4`` matches the token approximation used across the estimate path.
+    Returns 0 (no escalation) when the store is unavailable or nothing resolves.
+    """
+    mid = task.get("mission_id") or task_ctx.get("mission_id")
+    arts = task_ctx.get("input_artifacts") or []
+    if not (mid and isinstance(arts, list)):
+        return 0
+    try:
+        from src.workflows.engine.hooks import get_artifact_store
+        store = get_artifact_store()
+    except Exception as _e:
+        logger.info(f"[req-escalation] artifact store unavailable: {_e!r}")
+        return 0
+    total = 0
+    resolved = 0
+    for name in arts:
+        if not isinstance(name, str):
+            continue
+        val = None
+        try:
+            val = await store.retrieve(mid, name)
+            if not (isinstance(val, str) and val.strip()):
+                # store miss → fall back to the summary form for sizing
+                val = await store.retrieve(mid, f"{name}_summary")
+        except Exception as _e:
+            logger.info(f"[req-escalation] retrieve({mid},{name}) raised {_e!r}")
+            val = None
+        if isinstance(val, str) and val.strip():
+            total += len(val) // 4
+            resolved += 1
+    logger.info(
+        f"[req-escalation] mid={mid} resolved {resolved}/{len(arts)} "
+        f"input_artifacts -> {total} tok"
+    )
+    return total
+
+
 def resolve_local_only(task: dict, task_ctx: dict | None) -> bool:
     """Single source of truth for whether a task must run on a LOCAL model.
 
@@ -211,6 +254,39 @@ async def requirements_for(
     _shim.agent_type = reqs.agent_type
     _shim.context = task_ctx if isinstance(task_ctx, dict) else {}
     reqs.estimated_input_tokens = estimate_for(_shim, btable=_bt).in_tokens
+
+    # ── Review-step input escalation (mission 90 task 567399) ──
+    # Review steps fetch their declared input_artifacts in FULL (coulson
+    # fetch_deps — not the lossy `_summary` form) because they verify those
+    # artifacts line-by-line. The btable estimate above was learned from
+    # summary-fed runs and under-counts the real prompt (3958 tok observed for
+    # a 6-artifact, ~46KB review), so model selection could pick a small-ctx
+    # model that cannot hold the full docs. Escalate the estimate by the actual
+    # full-artifact size; effective_context_length() then floors selection on
+    # it. Only the reviewer fetches full, so only the reviewer escalates.
+    if reqs.agent_type == "reviewer" and isinstance(task_ctx, dict) \
+            and task_ctx.get("input_artifacts"):
+        try:
+            _art_tok = await _estimate_full_artifact_tokens(task, task_ctx)
+        except Exception as _e:
+            _art_tok = 0
+            logger.debug(
+                f"[Task #{task.get('id','?')}] review-artifact escalation "
+                f"skipped: {_e}"
+            )
+        if _art_tok > 0:
+            # scaffold = system prompt + 17-check rubric + workspace listing +
+            # additional context (~4k tok measured on task 567399).
+            _REVIEW_SCAFFOLD_TOK = 4000
+            from fatih_hoca.estimates import _max_est_in_tokens
+            _floor = min(_REVIEW_SCAFFOLD_TOK + _art_tok, _max_est_in_tokens())
+            if _floor > reqs.estimated_input_tokens:
+                logger.info(
+                    f"[Task #{task.get('id','?')}] review-step input estimate "
+                    f"escalated {reqs.estimated_input_tokens}->{_floor} "
+                    f"(full input_artifacts ~{_art_tok} tok)"
+                )
+                reqs.estimated_input_tokens = _floor
 
     # Template's estimated_output_tokens is a per-agent default (e.g.
     # analyst=3000, coder=4000). List-heavy workflow steps like

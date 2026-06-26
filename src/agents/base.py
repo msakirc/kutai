@@ -149,13 +149,32 @@ class BaseAgent:
         """
         from src.runtime.context import build_user_context
 
-        # Resolve model context window — try dispatcher's loaded model
+        # Resolve the context window of the ACTUAL model selected for this task
+        # (cloud OR local) so the context budget scales with real capacity.
+        # The old `self._get_context_window(loaded)` was a DEAD method call (no
+        # such method exists) → the try ALWAYS raised → model_ctx stayed 4096
+        # for EVERY step → compute_layer_budgets handed deps a ~1.2k-tok budget
+        # → large input artifacts were truncated/dropped (mission 90 [1.13]
+        # reviewer: full artifacts fetched, then 5/6 "omitted to fit budget").
+        # Resolve from the selected model's real context_length via
+        # coulson.window.context_window_for (litellm model-info → registry →
+        # difficulty fallback); still bounded by CONTEXT_ABS_CAP, and
+        # trim_if_needed protects the actual per-call model.
         model_ctx = 4096
         try:
+            from coulson.window import context_window_for
             from src.models.introspection import get_loaded_litellm_name
-            loaded = get_loaded_litellm_name()
-            if loaded:
-                model_ctx = self._get_context_window(loaded) or 4096
+            _ctx = task.get("context") or {}
+            if isinstance(_ctx, str):
+                try:
+                    _ctx = json.loads(_ctx)
+                except (json.JSONDecodeError, TypeError):
+                    _ctx = {}
+            _selected = (
+                _ctx.get("generating_model") if isinstance(_ctx, dict) else None
+            ) or get_loaded_litellm_name()
+            if _selected:
+                model_ctx = context_window_for(_selected) or 4096
         except Exception:
             pass
 

@@ -55,3 +55,48 @@ def test_huge_context_task_still_uses_btable_estimate():
     assert reqs.estimated_input_tokens == expected
     # prove char-based (≈10000) is NOT what we returned
     assert reqs.estimated_input_tokens != (len("z") + len(big_ctx_str)) // 4
+
+
+def test_review_step_escalates_estimate_by_full_artifact_size(monkeypatch):
+    """Mission 90 task 567399: review steps fetch their input_artifacts in FULL
+    (not the lossy _summary), so the input estimate must escalate by the real
+    full-artifact size — else the summary-learned btable value (~4k) lets
+    selection pick a small-ctx model that can't hold the full docs. Escalating
+    estimated_input_tokens floors effective_context_length()."""
+    big = "X" * 40000  # ~10k tok per artifact (char//4)
+
+    class _Store:
+        async def retrieve(self, mid, name):
+            return "tiny" if name.endswith("_summary") else big
+
+    monkeypatch.setattr(
+        "src.workflows.engine.hooks.get_artifact_store", lambda: _Store()
+    )
+    ctx = {
+        "workflow_step_id": "1.13",
+        "mission_id": 90,
+        "input_artifacts": ["market_research_report", "product_charter"],
+        # set output override so the builder skips its DB step-refresh read
+        "estimated_output_tokens": 2000,
+    }
+    task = {"id": 9, "mission_id": 90, "priority": 5}
+    reqs = _run(requirements_for(task, ctx, agent_name="reviewer"))
+
+    base = _admission_estimate("reviewer", ctx)
+    # two ~10k-tok artifacts → estimate must escalate well above base
+    assert reqs.estimated_input_tokens > base
+    assert reqs.estimated_input_tokens >= 20000
+    # effective ctx floor follows the escalated estimate (no explicit min set)
+    assert reqs.effective_context_needed > 25000
+
+
+def test_review_step_no_artifacts_keeps_base_estimate(monkeypatch):
+    """No input_artifacts → nothing to escalate; base estimate preserved."""
+    monkeypatch.setattr(
+        "src.workflows.engine.hooks.get_artifact_store",
+        lambda: (_ for _ in ()).throw(AssertionError("store should not be read")),
+    )
+    ctx = {"workflow_step_id": "1.13", "mission_id": 90}
+    task = {"id": 10, "mission_id": 90, "priority": 5}
+    reqs = _run(requirements_for(task, ctx, agent_name="reviewer"))
+    assert reqs.estimated_input_tokens == _admission_estimate("reviewer", ctx)

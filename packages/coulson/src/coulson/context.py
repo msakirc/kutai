@@ -700,14 +700,27 @@ async def fetch_deps(profile, task: dict, max_tokens: int) -> str:
         # already surfaces them with anti-hallucination guidance.
         from dogru_mu_samet import assess as cq_assess, salvage as cq_salvage
 
+        # Review steps verify the FULL input artifacts line-by-line, so the
+        # lossy ``_summary`` form makes the reviewer hallucinate "missing"
+        # content that is actually present in full (mission 90 task 567399:
+        # reviewer fed 6 summaries — charter cut after 3/5 solutions, prior-art
+        # missing most of 20 entries — halted a complete mission with 7/9 bogus
+        # blockers). For the reviewer, inject the FULL artifact; every other
+        # agent keeps the summary preference (general context-saving). The deps
+        # budget already accommodates full docs for the cloud models a review
+        # step routes to (its input estimate is escalated to match).
+        _wants_full = getattr(profile, "name", "") == "reviewer"
         entries: list[tuple[str, str, str]] = []  # (name, form, text)
         for art_name in _input_artifacts:
             if not isinstance(art_name, str):
                 continue
             form = "summary"
             value: str | None = None
+            if _wants_full:
+                form = "full"
+                value = await _store.retrieve(_mid, art_name)
             # Prefer the summary form unless the caller already requested the summary directly.
-            if not art_name.endswith("_summary"):
+            elif not art_name.endswith("_summary"):
                 value = await _store.retrieve(_mid, f"{art_name}_summary")
             if value is None:
                 form = "full"
@@ -1511,11 +1524,33 @@ async def build_context(profile, task: dict) -> str:
     ``profile.allowed_tools`` (via the existing ``_original_allowed_tools``
     snapshot pattern) instead of mutating the shared class attribute.
 
-    NOTE: the dead ``self._get_context_window(loaded)`` branch from base.py was
-    dropped — that method never existed; the call was swallowed by the
-    try/except, so ``model_ctx`` always defaulted to 4096. Kept at 4096.
+    Resolves ``model_ctx`` from the ACTUAL selected model's context window
+    (``ctx.generating_model`` → ``context_window_for``), cloud or local, so the
+    context budget scales with real capacity. The old branch relied on a DEAD
+    ``self._get_context_window`` method → always 4096 → ~1.2k-tok deps budget →
+    large input artifacts truncated (mission 90 [1.13] reviewer). Bounded by
+    CONTEXT_ABS_CAP; trim_if_needed protects the actual per-call model.
     """
     model_ctx = 4096
+    try:
+        from .window import context_window_for
+        _ctx = task.get("context") or {}
+        if isinstance(_ctx, str):
+            try:
+                _ctx = json.loads(_ctx)
+            except (json.JSONDecodeError, TypeError):
+                _ctx = {}
+        _selected = _ctx.get("generating_model") if isinstance(_ctx, dict) else None
+        if not _selected:
+            try:
+                from src.models.introspection import get_loaded_litellm_name
+                _selected = get_loaded_litellm_name()
+            except Exception:
+                _selected = None
+        if _selected:
+            model_ctx = context_window_for(_selected) or 4096
+    except Exception:
+        pass
 
     ctx_str, injected_skills = await build_user_context(
         profile, task, model_ctx=model_ctx

@@ -172,7 +172,11 @@ AGENT_REQUIREMENTS: dict[str, ModelRequirements] = {
     "architect":      ModelRequirements(task="architect",      difficulty=5, estimated_input_tokens=8_000,  estimated_output_tokens=4_500, prefer_quality=True),
     "coder":          ModelRequirements(task="coder",          difficulty=6, estimated_input_tokens=8_000,  estimated_output_tokens=2_000, needs_function_calling=True),
     "fixer":          ModelRequirements(task="fixer",          difficulty=6, estimated_input_tokens=8_000,  estimated_output_tokens=4_000, needs_function_calling=True),
-    "reviewer":       ModelRequirements(task="reviewer",       difficulty=6, estimated_input_tokens=10_000, estimated_output_tokens=2_000),
+    # Reviewer is a mission-halting quality gate — must use a capable model
+    # (medium-difficulty picked weak gemini-flash-lite, which narrated instead
+    # of judging; mission 90 [1.13]). prefer_quality + difficulty 7 keep the
+    # weakest models out without over-constraining to top-tier only.
+    "reviewer":       ModelRequirements(task="reviewer",       difficulty=7, estimated_input_tokens=10_000, estimated_output_tokens=2_000, prefer_quality=True),
     "analyst":        ModelRequirements(task="analyst",        difficulty=6, estimated_input_tokens=8_000,  estimated_output_tokens=2_500, needs_function_calling=True),
     # ── Moderate ──
     "implementer":    ModelRequirements(task="implementer",    difficulty=5, estimated_input_tokens=8_000,  estimated_output_tokens=2_500, needs_function_calling=True),

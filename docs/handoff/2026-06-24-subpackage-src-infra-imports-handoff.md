@@ -164,3 +164,59 @@ so a `/restart` picks it up. Verify a live audit/trace write post-restart, then 
 fits the **nerd_herd** pillar. `mission_lessons` + the DLQ history (`dlq_feedback`/`dead_letter`
 records) are durable-history → they belong in **`kara_kutu`**, growing it from ~257 to a
 ~600–1000 LOC real package.
+
+---
+
+## ✅ Update 2026-06-25 — Tier 2 DONE (4 modules) — committed `90e44e5c`, pushed `main`
+
+All four Tier-2 modules relocated. `src.infra.db`→`dabidabi` + logging→`yazbunu` swap per
+module, then moved to owner package; callers repointed; deps wired.
+
+| module | LOC | → owner | original |
+|---|---|---|---|
+| admission_forensics | 90 | `kara_kutu` | **deleted** (no src caller) |
+| mission_lessons | 306 | `kara_kutu` | shim kept (telegram_bot:9364) |
+| cost_wiring | 195 | `kuleden_donen_var` | shim kept (telegram_bot:3525) |
+| recipes | 645 | `yalayut` | shim kept (playbooks `_load_yaml`) |
+
+Owner notes:
+- **recipes → yalayut, NOT mr_roboto** (handoff suggested either). yalayut already owns recipes
+  as a first-class concept: `yalayut/executor.py::run_recipe`, `__all__` exports it, and
+  `discovery/sources/cookiecutter_template.py` ingests templates as `shell_recipe` artifacts.
+  The 4 mr_roboto callers are the *mechanical-executor shim layer* that calls INTO yalayut
+  (yalayut's own design), not the owner. Imported via `yalayut.recipes` submodule (NOT top-level
+  `__init__`) to keep the disk-YAML recipe vocab separate from yalayut's `run_recipe`/shell_recipe.
+- ⚠️ **Two parallel recipe systems now co-located in yalayut, NOT converged**: (1) the moved
+  disk-YAML library (`recipes/<name>/v1/recipe.yaml`, tech_stack match, token-substitute,
+  `pin_recipe`/`recipe_picks` table); (2) yalayut's `yalayut_index` `shell_recipe` rows +
+  cookiecutter discovery + `run_recipe` shell-steps. Convergence = separate design task (follow-up).
+- `cost_wiring` → kuleden_donen_var verified cycle-safe (kuleden imports no coulson/mr_roboto).
+- `admission_forensics`/`mission_lessons` → kara_kutu (multi-pkg telemetry writers / durable
+  history; leaf-safe per the circular-trap rule).
+
+Deps added: `kara_kutu`→husam/general_beckman/mr_roboto; `kuleden_donen_var`→coulson/mr_roboto;
+`yalayut`→general_beckman/mr_roboto.
+
+Patch targets repointed (caller now does lazy `from <owner> import …`):
+`coulson/tests/test_pool_empty_diag.py` → `kara_kutu.record_admission_violation`;
+`mr_roboto/tests/test_mission_deliverable_bundle.py` → `kuleden_donen_var.format_mission_cost`.
+(`test_visual_review_notify` self-patches the shim attr → unchanged; root `test_z2_t4` patches
+`src.infra.db.get_db` which is a sys.modules alias of dabidabi → unchanged.)
+
+Verified green: beckman **371**, kara_kutu+kuleden **190**, mr_roboto targets **41**, root **65**.
+2 root failures in `test_z2_t4_mission_lessons::TestDLQEmitter` are **pre-existing** (proven by
+stash-revert to original module → identical `sqlite3 no such column: t.retry_reason`; the test
+hand-rolls a `tasks` table without `retry_reason`, prod schema has it — dabidabi:833). Unrelated
+to this work; left as-is.
+
+**Status: committed `90e44e5c` + pushed to `origin/main`** (FF `692abe5a..90e44e5c`, also carried
+the prior restart-gated local commits). kara_kutu/yalayut/kuleden are editable-installed → a
+`/restart` picks up the new modules; verify a live mission-lessons / recipe-pin / mission-cost
+path post-restart.
+
+**Remaining (out of Tier 2 scope):**
+- `metrics` (217 LOC) — its own item; blocked by `src.shopping.resilience.detection_monitor`.
+  Once freed → nerd_herd pillar.
+- Tier 3 (3 modules) — `dead_letter` / `mission_pacing_cron` / `dlq_feedback`, gated on inverting
+  the `telegram_bot` notification path. Do NOT string-move.
+- DoD grep now shows ONLY `metrics` (×3) + the 3 Tier-3 modules in `packages/*/src`.

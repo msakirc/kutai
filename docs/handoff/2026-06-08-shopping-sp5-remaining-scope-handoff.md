@@ -7,6 +7,18 @@
 
 ---
 
+## UPDATE 2026-06-08 (triage session 2) — memory `project_shopping_sp5_group_findings_20260608`
+
+**Founder rulings:** (1) every LLM call MUST be Beckman-admitted via husam/coulson — NO shortcuts (rejects direct `husam.run()` AND deterministic-strip of the tools); (2) DON'T delete the dead intelligence modules — "they are meant to be wired, not deleted"; (3) DEFER intelligence wiring to a dedicated shopping session.
+
+- **GROUP 1 — DELETED + merged main** (−933 LOC, NOT pushed, restart-gated, zero behavior change). Removed the 4 fused handlers + `step_group`/`step_synthesize_reviews`/`step_label` + the 3 inline LLM helpers (`_grouping_llm_call`/`_llm_group_residuals`/`_synthesis_llm_call`/`_label_llm_call`) + 4 `_STEP_HANDLERS_V2` keys + the dead-path tests. KEPT shared-with-v3 fns. 749 shopping tests pass. **Task C step 2 = DONE.**
+- **GROUP 2 — DORMANT, deferred (this is the founder's "shopping session").** Single chokepoint `_llm_call`, reached live only by 4 `shopping_advisor` agent tools — but `model_pick_log` proves it's UNEXERCISED: `shopping_advisor` OVERHEAD picks last fired **2026-04-18** while the agent ran 116 main_work picks through 06-07. Live shopping = v3 producers, not these tools. Mid-ReAct CPS is therefore MOOT to build now. The other 8 intelligence modules = zero live callers, meant to be wired. The real Group-2 fix = wire ALL intelligence LLM calls as admitted producers/steps (NOT a coulson loop hack, NOT husam-direct).
+- **GROUP 3 — confirmed DEAD** (not just "probably"). `self_reflect`(reflection.py:88) + `maybe_apply`(constrained_emit.py:147) have zero live callers; SP3b Task 7 moved both to Beckman posthook children. They die when `request()` dies.
+- **`request()` still cannot be deleted** — Group 2 (dormant) + Group 3 (dead-present) both still reference it. Deletion order unchanged: wire Group 2 → then delete Group 3 + single_shot + `request()` → then SP5 deletes `await_inline`.
+- **Side note:** `src/tools/vision.py` uses direct `husam.run()` for its mid-ReAct tool LLM — the husam-inline shortcut ruling #1 rejects. vision is itself non-compliant; fold into the same fix when wiring Group 2.
+
+---
+
 ## TL;DR — is SP5 unblocked? NO. Three live `request()` caller groups remain.
 
 The original plan migrated **only `shopping_v3`** (the category/deep_research path). It is now LIVE and a clean variant run is confirmed (mission #84). But `LLMDispatcher.request()` (the shim SP5 needs gone) still has **three** live caller groups the plan never touched:

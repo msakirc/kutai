@@ -23,8 +23,9 @@ import json
 from general_beckman.apply import (
     _posthook_agent_and_payload,
     _PRODUCER_QUALITY_Z1_BLOCKERS,
+    _adapt_shape_findings,
 )
-from general_beckman.result_router import RequestPostHook
+from general_beckman.result_router import RequestPostHook, PostHookVerdict
 
 
 # ── routing: producer-quality, so re-pend instead of single-shot DLQ ──────
@@ -74,3 +75,30 @@ def test_payload_builder_no_parse_error_on_valid_array():
     payload = spec["payload"]
     assert "parse_error" not in payload
     assert list(payload["artifacts"].keys()) == ["functional_requirements"]
+
+
+# ── the actionable feedback must SURVIVE the producer-verdict merge ───────────
+
+def test_actionable_feedback_survives_verdict_merge_into_a_finding():
+    # The empty-case executor result (mr_roboto) carries the message on BOTH
+    # `error` and the structured `problems` list.
+    actionable = (
+        "No falsification-bearing requirement items were found in your output. "
+        "Re-emit the artifact as a SINGLE valid JSON array of requirement objects."
+    )
+    res = {"ok": False, "checked": 0, "missing": [],
+           "critical_underspecified": [], "empty": True,
+           "error": actionable, "problems": [{"why": actionable}]}
+    # rewrite.py builds the producer verdict as {**res, "error": Action.error},
+    # which CLOBBERS res["error"] with the generic executor summary. The
+    # structured `problems` list survives the spread.
+    generic = ("verify_falsification_present: missing=[] "
+               "critical_underspecified=[] empty=True")
+    verdict = PostHookVerdict(
+        source_task_id=3, kind="verify_falsification_present",
+        passed=False, raw={**res, "error": generic},
+    )
+    _adapt_shape_findings(verdict)
+    whys = " ".join(f.get("why", "") for f in (verdict.raw.get("findings") or []))
+    assert "valid JSON array" in whys          # the model sees the real fix
+    assert "empty=True" not in whys            # NOT the misleading summary

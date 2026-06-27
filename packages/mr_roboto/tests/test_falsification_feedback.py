@@ -33,6 +33,11 @@ async def test_empty_artifacts_yield_actionable_error():
     assert res["empty"] is True
     assert res.get("error"), "empty result must carry actionable feedback"
     assert "JSON" in res["error"]
+    # The producer verdict is built as {**res, "error": Action.error}, which
+    # clobbers res["error"]. The structured `problems` list survives the merge
+    # and is what _adapt_shape_findings reads → the model sees real feedback.
+    assert res.get("problems"), "actionable feedback must ride a survivable key"
+    assert "JSON" in res["problems"][0]["why"]
 
 
 @pytest.mark.asyncio

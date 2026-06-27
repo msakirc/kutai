@@ -1213,7 +1213,7 @@ async def _run_dispatch(task: dict) -> Action:
                 # to fix; attach actionable feedback so the re-pend converges
                 # (_adapt_shape_findings turns this `error` into retry text).
                 pe = payload.get("parse_error")
-                res["error"] = (
+                _msg = (
                     "No falsification-bearing requirement items were found in "
                     "your output. Re-emit the artifact as a SINGLE valid JSON "
                     "array of requirement objects, each carrying req_id, "
@@ -1221,6 +1221,14 @@ async def _run_dispatch(task: dict) -> Action:
                     + (f" Your previous output failed to parse as JSON: {pe}"
                        if pe else "")
                 )
+                res["error"] = _msg
+                # Carry the message in a STRUCTURED list too: the producer
+                # verdict is built as ``{**res, "error": Action.error}``
+                # (rewrite.py), which clobbers ``res["error"]`` with the generic
+                # Action summary. ``_adapt_shape_findings`` reads ``problems``
+                # BEFORE falling back to ``error``, and ``problems`` survives the
+                # spread — so the model actually sees the actionable feedback.
+                res["problems"] = [{"why": _msg}]
             if not res.get("ok"):
                 return Action(
                     status="failed",

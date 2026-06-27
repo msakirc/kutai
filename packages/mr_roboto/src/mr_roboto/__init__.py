@@ -1206,6 +1206,21 @@ async def _run_dispatch(task: dict) -> Action:
             res = _verify_fals(
                 artifacts=payload.get("artifacts") or {},
             )
+            if res.get("empty"):
+                # No parseable items — usually the producer's JSON failed to
+                # parse upstream (the wiring passes the JSONDecodeError as
+                # `parse_error`). Bare `empty=True` gives the producer nothing
+                # to fix; attach actionable feedback so the re-pend converges
+                # (_adapt_shape_findings turns this `error` into retry text).
+                pe = payload.get("parse_error")
+                res["error"] = (
+                    "No falsification-bearing requirement items were found in "
+                    "your output. Re-emit the artifact as a SINGLE valid JSON "
+                    "array of requirement objects, each carrying req_id, "
+                    "risk_if_wrong, validation_method, and falsification_signal."
+                    + (f" Your previous output failed to parse as JSON: {pe}"
+                       if pe else "")
+                )
             if not res.get("ok"):
                 return Action(
                     status="failed",

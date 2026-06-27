@@ -2560,6 +2560,7 @@ def _posthook_agent_and_payload(
         # the parsed result under its declared output_artifacts[0] name.
         source_result = source.get("result") or ""
         parsed: object = {}
+        parse_error: str | None = None
         if isinstance(source_result, str) and source_result.strip():
             # Cloud LLMs frequently bury the artifact under chat narration
             # and/or a ```json fence (mission-81 3.2/3.7 DLQ'd empty=True
@@ -2570,8 +2571,14 @@ def _posthook_agent_and_payload(
             candidate = unwrap_fenced_artifact(source_result) or source_result
             try:
                 parsed = json.loads(candidate)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as exc:
+                # Do NOT silently swallow into {} → empty=True (a misleading
+                # "wiring bug" signal). Surface the parse error so the verdict
+                # re-pends the PRODUCER with "re-emit valid JSON" feedback
+                # (mission-90 567413: a single corrupt JSON seam DLQ'd a
+                # near-valid 12k array at wa=1). _parse_error rides the payload.
                 parsed = {}
+                parse_error = str(exc)
         elif isinstance(source_result, (list, dict)):
             parsed = source_result
         output_names = list(source_ctx.get("output_artifacts") or [])
@@ -2581,14 +2588,17 @@ def _posthook_agent_and_payload(
             artifacts = parsed
         elif output_names and parsed:
             artifacts = {output_names[0]: parsed}
+        payload = {
+            "action": "verify_falsification_present",
+            "artifacts": artifacts,
+        }
+        if parse_error:
+            payload["parse_error"] = parse_error
         return ("mechanical", {
             "source_task_id": a.source_task_id,
             "posthook_kind": "verify_falsification_present",
             "executor": "mechanical",
-            "payload": {
-                "action": "verify_falsification_present",
-                "artifacts": artifacts,
-            },
+            "payload": payload,
         })
     # critic_gate is now an admitted posthook LLM child (SP6) — handled by the LLM-child route above.
     if a.kind == "integration_review":
@@ -4256,16 +4266,24 @@ _Z1_WARNING_KINDS: frozenset[str] = frozenset({
 _Z1_MECHANICAL_KINDS: frozenset[str] = _Z1_BLOCKER_KINDS | _Z1_WARNING_KINDS
 
 # Z1 blockers whose verdict judges LLM PRODUCER output (fabrication / thin
-# grounding), NOT a deterministic on-disk artifact. These must NOT single-shot
-# DLQ — a retry on an escalated (stronger) model can ground correctly — so the
-# verdict dispatcher routes them through the retry-with-escalation rail
-# (_apply_simple_blocker_verdict) instead of _apply_z1_mechanical_verdict. The
-# remaining _Z1_BLOCKER_KINDS (compliance_template_present / compliance_blocker_
-# check — file-presence + on-disk overlay checks; critic_gate — a veto) stay
-# single-shot, since re-running the same artifact through the same model is
-# pointless there. See project_quality_failure_escalation_20260604.
+# grounding / malformed artifact), NOT a deterministic on-disk artifact. These
+# must NOT single-shot DLQ — a retry on the same (or an escalated) model can
+# emit a correct artifact — so the verdict dispatcher routes them through the
+# retry-with-feedback rail (_apply_simple_blocker_verdict) instead of
+# _apply_z1_mechanical_verdict. The remaining _Z1_BLOCKER_KINDS
+# (compliance_template_present / compliance_blocker_check — file-presence +
+# on-disk overlay checks; critic_gate — a veto) stay single-shot, since
+# re-running the same artifact through the same model is pointless there.
+# See project_quality_failure_escalation_20260604.
+#
+# verify_falsification_present judges the producer's requirement-bundle artifact
+# straight out of tasks.result (produces=None) — a localized JSON glitch or a
+# missing falsification field is fixable on a re-pend with feedback. Routing it
+# single-shot DLQ'd a near-valid 12k array at wa=1 with a misleading
+# `empty=True` (mission-90 567413). It belongs on the producer-re-pend rail.
 _PRODUCER_QUALITY_Z1_BLOCKERS: frozenset[str] = frozenset({
     "prior_art_min_coverage",
+    "verify_falsification_present",
 })
 
 

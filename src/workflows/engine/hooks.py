@@ -855,7 +855,8 @@ async def resolve_dynamic_constraints(
 
 
 def validate_artifact_schema(
-    output_value: str, schema: dict, inputs: dict | None = None
+    output_value: str, schema: dict, inputs: dict | None = None,
+    *, produces_markdown: bool = False,
 ) -> tuple[bool, str]:
     """Validate an artifact output against its schema definition.
 
@@ -864,6 +865,17 @@ def validate_artifact_schema(
     ``inputs`` (optional ``{artifact_name: parsed_value}``) anchors the
     dialect's ``empty_ok_when_input_empty`` per-field exemption to upstream
     input artifacts. Omit it and validation behaves exactly as before.
+
+    ``produces_markdown`` — True when the validated artifact is a markdown
+    file on disk (the step's produces is ``*.md``). For an ``object``/``array``
+    schema the structured value can never be extracted from markdown, so the
+    prose text-fallback degenerates into a literal substring search for the
+    field NAMES — meaningless for prose (false-reject AND false-pass; mission-90
+    567452 [5.0c] user_flow searched for the literal ``mermaid_per_surface`` in
+    a flow doc). Every such step carries a ``verify_*_shape`` mechanical check
+    that is the authoritative validator, so we DEFER to it and skip the
+    fallback. The structured (data-extracted) dialect path is unaffected — a
+    real JSON object is still validated strictly.
     """
     if not schema:
         return True, ""
@@ -888,6 +900,13 @@ def validate_artifact_schema(
                 if err:
                     return False, f"Schema validation: {err}"
                 continue  # passed dialect check
+
+            # Could not extract a structured value. For a markdown produces this
+            # is expected (markdown is not JSON); the prose text-fallback below
+            # would substring-match field NAMES against prose — pure noise. Defer
+            # to the step's verify_*_shape check (mission-90 567452 [5.0c]).
+            if produces_markdown:
+                continue
 
             # Parse failed — fall back for small LLMs that emit prose.
             if schema_type == "object":
@@ -1898,8 +1917,18 @@ async def _post_execute_workflow_step_impl(task: dict, result: dict) -> None:
                 )
             except Exception as _e:
                 logger.debug(f"[Workflow Hook] empty-exemption inputs skipped: {_e}")
+            # A markdown produces (every produced path is *.md) carries an
+            # object/array schema only as a hint for its verify_*_shape check —
+            # the schema gate's prose text-fallback must not literal-match field
+            # names against markdown (mission-90 567452). Conservative: only when
+            # ALL produces are .md, so a mixed .md+.json step keeps full checks.
+            _produces = ctx.get("produces") or []
+            _produces_markdown = bool(_produces) and all(
+                str(p).endswith(".md") for p in _produces
+            )
             is_valid, error_msg = validate_artifact_schema(
-                output_value, _eff_schema, inputs=_gate_inputs
+                output_value, _eff_schema, inputs=_gate_inputs,
+                produces_markdown=_produces_markdown,
             )
         if is_valid and os.environ.get("LAZY_TRUE_EVIDENCE_CHECK") == "1":
             # Lazy-true detection: agent claimed a verification flag is true

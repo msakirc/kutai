@@ -35,12 +35,13 @@ logger = logging.getLogger(__name__)
 _TEXT_ARTIFACTS = ("idea_brief_final", "product_charter", "prd_final_summary")
 
 
-async def _gather_signal_text(mission_id: int | None) -> str:
-    """Collect the founder's words for surface inference (best-effort)."""
+async def _gather_founder_text(mission_id: int | None) -> str:
+    """The founder's OWN words — mission title + description. This is the
+    authoritative surface signal: when the founder said "app", the founder
+    means a mobile app, and no LLM-generated prose may overrule that."""
     parts: list[str] = []
     if mission_id is None:
         return ""
-
     try:
         from dabidabi import get_db
         db = await get_db()
@@ -55,7 +56,17 @@ async def _gather_signal_text(mission_id: int | None) -> str:
                     parts.append(cell)
     except Exception as exc:
         logger.debug("infer_surface_signal: missions lookup failed: %s", exc)
+    return "\n".join(parts)
 
+
+async def _gather_enrichment_text(mission_id: int | None) -> str:
+    """LLM-generated enrichment (idea brief / charter / PRD summary). Consulted
+    ONLY when the founder named no surface — its prose can carry strong platform
+    words ('dashboard', 'SaaS', 'web platform') that previously outranked the
+    founder's own colloquial 'app' and flipped target_platform to web."""
+    parts: list[str] = []
+    if mission_id is None:
+        return ""
     for name in _TEXT_ARTIFACTS:
         try:
             from src.workflows.engine.hooks import get_artifact_store
@@ -67,7 +78,6 @@ async def _gather_signal_text(mission_id: int | None) -> str:
                 parts.append(json.dumps(raw, ensure_ascii=False))
         except Exception as exc:
             logger.debug("infer_surface_signal: %s lookup failed: %s", name, exc)
-
     return "\n".join(parts)
 
 
@@ -84,8 +94,19 @@ async def infer_surface_signal(
     sees the absence explicitly and derives from the PRD itself.
     """
     mission_id = task.get("mission_id")
-    text = await _gather_signal_text(mission_id)
-    inf = infer_surfaces(text)
+    # Founder words win: infer from the founder's OWN title+description first.
+    founder_text = await _gather_founder_text(mission_id)
+    inf = infer_surfaces(founder_text)
+    source = "founder_words"
+    if inf["confidence"] == "low":
+        # The founder named no surface — fall back to the full text (founder +
+        # LLM enrichment), the pre-2026-06-27 behavior, so a silent founder
+        # still gets a best-effort guess instead of null. The founder text is
+        # kept in the blend so a weak founder hint still counts here.
+        enrichment = await _gather_enrichment_text(mission_id)
+        combined = (founder_text + "\n" + enrichment).strip()
+        inf = infer_surfaces(combined)
+        source = "enrichment_fallback"
     surfaces = inf["surfaces"]
 
     signal: dict[str, Any] = {
@@ -95,7 +116,7 @@ async def infer_surface_signal(
         "primary_surface": inf["primary_surface"],
         "target_platform": target_platform_from_surfaces(surfaces),
         "confidence": inf["confidence"],
-        "source": "intake_inference",
+        "source": source,
     }
 
     if workspace_path is None and mission_id is not None:

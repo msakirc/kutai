@@ -1930,6 +1930,49 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 return False  # blessed empty-scope — no LLM grade
         except Exception:  # noqa: BLE001 — never let the skip break grade
             pass
+        # ── Deterministic shape verifier is authoritative; LLM grade subordinate ──
+        # When the step declares a verify_*_shape mechanical check, run it inline
+        # on the materialized artifact. A PASS means shape + field-completeness is
+        # a proven deterministic fact, so the scope-blind LLM grader — which only
+        # confabulates COMPLETE:NO on these structured artifacts (its own prompt
+        # forbids judging presence) — is skipped, exactly like the empty-scope
+        # short-circuit above. Placed AFTER build_grading_spec so the
+        # dogru_mu_samet degeneracy floor has already auto-failed garbage. Task
+        # 567449 [5.0a] design_tokens: a shape-valid artifact was confab-FAILed
+        # COMPLETE:NO, then DLQ'd as a "degenerate repeat" when the producer
+        # re-emitted the SAME correct artifact — killed because it converged. The
+        # verifier still runs as a post-hook AFTER grade for its own re-pend
+        # semantics; a FAIL here (a real defect on an earlier attempt) simply
+        # does not short-circuit, so the producer still re-pends normally.
+        try:
+            _shape_check = next(
+                (c for c in (source_ctx.get("checks") or [])
+                 if isinstance(c, dict)
+                 and str(c.get("kind", "")).startswith("verify_")
+                 and str(c.get("kind", "")).endswith("_shape")),
+                None,
+            )
+            if _shape_check and source.get("mission_id") is not None:
+                import mr_roboto as _mr
+                _vpayload = dict(_shape_check.get("payload") or {})
+                _vpayload.setdefault("action", _shape_check.get("kind"))
+                _vaction = await _mr.run({
+                    "id": source_id,
+                    "mission_id": source.get("mission_id"),
+                    "payload": _vpayload,
+                })
+                if getattr(_vaction, "status", None) == "completed":
+                    await _apply_posthook_verdict(
+                        {"id": source_id},
+                        PostHookVerdict(
+                            source_task_id=source_id, kind="grade", passed=True,
+                            raw={"passed": True,
+                                 "raw": f"{_shape_check.get('kind')} passed "
+                                        "(deterministic shape authority); "
+                                        "LLM grade skipped"}))
+                    return False  # shape proven → no confab-prone LLM grade
+        except Exception:  # noqa: BLE001 — never let the short-circuit break grade
+            pass
         cont_state = {"source_task_id": source_id, "kind": "grade",
                       "attempt": attempt, "exclusions": excl, "mission_id": mission_id}
 

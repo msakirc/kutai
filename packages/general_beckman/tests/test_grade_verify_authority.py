@@ -77,6 +77,53 @@ async def test_grade_runs_normally_when_shape_verifier_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_grade_auto_passes_on_verify_adr_register(monkeypatch):
+    # verify_adr_register is a full-artifact deterministic validator that does
+    # NOT carry the *_shape suffix. Authority must be a registry, not a naming
+    # convention — else step 4.14 (register.md) stays exposed to the exact
+    # 567449 confab-grade → degenerate-repeat loop while Fix 2 already treats
+    # verify_adr_register as authoritative (asymmetry the reviewer flagged).
+    import general_beckman.apply as apply_mod
+
+    verdicts = []
+
+    async def fake_apply(child_task, verdict):
+        verdicts.append(verdict)
+
+    monkeypatch.setattr(apply_mod, "_apply_posthook_verdict", fake_apply)
+    monkeypatch.setattr("mr_roboto.run",
+                        AsyncMock(return_value=_FakeAction("completed")))
+
+    source_ctx = {"artifact_schema": _SCHEMA, "checks": [
+        {"kind": "verify_adr_register",
+         "payload": {"action": "verify_adr_register", "path": ".adr/register.md"}}]}
+    with patch.object(apply_mod, "enqueue", AsyncMock(return_value=1)) as enq:
+        await apply_mod._enqueue_posthook_llm_child("grade", _source(), source_ctx)
+
+    enq.assert_not_awaited()
+    assert verdicts and verdicts[0].passed is True
+
+
+@pytest.mark.asyncio
+async def test_narrow_check_does_not_auto_pass_grade(monkeypatch):
+    # A NARROW check (verify_contains_product_name — one substring) is not a
+    # completeness authority: it must NOT skip the LLM grade.
+    import general_beckman.apply as apply_mod
+
+    monkeypatch.setattr(apply_mod, "_apply_posthook_verdict", AsyncMock())
+    monkeypatch.setattr("mr_roboto.run",
+                        AsyncMock(return_value=_FakeAction("completed")))
+
+    source_ctx = {"artifact_schema": _SCHEMA, "checks": [
+        {"kind": "verify_contains_product_name",
+         "payload": {"action": "verify_contains_product_name"}}]}
+    with patch.object(apply_mod, "enqueue", AsyncMock(return_value=1)) as enq:
+        await apply_mod._enqueue_posthook_llm_child("grade", _source(), source_ctx)
+
+    enq.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_no_shape_check_grades_normally(monkeypatch):
     # A step without a verify_*_shape check is unaffected — LLM grade still spawns.
     import general_beckman.apply as apply_mod

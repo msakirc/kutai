@@ -1807,6 +1807,29 @@ async def _complete_source_if_no_pending(source_task_id: int, ctx: dict) -> None
 enqueue = None  # noqa: F811 — populated lazily by _enqueue_posthook_llm_child
 
 
+# Checks that FULLY validate a produced artifact's shape/structure — passing one
+# is a deterministic completeness authority, so the confab-prone LLM grade is
+# skipped (the grade gate runs it inline; see kind=="grade" below). The *_shape
+# suffix is the convention, but authority is a REGISTRY, not a naming rule:
+# verify_adr_register is a full register validator that lacks the suffix and
+# would otherwise leave step 4.14 (register.md) exposed to the same confab-grade
+# → degenerate-repeat loop this short-circuit closes (task 567449). NARROW checks
+# (e.g. verify_contains_product_name — a single-substring presence check) prove
+# nothing about completeness and must NEVER be listed here.
+_GRADE_AUTHORITATIVE_NON_SHAPE_CHECKS: frozenset[str] = frozenset({
+    "verify_adr_register",
+})
+
+
+def _is_grade_authoritative_check(kind: str) -> bool:
+    """True when passing *kind* deterministically proves artifact completeness,
+    so the LLM grade may be skipped."""
+    return (
+        (kind.startswith("verify_") and kind.endswith("_shape"))
+        or kind in _GRADE_AUTHORITATIVE_NON_SHAPE_CHECKS
+    )
+
+
 async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                                       *, exclusions=None, attempt: int = 0) -> bool:
     """Enqueue the raw_dispatch reviewer/summarizer child with a durable
@@ -1948,8 +1971,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
             _shape_check = next(
                 (c for c in (source_ctx.get("checks") or [])
                  if isinstance(c, dict)
-                 and str(c.get("kind", "")).startswith("verify_")
-                 and str(c.get("kind", "")).endswith("_shape")),
+                 and _is_grade_authoritative_check(str(c.get("kind", "")))),
                 None,
             )
             if _shape_check and source.get("mission_id") is not None:

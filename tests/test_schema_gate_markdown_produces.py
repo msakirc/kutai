@@ -15,6 +15,7 @@ that check.
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -111,3 +112,34 @@ async def test_post_execute_non_markdown_produces_still_text_validates():
         await _post_execute_workflow_step_impl(task, result)
     assert "missing content about" in (result.get("error") or "")
     assert "mermaid_per_surface" in (result.get("error") or "")
+
+
+# ── invariant: deferring is only safe because a verify_* check exists ─────────
+
+def test_every_markdown_object_step_declares_a_verify_check():
+    """A markdown produces with an object/array schema relies ENTIRELY on its
+    verify_* check once the prose text-fallback is skipped. Enforce that every
+    such step actually declares one — a future step that forgot would otherwise
+    silently lose its only schema gate."""
+    path = os.path.join(os.path.dirname(__file__), "..", "src", "workflows",
+                        "i2p", "i2p_v3.json")
+    wf = json.load(open(path, encoding="utf-8"))
+    offenders = []
+    for s in wf.get("steps", []):
+        produces = s.get("produces") or []
+        if not (produces and all(str(p).endswith(".md") for p in produces)):
+            continue
+        schema = s.get("artifact_schema") or {}
+        has_structured = any(
+            isinstance(r, dict) and r.get("type") in ("object", "array")
+            for r in schema.values()
+        )
+        if not has_structured:
+            continue
+        checks = s.get("checks") or []
+        if not any(str(c.get("kind", "")).startswith("verify_") for c in checks):
+            offenders.append(s.get("id"))
+    assert not offenders, (
+        "markdown+object/array steps whose only schema gate is now deferred but "
+        f"that declare NO verify_* check (silent gate drop): {offenders}"
+    )

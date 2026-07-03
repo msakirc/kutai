@@ -260,6 +260,45 @@ async def test_markdown_rich_disk_file_preserved_over_thinner_result(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_md_produces_object_schema_prefers_clean_disk_over_narration(tmp_path, monkeypatch):
+    """m90 5.0c user_flow (and 5.0d/4.14/6.5z) — the object-schema-on-.md-produces
+    mismatch. The step validates structured frontmatter fields via an OBJECT
+    schema, but the artifact is a markdown doc the analyst authors. With
+    write_file kept, the analyst writes the CLEAN doc to disk AND narrates its
+    final_answer; the narration passes the object text-fallback (mentions the
+    field names), so ONLY candidate ORDER decides the winner. ``write_stripped``
+    must key off the ``.md`` produces form (free-form → disk-first), not the
+    schema ``type`` (object). Pre-fix ``write_stripped`` was True for the object
+    schema → ``[output_value, disk]`` → the narration clobbered the clean file →
+    verify_user_flow_shape failed → identical re-emit → degenerate-repeat DLQ."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    rel = "mission_90/.flow/user_flow.md"
+    abs_p = tmp_path / rel
+    abs_p.parent.mkdir(parents=True, exist_ok=True)
+    clean = ("---\n_schema_version: '1'\nsurfaces:\n  - web\n"
+             "mermaid_per_surface:\n  web: graph TD; A-->B\n---\n\n"
+             "## Web (returning-abandoner persona)\n")
+    abs_p.write_text(clean, encoding="utf-8")   # analyst's fresh write_file
+    schema = {"user_flow": {"type": "object",
+                            "required_fields": ["surfaces", "mermaid_per_surface"]}}
+    ctx = _ctx([rel], schema)
+    task = {"mission_id": 90, "agent_type": "analyst"}
+    # Pure-prose narration: unparseable as an object (falls to text-fallback),
+    # but mentions both field names → passes _schema_ok, so it competes on order.
+    narration = ("## Analysis: HabitHub User Flow\n\nThis report documents the "
+                 "surfaces and provides mermaid_per_surface diagrams for the web "
+                 "app.\n\n### Summary\nEverything is covered end to end.\n")
+
+    out = await materialize_produces(ctx, task, {"result": narration}, narration)
+
+    disk = abs_p.read_text(encoding="utf-8")
+    assert "## Analysis" not in disk             # narration did NOT clobber the file
+    assert "surfaces:" in disk                   # clean frontmatter doc kept
+    assert "graph TD" in disk
+    assert "## Analysis" not in out              # returned == on-disk (gate parity)
+
+
+@pytest.mark.asyncio
 async def test_mission81_289715_regression(tmp_path, monkeypatch):
     """The real failure: agent wrote a narration report to the produces path
     while the correct doc sat in a ```yaml fence in result. Materializer must

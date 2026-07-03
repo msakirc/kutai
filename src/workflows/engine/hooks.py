@@ -370,19 +370,21 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
     # even when the stale file is itself schema-valid (task 524364: a gate-failed
     # 'dead' report kept being resurrected over the corrected 'active' result).
     #
-    # CRITICAL: this predicate MUST match _apply_auto_strip, which strips write
-    # tools ONLY for STRUCTURED-only schemas (object/array) — markdown/string
-    # schemas KEEP write tools. A markdown step's disk file is therefore the
-    # agent's FRESH write (not stale) and must outrank the narration-prone
-    # final_answer. Treating any non-empty schema as write-stripped was a
-    # predicate drift that flipped markdown order to [output_value, disk] and
+    # CRITICAL: this predicate MUST match _apply_auto_strip. Write tools are
+    # stripped ONLY for structured-only schemas WITHOUT a free-form (.md) produces
+    # path — markdown/string schemas AND markdown produces (even under an
+    # object/array schema) KEEP write tools. A markdown step's disk file is
+    # therefore the agent's FRESH write (not stale) and must outrank the
+    # narration-prone final_answer. Treating any non-empty schema as write-stripped
+    # was a predicate drift that flipped markdown order to [output_value, disk] and
     # let a narration clobber the agent's clean file (task 567379 [0.6a.draft]
-    # non_goals_draft: writer wrote a real non_goals.md, narrated final_answer,
-    # materializer overwrote disk with the narration).
-    from coulson import _schema_is_structured_only
+    # non_goals_draft). Keying off schema type ALONE (ignoring the .md produces
+    # form) was the SAME drift for object-schema markdown steps (m90 5.0c user_flow
+    # object schema + user_flow.md produces → strip → analyst narrated → clobber).
+    from coulson import _write_tools_redundant
     write_stripped = (
         isinstance(schema, dict) and bool(schema)
-        and _schema_is_structured_only(schema)
+        and _write_tools_redundant(schema, produces)
         and not ctx.get("_allow_write_tools")
     )
     canonical_out = output_value

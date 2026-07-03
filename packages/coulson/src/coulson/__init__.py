@@ -85,6 +85,36 @@ def _schema_is_structured_only(schema: dict) -> bool:
     return all(t in _STRUCTURED_SCHEMA_TYPES for t in types)
 
 
+def _produces_has_markdown(produces) -> bool:
+    """A ``.md`` produces path is the AUTHORITATIVE free-form artifact signal.
+
+    The schema ``type`` is a VALIDATION concern (which frontmatter fields / shape
+    to check); the ``produces`` extension is the AUTHORING concern (how the agent
+    emits the artifact). A step may carry an OBJECT/ARRAY schema to validate a
+    markdown doc's structured frontmatter (e.g. surfaces / mermaid_per_surface)
+    yet still author a ``.md`` file. Keying the write-tool decision off the schema
+    ``type`` alone stripped write_file on 4 analyst steps (5.0c user_flow, 5.0d
+    screen_inventory/shared_shell, 4.14 register, 6.5z premortem), forcing the
+    narration-prone analyst down the final_answer path — its "## Analysis …"
+    wrapper then clobbered the materialized file. A ``.md`` produces keeps write
+    tools regardless of schema type, so the agent writes a CLEAN file to disk."""
+    return isinstance(produces, (list, tuple)) and any(
+        isinstance(p, str) and p.endswith(".md") for p in produces
+    )
+
+
+def _write_tools_redundant(schema: dict, produces=None) -> bool:
+    """True when the final_answer ``result`` IS the clean artifact and write
+    tools are safely stripped: a structured-only schema AND no free-form (``.md``)
+    produces path. A markdown produces always keeps write tools (the agent authors
+    the file), even under an object/array schema. Sole predicate shared by
+    ``_apply_auto_strip`` and ``materialize_produces.write_stripped`` so the two
+    never drift (the materializer's candidate order depends on it)."""
+    if _produces_has_markdown(produces):
+        return False
+    return _schema_is_structured_only(schema)
+
+
 async def execute(profile, task: dict, progress_callback: Callable | None = None) -> dict:
     """Drive one task to completion. Routes by profile.execution_pattern.
 
@@ -327,7 +357,7 @@ def _apply_auto_strip(profile, task_ctx: dict) -> None:
     _schema = task_ctx.get("artifact_schema")
     if (_schema and isinstance(_schema, dict)
             and not task_ctx.get("_allow_write_tools")
-            and _schema_is_structured_only(_schema)):
+            and _write_tools_redundant(_schema, task_ctx.get("produces"))):
         _strip_set |= _WRITE_TOOLS
 
     if not _strip_set:

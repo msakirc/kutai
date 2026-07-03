@@ -105,14 +105,19 @@ def _only_completeness_failed(verdict) -> bool:
     COMPLETE explicitly NO while RELEVANT / COHERENT / WELL_FORMED are NOT
     explicitly NO.
 
-    Used only when a deterministic shape verifier already proved completeness
-    (cont_state shape_verify_passed=True). The grader confabulates COMPLETE:NO on
-    structured artifacts — its own prompt forbids judging presence — which DLQ'd
-    task 567449 [5.0a]. Overriding that confab is safe because completeness is a
-    proven fact; but RELEVANT:NO (wrong product / off-topic) and COHERENT:NO are
-    exactly what the shape verifier CANNOT see, so those stay terminal. A
-    WELL_FORMED:NO — the shape verifier and grader disagreeing on structure — is a
-    rare contradiction that must NOT silently auto-pass, so it stays terminal too.
+    The grader's COMPLETE axis is SEMANTIC ADEQUACY (grading.yaml: "adequate
+    depth, no stubs or hand-waving; NOT field presence"). This override fires only
+    when the SPAWN side already restricted the tag (shape_verify_passed=True) to
+    pure STRUCTURED artifacts — where the returned structured value IS the whole
+    artifact, so a passing structural verifier ≈ substantive completeness and a
+    COMPLETE:NO is the grader over-judging structure it was told to ignore (the
+    confab that DLQ'd 567449 [5.0a] design_tokens). Prose / .md-authored steps are
+    never tagged, so their real adequacy grade is preserved. RELEVANT:NO (wrong
+    product / off-topic) and COHERENT:NO are exactly what the verifier CANNOT see,
+    so they stay terminal; a WELL_FORMED:NO (verifier and grader disagreeing on
+    structure) is a rare contradiction that must NOT silently auto-pass, so it
+    stays terminal too. A bare FAIL with COMPLETE absent yields complete=None →
+    ``None is False`` is False → no override (positive evidence required).
     """
     return (
         getattr(verdict, "complete", None) is False
@@ -177,9 +182,10 @@ async def _grade_resume(child_task_id: int, result: dict, state: dict) -> None:
     try:
         verdict = parse_grade_response(raw_text)
         verdict.raw = raw_text
-        # Advisory-COMPLETE override: a deterministic shape verifier already
-        # proved completeness at spawn time, so a grade FAIL whose only failing
-        # axis is COMPLETE is a confab (task 567449) — flip it to PASS. A
+        # Advisory-COMPLETE override: the tag is set (spawn side) only for pure
+        # structured artifacts where a passing structural verifier ≈ substantive
+        # completeness, so a grade FAIL whose only failing axis is COMPLETE
+        # (semantic adequacy) is a confab (task 567449) — flip it to PASS. A
         # RELEVANT:NO / COHERENT:NO FAIL (topicality the verifier can't see)
         # stays terminal.
         if (not verdict.passed and shape_verify_passed

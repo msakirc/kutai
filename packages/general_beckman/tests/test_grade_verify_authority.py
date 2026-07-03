@@ -1,24 +1,28 @@
-"""The deterministic shape verifier proves COMPLETENESS; the LLM grade keeps the
-TOPICALITY axis.
+"""A passing shape verifier proves COMPLETENESS only for STRUCTURED artifacts;
+prose keeps the full grade.
 
 Mission-90 task 567449 [5.0a] design_tokens_generation: the model converged on a
-shape-VALID design_tokens.json (verify_design_tokens_shape → ok), but the
-scope-blind LLM grader confabulated `COMPLETE: NO / VERDICT: FAIL` (its own
-prompt says "DO NOT JUDGE field/section presence"). The producer re-emitted the
-same correct artifact byte-identically, and the degenerate-repeat detector DLQ'd
-it as "not converging" — it was killed *because* it correctly converged.
+shape-VALID design_tokens.json (verify_design_tokens_shape → ok), but the LLM
+grader emitted `COMPLETE: NO / VERDICT: FAIL`. The producer re-emitted the same
+correct artifact byte-identically and the degenerate-repeat detector DLQ'd it —
+it was killed *because* it correctly converged.
 
-Original fix (2026-06-27) SKIPPED the grade entirely on a shape PASS — which
-also dropped the LLM grade's RELEVANT/COHERENT axes (is this artifact about the
-RIGHT product, does it hang together) on ~24 steps. That is a real topicality
-hole the shape verifier cannot cover.
+Correct framing (grading.yaml): the grader's COMPLETE axis is SEMANTIC ADEQUACY
+("adequate depth, no stubs or hand-waving; NOT field presence"). A shape verifier
+proves STRUCTURE, which ≈ substantive completeness ONLY when the returned
+structured value IS the whole artifact — a pure .json config/decision
+(design_tokens, ADR, taste_emphasis, surfaces). For a FREE-FORM authored doc (any
+.md produces — charter, reverse_pitch, user_flow, premortem, register, …)
+"adequate depth" is a real axis the verifier cannot see, so the LLM grade stays
+fully authoritative there.
 
-Advisory-COMPLETE refinement (this file): on a shape PASS the grade STILL RUNS,
-but the continuation is tagged ``shape_verify_passed=True``. The resume handler
-(``test_grade_advisory_complete.py``) then overrides a *completeness-only* grade
-FAIL to PASS (killing the 567449 confab loop) while a RELEVANT:NO / COHERENT:NO
-FAIL stays terminal (topicality preserved). On a shape FAIL the tag is False and
-the grade is fully authoritative, so the producer re-pends as before.
+So the override is gated on the codebase's authoritative structured-artifact
+predicate ``coulson._write_tools_redundant`` (structured-only schema AND no .md
+produces). Structured → the grade spawns with cont_state tagged
+``shape_verify_passed=True`` and the resume handler
+(``test_grade_advisory_complete.py``) overrides a completeness-only FAIL to PASS
+while RELEVANT:NO / COHERENT:NO stays terminal. Prose / .md-authored → NOT tagged,
+the verifier is not even probed, and the grade binds all axes.
 """
 from __future__ import annotations
 
@@ -27,13 +31,16 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
-_SCHEMA = {"design_tokens": {"type": "object", "required_fields": ["_schema_version"]}}
+_OBJ_SCHEMA = {"design_tokens": {"type": "object", "required_fields": ["_schema_version"]}}
+_MD_SCHEMA = {"product_charter": {"type": "markdown"}}
 _VALID_RESULT = '{"_schema_version": "1", "mission_id": 9}'
-_CHECKS = [{
+_SHAPE_CHECK = [{
     "kind": "verify_design_tokens_shape",
     "payload": {"action": "verify_design_tokens_shape",
                 "path": ".style/design_tokens.json"},
 }]
+_JSON_PRODUCES = ["mission_9/.style/design_tokens.json"]
+_MD_PRODUCES = ["mission_9/.charter/product_charter.md"]
 
 
 class _FakeAction:
@@ -52,104 +59,104 @@ def _cont_state(enq):
     return enq.await_args.kwargs["cont_state"]
 
 
-@pytest.mark.asyncio
-async def test_grade_spawns_tagged_when_shape_verifier_passes(monkeypatch):
-    # Shape PASS no longer skips the grade — it RUNS (topicality axis kept) with
-    # the continuation tagged so a completeness-only FAIL is overridden later.
+async def _run(monkeypatch, source_ctx, verify_status="completed"):
     import general_beckman.apply as apply_mod
-
     monkeypatch.setattr(apply_mod, "_apply_posthook_verdict", AsyncMock())
-    monkeypatch.setattr("mr_roboto.run",
-                        AsyncMock(return_value=_FakeAction("completed")))
-
-    source_ctx = {"artifact_schema": _SCHEMA, "checks": _CHECKS}
+    probe = AsyncMock(return_value=_FakeAction(verify_status))
+    monkeypatch.setattr("mr_roboto.run", probe)
     with patch.object(apply_mod, "enqueue", AsyncMock(return_value=1)) as enq:
         await apply_mod._enqueue_posthook_llm_child("grade", _source(), source_ctx)
+    return enq, probe
 
-    enq.assert_awaited_once()  # LLM grade RUNS — RELEVANT/COHERENT preserved
+
+@pytest.mark.asyncio
+async def test_structured_artifact_spawns_tagged(monkeypatch):
+    # Pure .json structured artifact: shape ≈ substantive completeness → grade
+    # RUNS (RELEVANT/COHERENT kept) tagged so a completeness-only FAIL is later
+    # overridden.
+    enq, probe = await _run(
+        monkeypatch,
+        {"artifact_schema": _OBJ_SCHEMA, "checks": _SHAPE_CHECK,
+         "produces": _JSON_PRODUCES},
+    )
+    enq.assert_awaited_once()
+    probe.assert_awaited_once()  # verifier probed
     assert _cont_state(enq)["shape_verify_passed"] is True
 
 
 @pytest.mark.asyncio
-async def test_grade_spawns_untagged_when_shape_verifier_fails(monkeypatch):
-    # A real earlier-attempt defect (shape FAIL) → grade is fully authoritative,
-    # continuation NOT tagged, producer re-pends on a FAIL as before.
-    import general_beckman.apply as apply_mod
-
-    monkeypatch.setattr(apply_mod, "_apply_posthook_verdict", AsyncMock())
-    monkeypatch.setattr("mr_roboto.run",
-                        AsyncMock(return_value=_FakeAction("failed")))
-
-    source_ctx = {"artifact_schema": _SCHEMA, "checks": _CHECKS}
-    with patch.object(apply_mod, "enqueue", AsyncMock(return_value=1)) as enq:
-        await apply_mod._enqueue_posthook_llm_child("grade", _source(), source_ctx)
-
+async def test_markdown_artifact_never_tagged(monkeypatch):
+    # PROSE (.md, markdown schema): COMPLETE is a real adequacy axis the verifier
+    # cannot prove → grade stays fully authoritative, verifier not even probed.
+    enq, probe = await _run(
+        monkeypatch,
+        {"artifact_schema": _MD_SCHEMA,
+         "checks": [{"kind": "verify_charter_shape",
+                     "payload": {"action": "verify_charter_shape"}}],
+         "produces": _MD_PRODUCES},
+    )
     enq.assert_awaited_once()
+    probe.assert_not_awaited()  # prose → verifier never runs
     assert _cont_state(enq)["shape_verify_passed"] is False
 
 
 @pytest.mark.asyncio
-async def test_grade_spawns_tagged_on_verify_adr_register(monkeypatch):
-    # verify_adr_register is a full-artifact deterministic validator that does
-    # NOT carry the *_shape suffix. Authority is a registry, not a naming
-    # convention — else step 4.14 (register.md) stays exposed to the 567449
-    # confab loop. Passing it tags the continuation exactly like *_shape.
-    import general_beckman.apply as apply_mod
-
-    monkeypatch.setattr(apply_mod, "_apply_posthook_verdict", AsyncMock())
-    monkeypatch.setattr("mr_roboto.run",
-                        AsyncMock(return_value=_FakeAction("completed")))
-
-    source_ctx = {"artifact_schema": _SCHEMA, "checks": [
-        {"kind": "verify_adr_register",
-         "payload": {"action": "verify_adr_register", "path": ".adr/register.md"}}]}
-    with patch.object(apply_mod, "enqueue", AsyncMock(return_value=1)) as enq:
-        await apply_mod._enqueue_posthook_llm_child("grade", _source(), source_ctx)
-
+async def test_object_schema_but_md_produces_never_tagged(monkeypatch):
+    # user_flow / premortem carry an OBJECT schema to validate markdown
+    # frontmatter but AUTHOR a .md doc — the .md produces is the authoritative
+    # free-form signal, so depth still matters and the grade stays authoritative.
+    enq, probe = await _run(
+        monkeypatch,
+        {"artifact_schema": {"user_flow": {"type": "object"}},
+         "checks": [{"kind": "verify_user_flow_shape",
+                     "payload": {"action": "verify_user_flow_shape"}}],
+         "produces": ["mission_9/.flow/user_flow.md"]},
+    )
     enq.assert_awaited_once()
-    assert _cont_state(enq)["shape_verify_passed"] is True
+    probe.assert_not_awaited()
+    assert _cont_state(enq)["shape_verify_passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_structured_shape_fail_spawns_untagged(monkeypatch):
+    # A real earlier-attempt defect (shape FAIL) → grade fully authoritative,
+    # continuation NOT tagged, producer re-pends on a FAIL as before.
+    enq, probe = await _run(
+        monkeypatch,
+        {"artifact_schema": _OBJ_SCHEMA, "checks": _SHAPE_CHECK,
+         "produces": _JSON_PRODUCES},
+        verify_status="failed",
+    )
+    enq.assert_awaited_once()
+    probe.assert_awaited_once()
+    assert _cont_state(enq)["shape_verify_passed"] is False
 
 
 @pytest.mark.asyncio
 async def test_narrow_check_leaves_grade_untagged(monkeypatch):
     # A NARROW check (verify_contains_product_name — one substring) is not a
-    # completeness authority: the verifier never runs, so the grade stays fully
-    # authoritative (untagged) and RELEVANT/COMPLETE/COHERENT all bind.
-    import general_beckman.apply as apply_mod
-
-    monkeypatch.setattr(apply_mod, "_apply_posthook_verdict", AsyncMock())
-    monkeypatch.setattr("mr_roboto.run",
-                        AsyncMock(return_value=_FakeAction("completed")))
-
-    source_ctx = {"artifact_schema": _SCHEMA, "checks": [
-        {"kind": "verify_contains_product_name",
-         "payload": {"action": "verify_contains_product_name"}}]}
-    with patch.object(apply_mod, "enqueue", AsyncMock(return_value=1)) as enq:
-        await apply_mod._enqueue_posthook_llm_child("grade", _source(), source_ctx)
-
+    # completeness authority: even on a structured artifact it is not probed, so
+    # the grade stays fully authoritative.
+    enq, probe = await _run(
+        monkeypatch,
+        {"artifact_schema": _OBJ_SCHEMA,
+         "checks": [{"kind": "verify_contains_product_name",
+                     "payload": {"action": "verify_contains_product_name"}}],
+         "produces": _JSON_PRODUCES},
+    )
     enq.assert_awaited_once()
+    probe.assert_not_awaited()
     assert _cont_state(enq)["shape_verify_passed"] is False
 
 
 @pytest.mark.asyncio
 async def test_no_shape_check_leaves_grade_untagged(monkeypatch):
-    # A step without a verify_*_shape check is unaffected — grade spawns untagged
+    # A structured step without any authoritative check → grade spawns untagged
     # and the verifier is never invoked.
-    import general_beckman.apply as apply_mod
-
-    monkeypatch.setattr(apply_mod, "_apply_posthook_verdict", AsyncMock())
-    ran = {"called": False}
-
-    async def fake_run(task):
-        ran["called"] = True
-        return _FakeAction("completed")
-
-    monkeypatch.setattr("mr_roboto.run", fake_run)
-
-    source_ctx = {"artifact_schema": _SCHEMA, "checks": []}
-    with patch.object(apply_mod, "enqueue", AsyncMock(return_value=1)) as enq:
-        await apply_mod._enqueue_posthook_llm_child("grade", _source(), source_ctx)
-
+    enq, probe = await _run(
+        monkeypatch,
+        {"artifact_schema": _OBJ_SCHEMA, "checks": [], "produces": _JSON_PRODUCES},
+    )
     enq.assert_awaited_once()
-    assert ran["called"] is False  # no shape check → verifier never invoked
+    probe.assert_not_awaited()
     assert _cont_state(enq)["shape_verify_passed"] is False

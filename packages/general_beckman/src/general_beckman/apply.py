@@ -1953,35 +1953,51 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 return False  # blessed empty-scope — no LLM grade
         except Exception:  # noqa: BLE001 — never let the skip break grade
             pass
-        # ── Deterministic shape verifier PROVES completeness; LLM grade keeps ──
-        # ── the TOPICALITY axis ──
-        # When the step declares a verify_*_shape (or registry-listed
-        # verify_adr_register) mechanical check, run it inline on the materialized
-        # artifact. A PASS means shape + field-completeness is a proven
-        # deterministic fact — BUT the LLM grade ALSO judges relevance/coherence
-        # (is this the RIGHT artifact for the mission, not a well-formed
-        # hallucination), which the shape verifier cannot see. So we do NOT skip
-        # the grade: we tag the continuation shape_verify_passed=True and let the
-        # grade run. The resume handler (posthook_continuations._grade_resume)
-        # overrides a COMPLETE-only FAIL to PASS — killing the confab that DLQ'd
-        # task 567449 [5.0a] design_tokens (a shape-valid artifact FAILed
-        # COMPLETE:NO by a grader whose own prompt forbids judging presence, then
-        # DLQ'd as a "degenerate repeat" when the producer re-emitted the SAME
-        # correct artifact) — while a RELEVANT:NO / COHERENT:NO FAIL stays
-        # terminal, preserving topicality on the ~24 verify-gated steps that the
-        # old skip-the-grade fix silently dropped. Placed AFTER build_grading_spec
-        # so the dogru_mu_samet degeneracy floor has already auto-failed garbage.
-        # On a shape FAIL (a real earlier-attempt defect) the tag stays False and
-        # the grade is fully authoritative, so the producer re-pends normally. The
-        # verifier still runs again as its own post-hook AFTER grade.
+        # ── A passing shape verifier PROVES completeness only for STRUCTURED ──
+        # ── artifacts; the LLM grade keeps TOPICALITY (and adequacy for prose) ──
+        # The grader's COMPLETE axis is SEMANTIC ADEQUACY (grading.yaml: "adequate
+        # depth, no stubs or hand-waving; NOT field presence"), NOT structural
+        # presence. A verify_*_shape / verify_adr_register check proves STRUCTURE,
+        # which ≈ substantive completeness ONLY when the returned structured value
+        # IS the whole artifact — a pure .json config/decision (design_tokens, ADR,
+        # taste_emphasis, surfaces). For a FREE-FORM authored doc (ANY .md
+        # produces — charter, reverse_pitch, user_flow, premortem, register, …)
+        # "adequate depth" is a real axis the verifier cannot see, so the LLM grade
+        # must stay FULLY authoritative there (skipping/overriding COMPLETE would
+        # drop legitimate stub/hand-waving detection on prose). Gate on the
+        # codebase's authoritative structured-artifact predicate
+        # (coulson._write_tools_redundant: structured-only schema AND no .md
+        # produces) — the same seam that decides whether the result IS the clean
+        # artifact for auto-strip / materialize.
+        #
+        # When eligible, we do NOT skip the grade: we run the shape check inline,
+        # tag the continuation shape_verify_passed=True, and let the grade run. The
+        # resume handler (posthook_continuations._grade_resume) then overrides a
+        # COMPLETE-only FAIL to PASS — killing the confab that DLQ'd task 567449
+        # [5.0a] design_tokens (a shape-valid .json FAILed COMPLETE:NO, then DLQ'd
+        # as a "degenerate repeat" when the producer re-emitted the SAME correct
+        # artifact) — while a RELEVANT:NO / COHERENT:NO FAIL stays terminal,
+        # preserving topicality. Placed AFTER build_grading_spec so the
+        # dogru_mu_samet degeneracy floor has already auto-failed garbage. On a
+        # shape FAIL (a real earlier-attempt defect) the tag stays False and the
+        # grade is fully authoritative. The verifier still runs again as its own
+        # post-hook AFTER grade.
         _shape_verify_passed = False
+        try:
+            from coulson import _write_tools_redundant as _artifact_is_structured_only
+            _override_eligible = (
+                isinstance(_art_schema, dict) and bool(_art_schema)
+                and _artifact_is_structured_only(_art_schema, source_ctx.get("produces"))
+            )
+        except Exception:  # noqa: BLE001 — predicate must never break grade
+            _override_eligible = False
         try:
             _shape_check = next(
                 (c for c in (source_ctx.get("checks") or [])
                  if isinstance(c, dict)
                  and _is_grade_authoritative_check(str(c.get("kind", "")))),
                 None,
-            )
+            ) if _override_eligible else None
             if _shape_check and source.get("mission_id") is not None:
                 import mr_roboto as _mr
                 _vpayload = dict(_shape_check.get("payload") or {})

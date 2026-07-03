@@ -1953,20 +1953,28 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 return False  # blessed empty-scope — no LLM grade
         except Exception:  # noqa: BLE001 — never let the skip break grade
             pass
-        # ── Deterministic shape verifier is authoritative; LLM grade subordinate ──
-        # When the step declares a verify_*_shape mechanical check, run it inline
-        # on the materialized artifact. A PASS means shape + field-completeness is
-        # a proven deterministic fact, so the scope-blind LLM grader — which only
-        # confabulates COMPLETE:NO on these structured artifacts (its own prompt
-        # forbids judging presence) — is skipped, exactly like the empty-scope
-        # short-circuit above. Placed AFTER build_grading_spec so the
-        # dogru_mu_samet degeneracy floor has already auto-failed garbage. Task
-        # 567449 [5.0a] design_tokens: a shape-valid artifact was confab-FAILed
-        # COMPLETE:NO, then DLQ'd as a "degenerate repeat" when the producer
-        # re-emitted the SAME correct artifact — killed because it converged. The
-        # verifier still runs as a post-hook AFTER grade for its own re-pend
-        # semantics; a FAIL here (a real defect on an earlier attempt) simply
-        # does not short-circuit, so the producer still re-pends normally.
+        # ── Deterministic shape verifier PROVES completeness; LLM grade keeps ──
+        # ── the TOPICALITY axis ──
+        # When the step declares a verify_*_shape (or registry-listed
+        # verify_adr_register) mechanical check, run it inline on the materialized
+        # artifact. A PASS means shape + field-completeness is a proven
+        # deterministic fact — BUT the LLM grade ALSO judges relevance/coherence
+        # (is this the RIGHT artifact for the mission, not a well-formed
+        # hallucination), which the shape verifier cannot see. So we do NOT skip
+        # the grade: we tag the continuation shape_verify_passed=True and let the
+        # grade run. The resume handler (posthook_continuations._grade_resume)
+        # overrides a COMPLETE-only FAIL to PASS — killing the confab that DLQ'd
+        # task 567449 [5.0a] design_tokens (a shape-valid artifact FAILed
+        # COMPLETE:NO by a grader whose own prompt forbids judging presence, then
+        # DLQ'd as a "degenerate repeat" when the producer re-emitted the SAME
+        # correct artifact) — while a RELEVANT:NO / COHERENT:NO FAIL stays
+        # terminal, preserving topicality on the ~24 verify-gated steps that the
+        # old skip-the-grade fix silently dropped. Placed AFTER build_grading_spec
+        # so the dogru_mu_samet degeneracy floor has already auto-failed garbage.
+        # On a shape FAIL (a real earlier-attempt defect) the tag stays False and
+        # the grade is fully authoritative, so the producer re-pends normally. The
+        # verifier still runs again as its own post-hook AFTER grade.
+        _shape_verify_passed = False
         try:
             _shape_check = next(
                 (c for c in (source_ctx.get("checks") or [])
@@ -1983,20 +1991,12 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                     "mission_id": source.get("mission_id"),
                     "payload": _vpayload,
                 })
-                if getattr(_vaction, "status", None) == "completed":
-                    await _apply_posthook_verdict(
-                        {"id": source_id},
-                        PostHookVerdict(
-                            source_task_id=source_id, kind="grade", passed=True,
-                            raw={"passed": True,
-                                 "raw": f"{_shape_check.get('kind')} passed "
-                                        "(deterministic shape authority); "
-                                        "LLM grade skipped"}))
-                    return False  # shape proven → no confab-prone LLM grade
-        except Exception:  # noqa: BLE001 — never let the short-circuit break grade
-            pass
+                _shape_verify_passed = getattr(_vaction, "status", None) == "completed"
+        except Exception:  # noqa: BLE001 — never let the probe break grade
+            _shape_verify_passed = False
         cont_state = {"source_task_id": source_id, "kind": "grade",
-                      "attempt": attempt, "exclusions": excl, "mission_id": mission_id}
+                      "attempt": attempt, "exclusions": excl, "mission_id": mission_id,
+                      "shape_verify_passed": _shape_verify_passed}
 
     elif kind == "code_review":
         from src.core.code_review import build_code_review_spec, CodeReviewResult

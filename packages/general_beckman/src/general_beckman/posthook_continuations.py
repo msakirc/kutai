@@ -100,6 +100,28 @@ def _make_grade_verdict(source_task_id, passed: bool, raw: dict):
                            passed=passed, raw=raw)
 
 
+def _only_completeness_failed(verdict) -> bool:
+    """True when a grade FAIL is driven SOLELY by the completeness axis —
+    COMPLETE explicitly NO while RELEVANT / COHERENT / WELL_FORMED are NOT
+    explicitly NO.
+
+    Used only when a deterministic shape verifier already proved completeness
+    (cont_state shape_verify_passed=True). The grader confabulates COMPLETE:NO on
+    structured artifacts — its own prompt forbids judging presence — which DLQ'd
+    task 567449 [5.0a]. Overriding that confab is safe because completeness is a
+    proven fact; but RELEVANT:NO (wrong product / off-topic) and COHERENT:NO are
+    exactly what the shape verifier CANNOT see, so those stay terminal. A
+    WELL_FORMED:NO — the shape verifier and grader disagreeing on structure — is a
+    rare contradiction that must NOT silently auto-pass, so it stays terminal too.
+    """
+    return (
+        getattr(verdict, "complete", None) is False
+        and getattr(verdict, "relevant", None) is not False
+        and getattr(verdict, "coherent", None) is not False
+        and getattr(verdict, "well_formed", None) is not False
+    )
+
+
 def _result_model(result: dict) -> str:
     """Pull the reviewer child's chosen model from the child RESULT.
 
@@ -150,9 +172,26 @@ async def _grade_resume(child_task_id: int, result: dict, state: dict) -> None:
     exclusions = list(state.get("exclusions") or [])
     raw_text = _extract_content(result)
 
+    shape_verify_passed = bool(state.get("shape_verify_passed"))
+
     try:
         verdict = parse_grade_response(raw_text)
         verdict.raw = raw_text
+        # Advisory-COMPLETE override: a deterministic shape verifier already
+        # proved completeness at spawn time, so a grade FAIL whose only failing
+        # axis is COMPLETE is a confab (task 567449) — flip it to PASS. A
+        # RELEVANT:NO / COHERENT:NO FAIL (topicality the verifier can't see)
+        # stays terminal.
+        if (not verdict.passed and shape_verify_passed
+                and _only_completeness_failed(verdict)):
+            logger.info(
+                "grade COMPLETE-only FAIL overridden to PASS — shape verifier "
+                "already proved completeness; RELEVANT/COHERENT intact",
+                source_id=source_task_id,
+            )
+            verdict.passed = True
+            verdict.raw = ("advisory-COMPLETE override (shape verify authoritative "
+                           "on completeness; RELEVANT/COHERENT intact): " + raw_text)
         await _apply_posthook_verdict(
             {"id": child_task_id},
             _make_grade_verdict(source_task_id, verdict.passed,
@@ -173,6 +212,27 @@ async def _grade_resume(child_task_id: int, result: dict, state: dict) -> None:
                 mission_id=state.get("mission_id"),
             )
             return
+        # Grader incapable after 2 attempts. When the shape verifier already
+        # proved completeness, fall back to auto-PASS rather than punishing a
+        # shape-valid producer for a grader that can't emit a parseable verdict
+        # (outage-safety parity with the old skip-the-grade fix). No parseable
+        # relevance signal is available to keep terminal, so completeness (proven)
+        # governs.
+        if shape_verify_passed:
+            logger.info(
+                "grader incapable but shape verify passed — auto-PASS "
+                "(completeness proven, LLM grade unavailable)",
+                source_id=source_task_id,
+            )
+            await _apply_posthook_verdict(
+                {"id": child_task_id},
+                _make_grade_verdict(
+                    source_task_id, True,
+                    {"passed": True,
+                     "raw": "shape verify authoritative; grader incapable — "
+                            "completeness proven, LLM grade unavailable"}),
+            )
+            return
         msg = (f"auto-fail: grader_incapable after 2 attempts: "
                f"{raw_text[:300]}")
         logger.warning("grade parse-fail attempt 1 — auto-failing source",
@@ -186,9 +246,26 @@ async def _grade_resume(child_task_id: int, result: dict, state: dict) -> None:
 
 async def _grade_resume_err(child_task_id: int, result: dict, state: dict) -> None:
     """On_error: the grade reviewer child terminally failed (no candidates /
-    infra). Auto-fail the source's grade rather than leaving it parked."""
+    infra). Auto-fail the source's grade rather than leaving it parked — UNLESS a
+    deterministic shape verifier already proved completeness at spawn time, in
+    which case auto-PASS (outage-safety parity with the old skip-the-grade fix: a
+    shape-valid producer must never be punished for grader unavailability)."""
     source_task_id = state.get("source_task_id")
     err = (result or {}).get("error", "unknown")
+    if state.get("shape_verify_passed"):
+        logger.info(
+            "grade child failed terminally but shape verify passed — auto-PASS",
+            source_id=source_task_id, error=str(err)[:200],
+        )
+        await _apply_posthook_verdict(
+            {"id": child_task_id},
+            _make_grade_verdict(
+                source_task_id, True,
+                {"passed": True,
+                 "raw": f"shape verify authoritative; grade child failed ({err}) "
+                        "— completeness proven, LLM grade unavailable"}),
+        )
+        return
     msg = f"auto-fail: grader call failed ({err})"
     logger.warning("grade child failed terminally — auto-failing source",
                    source_id=source_task_id, error=str(err)[:200])

@@ -118,6 +118,24 @@ async def test_object_schema_but_md_produces_never_tagged(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_registry_validator_tags_even_with_md_produces(monkeypatch):
+    # verify_adr_register is a registry-listed FULL-ARTIFACT completeness proof —
+    # register.md is a mechanical index with no depth axis. It authors .md but is
+    # override-eligible via the registry seam (prose *_shape checks never are).
+    enq, probe = await _run(
+        monkeypatch,
+        {"artifact_schema": {"adrs": {"type": "array"}},
+         "checks": [{"kind": "verify_adr_register",
+                     "payload": {"action": "verify_adr_register",
+                                 "path": ".adr/register.md"}}],
+         "produces": ["mission_9/.adr/register.md"]},
+    )
+    enq.assert_awaited_once()
+    probe.assert_awaited_once()
+    assert _cont_state(enq)["shape_verify_passed"] is True
+
+
+@pytest.mark.asyncio
 async def test_structured_shape_fail_spawns_untagged(monkeypatch):
     # A real earlier-attempt defect (shape FAIL) → grade fully authoritative,
     # continuation NOT tagged, producer re-pends on a FAIL as before.

@@ -1982,10 +1982,22 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         # shape FAIL (a real earlier-attempt defect) the tag stays False and the
         # grade is fully authoritative. The verifier still runs again as its own
         # post-hook AFTER grade.
+        # A registry-listed non-shape validator (verify_adr_register) is by
+        # definition a FULL-ARTIFACT deterministic completeness proof (register.md
+        # is a mechanical index with no adequacy/depth axis), so it is
+        # override-eligible even though it authors a .md file — the .md exclusion
+        # above targets prose whose depth the verifier can't see, which a
+        # mechanical index is not. Prose *_shape checks are never registry members,
+        # so this cannot re-admit them.
         _shape_verify_passed = False
         try:
             from coulson import _write_tools_redundant as _artifact_is_structured_only
-            _override_eligible = (
+            _registry_authoritative = any(
+                isinstance(c, dict)
+                and str(c.get("kind", "")) in _GRADE_AUTHORITATIVE_NON_SHAPE_CHECKS
+                for c in (source_ctx.get("checks") or [])
+            )
+            _override_eligible = _registry_authoritative or (
                 isinstance(_art_schema, dict) and bool(_art_schema)
                 and _artifact_is_structured_only(_art_schema, source_ctx.get("produces"))
             )

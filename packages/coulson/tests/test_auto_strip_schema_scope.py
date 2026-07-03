@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import types
 
-from coulson import _apply_auto_strip
+from coulson import _apply_auto_strip, _ensure_write_tools_for_markdown_produces
 
 
 def _prof(tools):
     return types.SimpleNamespace(
-        name="analyst", allowed_tools=list(tools),
+        name="analyst",
+        allowed_tools=(None if tools is None else list(tools)),
         _original_allowed_tools=None, _tools_overridden=False,
     )
 
@@ -124,3 +125,56 @@ def test_json_produces_object_schema_still_strips_write_file():
     }
     _apply_auto_strip(prof, ctx)
     assert "write_file" not in prof.allowed_tools
+
+
+# ── INVARIANT: a .md produces MUST have write_file, whatever tools_hint did ──
+# tools_hint OVERRIDES allowed_tools (``profile.allowed_tools = tools_hint``);
+# tools_hint=[] leaves the agent with NO tools, so it cannot author its declared
+# .md file and dumps the doc into final_answer, where a narration-prone analyst
+# wraps it → materialized clobber (m90 4.14/5.0c/5.0d all shipped tools_hint=[]).
+# auto_strip only REMOVES tools, so it cannot restore write_file. This final
+# reconciliation guarantees the produces contract: you can't declare a file you
+# have no tool to write. Runs AFTER _refresh_workflow_step_config so it sees the
+# live produces list.
+
+
+def test_md_produces_restores_write_file_after_empty_tools_hint():
+    """m90 5.0c/4.14/5.0d — tools_hint=[] stripped every tool; the .md produces
+    contract must restore write_file so the analyst can author a clean file."""
+    prof = _prof([])                       # what _apply_tools_hint([]) leaves
+    ctx = {"produces": ["mission_90/.flow/user_flow.md"],
+           "artifact_schema": {"user_flow": {"type": "object"}}}
+    _ensure_write_tools_for_markdown_produces(prof, ctx)
+    assert "write_file" in prof.allowed_tools
+
+
+def test_json_produces_does_not_restore_write_file():
+    """A .json produces is structured — the final_answer JSON IS the artifact;
+    no write tool needed, so the invariant must not add one."""
+    prof = _prof([])
+    ctx = {"produces": ["mission_90/.intake/draft.json"],
+           "artifact_schema": {"draft": {"type": "object"}}}
+    _ensure_write_tools_for_markdown_produces(prof, ctx)
+    assert "write_file" not in prof.allowed_tools
+
+
+def test_no_produces_leaves_tools_untouched():
+    prof = _prof([])
+    ctx = {"artifact_schema": {"verdict": {"type": "object"}}}   # no produces
+    _ensure_write_tools_for_markdown_produces(prof, ctx)
+    assert prof.allowed_tools == []
+
+
+def test_none_allowed_tools_means_all_tools_unchanged():
+    """allowed_tools=None ⇒ all tools available (write_file already present)."""
+    prof = _prof(None)
+    ctx = {"produces": ["mission_90/.flow/user_flow.md"]}
+    _ensure_write_tools_for_markdown_produces(prof, ctx)
+    assert prof.allowed_tools is None
+
+
+def test_write_file_already_present_is_idempotent():
+    prof = _prof(["write_file", "read_file"])
+    ctx = {"produces": ["mission_90/.flow/user_flow.md"]}
+    _ensure_write_tools_for_markdown_produces(prof, ctx)
+    assert prof.allowed_tools.count("write_file") == 1

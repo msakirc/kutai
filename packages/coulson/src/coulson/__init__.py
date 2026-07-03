@@ -136,6 +136,11 @@ async def execute(profile, task: dict, progress_callback: Callable | None = None
     if _task_ctx.get("is_workflow_step"):
         await _refresh_workflow_step_config(task, _task_ctx)
 
+    # INVARIANT (final word, after the live-config refresh): a .md produces MUST
+    # have write_file, whatever tools_hint / auto_strip did — else the agent
+    # can't author its declared file and narrates it into final_answer (clobber).
+    _ensure_write_tools_for_markdown_produces(profile, _task_ctx)
+
     # ── Z6 T7C — detect needs_real_tools and short-circuit-or-inject ──
     # If the task is flagged ``needs_real_tools`` we re-check admission
     # before paying for an LLM call:
@@ -379,6 +384,36 @@ def _apply_auto_strip(profile, task_ctx: dict) -> None:
         profile.allowed_tools = [
             t for t in list_tool_names() if t not in _strip_set
         ]
+
+
+def _ensure_write_tools_for_markdown_produces(profile, task_ctx: dict) -> None:
+    """INVARIANT: a step declaring a ``.md`` produces path MUST have write_file.
+
+    A ``produces`` path is a hard requirement to AUTHOR that file, but
+    ``_apply_tools_hint`` OVERRIDES ``allowed_tools`` with the step's tools_hint
+    verbatim — a ``tools_hint: []`` leaves the agent with NO tools. Unable to
+    write, the agent dumps the document into its ``final_answer``, where a
+    narration-prone analyst wraps it in a "## Analysis …" report that clobbers
+    the materialized artifact (m90 4.14/5.0c/5.0d all shipped ``tools_hint: []``;
+    the analyst made ZERO tool calls and the narration became the file). Every
+    WORKING markdown step (0.0c/0.1/1.4a/6.5z) already lists ``write_file``;
+    this makes that non-negotiable so no step can declare a file it has no tool
+    to write. ``_apply_auto_strip`` only REMOVES tools, so it cannot restore
+    write_file — this reconciliation is the final word, and MUST run after
+    ``_refresh_workflow_step_config`` so it sees the live produces list.
+
+    Scoped to ``.md`` (free-form authored) produces only: a ``.json`` produces is
+    structured — the final_answer JSON IS the artifact, no write tool needed.
+    ``allowed_tools is None`` means "all tools" (write_file already available)."""
+    if not _produces_has_markdown(task_ctx.get("produces")):
+        return
+    tools = profile.allowed_tools
+    if tools is None or "write_file" in tools:
+        return
+    if not getattr(profile, "_tools_overridden", False):
+        profile._original_allowed_tools = profile.allowed_tools
+        profile._tools_overridden = True
+    profile.allowed_tools = list(tools) + ["write_file"]
 
 
 async def _refresh_workflow_step_config(task: dict, task_ctx: dict) -> None:

@@ -475,6 +475,42 @@ class TestV3WorkflowLoading:
                 "artifact_schema" in step
             ), f"Step {step['id']} missing artifact_schema"
 
+    def test_v3_md_produces_steps_use_markdown_schema(self):
+        """Narration-clobber guard (m90). A step that AUTHORS a ``.md`` document
+        must NOT declare an object/array artifact_schema. That miscategorization
+        (a) strips write_file — the agent can't author the file so it narrates it
+        into final_answer → clobber — and (b) makes the grade schema gate's
+        field-NAME substring fallback false-reject the clean markdown. The ``.md``
+        artifact form IS markdown; declare it ``markdown`` and let the step's
+        ``verify_*_shape`` check validate structure.
+
+        Exemption: a structured-RETURN step whose ``.md`` is built MECHANICALLY
+        from a returned JSON object (4.14 ADR register.md — its instruction says
+        "RETURN your decision as a JSON object … do NOT write any files yourself;
+        the workflow materializes your returned JSON and rebuilds the register")
+        legitimately keeps a structured schema. Add such a step to
+        ``STRUCTURED_RETURN_MD`` WITH a rationale — do not relax the check."""
+        STRUCTURED_RETURN_MD = {"4.14"}  # returns ADR JSON; register.md built by engine
+        STRUCTURED = {"object", "array", "json"}
+        wf = load_workflow("i2p_v3")
+        offenders = []
+        for step in wf.steps:
+            produces = step.get("produces") or []
+            if not any(isinstance(p, str) and p.endswith(".md") for p in produces):
+                continue
+            if step.get("id") in STRUCTURED_RETURN_MD:
+                continue
+            schema = step.get("artifact_schema") or {}
+            types = [(v.get("type") or "object").lower()
+                     for v in schema.values() if isinstance(v, dict)]
+            if types and all(t in STRUCTURED for t in types):
+                offenders.append((step["id"], types))
+        assert not offenders, (
+            "`.md`-produces steps carry a structured (object/array) schema — "
+            "declare them `markdown` (verify_*_shape validates structure) or add "
+            f"to STRUCTURED_RETURN_MD with rationale: {offenders}"
+        )
+
     def test_v3_step_count_in_expected_range(self):
         """v3 collapsed v2's 328 steps to ~190, then grew to ~288 across the
         zone work; assert it didn't silently collapse or balloon."""

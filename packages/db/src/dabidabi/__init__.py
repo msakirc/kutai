@@ -5976,10 +5976,19 @@ async def reset_workflow_step(
     # return True (saved_attempts >= 0) and the fresh attempt would restore the
     # prior messages array (incl. the final answer) → re-emit the IDENTICAL
     # artifact. Clearing the checkpoint forces a genuine fresh generation.
+    # Also wipe the stale retry history from context: _rejection_ledger holds
+    # prior-attempt out_hashes, and the degenerate-repeat detector compares a
+    # fresh attempt's hash against ledger[-1] BEFORE appending — a deliberate
+    # regen/reset must not be instant-DLQ'd as "degenerate repeat" against a
+    # PRE-RESET output (m90 5.0c: re-pend after a real fix died at
+    # worker_attempts<=1). _schema_error / _prev_output are the same stale-signal
+    # class. json_remove is a no-op for absent keys and NULL-safe.
     reset_sql = (
         "UPDATE tasks SET status='pending', worker_attempts=0, error=NULL, "
         "error_category=NULL, started_at=NULL, completed_at=NULL, "
-        "task_state=NULL "
+        "task_state=NULL, "
+        "context=json_remove(context, '$._rejection_ledger', "
+        "'$._schema_error', '$._schema_error_for_attempt', '$._prev_output') "
         "WHERE mission_id=? AND json_extract(context,'$.workflow_step_id')=?"
     )
     # Reset writer step and verify sibling only when step_id is known.

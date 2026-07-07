@@ -512,6 +512,44 @@ async def test_reset_workflow_step_clears_checkpoint(fresh_db):
     assert r_verify["task_state"] is None, "verify checkpoint must be cleared on regen"
 
 
+@pytest.mark.asyncio
+async def test_reset_workflow_step_clears_rejection_ledger(fresh_db):
+    """Regenerate must wipe the stale rejection ledger / schema-error / prev-output
+    from context. Else the degenerate-repeat detector compares the fresh attempt's
+    output hash against PRE-RESET out_hashes and instant-DLQs a genuine retry
+    ("degenerate repeat" at worker_attempts<=1) — masking whether a real fix
+    worked and denying the fresh attempt its budget (m90 5.0c user_flow)."""
+    db_path = fresh_db
+    import src.infra.db as db_module
+    from general_beckman import add_task, update_task, reset_workflow_step
+
+    mid = await _add_mission(db_module)
+    writer_id = await add_task(
+        title="Writer", description="d", mission_id=mid,
+        context={
+            "workflow_step_id": "3.draft",
+            "_rejection_ledger": [{"attempt": 1, "out_hash": "deadbeef",
+                                   "reason": "stale"}],
+            "_schema_error": "some stale schema error",
+            "_prev_output": "stale narration output",
+            "produces": ["mission_1/x.md"],
+        },
+    )
+    await update_task(writer_id, status="failed")
+
+    await reset_workflow_step(mid, "3.draft")
+
+    r = await _fetch_task(db_path, writer_id)
+    ctx = json.loads(r["context"])
+    assert "_rejection_ledger" not in ctx, "stale ledger must be cleared on regen"
+    assert "_schema_error" not in ctx
+    assert "_prev_output" not in ctx
+    # Unrelated context keys are preserved.
+    assert ctx.get("produces") == ["mission_1/x.md"]
+    assert ctx["workflow_step_id"] == "3.draft"
+    assert r["status"] == "pending"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # recover_startup_tasks
 # ──────────────────────────────────────────────────────────────────────────────

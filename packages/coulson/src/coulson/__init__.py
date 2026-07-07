@@ -404,9 +404,20 @@ def _ensure_write_tools_for_markdown_produces(profile, task_ctx: dict) -> None:
 
     Scoped to ``.md`` (free-form authored) produces only: a ``.json`` produces is
     structured — the final_answer JSON IS the artifact, no write tool needed.
-    ``allowed_tools is None`` means "all tools" (write_file already available)."""
+    ``allowed_tools is None`` means "all tools" (write_file already available).
+
+    EXCEPTION — a NON-EMPTY structured-only (object/array) schema on a ``.md``
+    produces is a structured-RETURN step, NOT an authoring step: the agent returns
+    JSON and a mechanical post-step materializes the ``.md`` from it (4.14 ADR
+    ``register.md`` is rebuilt from the returned ADR JSON; its instruction says
+    "do NOT write any files yourself"). Such steps must stay write-stripped — the
+    engine, not the agent, writes the file. Only markdown/string/no-schema ``.md``
+    steps (the agent authors the doc) get write_file restored."""
     if not _produces_has_markdown(task_ctx.get("produces")):
         return
+    _sch = task_ctx.get("artifact_schema")
+    if isinstance(_sch, dict) and _sch and _schema_is_structured_only(_sch):
+        return  # structured-return-to-.md (mechanical materialize); do not author
     tools = profile.allowed_tools
     if tools is None or "write_file" in tools:
         return

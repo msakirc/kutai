@@ -4894,7 +4894,9 @@
       "name": "user_flow_lock",
       "agent": "analyst",
       "difficulty": "medium",
-      "tools_hint": [],
+      "tools_hint": [
+        "write_file"
+      ],
       "depends_on": [
         "5.0b"
       ],
@@ -4907,18 +4909,14 @@
       "output_artifacts": [
         "user_flow"
       ],
-      "instruction": "Read surfaces.json + product_charter (especially Solutions and persona references). Emit mission_{mission_id}/.flow/user_flow.md with YAML frontmatter (_schema_version='1', mission_id, surfaces) and one ```mermaid graph TD``` block per declared surface. Each node must follow the pattern: Name[\"Screen Name<br/>/route\"]. Match the paraflow shape: per-surface H2 sections with persona name in parentheses; Mobile may split into Authentication/Onboarding + Main App.",
+      "instruction": "Read surfaces.json + product_charter (especially Solutions and persona references). Emit mission_{mission_id}/.flow/user_flow.md with YAML frontmatter (_schema_version='1', mission_id, surfaces) and one ```mermaid graph TD``` block per declared surface. Each node must follow the pattern: Name[\"Screen Name<br/>/route\"]. Match the paraflow shape: per-surface H2 sections with persona name in parentheses; Mobile may split into Authentication/Onboarding + Main App.\n\nWrite the file with write_file. The document body IS the deliverable — do NOT wrap it in a '## Analysis'/'Summary'/'Findings' report. The file MUST START with top-level YAML frontmatter that includes `surfaces:`, then one FENCED ```mermaid block per surface. EXACT format:\n---\n_schema_version: '1'\nmission_id: {mission_id}\nsurfaces: [web]\n---\n\n## Web (Persona Name)\n\n```mermaid\ngraph TD\n    Landing[\"Landing Page<br/>/\"] --> Auth[\"Sign In<br/>/auth\"]\n```",
       "done_when": "user_flow.md exists with one mermaid block per surface.",
       "produces": [
         "mission_{mission_id}/.flow/user_flow.md"
       ],
       "artifact_schema": {
         "user_flow": {
-          "type": "object",
-          "required_fields": [
-            "surfaces",
-            "mermaid_per_surface"
-          ]
+          "type": "markdown"
         }
       },
       "context": {
@@ -4941,7 +4939,9 @@
       "name": "screen_inventory_and_shell",
       "agent": "analyst",
       "difficulty": "medium",
-      "tools_hint": [],
+      "tools_hint": [
+        "write_file"
+      ],
       "depends_on": [
         "5.0c"
       ],
@@ -4954,7 +4954,7 @@
         "screen_inventory",
         "shared_shell"
       ],
-      "instruction": "Read user_flow.md. Extract every unique screen by parsing mermaid node labels (Name[\"Screen Name<br/>/route\"]). Emit two artifacts:\n1. mission_{mission_id}/.flow/screen_inventory.md — YAML frontmatter with total_screens, chunk_size=4 (B8 cohesion ceiling), chunks (list of lists, each <= chunk_size). Body groups screens by surface (## Mobile / ## Web / etc.). Each screen line: '- Screen Name (`/route`)'.\n2. mission_{mission_id}/.flow/shared_shell.md — YAML frontmatter with shared_components dict + applicable_to_surfaces. Body has H2 sections for at minimum: Header, EmptyState, ErrorState, LoadingState (TabBar/Footer optional but recommended). Each section describes the invariant pattern.",
+      "instruction": "Read user_flow.md. Extract every unique screen by parsing mermaid node labels (Name[\"Screen Name<br/>/route\"]). Emit two artifacts:\n1. mission_{mission_id}/.flow/screen_inventory.md — YAML frontmatter with total_screens, chunk_size=4 (B8 cohesion ceiling), chunks (list of lists, each <= chunk_size). Body groups screens by surface (## Mobile / ## Web / etc.). Each screen line: '- Screen Name (`/route`)'.\n2. mission_{mission_id}/.flow/shared_shell.md — YAML frontmatter with shared_components dict + applicable_to_surfaces. Body has H2 sections for at minimum: Header, EmptyState, ErrorState, LoadingState (TabBar/Footer optional but recommended). Each section describes the invariant pattern.\n\nWrite BOTH files with write_file. Each document body IS the deliverable — do NOT wrap either in a '## Analysis'/'Summary'/'Findings' report. Each file MUST START with its top-level YAML frontmatter (between --- markers), then the markdown body.",
       "done_when": "screen_inventory and shared_shell both exist.",
       "produces": [
         "mission_{mission_id}/.flow/screen_inventory.md",
@@ -4962,19 +4962,10 @@
       ],
       "artifact_schema": {
         "screen_inventory": {
-          "type": "object",
-          "required_fields": [
-            "total_screens",
-            "chunk_size",
-            "chunks"
-          ]
+          "type": "markdown"
         },
         "shared_shell": {
-          "type": "object",
-          "required_fields": [
-            "shared_components",
-            "applicable_to_surfaces"
-          ]
+          "type": "markdown"
         }
       },
       "context": {
@@ -5681,12 +5672,7 @@
       ],
       "artifact_schema": {
         "premortem": {
-          "type": "object",
-          "required_fields": [
-            "_schema_version",
-            "scenarios"
-          ],
-          "_schema_version": "1"
+          "type": "markdown"
         }
       },
       "reversibility": "full",

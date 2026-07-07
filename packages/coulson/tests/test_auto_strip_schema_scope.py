@@ -138,14 +138,33 @@ def test_json_produces_object_schema_still_strips_write_file():
 # live produces list.
 
 
-def test_md_produces_restores_write_file_after_empty_tools_hint():
-    """m90 5.0c/4.14/5.0d — tools_hint=[] stripped every tool; the .md produces
-    contract must restore write_file so the analyst can author a clean file."""
+def test_md_produces_markdown_schema_restores_write_file_after_empty_tools_hint():
+    """m90 5.0c/5.0d/6.5z — tools_hint=[] stripped every tool; a markdown-AUTHORING
+    .md produces must restore write_file so the analyst can author a clean file."""
     prof = _prof([])                       # what _apply_tools_hint([]) leaves
     ctx = {"produces": ["mission_90/.flow/user_flow.md"],
-           "artifact_schema": {"user_flow": {"type": "object"}}}
+           "artifact_schema": {"user_flow": {"type": "markdown"}}}
     _ensure_write_tools_for_markdown_produces(prof, ctx)
     assert "write_file" in prof.allowed_tools
+
+
+def test_md_produces_no_schema_restores_write_file():
+    """A .md produces with NO schema is an authoring step — restore write_file."""
+    prof = _prof([])
+    ctx = {"produces": ["mission_90/notes.md"]}
+    _ensure_write_tools_for_markdown_produces(prof, ctx)
+    assert "write_file" in prof.allowed_tools
+
+
+def test_md_produces_structured_return_schema_does_not_restore_write_file():
+    """4.14 ADR register.md — a NON-EMPTY object/array schema on a .md produces is
+    a structured-RETURN step (agent returns JSON; engine rebuilds the .md). It must
+    stay write-stripped; the invariant must NOT hand it write_file."""
+    prof = _prof([])
+    ctx = {"produces": ["mission_90/.adr/register.md"],
+           "artifact_schema": {"adrs": {"type": "array", "min_items": 3}}}
+    _ensure_write_tools_for_markdown_produces(prof, ctx)
+    assert "write_file" not in prof.allowed_tools
 
 
 def test_json_produces_does_not_restore_write_file():

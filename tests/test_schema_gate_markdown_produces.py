@@ -78,8 +78,14 @@ def test_array_text_fallback_also_skipped_for_markdown_produces():
 # ── call-site wiring: the flag is derived from ctx.produces (all *.md) ─────
 
 def _step(produces: list[str]) -> tuple[dict, dict]:
+    # A SYNTHETIC step_id (not a live i2p_v3 step): post_execute refreshes the
+    # artifact_schema from the live workflow JSON by step_id, so a real id (5.0c
+    # is now `markdown` after the m90 fix) would override the object schema this
+    # test controls. An unknown id makes the refresh a no-op, isolating the CODE
+    # under test (produces_markdown derived from the produces FORM).
     ctx = {
-        "is_workflow_step": True, "workflow_step_id": "5.0c", "mission_id": 999,
+        "is_workflow_step": True, "workflow_step_id": "unit_synthetic_object_md",
+        "mission_id": 999,
         "output_artifacts": ["user_flow"], "produces": produces,
         "artifact_schema": _USER_FLOW_SCHEMA,
     }

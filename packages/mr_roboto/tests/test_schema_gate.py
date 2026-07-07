@@ -123,3 +123,36 @@ def test_empty_overlay_fails_without_inputs():
     overlay = json.dumps({"required_documents": []})
     res = schema_gate(output_value=overlay, schema=_OVERLAY_SCHEMA)
     assert res["passed"] is False
+
+
+# ── produces_markdown: an object schema on a .md artifact must defer to
+#    verify_*_shape, NOT run the field-NAME substring fallback (which is
+#    meaningless on prose). Mirrors the producer gate (hooks.py:1928); closes
+#    the grade-path asymmetry (apply.py grade gate omitted the flag). ──────────
+
+_UF_OBJECT_SCHEMA = {
+    "user_flow": {"type": "object",
+                  "required_fields": ["surfaces", "mermaid_per_surface"]}
+}
+# A real markdown doc: has `surfaces:` frontmatter + a ```mermaid block, but
+# NOT the literal field name `mermaid_per_surface` (nor any word the loose
+# substring fallback would match its parts against — e.g. no "per*" word).
+_UF_MARKDOWN = (
+    "---\nsurfaces: ['web']\n---\n\n## Web\n\n"
+    "```mermaid\ngraph TD\n  A --> B\n```\n"
+)
+
+
+def test_object_schema_on_markdown_defers_when_produces_markdown():
+    res = schema_gate(output_value=_UF_MARKDOWN, schema=_UF_OBJECT_SCHEMA,
+                      produces_markdown=True)
+    assert res["passed"] is True, res["error"]
+    assert not res["error"]
+
+
+def test_object_schema_on_markdown_false_rejects_without_flag():
+    # Back-compat: default (produces_markdown=False) still runs the fallback and
+    # false-rejects the markdown for the absent field NAME.
+    res = schema_gate(output_value=_UF_MARKDOWN, schema=_UF_OBJECT_SCHEMA)
+    assert res["passed"] is False
+    assert "mermaid_per_surface" in res["error"]

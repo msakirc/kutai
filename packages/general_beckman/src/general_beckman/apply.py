@@ -1902,8 +1902,17 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                             _gate_inputs = _cee(_art_schema, _mid)
                     except Exception:  # noqa: BLE001 — loader must never break grade
                         _gate_inputs = None
+                    # A .md produces step's object/array schema must DEFER to
+                    # verify_*_shape — the field-NAME substring fallback is
+                    # meaningless on markdown prose (false pass AND false reject).
+                    # Mirrors the producer gate (hooks.py produces_markdown).
+                    _sg_produces = source_ctx.get("produces") or []
+                    _sg_md = bool(_sg_produces) and all(
+                        isinstance(p, str) and p.endswith(".md") for p in _sg_produces
+                    )
                     _sg = _schema_gate(
-                        output_value=_draft, schema=_art_schema, inputs=_gate_inputs
+                        output_value=_draft, schema=_art_schema, inputs=_gate_inputs,
+                        produces_markdown=_sg_md,
                     )
                 except Exception:  # noqa: BLE001 — never let the gate crash grade
                     _sg = {"passed": True, "error": ""}

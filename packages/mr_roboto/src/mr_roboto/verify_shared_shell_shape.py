@@ -67,8 +67,15 @@ async def verify_shared_shell_shape(
     with open(abs_path, "r", encoding="utf-8") as f:
         text = f.read()
 
-    if not _FRONTMATTER_RE.match(text):
+    _fm = _FRONTMATTER_RE.match(text)
+    if not _fm:
         errors.append("missing or unparseable YAML frontmatter")
+    else:
+        # applicable_to_surfaces was a required_field of the old object schema
+        # (5.0d). After the schema→markdown flip (m90) the shell headings proxy
+        # for shared_components, but this field would otherwise go unvalidated.
+        if not re.search(r"^\s*applicable_to_surfaces\s*:", _fm.group(1), re.MULTILINE):
+            errors.append("frontmatter missing applicable_to_surfaces")
 
     headings = [_normalize(h) for h in _HEADING_RE.findall(text)]
     # Aliases — accept singular and EmptyState/Empty State variants alike.

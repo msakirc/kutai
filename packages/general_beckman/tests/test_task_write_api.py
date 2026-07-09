@@ -531,6 +531,7 @@ async def test_reset_workflow_step_clears_rejection_ledger(fresh_db):
             "_rejection_ledger": [{"attempt": 1, "out_hash": "deadbeef",
                                    "reason": "stale"}],
             "_schema_error": "some stale schema error",
+            "_schema_error_for_attempt": 1,
             "_prev_output": "stale narration output",
             "produces": ["mission_1/x.md"],
         },
@@ -543,6 +544,7 @@ async def test_reset_workflow_step_clears_rejection_ledger(fresh_db):
     ctx = json.loads(r["context"])
     assert "_rejection_ledger" not in ctx, "stale ledger must be cleared on regen"
     assert "_schema_error" not in ctx
+    assert "_schema_error_for_attempt" not in ctx
     assert "_prev_output" not in ctx
     # Unrelated context keys are preserved.
     assert ctx.get("produces") == ["mission_1/x.md"]

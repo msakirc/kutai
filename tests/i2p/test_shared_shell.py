@@ -54,7 +54,7 @@ async def test_alias_singular_headings_accepted(tmp_path):
     ws = tmp_path / "ws"
     (ws / ".flow").mkdir(parents=True)
     (ws / ".flow" / "shared_shell.md").write_text(
-        '---\n_schema_version: "1"\nmission_id: 1\n---\n'
+        '---\n_schema_version: "1"\nmission_id: 1\napplicable_to_surfaces: ["web"]\n---\n'
         "## Header\nx\n## Empty\nx\n## Error\nx\n## Loading\nx\n",
         encoding="utf-8",
     )
@@ -62,3 +62,23 @@ async def test_alias_singular_headings_accepted(tmp_path):
         mission_id=1, path=".flow/shared_shell.md", workspace_path=str(ws),
     )
     assert res["ok"], res
+
+
+@pytest.mark.asyncio
+async def test_missing_applicable_to_surfaces_fails(tmp_path):
+    """5.0d schema flipped object→markdown; the dropped object schema had
+    required_fields=[shared_components, applicable_to_surfaces]. The shell headings
+    proxy for shared_components, but applicable_to_surfaces was left unvalidated —
+    restore it so schema→markdown loses no validation (review MINOR)."""
+    ws = tmp_path / "ws"
+    (ws / ".flow").mkdir(parents=True)
+    (ws / ".flow" / "shared_shell.md").write_text(
+        '---\n_schema_version: "1"\nmission_id: 1\nshared_components:\n  header: x\n---\n'
+        "## Header\nx\n## EmptyState\nx\n## ErrorState\nx\n## LoadingState\nx\n",
+        encoding="utf-8",
+    )
+    res = await verify_shared_shell_shape(
+        mission_id=1, path=".flow/shared_shell.md", workspace_path=str(ws),
+    )
+    assert not res["ok"]
+    assert any("applicable_to_surfaces" in e for e in res["errors"]), res

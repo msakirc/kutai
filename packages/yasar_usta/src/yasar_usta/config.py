@@ -94,6 +94,7 @@ class GuardConfig:
     app_name: str = "App"
     command: list[str] = field(default_factory=list)
     cwd: str | None = None
+    env: dict = field(default_factory=dict)  # merged onto os.environ at spawn
 
     # Telegram
     telegram_token: str = ""
@@ -139,3 +140,24 @@ class GuardConfig:
 
     # Extra process names to check in status panel
     extra_processes: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class HubConfig:
+    """Hub-level config: the single shared Telegram bot + hub lock/log dir."""
+
+    name: str = "Yaşar Usta"
+    telegram_token: str = ""
+    telegram_chat_id: str = ""
+    log_dir: str = "logs"  # where the hub lock + hub meta log live
+    messages: Messages = field(default_factory=Messages)
+
+
+@dataclass
+class ProjectConfig:
+    """One project = a display name + N targets + an optional hook module."""
+
+    id: str
+    name: str
+    targets: list[GuardConfig] = field(default_factory=list)
+    hook_module: str | None = None

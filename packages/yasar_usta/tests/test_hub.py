@@ -79,3 +79,16 @@ async def test_poll_status_command_sends_dashboard(tmp_path):
     except asyncio.CancelledError:
         pass
     assert dash["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_watcher_fans_out_stop(tmp_path):
+    hub = _hub(tmp_path, ["kutai", "foo"])
+    stopped = {"kutai": 0, "foo": 0}
+    for pid, sup in hub.supervisors.items():
+        async def _s(p=pid):
+            stopped[p] += 1
+        sup.do_stop_now = _s
+    hub._shutdown = True  # already requested
+    await hub._shutdown_watcher()  # returns immediately, fans out
+    assert stopped == {"kutai": 1, "foo": 1}

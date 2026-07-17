@@ -146,8 +146,7 @@ class Hub:
         self._shutdown = True
         for sup in self.supervisors.values():
             sup.request_shutdown()
-            if sup.is_running:
-                await sup.subprocess.stop()
+            await sup.do_stop_now()
         await self._stop_poller()
         await self.telegram.flush_updates()
         import subprocess as _sp
@@ -175,6 +174,19 @@ class Hub:
         self._shutdown = True
         for sup in self.supervisors.values():
             sup.request_shutdown()
+
+    async def _shutdown_watcher(self) -> None:
+        """When shutdown is requested, fan out a graceful stop to every
+        supervisor so their run() loops wake and exit promptly (spec: Hub
+        fans out stop(timeout) on shutdown). Otherwise this task idles until
+        cancelled by run()."""
+        while not self._shutdown:
+            await asyncio.sleep(0.5)
+        for sup in self.supervisors.values():
+            try:
+                await sup.do_stop_now()
+            except Exception as e:
+                logger.error("shutdown stop for %s failed: %s", sup.project_id, e)
 
     # ── Poll loop ────────────────────────────────────────────────────────
     async def _poll_loop(self, initial_offset: int = 0) -> None:
@@ -265,9 +277,16 @@ class Hub:
             self._telegram_poller = asyncio.create_task(self._poll_loop(offset))
 
         sup_tasks = [asyncio.create_task(s.run()) for s in self.supervisors.values()]
+        watcher = asyncio.create_task(self._shutdown_watcher())
         try:
             await asyncio.gather(*sup_tasks)
         except asyncio.CancelledError:
             pass
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
         await self._stop_poller()
         logger.info("Hub exiting.")

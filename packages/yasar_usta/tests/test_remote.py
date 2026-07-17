@@ -63,3 +63,12 @@ async def test_remote_spawn_uses_no_window_not_detached(monkeypatch):
     assert flags & remote._sp.CREATE_NEW_PROCESS_GROUP, (
         "keep new process group so the session survives a guard restart"
     )
+
+
+import inspect
+from yasar_usta import remote as _remote_mod
+
+
+def test_start_claude_remote_accepts_session_label():
+    sig = inspect.signature(_remote_mod.start_claude_remote)
+    assert "session_label" in sig.parameters

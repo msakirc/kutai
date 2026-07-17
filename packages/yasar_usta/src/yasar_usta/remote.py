@@ -97,6 +97,7 @@ async def start_claude_remote(
     name: str = "App",
     cwd: str | None = None,
     session_dir: str | Path | None = None,
+    session_label: str | None = None,
 ) -> tuple[int | None, str | None]:
     """Start a Claude Code remote-control session as a detached process.
 
@@ -115,8 +116,10 @@ async def start_claude_remote(
 
         if sdir:
             sdir.mkdir(parents=True, exist_ok=True)
-            # Use PID-unique temp name to avoid collision between sessions
-            log_path = sdir / f"_starting_{os.getpid()}.log"
+            # Use call-unique temp name to avoid collision between concurrent targets
+            import uuid as _uuid
+            label = session_label or "s"
+            log_path = sdir / f"_starting_{label}_{_uuid.uuid4().hex[:8]}.log"
             out_fh = open(log_path, "w", encoding="utf-8")
             kwargs["stdout"] = out_fh
             kwargs["stderr"] = out_fh

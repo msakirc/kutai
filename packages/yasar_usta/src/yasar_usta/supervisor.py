@@ -209,6 +209,7 @@ class TargetSupervisor:
             name=self.cfg.claude_name or self.cfg.app_name,
             cwd=self.cfg.cwd,
             session_dir=self._claude_session_dir,
+            session_label=self.project_id,
         )
         if pid is None:
             await self.notify(self.msgs.remote_failed.format(error=url or "process failed to start"))

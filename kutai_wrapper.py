@@ -7,7 +7,6 @@ Thin consumer of the yasar-usta package, configured for KutAI.
 import asyncio
 import os
 import signal
-import subprocess as _sp
 import sys
 from pathlib import Path
 
@@ -25,211 +24,45 @@ if not _in_venv and _EXPECTED_VENV.exists():
     print(f"Use: .venv\\Scripts\\python.exe kutai_wrapper.py")
     sys.exit(1)
 
-from yasar_usta import ProcessGuard, GuardConfig, Messages, SidecarConfig
+from yasar_usta import Hub, load_registry
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-os.environ["NERD_HERD_PROJECT_ROOT"] = str(PROJECT_ROOT)
 
 
-def _find_python() -> str:
-    venv = PROJECT_ROOT / ".venv"
-    if sys.platform == "win32":
-        p = venv / "Scripts" / "python.exe"
-    else:
-        p = venv / "bin" / "python"
-    return str(p) if p.exists() else sys.executable
-
-
-def _kill_orphan_processes(exit_code: int) -> None:
-    """Kill orphaned llama-server after orchestrator exits (KutAI-specific)."""
-    if exit_code == 42:
-        return  # Clean restart — don't kill llama-server
-
-    targets = [
-        ("llama-server.exe", "llama-server"),
-        ("ollama.exe", "Ollama"),
-        ("ollama_llama_server.exe", "Ollama runner"),
-    ]
-    for exe, label in targets:
-        try:
-            check = _sp.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/NH"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if exe.lower() not in check.stdout.lower():
-                continue
-            result = _sp.run(
-                ["taskkill", "/F", "/IM", exe],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                print(f"[Yasar Usta] Killed orphaned {label}: {result.stdout.strip()}")
-        except Exception as e:
-            print(f"[Yasar Usta] {label} cleanup error: {e}")
-
-
-def _kill_stale_orchestrators() -> None:
-    """Kill any stale orchestrator (run.py) processes left from a previous crash."""
-    my_pid = os.getpid()
-    try:
-        raw = _sp.check_output(
-            ['wmic', 'process', 'where', "name='python.exe'",
-             'get', 'ProcessId,CommandLine'],
-            text=True, timeout=5,
-        )
-        for line in raw.strip().splitlines():
-            line = line.strip()
-            if not line or line.startswith("CommandLine"):
-                continue
-            if "run.py" not in line:
-                continue
-            pid_str = line.split()[-1]
-            try:
-                pid = int(pid_str)
-            except ValueError:
-                continue
-            if pid == my_pid:
-                continue
-            print(f"[Yasar Usta] Killing stale orchestrator PID {pid}")
-            _sp.run(['taskkill', '/F', '/PID', str(pid)],
-                    capture_output=True, timeout=5)
-    except Exception as e:
-        print(f"[Yasar Usta] Stale orchestrator cleanup error: {e}")
-
-
-def _reconcile_stray_llama() -> None:
-    """Kill any llama-server NOT on the configured port (frees VRAM).
-
-    Singleton hardening for the 2026-06-14 wrong-port orphan: a llama-server
-    spawned by a dead/stale process on the wrong port (e.g. :8080 when the
-    stack expects :8081) sits invisible to every port-specific check, blocking
-    VRAM. This clears such strays at supervisor boot while preserving a
-    healthy server already on the configured port. Fail-soft: the supervisor
-    must never crash on cleanup (unlike the orchestrator, which fails loud).
-    """
-    raw = os.environ.get("LLAMA_SERVER_PORT")
-    if raw is None:
-        print("[Yasar Usta] LLAMA_SERVER_PORT unset — skipping stray-llama reconcile")
-        return
-    try:
-        port = int(raw)
-    except ValueError:
-        print(f"[Yasar Usta] LLAMA_SERVER_PORT={raw!r} invalid — skipping reconcile")
-        return
-    try:
-        from dallama.platform import PlatformHelper
-
-        n = PlatformHelper().kill_stray_servers(port)
-        if n:
-            print(f"[Yasar Usta] Reconciled {n} stray llama-server(s) not on port {port}")
-    except Exception as e:
-        print(f"[Yasar Usta] Stray-llama reconcile error: {e}")
-
-
-# ── Startup cleanup ──
-_kill_stale_orchestrators()
-_reconcile_stray_llama()
-
-venv_python = _find_python()
-
-config = GuardConfig(
-    name="Yaşar Usta",
-    app_name="Kutay",
-    command=[venv_python, str(PROJECT_ROOT / "src" / "app" / "run.py")],
-    cwd=str(PROJECT_ROOT),
-
-    telegram_token=os.getenv("YASAR_USTA_BOT_TOKEN", ""),
-    telegram_chat_id=os.getenv("TELEGRAM_ADMIN_CHAT_ID", ""),
-
-    backoff_steps=[5, 15, 60, 300],
-    backoff_reset_after=600,
-
-    heartbeat_file=str(PROJECT_ROOT / "logs" / "orchestrator.heartbeat"),
-    heartbeat_stale_seconds=120,
-    heartbeat_healthy_seconds=90,
-
-    restart_exit_code=42,
-    log_dir=str(PROJECT_ROOT / "logs"),
-    log_file=str(PROJECT_ROOT / "logs" / "orchestrator.jsonl"),
-    stop_timeout=30,
-    auto_restart="--no-auto-restart" not in sys.argv,
-
-    claude_enabled=True,
-    claude_cmd=str(Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd") if os.environ.get("APPDATA") else None,
-    claude_name="Kutay",
-    claude_signal_file=str(PROJECT_ROOT / "logs" / "claude_remote.signal"),
-
-    sidecars=[
-        SidecarConfig(
-            name="yazbunu",
-            command=[venv_python, "-m", "yazbunu.server",
-                     "--log-dir", "./logs", "--port", "9880", "--host", "0.0.0.0"],
-            health_url="http://127.0.0.1:9880/health",
-            pid_file=str(PROJECT_ROOT / "logs" / "yazbunu.pid"),
-            detached=True,
-            auto_start=True,
-        ),
-        SidecarConfig(
-            name="nerd_herd",
-            # No --llama-url: nerd_herd resolves it from LLAMA_SERVER_PORT
-            # (inherited from load_dotenv above) and fails loud if unset,
-            # instead of silently defaulting to :8080 (2026-06-14 orphan guard).
-            command=[venv_python, "-m", "nerd_herd",
-                     "--port", "9881",
-                     "--pid-file", str(PROJECT_ROOT / "logs" / "nerd_herd.pid"),
-                     "--db-path", os.getenv("DB_PATH", str(PROJECT_ROOT / "data" / "kutai.db"))],
-            health_url="http://127.0.0.1:9881/health",
-            pid_file=str(PROJECT_ROOT / "logs" / "nerd_herd.pid"),
-            detached=True,
-            auto_start=True,
-        ),
-    ],
-
-    on_exit=_kill_orphan_processes,
-
-    extra_processes=[
-        {"exe": "llama-server.exe", "label": "llama-server"},
-    ],
-
-    messages=Messages(
-        announce="🔧 *Bennn... Yaşar Usta!*\n\nKutay'ı başlatıyorum...",
-        started="✅ *Kutay Started*",
-        stopped="⏹ *Kutay Stopped*\nSend /kutai\\_start to restart.",
-        crash=(
-            "🔴 *Kutay Crashed*\n"
-            "Exit code: `{exit_code}`\n"
-            "Crash #{crash_count}\n"
-            "Restarting in {backoff}s\n\n"
-            "```\n{stderr}\n```"
-        ),
-        hung="🔴 Kutay dondu — Yaşar Usta {delay}sn içinde yeniden başlatıyor",
-        restarting="♻️ *Kutay yeniden başlatılıyor...*",
-        self_restarting="🔄 *Yaşar Usta yeniden başlatılıyor...*",
-        down_prompt="⚠️ Kutay durdu. Başlatmak için butona bas.",
-        down_reply="⏸ Kutay şu an kapalı.",
-        starting="🚀 Kutay başlatılıyor...",
-        btn_start="▶️ {app_name}'ı Başlat",
-        btn_status="🔧 Durum",
-        btn_system="⚙️ Sistem",
-        btn_restart="🔄 {app_name}'ı Yeniden Başlat",
-        btn_stop="⏹ {app_name}'ı Durdur",
-        btn_logs="📋 Loglar",
-        btn_remote="🖥️ Claude Code",
-        btn_refresh="🔄 Yenile",
-        btn_restart_guard="♻️ Usta'yı Yeniden Başlat",
-        btn_restart_sidecar="📊 {sidecar_name} Yeniden Başlat",
-        remote_starting="🖥️ Claude Code oturumu başlatılıyor...",
-        remote_not_found="❌ `claude` command not found. Claude Code kurulu mu?",
-    ),
-)
+def _apply_runtime_values(hub_cfg, projects) -> None:
+    """Inject process-specific runtime values the declarative registry can't hold,
+    plus the KutAI Turkish Messages (review finding #11)."""
+    from yasar_usta.hooks import load_hook
+    appdata = os.environ.get("APPDATA", "")
+    claude_cmd = str(Path(appdata) / "npm" / "claude.cmd") if appdata else None
+    auto_restart = "--no-auto-restart" not in sys.argv
+    db_path = os.getenv("DB_PATH", str(PROJECT_ROOT / "data" / "kutai.db"))
+    for proj in projects:
+        hook = load_hook(proj.hook_module)
+        msgs = getattr(hook, "MESSAGES", None)
+        if msgs is not None:
+            hub_cfg.messages = msgs  # hub keyboard + announce use these
+        for tgt in proj.targets:
+            tgt.auto_restart = auto_restart
+            if msgs is not None:
+                tgt.messages = msgs  # crash/stop/down notifications stay Turkish
+            if claude_cmd:
+                tgt.claude_cmd = claude_cmd
+            # nerd_herd sidecar needs --db-path appended (kept out of YAML)
+            for sc in tgt.sidecars:
+                if sc.name == "nerd_herd" and "--db-path" not in sc.command:
+                    sc.command += ["--db-path", db_path]
 
 
 async def main():
-    guard = ProcessGuard(config)
+    hub_cfg, projects = load_registry(PROJECT_ROOT / "registry.yaml",
+                                      project_root=str(PROJECT_ROOT))
+    _apply_runtime_values(hub_cfg, projects)
+    hub = Hub(hub_cfg, projects)
 
     def _sig(sig, frame):
         print(f"\n[Yasar Usta] Signal {sig} received, shutting down...")
-        guard.request_shutdown()
+        hub.request_shutdown()
 
     signal.signal(signal.SIGINT, _sig)
     if hasattr(signal, "SIGTERM"):
@@ -242,16 +75,16 @@ async def main():
             @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
             def _console_handler(event):
                 if event in (0, 2):
-                    guard.request_shutdown()
+                    hub.request_shutdown()
                     return True
                 return False
 
             ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler, True)
-            guard._console_handler = _console_handler
+            hub._console_handler = _console_handler  # GC anchor
         except Exception:
             pass
 
-    await guard.run()
+    await hub.run()
 
 
 if __name__ == "__main__":

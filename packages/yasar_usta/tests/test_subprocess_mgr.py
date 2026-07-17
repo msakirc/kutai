@@ -99,3 +99,22 @@ class TestSubprocessManager:
                 heartbeat_file=str(Path(tmp) / "nonexistent"),
             )
             assert mgr.is_heartbeat_stale() is False
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_env_merged_onto_os_environ(tmp_path):
+    marker = tmp_path / "out.txt"
+    code = "import os,pathlib; pathlib.Path(os.environ['OUT']).write_text(os.environ['MYVAR'])"
+    mgr = SubprocessManager(
+        command=[sys.executable, "-c", code],
+        log_dir=str(tmp_path / "logs"),
+        env={"MYVAR": "hello", "OUT": str(marker)},
+    )
+    await mgr.start()
+    await mgr.wait_for_exit()
+    assert marker.read_text() == "hello"
+    # os.environ was NOT mutated
+    assert "MYVAR" not in os.environ

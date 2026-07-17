@@ -56,6 +56,7 @@ class SubprocessManager:
         stop_timeout: int = 30,
         heartbeat_file: str | None = None,
         heartbeat_stale_seconds: int = 120,
+        env: dict | None = None,
     ):
         self.command = command
         self.log_dir = Path(log_dir)
@@ -63,6 +64,7 @@ class SubprocessManager:
         self.stop_timeout = stop_timeout
         self.heartbeat_file = heartbeat_file
         self.heartbeat_stale_seconds = heartbeat_stale_seconds
+        self.env = env or {}
 
         self.process: asyncio.subprocess.Process | None = None
         self.running: bool = False
@@ -118,6 +120,10 @@ class SubprocessManager:
             )
 
         logger.info("Starting subprocess: %s", " ".join(self.command))
+        _child_env = None
+        if self.env:
+            import os as _os
+            _child_env = {**_os.environ, **self.env}
         try:
             self.process = await asyncio.create_subprocess_exec(
                 *self.command,
@@ -125,6 +131,7 @@ class SubprocessManager:
                 stderr=asyncio.subprocess.PIPE,
                 limit=1024 * 1024,
                 cwd=self.cwd,
+                env=_child_env,
                 **kwargs,
             )
         except Exception as e:

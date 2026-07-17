@@ -231,7 +231,8 @@ class Hub:
 
     async def _route_text(self, text: str) -> None:
         # Hub-global: dashboard (slash OR the persistent "Status" button label)
-        if text.startswith("/status") or text == self.msgs.btn_status:
+        if text.startswith("/status") or text.startswith("/kutai_status") \
+                or text == self.msgs.btn_status:
             await self._send_dashboard()
             return
         if text.startswith("/restart_hub") or text.startswith("/restart_usta") \
@@ -247,6 +248,9 @@ class Hub:
             await self._for_bare_target("remote")
             return
         # Bare per-target action verbs (start/restart/stop) — slash aliases only.
+        if text.startswith("/kutai_start"):
+            await self._for_bare_target("start")
+            return
         for verb in ("start", "restart", "stop"):
             if text.startswith("/" + verb):
                 await self._for_bare_target(verb)
@@ -275,9 +279,13 @@ class Hub:
             run_pre_boot(self._hooks.get(proj.id), proj)
 
         offset = await self.telegram.flush_updates()
-        await self._notify(
-            f"🔧 *{self.cfg.name}* — {len(self.supervisors)} target(s) starting...",
-            reply_markup=self._kb())
+        try:
+            _announce = self.msgs.announce.format(
+                name=self.cfg.name,
+                app_name=", ".join(p.name for p in self.projects))
+        except Exception:
+            _announce = f"🔧 *{self.cfg.name}* — {len(self.supervisors)} target(s) starting..."
+        await self._notify(_announce, reply_markup=self._kb())
         if self.telegram.enabled:
             self._telegram_poller = asyncio.create_task(self._poll_loop(offset))
 

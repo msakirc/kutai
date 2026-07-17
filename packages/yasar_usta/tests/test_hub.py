@@ -82,6 +82,23 @@ async def test_poll_status_command_sends_dashboard(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_kutai_aliases_route(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    hub.cfg.telegram_chat_id = "42"
+    hits = {"dash": 0, "start": 0}
+    async def _dash(edit_message_id=None):
+        hits["dash"] += 1
+    hub._send_dashboard = _dash
+    async def _bare(verb):
+        if verb == "start":
+            hits["start"] += 1
+    hub._for_bare_target = _bare
+    await hub._route_text("/kutai_status")
+    await hub._route_text("/kutai_start")
+    assert hits == {"dash": 1, "start": 1}
+
+
+@pytest.mark.asyncio
 async def test_shutdown_watcher_fans_out_stop(tmp_path):
     hub = _hub(tmp_path, ["kutai", "foo"])
     stopped = {"kutai": 0, "foo": 0}

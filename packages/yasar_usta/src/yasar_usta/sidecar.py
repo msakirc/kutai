@@ -38,6 +38,7 @@ class SidecarManager:
         log_file: str | None = None,
         cwd: str | None = None,
         detached: bool = True,
+        env: dict | None = None,
     ):
         self.name = name
         self.command = command
@@ -47,6 +48,7 @@ class SidecarManager:
         self.log_file = Path(log_file) if log_file else None
         self.cwd = cwd
         self.detached = detached
+        self.env = env or {}
 
     def pid_alive(self) -> int | None:
         """Return PID if the sidecar process is alive, else None."""
@@ -111,6 +113,8 @@ class SidecarManager:
                 kwargs["stdout"] = out_fh
                 kwargs["stderr"] = out_fh
 
+            if self.env:
+                kwargs["env"] = {**os.environ, **self.env}
             proc = _sp.Popen(
                 self.command,
                 cwd=self.cwd,

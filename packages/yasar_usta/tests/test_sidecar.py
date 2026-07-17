@@ -89,3 +89,21 @@ class TestSidecarManager:
     def test_no_pid_file_stays_none(self):
         mgr = SidecarManager(name="test", command=["echo"])
         assert mgr.pid_file is None
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_sidecar_env_merged(tmp_path):
+    marker = tmp_path / "sc.txt"
+    code = "import os,pathlib; pathlib.Path(os.environ['OUT']).write_text(os.environ['SCVAR'])"
+    sc = SidecarManager(
+        name="t", command=[sys.executable, "-c", code],
+        pid_file=str(tmp_path / "t.pid"), detached=False,
+        env={"SCVAR": "sc", "OUT": str(marker)},
+    )
+    await sc.start()
+    import asyncio; await asyncio.sleep(1.0)
+    assert marker.read_text() == "sc"
+    assert "SCVAR" not in os.environ

@@ -83,6 +83,7 @@ class SidecarConfig:
     detached: bool = True
     auto_start: bool = True
     auto_restart: bool = True
+    env: dict = field(default_factory=dict)
 
 
 @dataclass

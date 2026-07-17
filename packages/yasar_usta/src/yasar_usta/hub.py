@@ -30,8 +30,8 @@ class Hub:
         self.telegram = TelegramAPI(hub_cfg.telegram_token, hub_cfg.telegram_chat_id)
         self._guard_start_time = time.time()
         self._shutdown = False
-        self._restart_hub = False
         self._telegram_poller: asyncio.Task | None = None
+        self._bg_tasks: set = set()  # strong refs to fire-and-forget tasks
 
         # Persistent reply keyboard, built once from hub Messages (spec R4).
         self._reply_kb = build_hub_reply_keyboard(self.msgs)
@@ -77,6 +77,10 @@ class Hub:
                     await self.telegram.send(text, reply_markup=kb, parse_mode=None)
         except Exception as e:
             logger.error("dashboard failed: %s", e)
+            try:
+                await self.telegram.send(f"⚠️ Dashboard error: {e}")
+            except Exception:
+                pass
 
     # ── Callback routing ─────────────────────────────────────────────────
     async def _route_callback(self, cb_data: str, cb_msg_id) -> None:
@@ -124,8 +128,9 @@ class Hub:
             await sup.kill_now()
             await sup._send_start_prompt(f"🔴 {sup.cfg.app_name} not responding.")
         elif verb == "remote":
-            import asyncio as _a
-            _a.create_task(sup._handle_remote())
+            t = asyncio.create_task(sup._handle_remote())
+            self._bg_tasks.add(t)
+            t.add_done_callback(self._bg_tasks.discard)
         elif verb == "logs":
             await self._send_logs_for(sup)
 

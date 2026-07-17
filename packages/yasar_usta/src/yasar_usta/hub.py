@@ -1,0 +1,207 @@
+"""Hub — owns the shared Telegram poller, the single lock, N supervisors,
+the dashboard, coordinated shutdown, and hub self-restart."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import sys
+import time
+from pathlib import Path
+
+from .commands import (build_dashboard_keyboard, build_hub_reply_keyboard,
+                       format_log_entries)
+from .config import HubConfig, ProjectConfig
+from .hooks import load_hook, run_pre_boot
+from .lock import acquire_lock, release_lock
+from .status import build_dashboard_text
+from .supervisor import TargetSupervisor
+from .telegram import TelegramAPI
+
+logger = logging.getLogger("yasar_usta.hub")
+
+
+class Hub:
+    def __init__(self, hub_cfg: HubConfig, projects: list[ProjectConfig]):
+        self.cfg = hub_cfg
+        self.msgs = hub_cfg.messages
+        self.projects = projects
+        self.telegram = TelegramAPI(hub_cfg.telegram_token, hub_cfg.telegram_chat_id)
+        self._guard_start_time = time.time()
+        self._shutdown = False
+        self._restart_hub = False
+        self._telegram_poller: asyncio.Task | None = None
+
+        # Persistent reply keyboard, built once from hub Messages (spec R4).
+        self._reply_kb = build_hub_reply_keyboard(self.msgs)
+
+        # One supervisor per target, keyed by a unique routing id. Single-target
+        # project → routing id is the project id; multi-target → `${pid}:${tgt}`.
+        self.supervisors: dict[str, TargetSupervisor] = {}
+        self._hooks: dict[str, object] = {}  # loaded once, reused in run()
+        for proj in projects:
+            hook = load_hook(proj.hook_module)
+            self._hooks[proj.id] = hook
+            for tgt in proj.targets:
+                if hook is not None and hasattr(hook, "on_exit"):
+                    tgt.on_exit = hook.on_exit
+                rid = proj.id if len(proj.targets) == 1 else f"{proj.id}:{tgt.name}"
+                self.supervisors[rid] = TargetSupervisor(
+                    rid, tgt, notify=self._notify, reply_keyboard=self._reply_kb)
+
+    async def _notify(self, text: str, reply_markup: dict | None = None) -> None:
+        await self.telegram.send(text, reply_markup=reply_markup)
+
+    def _kb(self) -> dict:
+        return self._reply_kb
+
+    def _resolve_bare_target(self) -> "TargetSupervisor | None":
+        if len(self.supervisors) == 1:
+            return next(iter(self.supervisors.values()))
+        return None
+
+    # ── Dashboard ────────────────────────────────────────────────────────
+    async def _send_dashboard(self, edit_message_id: int | None = None) -> None:
+        states = [s.status() for s in self.supervisors.values()]
+        text = build_dashboard_text(self.cfg.name, states, self._guard_start_time)
+        kb = build_dashboard_keyboard(states)
+        try:
+            if edit_message_id:
+                result = await self.telegram.edit(edit_message_id, text, reply_markup=kb)
+                if result and not result.get("ok"):
+                    await self.telegram.edit(edit_message_id, text, reply_markup=kb, parse_mode=None)
+            else:
+                result = await self.telegram.send(text, reply_markup=kb)
+                if result and not result.get("ok"):
+                    await self.telegram.send(text, reply_markup=kb, parse_mode=None)
+        except Exception as e:
+            logger.error("dashboard failed: %s", e)
+
+    # ── Callback routing ─────────────────────────────────────────────────
+    async def _route_callback(self, cb_data: str, cb_msg_id) -> None:
+        if cb_data == "dashboard_refresh":
+            await self._send_dashboard(edit_message_id=cb_msg_id)
+            return
+        if cb_data == "restart_hub":
+            await self._notify("♻️ *Hub yeniden başlatılıyor...*")
+            await self._do_restart_hub()
+            return
+        if cb_data == "confirm_cancel":
+            if cb_msg_id:
+                await self.telegram.delete(cb_msg_id)
+            return
+        if ":" not in cb_data:
+            return
+        verb, pid = cb_data.split(":", 1)
+        sup = self.supervisors.get(pid)
+        if not sup:
+            return
+        # restart/stop are semi-destructive → confirm first (review finding #5).
+        if verb == "restart":
+            await self._confirm(pid, sup.cfg.app_name, "restart",
+                                f"🔄 *{sup.cfg.app_name} yeniden başlatılsın mı?*")
+        elif verb == "stop":
+            await self._confirm(pid, sup.cfg.app_name, "stop",
+                                f"⚠️ *{sup.cfg.app_name} durdurulsun mu?*\n"
+                                "Manuel olarak yeniden başlatmanız gerekecek.")
+        elif verb == "confirm_restart":
+            if cb_msg_id:
+                await self.telegram.delete(cb_msg_id)
+            await self._notify(f"♻️ *{sup.cfg.app_name} yeniden başlatılıyor...*")
+            sup.request_restart()
+            await sup.do_restart_now()
+        elif verb == "confirm_stop":
+            if cb_msg_id:
+                await self.telegram.delete(cb_msg_id)
+            await self._notify(f"⏹ *{sup.cfg.app_name} durduruluyor...*")
+            sup.request_stop()
+            await sup.do_stop_now()
+        elif verb == "start":
+            await self._notify(f"🚀 {sup.cfg.app_name} başlatılıyor...")
+            await sup.request_start()
+        elif verb == "kill":
+            await sup.kill_now()
+            await sup._send_start_prompt(f"🔴 {sup.cfg.app_name} not responding.")
+        elif verb == "remote":
+            import asyncio as _a
+            _a.create_task(sup._handle_remote())
+        elif verb == "logs":
+            await self._send_logs_for(sup)
+
+    async def _confirm(self, pid: str, app_name: str, action: str, prompt: str) -> None:
+        """Send a Yes/Cancel dialog whose Yes carries confirm_{action}:{pid}."""
+        await self.telegram.send(prompt, reply_markup={"inline_keyboard": [[
+            {"text": "✅ Evet", "callback_data": f"confirm_{action}:{pid}"},
+            {"text": "❌ Vazgeç", "callback_data": "confirm_cancel"},
+        ]]})
+
+    async def _send_logs_for(self, sup: TargetSupervisor) -> None:
+        log_path = sup.cfg.log_file or str(Path(sup.cfg.log_dir) / "orchestrator.jsonl")
+        formatted = format_log_entries(log_path, 20)
+        await self._notify(formatted or "📋 No log entries.")
+
+    # ── Hub self-restart (spec finding #1) ───────────────────────────────
+    async def _do_restart_hub(self) -> None:
+        self._shutdown = True
+        for sup in self.supervisors.values():
+            sup.request_shutdown()
+            if sup.is_running:
+                await sup.subprocess.stop()
+        await self._stop_poller()
+        await self.telegram.flush_updates()
+        import subprocess as _sp
+        script = str(Path(sys.argv[0]).resolve())
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = (
+                _sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS | _sp.CREATE_NO_WINDOW)
+        _sp.Popen([sys.executable, script] + sys.argv[1:], close_fds=True,
+                  cwd=str(Path(script).parent), **kwargs)
+        release_lock()
+        os._exit(0)
+
+    async def _stop_poller(self) -> None:
+        if self._telegram_poller:
+            self._telegram_poller.cancel()
+            try:
+                await self._telegram_poller
+            except asyncio.CancelledError:
+                pass
+            self._telegram_poller = None
+        await self.telegram.close()
+
+    def request_shutdown(self) -> None:
+        self._shutdown = True
+        for sup in self.supervisors.values():
+            sup.request_shutdown()
+
+    # ── Poll loop ────────────────────────────────────────────────────────
+    async def _poll_loop(self, initial_offset: int = 0) -> None:
+        # Full implementation added in Task 9.
+        ...
+
+    # ── Run ──────────────────────────────────────────────────────────────
+    async def run(self) -> None:
+        Path(self.cfg.log_dir).mkdir(parents=True, exist_ok=True)
+        acquire_lock(self.cfg.log_dir, name="hub")
+        logger.info("Hub started with %d supervisors", len(self.supervisors))
+
+        # pre_boot hooks (per project, once, after lock — spec finding #4).
+        for proj in self.projects:
+            run_pre_boot(self._hooks.get(proj.id), proj)
+
+        offset = await self.telegram.flush_updates()
+        await self._notify(
+            f"🔧 *{self.cfg.name}* — {len(self.supervisors)} target(s) starting...",
+            reply_markup=self._kb())
+        if self.telegram.enabled:
+            self._telegram_poller = asyncio.create_task(self._poll_loop(offset))
+
+        sup_tasks = [asyncio.create_task(s.run()) for s in self.supervisors.values()]
+        try:
+            await asyncio.gather(*sup_tasks)
+        except asyncio.CancelledError:
+            pass
+        await self._stop_poller()
+        logger.info("Hub exiting.")

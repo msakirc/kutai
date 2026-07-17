@@ -37,15 +37,15 @@ Yaşar Usta stays the package (`packages/yasar_usta/src/yasar_usta/`). Today's `
 
 ### `Hub` (new — `hub.py`)
 Owns:
-- The single Telegram poller and the callback dispatch table.
+- The **full `TelegramAPI` client** — the poll loop, the callback dispatch table, and **all callback-side ops** (`answer_callback`, `delete`, `edit` with Markdown→plain retry). The single Telegram **token + chat_id** live on `HubConfig`, not on targets (there is one shared bot; see finding R3).
 - The single `hub` lock (`name="hub"`, in a hub-level log dir — **not** any target's log dir).
 - The registry of `TargetSupervisor` instances keyed by `project_id`.
-- Aggregated multi-project status dashboard.
+- **Status rendering.** `_send_status`/dashboard is Hub-owned (reads `supervisor.status()` from each) — not supervisor-owned, because it needs `edit`/`answer_callback` which only the Hub holds (finding R1).
 - Coordinated shutdown (fan out to all supervisors) and **hub self-restart** (see finding #1 below).
 - Process-global signal handlers + Windows console ctrl handler (installed once).
 
 ### `TargetSupervisor` (`ProcessGuard` generalized)
-Owns supervision of exactly **one** target: the `run()` state machine (crash/backoff/exit-42/exit-0/hung), heartbeat staleness detection, sidecars, the claude-signal watcher, per-target intent flags. **Does not** own the poller, the lock, or signal handlers. Sends Telegram messages via an **injected sender callback** (`send(text, reply_markup=...)`), not a poller it owns.
+Owns supervision of exactly **one** target: the `run()` state machine (crash/backoff/exit-42/exit-0/hung), heartbeat staleness detection, sidecars, the claude-signal watcher, per-target intent flags. **Does not** own the poller, the lock, signal handlers, callback ops, or status rendering. It is injected **only** a one-way `notify(text, reply_markup=...)` sender for its own `run()` transition messages (crash/hung/restart notices) — it never edits messages or answers callbacks (finding R1).
 
 Exposes an explicit intent API the Hub's poller calls (never reaching into internals):
 - `request_start()`, `request_restart()`, `request_stop()`
@@ -57,9 +57,10 @@ Exposes an explicit intent API the Hub's poller calls (never reaching into inter
 ## Components
 
 1. **`config.py`** — add:
+   - `HubConfig(telegram_token, telegram_chat_id, log_dir)` — hub-level; the shared bot's token/chat move here from per-target `GuardConfig` (finding R3). Per-target Telegram fields are **removed**.
    - `ProjectConfig(id, name, targets: list[GuardConfig], hook_module: str | None)`.
-   - `load_registry(path) -> list[ProjectConfig]` — parse YAML → validate → construct. **Fail fast** on parse/validation error (no partial start).
-   - Keep `GuardConfig` per target (already parameterized: `command`, `cwd`, `heartbeat_file`, `restart_exit_code`, `log_dir`, `log_file`, `sidecars`, `backoff_steps`, `on_exit`, `extra_processes`). Add optional `env: dict[str,str]` for per-target subprocess env (see finding #4).
+   - `load_registry(path) -> (HubConfig, list[ProjectConfig])` — parse YAML → validate → construct. **Fail fast** on parse/validation error (no partial start).
+   - Keep `GuardConfig` per target (already parameterized: `command`, `cwd`, `heartbeat_file`, `restart_exit_code`, `log_dir`, `log_file`, `sidecars`, `backoff_steps`, `on_exit`, `extra_processes`, `extra_commands` — retained as-is, unused by KutAI). Add optional `env: dict[str,str]` for per-target subprocess env (see finding #4). Drop `telegram_token`/`telegram_chat_id` (now Hub-level).
 2. **`hub.py`** (new) — `Hub` class per Architecture above.
 3. **`guard.py`** — refactor `ProcessGuard` → `TargetSupervisor`: strip poller + lock + signal handlers; convert intent flags to the `request_*()` API; accept injected `send`.
 4. **`telegram.py`** — reuse the API client; add per-target callback routing helpers. Dispatch table lives in `Hub`.
@@ -94,9 +95,9 @@ projects:
 
 ## Data flow
 
-**Startup:** hub entry point → load `.env` → hub venv guard → `load_registry(registry.yaml)` → construct `Hub` → acquire `hub` lock → **for each project: run `pre_boot` hook** (KutAI's stale-orchestrator + stray-llama cleanup) → construct N `TargetSupervisor` → spawn N supervisor tasks + 1 telegram poll task → announce.
+**Startup:** hub entry point → load `.env` → hub venv guard → `load_registry(registry.yaml)` → construct `Hub` → acquire `hub` lock → **for each project: run `pre_boot(project)` hook once** (per-**project**, after the lock, before any of that project's supervisors spawn — KutAI's stale-orchestrator + stray-llama cleanup) → construct N `TargetSupervisor` → spawn N supervisor tasks + 1 telegram poll task → announce.
 
-**Runtime:** each supervisor's `run()` loops independently. Poller receives a command/callback → parses `verb` or `verb:project_id[:arg]` → calls the addressed supervisor's `request_*()` (or Hub-global handler) → replies via the injected sender.
+**Runtime — command routing (finding R4):** inline-dashboard buttons are the **only** per-target control surface; their callbacks carry `verb:project_id[:arg]` → Hub routes to that supervisor's `request_*()`. Bare **text** commands are **Hub-global**: `/status` = aggregate dashboard of all projects, `/restart_hub` = restart the hub, `/logs` = hub log. A per-target text verb with no id (e.g. bare `/restart`) is **rejected** with a hint to use the dashboard button — never silently applied to a guessed target. Each supervisor's `run()` loops independently; Hub-global text and per-target callbacks are dispatched by the single poller.
 
 **Status:** `/status` (or dashboard refresh) → `Hub` collects `supervisor.status()` from all → renders dashboard.
 
@@ -117,8 +118,18 @@ An adversarial code review (verdict: SOUND-WITH-FIXES) surfaced coupling the fir
 - **#5 (major) — confirmation callbacks are stateless.** `confirm_restart`/`confirm_stop` carry no target identity (works today because there is one app). Encode identity **in the callback string**: `confirm_restart:{pid}`, `confirm_stop:{pid}`, `restart_sidecar:{pid}:{name}`, `refresh:{pid}`. Hub-global callbacks stay unqualified (`restart_hub`, `dashboard_refresh`). No server-side pending-confirm dict (a hub restart would lose it; `flush_updates` already drops in-flight callbacks).
 - **#6 (minor) — lock hoist is clean.** `lock.py` uses module-global singletons + `atexit` (`lock.py:10-12,72`) — acceptable because there is exactly **one** hub lock. Add a guard so `acquire_lock` can't be called twice (it would silently clobber the handle). No target ever touches `lock.py`.
 - **#7 (minor) — claude temp-log collision.** `remote.py:119` names the starting-log `_starting_{os.getpid()}.log` — now the shared **hub** PID, so concurrent per-target launches collide before the rename to `{child_pid}.log`. Use `_starting_{project_id}_{uuid}.log`. Session dirs are already per-`log_dir` namespaced (`guard.py:97`).
-- **#8 (minor, highest mechanical risk) — `_start_signal_watcher` has 7 call sites** (`guard.py:650,678,694,708,720,730,741`) tied to app-lifecycle transitions. The watcher (claude-signal + sidecar `ensure()`, `guard.py:293-313`) moves whole to `TargetSupervisor`. **Enumerate all 7 in the implementation plan** — missing one silently stops a target's sidecar health checks after certain restart paths.
+- **#8 (minor, highest mechanical risk) — `_start_signal_watcher` has 7 call sites** (`guard.py:650,678,694,708,720,730,741`) tied to app-lifecycle transitions, **plus 2 `_stop_signal_watcher` sites (`guard.py:664,785`)**. The watcher (claude-signal + sidecar `ensure()`, `guard.py:293-313`) moves whole to `TargetSupervisor`. **Enumerate all 9 in the implementation plan** — missing a start site silently stops a target's sidecar health checks after certain restart paths; missing a stop site leaks watcher tasks per target.
 - **#10 (minor) — preserve, don't clean.** `_send_start_prompt` (`guard.py:130`) takes already-formatted `reason` strings from callers (`guard.py:511,524`). It is a slightly confused contract but **behavior-preserving-sensitive** (exact user-facing down-state wording). Do not "tidy" it during the split.
+
+### Second review pass (findings folded)
+
+A second adversarial pass (verdict: SOUND-WITH-FIXES; architecture + locked decisions confirmed) caught four spec-text gaps the first folding left — treated as constraints:
+
+- **R1 (major) — injected sender was too thin.** A single `send` callback can't express status refresh (`edit` + Markdown→plain retry, `guard.py:198-211`) or callback acknowledgement (`answer_callback`/`delete`, `guard.py:364-416`). Resolution (already reflected in Architecture): Hub owns the full `TelegramAPI` and all callback-side ops **and** status rendering; the supervisor is injected only a one-way `notify()` for its `run()` transition messages.
+- **R2 (major) — per-target `env` (#4) was unwired + incomplete.** (a) `SubprocessManager.start()` never passes `env=` to `create_subprocess_exec` (`subprocess_mgr.py:122-129`) — add it with an explicit **`{**os.environ, **cfg.env}` merge** (bare `cfg.env` would drop PATH/venv). (b) The nerd_herd **sidecar** also reads `NERD_HERD_PROJECT_ROOT`/`LLAMA_SERVER_PORT` from `os.environ`, but `SidecarManager` (`sidecar.py:31-49`) has no `env` param — thread per-project `env` through sidecars too, or moving project-root off `os.environ` breaks them. (c) `load_dotenv()` is process-global today; policy for sub-project 1 = **KutAI keeps the single process `.env`**; per-project `.env` files are deferred (only KutAI exists now). Env in the registry is per-target and merged onto `os.environ` at spawn.
+- **R3 (major) — shared-poller Telegram token/chat migration was unstated.** Per-target `telegram_token`/`telegram_chat_id` (filtered at `guard.py:359,425`; KutAI token `YASAR_USTA_BOT_TOKEN` at `kutai_wrapper.py:141`) move to `HubConfig`. Per-target Telegram fields are dropped and **excluded from the migration-equivalence assertion** (see Testing).
+- **R4 (major) — text-command routing was undefined.** Resolved in Data flow: inline buttons are the only per-target surface; bare text commands are Hub-global; ambiguous per-target text verbs are rejected with a hint, never applied to a guessed target.
+- **Tidies:** `_stop_signal_watcher` sites added to #8 (above); `extra_commands` retained (Components); `pre_boot` pinned as per-**project**, once, after lock (Data flow); migration-guard relabeled as a config-equivalence check (Testing).
 
 ## Error handling
 
@@ -141,8 +152,8 @@ An adversarial code review (verdict: SOUND-WITH-FIXES) surfaced coupling the fir
    - Per-target routing: `restart:foo` hits foo's supervisor, not kutai's; `confirm_restart:{pid}` targets the right one.
    - Dashboard render for N projects.
    - Hook load: `pre_boot` fires before supervisor start; `on_exit` fires on crash; KutAI cleanup fns invoked.
-3. **Migration guard test:** the KutAI registry block + loader produce a `GuardConfig` equivalent to today's hardcoded `kutai_wrapper.py` config (proves 1:1). Assert command, cwd, env, heartbeat_file, restart_exit_code, log paths, sidecars.
-4. All 10 existing `yasar_usta` test modules stay green.
+3. **Migration guard test (config-equivalence only):** the KutAI registry block + loader produce a `GuardConfig` equal to today's hardcoded `kutai_wrapper.py` config on: command, cwd, env, heartbeat_file, restart_exit_code, log paths, sidecars. **Excludes** the dropped per-target Telegram fields (now on `HubConfig`). This proves 1:1 *config*, not runtime behavior — behavior preservation is gated by the characterization suite (test 1), since the split changes execution structure even when config is identical.
+4. All 10 existing `yasar_usta` test modules stay green (or are updated in lockstep where the split moves a responsibility — e.g. lock/poller ownership).
 
 ## Scope (YAGNI)
 

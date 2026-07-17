@@ -37,6 +37,15 @@ def test_status_snapshot_shape(tmp_path):
     assert "heartbeat_age" in s and "total_crashes" in s
 
 
+def test_status_sidecars_is_snapshot_not_managers(tmp_path):
+    sup, _ = _sup(tmp_path)
+    # a supervisor with no sidecars → empty dict; values (if any) must be plain dicts
+    scs = sup.status()["sidecars"]
+    assert isinstance(scs, dict)
+    for v in scs.values():
+        assert isinstance(v, dict) and "name" in v
+
+
 @pytest.mark.asyncio
 async def test_crash_notification_carries_injected_keyboard(tmp_path):
     """Guards review finding #3: _notify_crash must NOT call a missing _kb();

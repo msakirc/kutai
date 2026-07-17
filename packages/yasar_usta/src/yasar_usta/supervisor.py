@@ -130,7 +130,8 @@ class TargetSupervisor:
             "heartbeat_age": self.subprocess.heartbeat_age(),
             "heartbeat_healthy_seconds": self.cfg.heartbeat_healthy_seconds,
             "total_crashes": self.backoff.total_crashes,
-            "sidecars": self.sidecars,
+            "sidecars": {name: {"name": name, "pid": sc.pid_alive()}
+                         for name, sc in self.sidecars.items()},
             "extra_processes": self.cfg.extra_processes,
         }
 
@@ -264,6 +265,12 @@ class TargetSupervisor:
     # ── Main loop ─────────────────────────────────────────────────────
 
     async def run(self) -> None:
+        # Clear a stale claude signal file so the watcher doesn't fire on boot
+        # (ported from guard.py:621-625).
+        if self.cfg.claude_signal_file:
+            _sf = Path(self.cfg.claude_signal_file)
+            if _sf.exists():
+                _sf.unlink()
         # Start this target's sidecars BEFORE the app (review finding #6):
         for sc in self.sidecars.values():
             if sc.command:
@@ -406,7 +413,7 @@ class TargetSupervisor:
                 while not self._shutdown and not self.subprocess.running:
                     await asyncio.sleep(5)
 
-        # Shutdown block (review finding #4 — NO _stop_telegram_poller):
+        # Shutdown: stop subprocess + watcher (poller/lock are Hub-owned).
         if self.subprocess.running:
             await self.subprocess.stop()
         await self._stop_signal_watcher()

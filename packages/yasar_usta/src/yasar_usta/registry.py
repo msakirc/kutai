@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 
@@ -49,7 +50,8 @@ def _build_target(raw: dict, tokens: dict) -> GuardConfig:
             sc["pid_file"] = _norm(sc["pid_file"])
         if isinstance(sc.get("command"), list) and sc["command"]:
             sc["command"] = [_norm(sc["command"][0])] + list(sc["command"][1:])
-        sidecars.append(SidecarConfig(**sc))
+        _sc_fields = {f.name for f in dataclasses.fields(SidecarConfig)}
+        sidecars.append(SidecarConfig(**{k: v for k, v in sc.items() if k in _sc_fields}))
     return GuardConfig(
         name=raw["id"],
         app_name=raw.get("app_name", raw["id"]),
@@ -87,7 +89,7 @@ def load_registry(path, project_root: str) -> tuple[HubConfig, list[ProjectConfi
         name=raw_hub.get("name", "Yaşar Usta"),
         telegram_token=os.getenv(raw_hub.get("telegram_token_env", ""), ""),
         telegram_chat_id=os.getenv(raw_hub.get("telegram_chat_id_env", ""), ""),
-        log_dir=_resolve(raw_hub.get("log_dir", "logs"), tokens),
+        log_dir=_norm(_resolve(raw_hub.get("log_dir", "logs"), tokens)),
     )
 
     projects: list[ProjectConfig] = []

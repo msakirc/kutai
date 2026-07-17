@@ -52,3 +52,23 @@ projects:
 """)
     with pytest.raises(ValueError, match="targets"):
         load_registry(reg, project_root=str(tmp_path))
+
+
+def test_sidecar_unknown_key_ignored(tmp_path):
+    reg = _write(tmp_path, """
+hub: {telegram_token_env: T, telegram_chat_id_env: C, log_dir: "l"}
+projects:
+  demo:
+    name: Demo
+    targets:
+      - id: web
+        command: ["python"]
+        sidecars:
+          - name: sc1
+            command: ["python", "-m", "x"]
+            bogus_key: 123
+""")
+    hub, projects = load_registry(reg, project_root=str(tmp_path))
+    sc = projects[0].targets[0].sidecars[0]
+    assert sc.name == "sc1"
+    assert sc.command == ["python", "-m", "x"]

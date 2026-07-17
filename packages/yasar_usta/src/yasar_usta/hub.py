@@ -178,8 +178,74 @@ class Hub:
 
     # ── Poll loop ────────────────────────────────────────────────────────
     async def _poll_loop(self, initial_offset: int = 0) -> None:
-        # Full implementation added in Task 9.
-        ...
+        offset = initial_offset
+        fail = 0
+        logger.info("Hub poller started")
+        while True:
+            try:
+                updates = await self.telegram.get_updates(offset=offset)
+                fail = 0
+                if not updates:
+                    continue
+                offset = max(u["update_id"] for u in updates) + 1
+                for update in updates:
+                    cb = update.get("callback_query")
+                    if cb:
+                        chat = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+                        if chat == str(self.cfg.telegram_chat_id):
+                            await self.telegram.answer_callback(cb["id"])
+                            await self._route_callback(
+                                cb.get("data", ""),
+                                cb.get("message", {}).get("message_id"))
+                        continue
+                    msg = update.get("message", {})
+                    text = msg.get("text", "")
+                    chat_id = str(msg.get("chat", {}).get("id", ""))
+                    if chat_id != str(self.cfg.telegram_chat_id):
+                        continue
+                    await self._route_text(text)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                fail += 1
+                if fail <= 3 or fail % 60 == 0:
+                    logger.error("Hub poll error (#%d): %s", fail, e)
+                await asyncio.sleep(5)
+
+    async def _route_text(self, text: str) -> None:
+        # Hub-global: dashboard (slash OR the persistent "Status" button label)
+        if text.startswith("/status") or text == self.msgs.btn_status:
+            await self._send_dashboard()
+            return
+        if text.startswith("/restart_hub") or text.startswith("/restart_usta") \
+                or text.startswith("/restart_guard"):
+            await self._notify("♻️ *Hub yeniden başlatılıyor...*")
+            await self._do_restart_hub()
+            return
+        # Persistent reply-keyboard labels for Logs / Remote (review finding #1/#2)
+        if text.startswith("/logs") or text == self.msgs.btn_logs:
+            await self._for_bare_target("logs")
+            return
+        if text.startswith("/remote") or text == self.msgs.btn_remote:
+            await self._for_bare_target("remote")
+            return
+        # Bare per-target action verbs (start/restart/stop) — slash aliases only.
+        for verb in ("start", "restart", "stop"):
+            if text.startswith("/" + verb):
+                await self._for_bare_target(verb)
+                return
+        if text.startswith("/"):
+            await self._send_dashboard()
+
+    async def _for_bare_target(self, verb: str) -> None:
+        """Apply a per-target verb to the sole supervisor, or reject if N>1
+        (spec R4: never guess a target)."""
+        sup = self._resolve_bare_target()
+        if sup is None:
+            await self._notify(
+                "⚠️ Multiple projects — open /status and use the buttons.")
+            return
+        await self._route_callback(f"{verb}:{sup.project_id}", None)
 
     # ── Run ──────────────────────────────────────────────────────────────
     async def run(self) -> None:

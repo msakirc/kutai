@@ -56,3 +56,26 @@ def test_bare_verb_rejected_when_multiple_projects(tmp_path):
 def test_bare_verb_resolves_when_single_project(tmp_path):
     hub = _hub(tmp_path, ["kutai"])
     assert hub._resolve_bare_target().project_id == "kutai"
+
+
+@pytest.mark.asyncio
+async def test_poll_status_command_sends_dashboard(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    hub.cfg.telegram_chat_id = "42"
+    hub.telegram.token = "x"; hub.telegram.chat_id = "42"
+    dash = {"n": 0}
+    async def _send_dash(edit_message_id=None):
+        dash["n"] += 1
+    hub._send_dashboard = _send_dash
+    calls = {"n": 0}
+    async def get_updates(offset=0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [{"update_id": 1, "message": {"text": "/status", "chat": {"id": 42}}}]
+        raise asyncio.CancelledError()
+    hub.telegram.get_updates = get_updates
+    try:
+        await hub._poll_loop(0)
+    except asyncio.CancelledError:
+        pass
+    assert dash["n"] == 1

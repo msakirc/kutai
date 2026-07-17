@@ -11,7 +11,8 @@
 **Spec:** `docs/superpowers/specs/2026-07-17-yasar-usta-multiproject-hub-design.md`
 
 **Conventions:**
-- Run tests with a timeout: `python -m pytest packages/yasar_usta/tests/... -v` (project rule: never run pytest without a timeout; targeted runs only). On Windows use the venv python.
+- **Every `python`/`pytest` command in this plan means the venv interpreter** `.venv/Scripts/python.exe` — the entry point's venv guard `sys.exit(1)`s under system Python, and imports resolve only in the venv. Prefix accordingly (shown bare below for brevity).
+- Run tests with a timeout: `.venv/Scripts/python.exe -m pytest packages/yasar_usta/tests/... -v` (project rule: never run pytest without a timeout; targeted runs only). Zombie pytest holds SQLite locks — keep runs foreground + targeted.
 - Commit at each task (project rule: commit at each milestone). Conventional commits + `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - Do NOT push — this work is restart-gated; push happens only after live-verify at the end.
 - Naming already in codebase: `TelegramAPI.send/edit/delete/answer_callback/get_updates/flush_updates`, `SubprocessManager`, `SidecarManager`, `BackoffTracker`, `build_status_text`, `build_start_keyboard`, `build_status_inline_keyboard`, `format_log_entries`, `acquire_lock(lock_dir, name=)`, `release_lock()`.
@@ -63,6 +64,13 @@ import pytest
 
 from yasar_usta.config import GuardConfig
 from yasar_usta.guard import ProcessGuard
+
+
+@pytest.fixture(autouse=True)
+def _no_lock(monkeypatch):
+    """run() calls acquire_lock (module-global handle + atexit, never released on
+    normal shutdown). No-op it so tests don't leak locked files on tmp dirs."""
+    monkeypatch.setattr("yasar_usta.guard.acquire_lock", lambda *a, **k: None)
 
 
 def _guard(tmp_path, **over):
@@ -303,8 +311,10 @@ projects:
     assert len(p.targets) == 1
     t = p.targets[0]
     assert t.command == ["python", "-m", "http.server"]
-    assert t.cwd == str(tmp_path)
-    assert t.log_dir == str(tmp_path / "logs")
+    # Compare as Path (loader normalizes separators; Windows-safe)
+    assert Path(t.cwd) == tmp_path
+    assert Path(t.log_dir) == tmp_path / "logs"
+    assert Path(t.heartbeat_file) == tmp_path / "logs" / "web.heartbeat"
 
 
 def test_load_registry_fails_fast_on_missing_targets(tmp_path):
@@ -384,12 +394,32 @@ def _resolve(value, tokens: dict):
     return value
 
 
+# Fields whose values are filesystem paths → normalize separators (Windows).
+_PATH_FIELDS = ("cwd", "log_dir", "log_file", "heartbeat_file",
+                "claude_signal_file", "claude_cmd")
+
+
+def _norm(v):
+    return str(Path(v)) if isinstance(v, str) and v else v
+
+
 def _build_target(raw: dict, tokens: dict) -> GuardConfig:
     raw = _resolve(raw, tokens)
     if "id" not in raw or "command" not in raw:
         raise ValueError(f"target missing id/command: {raw!r}")
+    for k in _PATH_FIELDS:
+        if k in raw:
+            raw[k] = _norm(raw[k])
+    # command[0] and pid_file paths also normalized
+    if isinstance(raw.get("command"), list):
+        raw["command"] = [_norm(raw["command"][0])] + list(raw["command"][1:]) \
+            if raw["command"] else raw["command"]
     sidecars = []
     for sc in raw.get("sidecars", []):
+        if sc.get("pid_file"):
+            sc["pid_file"] = _norm(sc["pid_file"])
+        if isinstance(sc.get("command"), list) and sc["command"]:
+            sc["command"] = [_norm(sc["command"][0])] + list(sc["command"][1:])
         sidecars.append(SidecarConfig(**sc))
     return GuardConfig(
         name=raw["id"],
@@ -617,7 +647,7 @@ git commit -m "feat(yasar_usta): per-project env for sidecars"
 
 ## Task 6: Introduce `TargetSupervisor` — intent API + injected notify + status()
 
-**Approach:** Create `TargetSupervisor` as a refactor of `ProcessGuard` that supervises ONE target and owns NO poller/lock/signal-handlers. It is constructed with a `GuardConfig` and an injected `notify` coroutine. It exposes `request_start/restart/stop`, `status()`, `run()`, `stop_all()`.
+**Approach:** Create `TargetSupervisor` as a refactor of `ProcessGuard` that supervises ONE target and owns NO poller/lock/signal-handlers. It is constructed with a `GuardConfig`, an injected `notify` coroutine, AND an injected `reply_keyboard` dict (built once by the Hub from `Messages`, so transition notifications keep the persistent keyboard without the supervisor owning `TelegramAPI` or `_kb` — review finding #3). It exposes `request_start/restart/stop`, `status()`, `run()`.
 
 **Files:**
 - Create: `packages/yasar_usta/src/yasar_usta/supervisor.py`
@@ -637,8 +667,9 @@ def _sup(tmp_path):
                       log_dir=str(tmp_path / "logs"), backoff_steps=[1])
     sent = []
     async def notify(text, reply_markup=None):
-        sent.append(text)
-    sup = TargetSupervisor("demo", cfg, notify=notify)
+        sent.append((text, reply_markup))
+    sup = TargetSupervisor("demo", cfg, notify=notify,
+                           reply_keyboard={"keyboard": [[{"text": "X"}]]})
     return sup, sent
 
 
@@ -662,6 +693,18 @@ def test_status_snapshot_shape(tmp_path):
     assert s["project_id"] == "demo"
     assert s["running"] is False
     assert "heartbeat_age" in s and "total_crashes" in s
+
+
+@pytest.mark.asyncio
+async def test_crash_notification_carries_injected_keyboard(tmp_path):
+    """Guards review finding #3: _notify_crash must NOT call a missing _kb();
+    it attaches the injected reply_keyboard."""
+    sup, sent = _sup(tmp_path)
+    sup.subprocess.stderr_tail = ["boom"]
+    await sup._notify_crash(1)
+    assert sent, "crash notification not sent"
+    text, kb = sent[-1]
+    assert kb == {"keyboard": [[{"text": "X"}]]}  # injected keyboard, no AttributeError
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -671,9 +714,13 @@ Expected: FAIL — `ModuleNotFoundError: yasar_usta.supervisor`.
 
 - [ ] **Step 3: Write `TargetSupervisor`**
 
-Create `packages/yasar_usta/src/yasar_usta/supervisor.py`. This is `ProcessGuard` reduced to one target. Copy the following methods **verbatim from `guard.py`**, changing only `self._send(...)` → `await self.notify(...)` and dropping telegram/lock/poller ownership:
+Create `packages/yasar_usta/src/yasar_usta/supervisor.py`. This is `ProcessGuard` reduced to one target. Copy the following methods **verbatim from `guard.py`**, applying TWO substitutions and dropping telegram/lock/poller ownership:
+- `self._send(...)` → `await self.notify(...)`
+- `self._kb()` → `self.reply_keyboard` (review finding #3 — supervisor has no `_kb`; the Hub injects the prebuilt keyboard)
 
-- from `guard.py`: `_extract_traceback` (module fn), `_write_shutdown_signal`, `_notify_crash`, `_notify_stopped`, `_notify_started`, `_send_start_prompt`, `_handle_remote`, `_start_signal_watcher`, `_stop_signal_watcher`, `_signal_watch_loop`, `_start_app`, and the entire `run()` **loop body** (everything from `while not self._shutdown:` at `:654` through the shutdown block at `:787`) — but NOT the lock/announce/poller/flush setup at `:581-653` (that moves to Hub).
+Methods to copy from `guard.py`: `_extract_traceback` (module fn), `_write_shutdown_signal`, `_notify_crash`, `_notify_stopped`, `_notify_started`, `_send_start_prompt`, `_handle_remote`, `_start_signal_watcher`, `_stop_signal_watcher`, `_signal_watch_loop`, `_start_app`, and the `run()` **loop body** (`while not self._shutdown:` at `:654` through `:785`) — but NOT the lock/announce/poller/flush setup at `:581-653` (moves to Hub).
+
+**In the copied shutdown block (review finding #4):** keep `subprocess.stop()` + `_stop_signal_watcher()`; **DELETE the `await self._stop_telegram_poller()` line (`guard.py:786`)** — the poller is Hub-owned and does not exist on the supervisor.
 
 Write the class as:
 
@@ -702,11 +749,13 @@ logger = logging.getLogger("yasar_usta.supervisor")
 
 class TargetSupervisor:
     def __init__(self, project_id: str, config: GuardConfig,
-                 notify: Callable[..., Awaitable[None]]):
+                 notify: Callable[..., Awaitable[None]],
+                 reply_keyboard: dict | None = None):
         self.project_id = project_id
         self.cfg = config
         self.msgs = config.messages
         self.notify = notify  # injected one-way sender (Hub owns TelegramAPI)
+        self.reply_keyboard = reply_keyboard  # Hub-built persistent keyboard
 
         self.subprocess = SubprocessManager(
             command=config.command, log_dir=config.log_dir, cwd=config.cwd,
@@ -733,7 +782,8 @@ class TargetSupervisor:
         self._restart_requested = False
         self._stop_requested = False
 
-    # ── Intent API (called by Hub's poller; never touches subprocess directly)
+    # ── Intent API (called by Hub; the Hub never touches self.subprocess —
+    #    it only calls these supervisor-owned methods; review finding #2)
     def request_restart(self) -> None:
         self._restart_requested = True
         self._write_shutdown_signal("restart")
@@ -741,6 +791,16 @@ class TargetSupervisor:
     def request_stop(self) -> None:
         self._stop_requested = True
         self._write_shutdown_signal("stop")
+
+    async def request_start(self) -> None:
+        """Start the app if not already running (guards double-start; the old
+        /start guarded on running at guard.py:438)."""
+        if not self.subprocess.running:
+            await self._start_app()
+            if self.subprocess.running:
+                self.backoff.mark_started()
+                await self._notify_started()
+                await self._start_signal_watcher()
 
     async def do_restart_now(self) -> None:
         """Stop the subprocess so run() picks up the restart flag."""
@@ -750,6 +810,18 @@ class TargetSupervisor:
     async def do_stop_now(self) -> None:
         if self.subprocess.running:
             await self.subprocess.stop()
+
+    async def kill_now(self) -> None:
+        """Force-kill a hung subprocess (was btn_system, guard.py:500-509)."""
+        proc = self.subprocess.process
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+        self.subprocess.process = None
+        self.subprocess.running = False
 
     def request_shutdown(self) -> None:
         self._shutdown = True
@@ -776,19 +848,30 @@ class TargetSupervisor:
     #    _start_app: copied from guard.py, with self._send(...) -> await self.notify(...)
 
     async def run(self) -> None:
-        """Per-target supervision loop. Body copied from guard.py:654-787
-        (the `while not self._shutdown:` loop + shutdown block), with
-        self._send(...) -> await self.notify(...). Before the loop, start the
-        app once (mirrors guard.py:645-652):"""
+        """Per-target supervision loop. Body copied from guard.py:654-785
+        with self._send(...) -> await self.notify(...) and
+        self._kb() -> self.reply_keyboard."""
+        # Start this target's sidecars BEFORE the app (review finding #6 —
+        # ports guard.py:631-634; otherwise sidecars don't boot until first
+        # app-exit or the ~30s watcher tick):
+        for sc in self.sidecars.values():
+            if sc.command:
+                await sc.start()
+        # Initial app start (mirrors guard.py:645-652):
         await self._start_app()
         if self.subprocess.running:
             self.backoff.mark_started()
             await self._notify_started()
             await self._start_signal_watcher()
-        # ... loop body verbatim from guard.py:654-787 ...
+        else:
+            logger.info("%s: initial start failed — waiting for start command",
+                        self.project_id)
+        # ... loop body verbatim from guard.py:654-785, then a shutdown block
+        #     with ONLY: if self.subprocess.running: await self.subprocess.stop()
+        #     and await self._stop_signal_watcher()  (NO _stop_telegram_poller)
 ```
 
-**Critical during the copy (spec finding #8):** the `run()` loop calls `_start_signal_watcher()` at 7 points and `_stop_signal_watcher()` at 2 — preserve every one. Grep after writing: `grep -n "_signal_watcher" supervisor.py` must show 9 call sites plus the 3 method defs.
+**Critical during the copy (spec finding #8):** the `run()` loop calls `_start_signal_watcher()` at 7 points and `_stop_signal_watcher()` at 2 — preserve every one. Grep after writing: `grep -n "_signal_watcher" supervisor.py` must show 9 call sites plus the 3 method defs. Also `grep -n "_stop_telegram_poller\|self\._kb\|self\.telegram" supervisor.py` must return NOTHING (those are Hub-only).
 
 - [ ] **Step 4: Run supervisor tests to verify PASS**
 
@@ -820,7 +903,17 @@ git commit -m "feat(yasar_usta): TargetSupervisor (one-target supervision, inten
 
 ```python
 from yasar_usta.status import build_dashboard_text
-from yasar_usta.commands import build_dashboard_keyboard
+from yasar_usta.commands import build_dashboard_keyboard, build_hub_reply_keyboard
+from yasar_usta.config import Messages
+
+
+def test_hub_reply_keyboard_is_minimal():
+    kb = build_hub_reply_keyboard(Messages(btn_status="Durum", btn_logs="Loglar",
+                                           btn_remote="Claude"))
+    flat = str(kb)
+    assert "Durum" in flat and "Loglar" in flat and "Claude" in flat
+    # No per-target Start/Restart/Stop on the persistent keyboard (spec R4)
+    assert "Start" not in flat and "Restart" not in flat
 
 
 def test_dashboard_lists_all_projects():
@@ -900,7 +993,11 @@ In `commands.py`, add:
 
 ```python
 def build_dashboard_keyboard(projects: list[dict]) -> dict:
-    """Inline keyboard: per-project control rows + hub controls."""
+    """Inline keyboard: per-project control rows + hub controls.
+
+    restart/stop emit restart:{pid}/stop:{pid} which the Hub turns into a
+    Yes/Cancel confirm dialog (review finding #5 — no immediate destructive
+    action). 🛑 kill is the hung-app fast path (was btn_system)."""
     rows = []
     for p in projects:
         pid = p["project_id"]
@@ -908,7 +1005,8 @@ def build_dashboard_keyboard(projects: list[dict]) -> dict:
         if p.get("running"):
             rows.append([
                 {"text": f"♻️ {label}", "callback_data": f"restart:{pid}"},
-                {"text": f"⏹ {label}", "callback_data": f"stop:{pid}"},
+                {"text": "⏹", "callback_data": f"stop:{pid}"},
+                {"text": "🛑", "callback_data": f"kill:{pid}"},
                 {"text": "📋", "callback_data": f"logs:{pid}"},
             ])
         else:
@@ -921,6 +1019,19 @@ def build_dashboard_keyboard(projects: list[dict]) -> dict:
         {"text": "♻️ Restart Hub", "callback_data": "restart_hub"},
     ])
     return {"inline_keyboard": rows}
+
+
+def build_hub_reply_keyboard(messages: Messages) -> dict:
+    """Minimal persistent reply keyboard for the hub (spec R4: Dashboard /
+    Logs / Remote). Per-target actions live on the inline dashboard, not here."""
+    return {
+        "keyboard": [
+            [{"text": messages.btn_status}, {"text": messages.btn_logs}],
+            [{"text": messages.btn_remote}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
 ```
 
 - [ ] **Step 5: Run to verify PASS**
@@ -971,14 +1082,29 @@ def test_hub_builds_one_supervisor_per_target(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_route_restart_targets_only_named_project(tmp_path):
+async def test_confirm_restart_targets_only_named_project(tmp_path):
     hub = _hub(tmp_path, ["kutai", "foo"])
+    hub.telegram.delete = lambda *a, **k: asyncio.sleep(0)
+    hub._notify = lambda *a, **k: asyncio.sleep(0)
     called = {"kutai": 0, "foo": 0}
     for pid, sup in hub.supervisors.items():
         sup.request_restart = lambda p=pid: called.__setitem__(p, called[p] + 1)
         sup.do_restart_now = lambda: asyncio.sleep(0)
-    await hub._route_callback("restart:foo", cb_msg_id=None)
+    # confirm_restart is the action; bare restart only opens a dialog
+    await hub._route_callback("confirm_restart:foo", cb_msg_id=None)
     assert called == {"kutai": 0, "foo": 1}
+
+
+@pytest.mark.asyncio
+async def test_bare_restart_sends_confirm_dialog_no_action(tmp_path):
+    hub = _hub(tmp_path, ["kutai", "foo"])
+    sent = []
+    hub.telegram.send = lambda text, reply_markup=None: sent.append(reply_markup) or asyncio.sleep(0)
+    acted = {"n": 0}
+    hub.supervisors["foo"].request_restart = lambda: acted.__setitem__("n", 1)
+    await hub._route_callback("restart:foo", cb_msg_id=None)
+    assert acted["n"] == 0  # no action yet
+    assert "confirm_restart:foo" in str(sent)  # dialog carries the pid
 
 
 def test_bare_verb_rejected_when_multiple_projects(tmp_path):
@@ -1013,7 +1139,8 @@ import sys
 import time
 from pathlib import Path
 
-from .commands import build_dashboard_keyboard, build_start_keyboard, format_log_entries
+from .commands import (build_dashboard_keyboard, build_hub_reply_keyboard,
+                       format_log_entries)
 from .config import HubConfig, ProjectConfig
 from .hooks import load_hook, run_pre_boot
 from .lock import acquire_lock, release_lock
@@ -1035,20 +1162,30 @@ class Hub:
         self._restart_hub = False
         self._telegram_poller: asyncio.Task | None = None
 
-        # One supervisor per target, keyed by a unique routing id. For a
-        # single-target project the routing id is the project id; multi-target
-        # projects get `${project_id}:${target_id}`.
+        # Persistent reply keyboard, built once from hub Messages (spec R4).
+        self._reply_kb = build_hub_reply_keyboard(self.msgs)
+
+        # One supervisor per target, keyed by a unique routing id. Single-target
+        # project → routing id is the project id; multi-target → `${pid}:${tgt}`.
+        # Each supervisor is injected the reply keyboard so its crash/stop/down
+        # notifications keep the persistent buttons (review finding #3).
         self.supervisors: dict[str, TargetSupervisor] = {}
+        self._hooks: dict[str, object] = {}  # loaded once, reused in run()
         for proj in projects:
+            hook = load_hook(proj.hook_module)
+            self._hooks[proj.id] = hook
             for tgt in proj.targets:
+                if hook is not None and hasattr(hook, "on_exit"):
+                    tgt.on_exit = hook.on_exit
                 rid = proj.id if len(proj.targets) == 1 else f"{proj.id}:{tgt.name}"
-                self.supervisors[rid] = TargetSupervisor(rid, tgt, notify=self._notify)
+                self.supervisors[rid] = TargetSupervisor(
+                    rid, tgt, notify=self._notify, reply_keyboard=self._reply_kb)
 
     async def _notify(self, text: str, reply_markup: dict | None = None) -> None:
         await self.telegram.send(text, reply_markup=reply_markup)
 
     def _kb(self) -> dict:
-        return build_start_keyboard(self.msgs, app_name=self.cfg.name)
+        return self._reply_kb
 
     def _resolve_bare_target(self) -> TargetSupervisor | None:
         """A bare per-target verb resolves only when there is exactly one
@@ -1083,22 +1220,55 @@ class Hub:
             await self._notify("♻️ *Hub yeniden başlatılıyor...*")
             await self._do_restart_hub()
             return
+        if cb_data == "confirm_cancel":
+            if cb_msg_id:
+                await self.telegram.delete(cb_msg_id)
+            return
         if ":" not in cb_data:
             return
         verb, pid = cb_data.split(":", 1)
         sup = self.supervisors.get(pid)
         if not sup:
             return
-        if verb in ("restart", "confirm_restart"):
+        # restart/stop are semi-destructive → confirm first (review finding #5,
+        # spec #5). Only confirm_* performs the action.
+        if verb == "restart":
+            await self._confirm(pid, sup.cfg.app_name, "restart",
+                                f"🔄 *{sup.cfg.app_name} yeniden başlatılsın mı?*")
+        elif verb == "stop":
+            await self._confirm(pid, sup.cfg.app_name, "stop",
+                                f"⚠️ *{sup.cfg.app_name} durdurulsun mu?*\n"
+                                "Manuel olarak yeniden başlatmanız gerekecek.")
+        elif verb == "confirm_restart":
+            if cb_msg_id:
+                await self.telegram.delete(cb_msg_id)
+            await self._notify(f"♻️ *{sup.cfg.app_name} yeniden başlatılıyor...*")
             sup.request_restart()
             await sup.do_restart_now()
-        elif verb in ("stop", "confirm_stop"):
+        elif verb == "confirm_stop":
+            if cb_msg_id:
+                await self.telegram.delete(cb_msg_id)
+            await self._notify(f"⏹ *{sup.cfg.app_name} durduruluyor...*")
             sup.request_stop()
             await sup.do_stop_now()
         elif verb == "start":
-            await sup._start_app()
+            await self._notify(f"🚀 {sup.cfg.app_name} başlatılıyor...")
+            await sup.request_start()
+        elif verb == "kill":
+            await sup.kill_now()
+            await sup._send_start_prompt(f"🔴 {sup.cfg.app_name} not responding.")
+        elif verb == "remote":
+            import asyncio as _a
+            _a.create_task(sup._handle_remote())
         elif verb == "logs":
             await self._send_logs_for(sup)
+
+    async def _confirm(self, pid: str, app_name: str, action: str, prompt: str) -> None:
+        """Send a Yes/Cancel dialog whose Yes carries confirm_{action}:{pid}."""
+        await self.telegram.send(prompt, reply_markup={"inline_keyboard": [[
+            {"text": "✅ Evet", "callback_data": f"confirm_{action}:{pid}"},
+            {"text": "❌ Vazgeç", "callback_data": "confirm_cancel"},
+        ]]})
 
     async def _send_logs_for(self, sup: TargetSupervisor) -> None:
         log_path = sup.cfg.log_file or str(Path(sup.cfg.log_dir) / "orchestrator.jsonl")
@@ -1151,10 +1321,10 @@ class Hub:
         acquire_lock(self.cfg.log_dir, name="hub")
         logger.info("Hub started with %d supervisors", len(self.supervisors))
 
-        # pre_boot hooks (per project, once, after lock — spec finding #4)
+        # pre_boot hooks (per project, once, after lock — spec finding #4).
+        # Reuse the hooks loaded in __init__ (no double import; finding #10).
         for proj in self.projects:
-            hook = load_hook(proj.hook_module)
-            run_pre_boot(hook, proj)
+            run_pre_boot(self._hooks.get(proj.id), proj)
 
         offset = await self.telegram.flush_updates()
         await self._notify(
@@ -1266,7 +1436,7 @@ Replace the `_poll_loop` stub in `hub.py` with the routing loop (adapted from `g
                 await asyncio.sleep(5)
 
     async def _route_text(self, text: str) -> None:
-        # Hub-global commands
+        # Hub-global: dashboard (slash OR the persistent "Status" button label)
         if text.startswith("/status") or text == self.msgs.btn_status:
             await self._send_dashboard()
             return
@@ -1275,20 +1445,32 @@ Replace the `_poll_loop` stub in `hub.py` with the routing loop (adapted from `g
             await self._notify("♻️ *Hub yeniden başlatılıyor...*")
             await self._do_restart_hub()
             return
-        # Per-target verbs: allowed bare only when exactly one supervisor
-        for verb in ("start", "restart", "stop", "logs"):
+        # Persistent reply-keyboard labels for Logs / Remote (review finding #1/#2)
+        # + their slash aliases → resolve to the single/selected target.
+        if text.startswith("/logs") or text == self.msgs.btn_logs:
+            await self._for_bare_target("logs")
+            return
+        if text.startswith("/remote") or text == self.msgs.btn_remote:
+            await self._for_bare_target("remote")
+            return
+        # Bare per-target action verbs (start/restart/stop) — buttons live on the
+        # dashboard, but the slash aliases work when unambiguous.
+        for verb in ("start", "restart", "stop"):
             if text.startswith("/" + verb):
-                sup = self._resolve_bare_target()
-                if sup is None:
-                    await self._notify(
-                        "⚠️ Multiple projects — use the dashboard buttons "
-                        "(/status) to pick one.")
-                    return
-                await self._route_callback(f"{verb}:{sup.project_id}", None)
+                await self._for_bare_target(verb)
                 return
-        # Unknown text while everything is addressable via dashboard
         if text.startswith("/"):
             await self._send_dashboard()
+
+    async def _for_bare_target(self, verb: str) -> None:
+        """Apply a per-target verb to the sole supervisor, or reject if N>1
+        (spec R4: never guess a target)."""
+        sup = self._resolve_bare_target()
+        if sup is None:
+            await self._notify(
+                "⚠️ Multiple projects — open /status and use the buttons.")
+            return
+        await self._route_callback(f"{verb}:{sup.project_id}", None)
 ```
 
 - [ ] **Step 4: Run to verify PASS**
@@ -1397,12 +1579,34 @@ def run_pre_boot(hook, project) -> None:
 Create `packages/yasar_usta/src/yasar_usta/projects/kutai/hooks.py` — move the three functions from `kutai_wrapper.py` verbatim (`_kill_stale_orchestrators`, `_reconcile_stray_llama`, `_kill_orphan_processes`), wrapped:
 
 ```python
-"""KutAI-specific lifecycle hooks (moved verbatim from kutai_wrapper.py)."""
+"""KutAI-specific lifecycle hooks + Turkish Messages (moved from kutai_wrapper.py)."""
 
 from __future__ import annotations
 
 import os
 import subprocess as _sp
+
+from yasar_usta.config import Messages
+
+# Turkish strings that were the Messages(...) block in kutai_wrapper.py:194-223.
+# The entry point applies MESSAGES to HubConfig + each target GuardConfig so the
+# keyboard + crash/stop/down notifications stay Turkish (review finding #11).
+MESSAGES = Messages(
+    announce="🔧 *Bennn... Yaşar Usta!*\n\nKutay'ı başlatıyorum...",
+    started="✅ *Kutay Started*",
+    stopped="⏹ *Kutay Stopped*\nSend /start to restart.",
+    hung="🔴 Kutay dondu — Yaşar Usta {delay}sn içinde yeniden başlatıyor",
+    restarting="♻️ *Kutay yeniden başlatılıyor...*",
+    self_restarting="🔄 *Yaşar Usta yeniden başlatılıyor...*",
+    down_prompt="⚠️ Kutay durdu. Başlatmak için butona bas.",
+    down_reply="⏸ Kutay şu an kapalı.",
+    starting="🚀 Kutay başlatılıyor...",
+    btn_status="🔧 Durum",
+    btn_logs="📋 Loglar",
+    btn_remote="🖥️ Claude Code",
+    remote_starting="🖥️ Claude Code oturumu başlatılıyor...",
+    remote_not_found="❌ `claude` command not found. Claude Code kurulu mu?",
+)
 
 
 def _kill_orphan_processes(exit_code: int) -> None:
@@ -1447,29 +1651,14 @@ git commit -m "feat(yasar_usta): pre_boot/on_exit hook loader + KutAI hooks modu
 
 ---
 
-## Task 11: Wire `on_exit` hook into supervisors + export `Hub`
+## Task 11: Export the new public API
 
 **Files:**
-- Modify: `packages/yasar_usta/src/yasar_usta/hub.py` (attach `on_exit` from hook to each target's `GuardConfig`)
 - Modify: `packages/yasar_usta/src/yasar_usta/__init__.py` (export `Hub`, `HubConfig`, `ProjectConfig`, `load_registry`, `TargetSupervisor`)
 
-- [ ] **Step 1: Attach on_exit in Hub.__init__**
+**Note:** `on_exit` hook wiring + `reply_keyboard` injection already happen in `Hub.__init__` (Task 8). This task is exports + a full-suite gate only.
 
-In `hub.py` `__init__`, before building supervisors, load each project's hook and set `on_exit`:
-
-```python
-        for proj in projects:
-            hook = load_hook(proj.hook_module)
-            for tgt in proj.targets:
-                if hook is not None and hasattr(hook, "on_exit"):
-                    tgt.on_exit = hook.on_exit
-                rid = proj.id if len(proj.targets) == 1 else f"{proj.id}:{tgt.name}"
-                self.supervisors[rid] = TargetSupervisor(rid, tgt, notify=self._notify)
-```
-
-(Remove the earlier plain supervisor-building loop from Task 8 Step 3 so this replaces it. The `run()` method's separate `load_hook`/`run_pre_boot` loop stays for `pre_boot`.)
-
-- [ ] **Step 2: Export the new public API**
+- [ ] **Step 1: Export the new public API**
 
 In `__init__.py`, add imports + `__all__` entries:
 
@@ -1483,7 +1672,7 @@ from .supervisor import TargetSupervisor
 
 Add `"Hub"`, `"HubConfig"`, `"ProjectConfig"`, `"TargetSupervisor"`, `"load_registry"` to `__all__`.
 
-- [ ] **Step 3: Verify imports + existing suite**
+- [ ] **Step 2: Verify imports + existing suite**
 
 Run: `python -c "from yasar_usta import Hub, HubConfig, ProjectConfig, load_registry, TargetSupervisor; print('ok')"`
 Expected: `ok`.
@@ -1491,11 +1680,11 @@ Expected: `ok`.
 Run: `python -m pytest packages/yasar_usta/tests/ -q`
 Expected: all pass (old ProcessGuard tests + all new).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add packages/yasar_usta/src/yasar_usta/hub.py packages/yasar_usta/src/yasar_usta/__init__.py
-git commit -m "feat(yasar_usta): wire on_exit hook into supervisors + export Hub API"
+git add packages/yasar_usta/src/yasar_usta/__init__.py
+git commit -m "feat(yasar_usta): export Hub/HubConfig/ProjectConfig/TargetSupervisor/load_registry"
 ```
 
 ---
@@ -1526,11 +1715,12 @@ def test_kutai_registry_matches_legacy_config():
     kutai = next(p for p in projects if p.id == "kutai")
     t = kutai.targets[0]
     assert t.command[-1].endswith("run.py")
-    assert t.cwd == str(ROOT)
+    # Path compare — loader normalizes separators (Windows-safe, finding #7)
+    assert Path(t.cwd) == ROOT
     assert t.restart_exit_code == 42
-    assert t.heartbeat_file == str(ROOT / "logs" / "orchestrator.heartbeat")
-    assert t.log_file == str(ROOT / "logs" / "orchestrator.jsonl")
-    assert t.env["NERD_HERD_PROJECT_ROOT"] == str(ROOT)
+    assert Path(t.heartbeat_file) == ROOT / "logs" / "orchestrator.heartbeat"
+    assert Path(t.log_file) == ROOT / "logs" / "orchestrator.jsonl"
+    assert Path(t.env["NERD_HERD_PROJECT_ROOT"]) == ROOT
     names = {sc.name for sc in t.sidecars}
     assert names == {"yazbunu", "nerd_herd"}
     assert kutai.hook_module == "yasar_usta.projects.kutai.hooks"
@@ -1622,14 +1812,23 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def _apply_runtime_values(hub_cfg, projects) -> None:
-    """Inject process-specific runtime values the declarative registry can't hold."""
+    """Inject process-specific runtime values the declarative registry can't hold,
+    plus the KutAI Turkish Messages (review finding #11)."""
+    from yasar_usta import load_registry  # noqa
+    from yasar_usta.hooks import load_hook
     appdata = os.environ.get("APPDATA", "")
     claude_cmd = str(Path(appdata) / "npm" / "claude.cmd") if appdata else None
     auto_restart = "--no-auto-restart" not in sys.argv
     db_path = os.getenv("DB_PATH", str(PROJECT_ROOT / "data" / "kutai.db"))
     for proj in projects:
+        hook = load_hook(proj.hook_module)
+        msgs = getattr(hook, "MESSAGES", None)
+        if msgs is not None:
+            hub_cfg.messages = msgs  # hub keyboard + announce use these
         for tgt in proj.targets:
             tgt.auto_restart = auto_restart
+            if msgs is not None:
+                tgt.messages = msgs  # crash/stop/down notifications stay Turkish
             if claude_cmd:
                 tgt.claude_cmd = claude_cmd
             # nerd_herd sidecar needs --db-path appended (kept out of YAML)
@@ -1683,10 +1882,10 @@ if __name__ == "__main__":
 
 Delete the now-relocated `_kill_orphan_processes`, `_kill_stale_orchestrators`, `_reconcile_stray_llama`, `_find_python`, the module-level cleanup calls, the giant `GuardConfig(...)` literal, and the `os.environ["NERD_HERD_PROJECT_ROOT"] = ...` mutation (now per-target env). Keep `load_dotenv()` and the venv guard.
 
-- [ ] **Step 2: Smoke-test the entry point loads (no bot token → poller disabled, supervisors would try to start; use --help-style dry check)**
+- [ ] **Step 2: Smoke-test the registry loads (run with the VENV python — the venv guard `sys.exit(1)`s under system Python; review finding #8)**
 
-Run: `python -c "import kutai_wrapper; from yasar_usta import load_registry; from pathlib import Path; h,p=load_registry(Path('registry.yaml'), project_root='.'); print(len(p), 'projects')"`
-Expected: prints `1 projects` (import side-effect free; `load_dotenv` + venv guard run at import — acceptable).
+Run: `.venv/Scripts/python.exe -c "from yasar_usta import load_registry; from pathlib import Path; h,p=load_registry(Path('registry.yaml'), project_root='.'); print(len(p), 'projects')"`
+Expected: prints `1 projects`. (Do NOT `import kutai_wrapper` here — its module-level venv guard + `load_dotenv` add nothing to this check and the guard aborts under the wrong interpreter.)
 
 - [ ] **Step 3: Run the FULL yasar_usta suite**
 
@@ -1770,6 +1969,12 @@ import sys
 import pytest
 from yasar_usta.config import GuardConfig, HubConfig, ProjectConfig
 from yasar_usta.hub import Hub
+
+
+@pytest.fixture(autouse=True)
+def _no_lock(monkeypatch):
+    monkeypatch.setattr("yasar_usta.hub.acquire_lock", lambda *a, **k: None)
+    monkeypatch.setattr("yasar_usta.hub.release_lock", lambda *a, **k: None)
 
 
 def _proj(pid, tmp_path, code):
@@ -1865,10 +2070,20 @@ git push
 - R3 (token/chat → HubConfig, dropped from migration assert) → Task 3, 12. ✅
 - R4 (text Hub-global; per-target via buttons; bare verb single-project-only) → Task 9. ✅
 
-**Known deviation from spec (noted, consistent with R4 intent):** a bare per-target text verb (`/restart`) IS honored when exactly one project exists (no ambiguity → no guessing). With >1 project it is rejected with a hint. This preserves KutAI's current single-target UX 1:1 while staying safe at scale.
+**Plan-review pass folded (verdict was FLAWED → fixed):** an adversarial review of an earlier draft caught behavior regressions the split leaked. All fixed in-plan:
+- **Dead reply-keyboard buttons / dropped Remote & System** → Task 7 minimal hub keyboard (`build_hub_reply_keyboard`: Dashboard/Logs/Remote per spec R4) + Task 9 `_route_text` routes those labels; Remote → resolved target `_handle_remote`; hung-kill restored as `kill:{pid}` dashboard button.
+- **`_kb` AttributeError in supervisor** → Task 6 injects `reply_keyboard`; copy substitutes `self._kb()`→`self.reply_keyboard`. New Task 6 test asserts the crash notification carries it.
+- **Copied shutdown pulled Hub-only `_stop_telegram_poller`** → Task 6 explicitly deletes that line + adds a grep gate.
+- **No-confirm destructive restart/stop** → Task 8 `_route_callback` sends a Yes/Cancel dialog (`restart:pid`→`confirm_restart:pid`), matching today + spec #5. New Task 8 test asserts bare restart takes no action.
+- **Sidecars didn't boot at start** → Task 6 `run()` starts them before `_start_app` (ports guard.py:631-634).
+- **Windows slash test failures** → Task 3 loader `_norm`s path fields; Task 3/12 tests compare via `Path`.
+- **Turkish label drift** → Task 10 `MESSAGES` constant; Task 13 entry point applies to `HubConfig` + each target.
+- **Smoke test venv-guard exit / lock leaks** → Task 13 uses venv python; Tasks 1/15 no-op `acquire_lock` via fixture.
 
-**Ordering note:** Task 8 (Hub) imports `hooks` from Task 10 — implement Task 10 before running Task 8 Step 4. Both are committed independently.
+**Known deviation from spec (noted, consistent with R4 intent):** a bare per-target text verb (`/restart`) IS honored when exactly one project exists (no ambiguity → no guessing). With >1 project it is rejected with a hint pointing to the dashboard. Preserves KutAI's single-target UX while staying safe at scale.
 
-**Placeholder scan:** the `...` markers in Task 6 (`TargetSupervisor` method bodies) and Task 10 (KutAI hook bodies) are explicit "copy verbatim from `guard.py`/`kutai_wrapper.py` at the cited line ranges" instructions, not vague TODOs — the source is exact and in-repo. All test code and all new logic (registry, env merge, Hub routing, dashboard, hooks loader, entry point) is complete.
+**Ordering note:** `hub.py` imports `hooks` (Task 10) at module load AND `Hub.__init__` calls `load_hook`. Implement Task 10 before Task 8. Both commit independently.
 
-**Type consistency:** `TargetSupervisor(project_id, config, notify=)`, `Hub(hub_cfg, projects)`, `load_registry(path, project_root=) -> (HubConfig, [ProjectConfig])`, `status()` dict keys used identically in Task 6/7/8. `request_restart/request_stop/request_shutdown/do_restart_now/do_stop_now/is_running/status` consistent across Tasks 6, 8, 9.
+**Placeholder scan:** the `...`/"copy verbatim from guard.py:NNN" markers in Task 6 (supervisor method bodies) and Task 10 (KutAI hook bodies) are explicit copy-from-cited-lines instructions with named substitutions, not vague TODOs — source is exact and in-repo. All test code and all new logic is complete.
+
+**Type consistency:** `TargetSupervisor(project_id, config, notify=, reply_keyboard=)`, `Hub(hub_cfg, projects)`, `load_registry(path, project_root=) -> (HubConfig, [ProjectConfig])`, `status()` dict keys identical across Tasks 6/7/8. Intent API `request_start/request_restart/request_stop/request_shutdown/do_restart_now/do_stop_now/kill_now/is_running/status` consistent across Tasks 6, 8, 9. Callbacks: `dashboard_refresh`, `restart_hub`, `confirm_cancel`, `{start|restart|stop|kill|remote|logs}:{pid}`, `confirm_{restart|stop}:{pid}`.

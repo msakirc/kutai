@@ -48,6 +48,48 @@ def build_status_inline_keyboard(messages: Messages, name: str,
     return {"inline_keyboard": buttons}
 
 
+def build_dashboard_keyboard(projects: list[dict]) -> dict:
+    """Inline keyboard: per-project control rows + hub controls.
+
+    restart/stop emit restart:{pid}/stop:{pid} which the Hub turns into a
+    Yes/Cancel confirm dialog (review finding #5 — no immediate destructive
+    action). 🛑 kill is the hung-app fast path (was btn_system)."""
+    rows = []
+    for p in projects:
+        pid = p["project_id"]
+        label = p.get("name", pid)
+        if p.get("running"):
+            rows.append([
+                {"text": f"♻️ {label}", "callback_data": f"restart:{pid}"},
+                {"text": "⏹", "callback_data": f"stop:{pid}"},
+                {"text": "🛑", "callback_data": f"kill:{pid}"},
+                {"text": "📋", "callback_data": f"logs:{pid}"},
+            ])
+        else:
+            rows.append([
+                {"text": f"▶️ {label}", "callback_data": f"start:{pid}"},
+                {"text": "📋", "callback_data": f"logs:{pid}"},
+            ])
+    rows.append([
+        {"text": "🔄 Refresh", "callback_data": "dashboard_refresh"},
+        {"text": "♻️ Restart Hub", "callback_data": "restart_hub"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+def build_hub_reply_keyboard(messages: Messages) -> dict:
+    """Minimal persistent reply keyboard for the hub (spec R4: Dashboard /
+    Logs / Remote). Per-target actions live on the inline dashboard, not here."""
+    return {
+        "keyboard": [
+            [{"text": messages.btn_status}, {"text": messages.btn_logs}],
+            [{"text": messages.btn_remote}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
 def _escape_md(text: str) -> str:
     """Escape Markdown special characters in log messages."""
     for ch in ("*", "_", "`", "[", "]"):

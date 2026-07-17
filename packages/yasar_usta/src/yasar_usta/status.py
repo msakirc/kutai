@@ -214,3 +214,37 @@ def _check_process_running(exe_name: str) -> bool:
             return result.returncode == 0
         except Exception:
             return False
+
+
+def build_project_section(st: dict) -> str:
+    """One project's health block for the multi-project dashboard."""
+    name = st["name"]
+    app_name = st["app_name"]
+    lines = [f"*{name}*"]
+    if not st["running"]:
+        lines.append(f"💀 {app_name}: not running")
+    else:
+        age = st["heartbeat_age"]
+        healthy = st["heartbeat_healthy_seconds"]
+        if age is not None and age < healthy:
+            lines.append(f"💚 {app_name}: healthy (heartbeat {int(age)}s ago)")
+        elif age is not None:
+            lines.append(f"🔴 {app_name}: UNRESPONSIVE ({int(age)}s silent)")
+        else:
+            lines.append(f"⚪ {app_name}: no heartbeat file")
+    for proc_info in (st.get("extra_processes") or []):
+        exe = proc_info.get("exe", "")
+        label = proc_info.get("label", exe)
+        lines.append(f"{'🟡' if _check_process_running(exe) else '⚫'} {label}")
+    if st.get("total_crashes"):
+        lines.append(f"  crashes: {st['total_crashes']}")
+    return "\n".join(lines)
+
+
+def build_dashboard_text(hub_name: str, projects: list[dict],
+                         guard_start_time: float) -> str:
+    up = int(time.time() - guard_start_time)
+    header = f"🔧 *{hub_name}* — {up // 3600}h {(up % 3600) // 60}m up\n"
+    sections = [build_project_section(p) for p in projects]
+    ts = time.strftime("%H:%M:%S")
+    return header + "\n\n".join(sections) + f"\n\n_Last update: {ts}_"

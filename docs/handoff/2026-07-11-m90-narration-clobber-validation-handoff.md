@@ -1,14 +1,13 @@
-# Handoff — m90 narration-clobber: fix set COMPLETE + reviewed, awaiting live validation
+# Handoff — m90: narration-clobber VALIDATED fixed; two NEW roots found + fixed (2026-07-18)
 
-**HEAD:** `706b9b7d` (local `main`). **Origin is 9 behind — nothing pushed.** Push is HELD until live-verified (user's standing choice).
-**Restart-gated:** every code fix is an editable install → the running bot does NOT have them until a Telegram `/restart`.
-**Status:** The narration-clobber class is fixed at the source, TDD'd, and passed an adversarial sub-review (verdict SHIP). What remains is one `/restart` + re-reset of two DLQ'd tasks + watch them clear + push. **You are NOT debugging from scratch — you are validating a finished, reviewed fix.**
+**UPDATE 2026-07-18:** The "just /restart + re-reset a finished fix" plan below was WRONG. After restart both tasks re-DLQ'd for reasons this handoff did not anticipate. The narration-clobber class IS genuinely fixed (5.0c disk file is now clean markdown, not `## Analysis`). But two SEPARATE roots surfaced and are now fixed at root with TDD — **committed `95a62136` on branch `feat/yasar-usta-multiproject-hub`** (the repo was switched to the Yaşar-Usta hub branch during session time-gaps; user chose to leave the m90 fix on feat — it reaches main at hub merge). Still **restart-gated** (editable installs). Full write-up: memory `project_m90_verdict_repr_userflow_repair_20260718`.
 
----
+- **567426 [3.11 requirements_review] "no parseable review verdict"** = repr-serialization, NOT schema/fleet. Reviewer returned a valid `{status:fail, issues:[real gaps]}` but `coulson/parsing.py:329` (legacy `status` branch) stored `str(parsed)` = Python repr (single quotes) → the verdict parser's `json.loads` failed → malformed → DLQ. **Fixed:** `json.dumps(parsed, ensure_ascii=False)` + `apply.py::_parse_review_result` `ast.literal_eval` fallback.
+- **567452 [5.0c user_flow] "degenerate repeat"** = model non-compliance on the MECHANICAL shell (instruction template is correct). `cerebras/gemma-4-31b` authored a correct flow graph but dropped the `surfaces:` frontmatter line + the ```mermaid fence → `verify_user_flow_shape` correctly rejected → deterministic identical repeat → DLQ. **Fixed:** `verify_user_flow_shape.py::normalize_user_flow` deterministically injects `surfaces:` (from surfaces.json) + fences bare mermaid before validation, writing the repaired renderable artifact back.
 
-## ⭐ DO THIS FIRST (the whole remaining job)
-1. **`/restart`** via Telegram (loads all the code fixes below).
-2. **Re-reset the 2 failed m90 tasks** — use the LEDGER-CLEARING SQL (the plain reset SQL leaves a stale rejection ledger that instant-DLQs the retry as "degenerate repeat"):
+## ⭐ DO THIS FIRST (updated)
+1. **`/restart`** via Telegram (loads commit `95a62136`).
+2. **Re-reset the 2 tasks** — LEDGER-CLEARING SQL (plain reset instant-DLQs as "degenerate repeat" against the stale ledger hash):
    ```sql
    UPDATE tasks SET status='pending', task_state=NULL, result=NULL, error=NULL,
      worker_attempts=0, grade_attempts=0, next_retry_at=NULL, exhaustion_reason=NULL,
@@ -17,10 +16,8 @@
      WHERE id IN (567452, 567426) AND status IN ('failed','waiting_human');
    ```
    (rw connect: `sqlite3.connect(db, timeout=10)` + `PRAGMA busy_timeout=8000`.)
-3. **Watch them.** Poll status (read-only, see commands below). Success = `completed`.
-   - **567452 [5.0c user_flow]** should now write a clean markdown doc (`---` frontmatter with `surfaces:` + a fenced ` ```mermaid ` block) and pass `verify_user_flow_shape`. **Inspect the disk file** `workspace/mission_90/.flow/user_flow.md` — first line must be `---`, NOT `## Analysis`.
-   - **567426 [reviewer]** is a DIFFERENT problem (not narration) — see §"The two failed tasks".
-4. **Push** (`git push origin main`, ahead 9) once both clear. ⚠️ Pushing also carries the parallel session's advisory-COMPLETE commits (`3dd5f54d`/`b39baa48`/`61c952e6`) — confirm those are intended too.
+3. **Watch.** 567452 → disk `workspace/mission_90/.flow/user_flow.md` should be repaired (starts `---`, has `surfaces: [web]`, fenced ```mermaid) and complete. 567426 → the fail verdict now PARSES and routes to the requirements_spec producer to add the missing falsification triples (correct — the reviewer found real gaps), instead of DLQ.
+4. **Push** is the hub branch's call (m90 fix rides feat). ⚠️ Repair does NOT extend to sibling 5.0d/6.5z — their frontmatter fields (`chunks`, `shared_components`) are semantic, not mechanically repairable; if they fail post-restart the lever is model capability, not more repair code.
 
 ---
 

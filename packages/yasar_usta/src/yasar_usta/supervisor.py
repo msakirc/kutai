@@ -266,25 +266,32 @@ class TargetSupervisor:
     # ── Main loop ─────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        # Clear a stale claude signal file so the watcher doesn't fire on boot
-        # (ported from guard.py:621-625).
-        if self.cfg.claude_signal_file:
-            _sf = Path(self.cfg.claude_signal_file)
-            if _sf.exists():
-                _sf.unlink()
-        # Start this target's sidecars BEFORE the app (review finding #6):
-        for sc in self.sidecars.values():
-            if sc.command:
-                await sc.start()
-        # Initial app start (mirrors guard.py:645-652):
-        await self._start_app()
-        if self.subprocess.running:
-            self.backoff.mark_started()
-            await self._notify_started()
-            await self._start_signal_watcher()
-        else:
-            logger.info("%s: initial start failed — waiting for start command",
-                        self.project_id)
+        # Guard the pre-loop startup: a failure here (stale-signal unlink,
+        # sidecar start, initial app start) must NOT propagate out and crash
+        # the whole hub — log it and fall through into the supervising loop,
+        # which has its own per-iteration try/except.
+        try:
+            # Clear a stale claude signal file so the watcher doesn't fire on boot
+            # (ported from guard.py:621-625).
+            if self.cfg.claude_signal_file:
+                _sf = Path(self.cfg.claude_signal_file)
+                if _sf.exists():
+                    _sf.unlink()
+            # Start this target's sidecars BEFORE the app (review finding #6):
+            for sc in self.sidecars.values():
+                if sc.command:
+                    await sc.start()
+            # Initial app start (mirrors guard.py:645-652):
+            await self._start_app()
+            if self.subprocess.running:
+                self.backoff.mark_started()
+                await self._notify_started()
+                await self._start_signal_watcher()
+            else:
+                logger.info("%s: initial start failed — waiting for start command",
+                            self.project_id)
+        except Exception as e:
+            logger.error("%s: startup error: %s", self.project_id, e)
 
         while not self._shutdown:
             try:

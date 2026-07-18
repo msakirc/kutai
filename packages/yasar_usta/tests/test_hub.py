@@ -28,6 +28,12 @@ def _hub(tmp_path, pids):
     return Hub(hub_cfg, projects)
 
 
+@pytest.fixture(autouse=True)
+def _no_lock(monkeypatch):
+    monkeypatch.setattr("yasar_usta.hub.acquire_lock", lambda *a, **k: None)
+    monkeypatch.setattr("yasar_usta.hub.release_lock", lambda *a, **k: None)
+
+
 def test_hub_builds_one_supervisor_per_target(tmp_path):
     hub = _hub(tmp_path, ["kutai", "foo"])
     assert set(hub.supervisors.keys()) == {"kutai", "foo"}
@@ -126,6 +132,26 @@ async def test_kutai_aliases_route(tmp_path):
     await hub._route_text("/kutai_status")
     await hub._route_text("/kutai_start")
     assert hits == {"dash": 1, "start": 1}
+
+
+@pytest.mark.asyncio
+async def test_supervisor_crash_does_not_kill_hub(tmp_path):
+    """A supervisor run() raising must NOT propagate out of Hub.run(); the hub
+    must still clean up the poller."""
+    hub = _hub(tmp_path, ["kutai", "foo"])
+    hub._acquire_singleton = lambda: None  # don't touch the real Win32 mutex
+    monkey_stopped = {"n": 0}
+    async def _boom():
+        raise RuntimeError("boom")
+    for sup in hub.supervisors.values():
+        sup.run = _boom
+    # stop the poller cleanly regardless
+    async def _stop():
+        monkey_stopped["n"] += 1
+    hub._stop_poller = _stop
+    # no telegram → poller not started; run() should return without raising
+    await asyncio.wait_for(hub.run(), timeout=5)
+    assert monkey_stopped["n"] == 1  # _stop_poller ran in finally
 
 
 @pytest.mark.asyncio

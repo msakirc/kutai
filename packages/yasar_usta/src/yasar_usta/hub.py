@@ -335,14 +335,19 @@ class Hub:
         sup_tasks = [asyncio.create_task(s.run()) for s in self.supervisors.values()]
         watcher = asyncio.create_task(self._shutdown_watcher())
         try:
-            await asyncio.gather(*sup_tasks)
-        except asyncio.CancelledError:
-            pass
+            # return_exceptions=True: a crashing supervisor must NOT propagate
+            # out of Hub.run() and kill the hub while orchestrators run headless.
+            results = await asyncio.gather(*sup_tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+                    logger.error("supervisor task crashed: %r", r)
         finally:
             watcher.cancel()
             try:
                 await watcher
             except asyncio.CancelledError:
                 pass
-        await self._stop_poller()
+            for t in list(self._bg_tasks):
+                t.cancel()
+            await self._stop_poller()
         logger.info("Hub exiting.")

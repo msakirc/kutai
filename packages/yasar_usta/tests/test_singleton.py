@@ -171,6 +171,26 @@ class TestEnforceSingleton:
             assert last_calls == [0]       # circuit-breaker stops the retry hammer
 
 
+class TestReleaseSingleton:
+    """Self-restart must free the mutex before re-spawn, or the new hub
+    deadlocks on the still-held mutex (zero-hub window)."""
+
+    def test_release_closes_and_clears_handle(self):
+        import yasar_usta.singleton as s
+        closed = []
+        s._held_handle = 12345
+        s.release_singleton(close_fn=lambda h: closed.append(h))
+        assert s._held_handle is None
+        assert closed == [12345]
+
+    def test_release_is_noop_when_nothing_held(self):
+        import yasar_usta.singleton as s
+        closed = []
+        s._held_handle = None
+        s.release_singleton(close_fn=lambda h: closed.append(h))
+        assert closed == []
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Win32 named mutex")
 class TestRealMutexSeam:
     def test_second_acquire_detects_first(self):

@@ -273,3 +273,21 @@ On an ambiguous `CreateMutex` failure (not `ERROR_ALREADY_EXISTS`):
 One hub mutex = **one hub process, N in-process `TargetSupervisor`s** (matches hub spec). Per-target restart backoff MUST be non-blocking w.r.t. other targets **and** w.r.t. the `hub.alive` writer — else a crash-looping project A stalls project B's heartbeat and the child-watchdog kills a healthy B. State this in the hub-implementation spec.
 
 ### 10e. Code references — verified 14/15 accurate (only the `_restart_self` name/line was wrong, now fixed). Guarantee wording consistent across §1/§5/§7/§9d. Consistent with the companion hub spec (finding #1: hub-owned self-restart, no `TargetSupervisor` exit path).
+
+---
+
+## 11. Implementation status + re-baseline (2026-07-18)
+
+**Re-baseline:** the multi-project **hub shipped** since this design was written (commits `1bef56ec`→`5c63c9c2`). The entry point is now `Hub` (`hub.py`), not `ProcessGuard`. So the hardening targets moved: singleton + self-restart now live in `hub.py` (`Hub.run()` acquire_lock at ~`hub.py:274`; `_do_restart_hub` self-fork at ~`hub.py:150`), and orphan cleanup **already moved** to `projects/kutai/hooks.py::pre_boot` (my §4.3 recommendation — done). `guard.py` `ProcessGuard`/`_restart_self` is now legacy (Hub uses `TargetSupervisor`). `/stop` already stops the child only and keeps the hub alive (confirms the §4.3/P1 correction). The design (§4/§7/§10) is unchanged; only the wiring locations shifted.
+
+**DONE (TDD, committed, restart-gated — not yet live-verified):**
+- **M1 — `yasar_usta/singleton.py`** (`b121a685`): `decide_singleton` (Global→Local→fail-closed), `enforce_singleton` (circuit-breaker), `record_fault`, `release_singleton`, real Win32 seam. 19 tests incl. real mutex.
+- **M2 — wired into `Hub`**: `Hub._acquire_singleton()` gates `run()` **before** `acquire_lock`/pre_boot; `_do_restart_hub` calls `release_singleton()` before re-spawn (avoids the zero-hub window while there is still a Popen self-fork). Full `yasar_usta` suite: 128 passed.
+
+**REMAINING (each its own milestone):**
+- **M3 — Layer 0 (Task Scheduler @ elevated logon + auto-logon) + convert `_do_restart_hub` from Popen self-fork to `os._exit(42)`.** The Popen→exit conversion is **gated on Layer 0 existing** (else self-restart has no relauncher). Until then M2's mutex-safe Popen is the bridge.
+- **M4 — outer hub-liveness watchdog** (`hub.alive` writer + `hub.stopped` marker + watchdog task, §7).
+- **M5 — state relocation** to `%LOCALAPPDATA%\YasarUsta` + `YASAR_USTA_STATE_DIR` env to children + `systemprofile` boot assertion (§10b).
+- **M6 — `_kill_stale_orchestrators` wmic-substring → owned-PID (full cmd+cwd)** (`projects/kutai/hooks.py`, live foot-gun §4.3).
+
+**Next gate:** user `/restart` to live-verify M1+M2 (healthy hub still boots + holds the mutex; a second manual launch exits immediately) before proceeding to M3 (which needs host config).

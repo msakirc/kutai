@@ -2,6 +2,17 @@ import asyncio
 import pytest
 from yasar_usta.config import GuardConfig, HubConfig, ProjectConfig
 from yasar_usta.hub import Hub
+from yasar_usta.singleton import ERROR_ALREADY_EXISTS
+
+
+class _FakeMutex:
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls = []
+
+    def __call__(self, qualified_name):
+        self.calls.append(qualified_name)
+        return self._results.pop(0)
 
 
 def _project(pid, tmp_path):
@@ -20,6 +31,25 @@ def _hub(tmp_path, pids):
 def test_hub_builds_one_supervisor_per_target(tmp_path):
     hub = _hub(tmp_path, ["kutai", "foo"])
     assert set(hub.supervisors.keys()) == {"kutai", "foo"}
+
+
+def test_singleton_gate_exits_zero_when_another_hub_owns_it(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    calls = []
+    hub._create_mutex = _FakeMutex([(1, ERROR_ALREADY_EXISTS)])
+    hub._singleton_exit = lambda c: calls.append(c)
+    hub._acquire_singleton()
+    assert calls == [0]  # a second hub must exit, not proceed
+
+
+def test_singleton_gate_proceeds_when_owned(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    calls = []
+    hub._create_mutex = _FakeMutex([(1, 0)])
+    hub._singleton_exit = lambda c: calls.append(c)
+    hub._acquire_singleton()
+    assert calls == []  # we own it → run
+    assert hub._create_mutex.calls == ["Global\\YasarUstaHub"]
 
 
 @pytest.mark.asyncio

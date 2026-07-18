@@ -137,6 +137,28 @@ def record_fault(
     return FaultDecision(should_alert=should_alert, count=count, give_up=count >= give_up_after)
 
 
+def release_singleton(close_fn=None) -> None:
+    """Release the held mutex (close its handle → kernel destroys the object).
+
+    Called on the self-restart path BEFORE re-spawning, so the replacement hub
+    acquires a free mutex instead of deadlocking on the one this process still
+    holds. ``close_fn`` is injectable for tests.
+    """
+    global _held_handle
+    h = _held_handle
+    _held_handle = None
+    if not h:
+        return
+    if close_fn is not None:
+        close_fn(h)
+        return
+    try:
+        import ctypes
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(h)
+    except Exception:
+        pass
+
+
 def _fault_marker(state_dir) -> Path:
     """Marker path in state_dir, falling back to the temp dir if state_dir is
     unusable (e.g. the fault IS an unwritable state dir — avoid a chicken-egg)."""

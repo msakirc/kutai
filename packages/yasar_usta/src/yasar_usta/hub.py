@@ -15,6 +15,8 @@ from .commands import (build_dashboard_keyboard, build_hub_reply_keyboard,
 from .config import HubConfig, ProjectConfig
 from .hooks import load_hook, run_pre_boot
 from .lock import acquire_lock, release_lock
+from .singleton import (_win32_create_mutex, enforce_singleton,
+                        release_singleton)
 from .status import build_dashboard_text
 from .supervisor import TargetSupervisor
 from .telegram import TelegramAPI
@@ -32,6 +34,9 @@ class Hub:
         self._shutdown = False
         self._telegram_poller: asyncio.Task | None = None
         self._bg_tasks: set = set()  # strong refs to fire-and-forget tasks
+        # Singleton seam (injectable for tests); real Win32 mutex by default.
+        self._create_mutex = _win32_create_mutex
+        self._singleton_exit = sys.exit
 
         # Persistent reply keyboard, built once from hub Messages (spec R4).
         self._reply_kb = build_hub_reply_keyboard(self.msgs)
@@ -52,6 +57,36 @@ class Hub:
 
     async def _notify(self, text: str, reply_markup: dict | None = None) -> None:
         await self.telegram.send(text, reply_markup=reply_markup)
+
+    # ── Single-instance gate (never-duplicates authority) ────────────────
+    def _acquire_singleton(self) -> None:
+        """Become the one hub, or exit. Runs before the file lock so no other
+        cleanup/pre_boot executes on a mutex-loser (§4.1). Fail-closed."""
+        enforce_singleton(
+            "YasarUstaHub",
+            state_dir=self.cfg.log_dir,
+            create_mutex=self._create_mutex,
+            alert=self._sync_alert,
+            exit_fn=self._singleton_exit,
+        )
+
+    def _sync_alert(self, msg: str) -> None:
+        """Best-effort BLOCKING Telegram post — usable before the async poller
+        exists (the mutex gate runs pre-loop). Never raises."""
+        token = getattr(self.cfg, "telegram_token", "")
+        chat = getattr(self.cfg, "telegram_chat_id", "")
+        if not token or not chat:
+            logger.error("SINGLETON: %s", msg)
+            return
+        try:
+            import urllib.parse
+            import urllib.request
+            data = urllib.parse.urlencode({"chat_id": chat, "text": msg}).encode()
+            urllib.request.urlopen(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=data, timeout=5)
+        except Exception:
+            logger.error("SINGLETON (alert send failed): %s", msg)
 
     def _kb(self) -> dict:
         return self._reply_kb
@@ -160,9 +195,14 @@ class Hub:
         if sys.platform == "win32":
             kwargs["creationflags"] = (
                 _sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS | _sp.CREATE_NO_WINDOW)
+        # Release the singleton mutex + file lock BEFORE re-spawning, so the
+        # replacement hub acquires a free mutex instead of deadlocking on the
+        # one we still hold (zero-hub window). The old process is already
+        # quiesced (supervisors + poller stopped) so there is no double-work.
+        release_singleton()
+        release_lock()
         _sp.Popen([sys.executable, script] + sys.argv[1:], close_fds=True,
                   cwd=str(Path(script).parent), **kwargs)
-        release_lock()
         os._exit(0)
 
     async def _stop_poller(self) -> None:
@@ -271,6 +311,9 @@ class Hub:
     # ── Run ──────────────────────────────────────────────────────────────
     async def run(self) -> None:
         Path(self.cfg.log_dir).mkdir(parents=True, exist_ok=True)
+        # Mutex is the singleton authority — gate BEFORE the file lock and any
+        # pre_boot cleanup, so a second hub exits before killing anything (§4.1).
+        self._acquire_singleton()
         acquire_lock(self.cfg.log_dir, name="hub")
         logger.info("Hub started with %d supervisors", len(self.supervisors))
 

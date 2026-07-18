@@ -200,10 +200,17 @@ class Hub:
             {"text": "❌ Vazgeç", "callback_data": "confirm_cancel"},
         ]]})
 
-    async def _send_logs_for(self, sup: TargetSupervisor) -> None:
+    async def _send_logs_for(self, sup: TargetSupervisor, n: int = 20) -> None:
         log_path = sup.cfg.log_file or str(Path(sup.cfg.log_dir) / "orchestrator.jsonl")
-        formatted = format_log_entries(log_path, 20)
-        await self._notify(formatted or "📋 No log entries.")
+        formatted = format_log_entries(log_path, n)
+        if formatted is None:
+            await self._notify("📋 No log entries.")
+            return
+        yaz = sup.sidecars.get("yazbunu")
+        if yaz and getattr(yaz, "health_url", None) and await yaz.http_alive():
+            url = yaz.health_url.replace("/health", "/")
+            formatted += f"\n\n📊 [Yazbunu Log Viewer]({url})"
+        await self._notify(formatted)
 
     # ── Hub self-restart (spec finding #1) ───────────────────────────────
     async def _do_restart_hub(self) -> None:
@@ -306,7 +313,18 @@ class Hub:
             return
         # Persistent reply-keyboard labels for Logs / Remote (review finding #1/#2)
         if text.startswith("/logs") or text == self.msgs.btn_logs:
-            await self._for_bare_target("logs")
+            n = 20
+            parts = text.split()
+            if len(parts) > 1:
+                try:
+                    n = min(int(parts[1]), 50)
+                except ValueError:
+                    pass
+            sup = self._resolve_bare_target()
+            if sup is None:
+                await self._notify("⚠️ Multiple projects — open /status and use the buttons.")
+            else:
+                await self._send_logs_for(sup, n)
             return
         if text.startswith("/remote") or text == self.msgs.btn_remote:
             await self._for_bare_target("remote")

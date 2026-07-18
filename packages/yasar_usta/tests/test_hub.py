@@ -192,6 +192,28 @@ async def test_route_restart_sidecar(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_logs_command_parses_count_and_links_yazbunu(tmp_path, monkeypatch):
+    import yasar_usta.hub as hubmod
+    hub = _hub(tmp_path, ["kutai"])
+    hub.cfg.telegram_chat_id = "42"
+    sent = []
+    hub._notify = lambda text, **k: sent.append(text) or asyncio.sleep(0)
+    captured = {"n": None}
+    def _fmt(path, n):
+        captured["n"] = n
+        return "log-line"
+    monkeypatch.setattr(hubmod, "format_log_entries", _fmt)
+    # yazbunu sidecar alive with a health_url
+    class _Yaz:
+        health_url = "http://127.0.0.1:9880/health"
+        async def http_alive(self): return True
+    hub.supervisors["kutai"].sidecars = {"yazbunu": _Yaz()}
+    await hub._route_text("/logs 35")
+    assert captured["n"] == 35
+    assert any("Yazbunu Log Viewer" in s for s in sent)
+
+
+@pytest.mark.asyncio
 async def test_send_dashboard_offloads_blocking_build(tmp_path, monkeypatch):
     """The dashboard text build (which does blocking tasklist calls) must run
     via asyncio.to_thread, not directly on the event loop."""

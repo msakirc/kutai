@@ -45,3 +45,7 @@ async def test_two_targets_run_independently(tmp_path):
     await asyncio.wait_for(hub.run(), timeout=8)
     # both supervisors were constructed and reachable
     assert set(hub.supervisors) == {"good", "bad"}
+    # both targets actually launched their subprocess (ran independently),
+    # not merely constructed
+    assert hub.supervisors["good"].subprocess.last_exit_code is not None
+    assert hub.supervisors["bad"].subprocess.last_exit_code is not None

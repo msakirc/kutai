@@ -3,6 +3,7 @@ import pytest
 from yasar_usta.config import GuardConfig, HubConfig, ProjectConfig
 from yasar_usta.hub import Hub
 from yasar_usta.singleton import ERROR_ALREADY_EXISTS
+from yasar_usta.singleton import _win32_create_mutex as _real_mutex
 
 
 class _FakeMutex:
@@ -56,6 +57,15 @@ def test_singleton_gate_proceeds_when_owned(tmp_path):
     hub._acquire_singleton()
     assert calls == []  # we own it → run
     assert hub._create_mutex.calls == ["Global\\YasarUstaHub"]
+
+
+def test_tests_never_touch_the_real_global_mutex(tmp_path):
+    """Regression guard: the autouse conftest fixture must neutralize the real
+    Win32 CreateMutexW so no test acquires/holds the machine-global prod mutex
+    (Global\\YasarUstaHub). Without it, a test run holds the prod mutex → the
+    live hub can't start, and post-restart integration tests sys.exit(0)."""
+    hub = _hub(tmp_path, ["kutai"])
+    assert hub._create_mutex is not _real_mutex
 
 
 @pytest.mark.asyncio

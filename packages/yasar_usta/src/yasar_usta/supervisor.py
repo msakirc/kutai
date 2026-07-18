@@ -77,6 +77,7 @@ class TargetSupervisor:
         self._shutdown = False
         self._restart_requested = False
         self._stop_requested = False
+        self._start_requested = False
 
     # ── Intent API (called by Hub; Hub never touches self.subprocess directly)
     def request_restart(self) -> None:
@@ -88,12 +89,9 @@ class TargetSupervisor:
         self._write_shutdown_signal("stop")
 
     async def request_start(self) -> None:
+        """Request a start; the run() loop performs it when parked (never lost)."""
         if not self.subprocess.running:
-            await self._start_app()
-            if self.subprocess.running:
-                self.backoff.mark_started()
-                await self._notify_started()
-                await self._start_signal_watcher()
+            self._start_requested = True
 
     async def do_restart_now(self) -> None:
         if self.subprocess.running:
@@ -263,6 +261,27 @@ class TargetSupervisor:
         """Start the managed app subprocess."""
         await self.subprocess.start()
 
+    async def _park_until_wake(self) -> None:
+        """While stopped, wait for a start/restart intent (or shutdown). A restart
+        or start request while parked starts the app; a stop request is consumed
+        (stay stopped). This is the ONLY place a stopped app is (re)started in
+        response to poller intent — fixes the lost-restart race (B3)."""
+        while not self._shutdown and not self.subprocess.running:
+            if self._start_requested or self._restart_requested:
+                self._start_requested = False
+                self._restart_requested = False
+                self._stop_requested = False
+                await self._start_app()
+                if self.subprocess.running:
+                    self.backoff.mark_started()
+                    await self._notify_started()
+                    await self._start_signal_watcher()
+                return
+            if self._stop_requested:
+                self._stop_requested = False
+                # already stopped; nothing to do, keep waiting for a start
+            await asyncio.sleep(1)
+
     # ── Main loop ─────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -312,12 +331,7 @@ class TargetSupervisor:
                     if (self.backoff.last_crash_time
                             and (time.time() - self.backoff.last_crash_time) < 10):
                         logger.info("No process — waiting for /start command via Telegram")
-                        while not self._shutdown and not self.subprocess.running:
-                            await asyncio.sleep(1)
-                        if self.subprocess.running:
-                            self.backoff.mark_started()
-                            await self._notify_started()
-                            await self._start_signal_watcher()
+                        await self._park_until_wake()
                         continue
 
                     self.backoff.record_crash()
@@ -354,12 +368,7 @@ class TargetSupervisor:
                     self._stop_requested = False
                     logger.info("Stop requested via Telegram — app stopped cleanly")
                     # Already notified in poller; just wait for /start
-                    while not self._shutdown and not self.subprocess.running:
-                        await asyncio.sleep(1)
-                    if self.subprocess.running:
-                        self.backoff.mark_started()
-                        await self._notify_started()
-                        await self._start_signal_watcher()
+                    await self._park_until_wake()
                     continue
 
                 if exit_code == self.cfg.restart_exit_code:
@@ -375,12 +384,7 @@ class TargetSupervisor:
                 elif exit_code == 0:
                     logger.info("App stopped cleanly")
                     await self._notify_stopped()
-                    while not self._shutdown and not self.subprocess.running:
-                        await asyncio.sleep(1)
-                    if self.subprocess.running:
-                        self.backoff.mark_started()
-                        await self._notify_started()
-                        await self._start_signal_watcher()
+                    await self._park_until_wake()
                     continue
 
                 else:
@@ -393,8 +397,7 @@ class TargetSupervisor:
                     await self._notify_crash(exit_code)
 
                     if not self.cfg.auto_restart:
-                        while not self._shutdown and not self.subprocess.running:
-                            await asyncio.sleep(1)
+                        await self._park_until_wake()
                         continue
 
                     for _ in range(backoff_delay):
@@ -418,8 +421,7 @@ class TargetSupervisor:
                     await self.notify(self.msgs.wrapper_error.format(error=repr(exc)))
                 except Exception:
                     pass
-                while not self._shutdown and not self.subprocess.running:
-                    await asyncio.sleep(5)
+                await self._park_until_wake()
 
         # Shutdown: stop subprocess + watcher (poller/lock are Hub-owned).
         if self.subprocess.running:

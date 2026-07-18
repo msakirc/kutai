@@ -70,6 +70,12 @@ def build_dashboard_keyboard(projects: list[dict]) -> dict:
                 {"text": f"▶️ {label}", "callback_data": f"start:{pid}"},
                 {"text": "📋", "callback_data": f"logs:{pid}"},
             ])
+        scs = p.get("sidecar_health", [])
+        if scs:
+            rows.append([
+                {"text": f"📊 {sc['name']}", "callback_data": f"restart_sidecar:{pid}:{sc['name']}"}
+                for sc in scs
+            ])
     rows.append([
         {"text": "🔄 Refresh", "callback_data": "dashboard_refresh"},
         {"text": "♻️ Restart Hub", "callback_data": "restart_hub"},

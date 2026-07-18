@@ -131,6 +131,7 @@ class TargetSupervisor:
             "sidecars": {name: {"name": name, "pid": sc.pid_alive()}
                          for name, sc in self.sidecars.items()},
             "extra_processes": self.cfg.extra_processes,
+            "app_script": Path(self.cfg.command[-1]).name if self.cfg.command else None,
         }
 
     # ── Shutdown signal ────────────────────────────────────────────────

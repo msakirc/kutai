@@ -37,3 +37,26 @@ def test_dashboard_keyboard_has_per_project_callbacks():
     assert "start:foo" in flat
     assert "restart_hub" in flat
     assert "dashboard_refresh" in flat
+
+
+def test_dashboard_shows_sidecar_health():
+    from yasar_usta.status import build_project_section
+    st = {"project_id": "kutai", "name": "Kutay", "app_name": "Kutay",
+          "running": True, "heartbeat_age": 2.0, "heartbeat_healthy_seconds": 90,
+          "total_crashes": 0, "extra_processes": [], "app_script": None,
+          "sidecar_health": [
+              {"name": "yazbunu", "http_alive": True, "pid": 111, "alive": True},
+              {"name": "nerd_herd", "http_alive": False, "pid": None, "alive": False}]}
+    text = build_project_section(st)
+    assert "yazbunu" in text and "running" in text
+    assert "nerd_herd" in text and "not running" in text
+
+
+def test_dashboard_keyboard_has_sidecar_restart():
+    from yasar_usta.commands import build_dashboard_keyboard
+    kb = build_dashboard_keyboard([
+        {"project_id": "kutai", "name": "Kutay", "running": True,
+         "sidecar_health": [{"name": "yazbunu"}, {"name": "nerd_herd"}]}])
+    flat = str(kb)
+    assert "restart_sidecar:kutai:yazbunu" in flat
+    assert "restart_sidecar:kutai:nerd_herd" in flat

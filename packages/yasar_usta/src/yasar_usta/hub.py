@@ -98,7 +98,19 @@ class Hub:
 
     # ── Dashboard ────────────────────────────────────────────────────────
     async def _send_dashboard(self, edit_message_id: int | None = None) -> None:
-        states = [s.status() for s in self.supervisors.values()]
+        # Gather sidecar health on the loop (aiohttp http_alive can't run in the
+        # worker thread), THEN offload the blocking text render via to_thread.
+        states = []
+        for s in self.supervisors.values():
+            st = s.status()
+            st["sidecar_health"] = [
+                {"name": sc.name,
+                 "http_alive": await sc.http_alive(),
+                 "pid": sc.pid_alive(),
+                 "alive": await sc.is_alive()}
+                for sc in s.sidecars.values()
+            ]
+            states.append(st)
         text = await asyncio.to_thread(
             build_dashboard_text, self.cfg.name, states, self._guard_start_time)
         kb = build_dashboard_keyboard(states)
@@ -130,6 +142,17 @@ class Hub:
         if cb_data == "confirm_cancel":
             if cb_msg_id:
                 await self.telegram.delete(cb_msg_id)
+            return
+        if cb_data.startswith("restart_sidecar:"):
+            rest = cb_data[len("restart_sidecar:"):]
+            pid, _, name = rest.rpartition(":")
+            sup = self.supervisors.get(pid)
+            sc = sup.sidecars.get(name) if sup else None
+            if sc:
+                await self._notify(f"📊 *{name}* yeniden başlatılıyor...")
+                await sc.stop()
+                await sc.start()
+                await self._notify(f"✅ *{name}* yeniden başlatıldı")
             return
         if ":" not in cb_data:
             return

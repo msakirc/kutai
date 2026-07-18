@@ -236,6 +236,26 @@ def build_project_section(st: dict) -> str:
         exe = proc_info.get("exe", "")
         label = proc_info.get("label", exe)
         lines.append(f"{'🟡' if _check_process_running(exe) else '⚫'} {label}")
+    # DUAL-ORCHESTRATOR warning (SQLite-lock crash-loop guard).
+    app_script = st.get("app_script")
+    if app_script:
+        dups = _count_python_processes(app_script)
+        if len(dups) > 1:
+            pids = ", ".join(map(str, dups))
+            lines.append(f"⚠️ DUAL ORCHESTRATOR: {len(dups)} instances ({pids})")
+    # Sidecar health (mirrors the old build_status_text logic).
+    for si in (st.get("sidecar_health") or []):
+        sc_name = si["name"]
+        pid = si.get("pid")
+        if si.get("http_alive"):
+            pid_str = f", PID {pid}" if pid else ""
+            lines.append(f"📊 {sc_name}: running{pid_str}")
+        elif pid:
+            lines.append(f"🟠 {sc_name}: process alive but not responding (PID {pid})")
+        elif si.get("alive"):
+            lines.append(f"🟢 {sc_name}: running")
+        else:
+            lines.append(f"⚫ {sc_name}: not running")
     if st.get("total_crashes"):
         lines.append(f"  crashes: {st['total_crashes']}")
     return "\n".join(lines)

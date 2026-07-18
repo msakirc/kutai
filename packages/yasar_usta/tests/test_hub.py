@@ -178,6 +178,20 @@ async def test_shutdown_watcher_fans_out_stop(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_route_restart_sidecar(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    hub._notify = lambda *a, **k: asyncio.sleep(0)
+    sup = hub.supervisors["kutai"]
+    calls = {"stop": 0, "start": 0}
+    class _SC:
+        async def stop(self): calls["stop"] += 1
+        async def start(self): calls["start"] += 1
+    sup.sidecars = {"yazbunu": _SC()}
+    await hub._route_callback("restart_sidecar:kutai:yazbunu", cb_msg_id=None)
+    assert calls == {"stop": 1, "start": 1}
+
+
+@pytest.mark.asyncio
 async def test_send_dashboard_offloads_blocking_build(tmp_path, monkeypatch):
     """The dashboard text build (which does blocking tasklist calls) must run
     via asyncio.to_thread, not directly on the event loop."""

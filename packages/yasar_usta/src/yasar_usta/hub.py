@@ -99,7 +99,8 @@ class Hub:
     # ── Dashboard ────────────────────────────────────────────────────────
     async def _send_dashboard(self, edit_message_id: int | None = None) -> None:
         states = [s.status() for s in self.supervisors.values()]
-        text = build_dashboard_text(self.cfg.name, states, self._guard_start_time)
+        text = await asyncio.to_thread(
+            build_dashboard_text, self.cfg.name, states, self._guard_start_time)
         kb = build_dashboard_keyboard(states)
         try:
             if edit_message_id:

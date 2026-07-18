@@ -165,3 +165,20 @@ async def test_shutdown_watcher_fans_out_stop(tmp_path):
     hub._shutdown = True  # already requested
     await hub._shutdown_watcher()  # returns immediately, fans out
     assert stopped == {"kutai": 1, "foo": 1}
+
+
+@pytest.mark.asyncio
+async def test_send_dashboard_offloads_blocking_build(tmp_path, monkeypatch):
+    """The dashboard text build (which does blocking tasklist calls) must run
+    via asyncio.to_thread, not directly on the event loop."""
+    import yasar_usta.hub as hubmod
+    hub = _hub(tmp_path, ["kutai"])
+    hub.telegram.send = lambda *a, **k: asyncio.sleep(0)  # returns coroutine
+    used = {"to_thread": 0}
+    real_to_thread = asyncio.to_thread
+    async def _tt(fn, *a, **k):
+        used["to_thread"] += 1
+        return await real_to_thread(fn, *a, **k)
+    monkeypatch.setattr(hubmod.asyncio, "to_thread", _tt)
+    await hub._send_dashboard()
+    assert used["to_thread"] == 1

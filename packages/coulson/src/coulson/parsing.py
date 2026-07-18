@@ -326,7 +326,12 @@ def _normalize_action(parsed: dict) -> dict | None:
             # Legacy orchestrator format
             return {
                 "action":              "final_answer",
-                "result":              parsed.get("result", str(parsed)),
+                # Serialize the whole dict as JSON (not str(parsed) → Python
+                # repr with single quotes), so downstream json.loads consumers
+                # — e.g. verify_review_verdict — can parse a `{status, issues}`
+                # reviewer verdict. ensure_ascii=False keeps Turkish intact.
+                "result":              parsed.get("result")
+                                       or json.dumps(parsed, ensure_ascii=False),
                 "subtasks":            parsed.get("subtasks"),
                 "plan_summary":        parsed.get("plan_summary"),
                 "needs_clarification": parsed.get("clarification"),

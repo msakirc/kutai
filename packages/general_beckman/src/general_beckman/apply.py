@@ -16,6 +16,7 @@ before calling `mr_roboto.run`, which routes on `payload["action"]`. Use
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 from datetime import timedelta
@@ -2250,6 +2251,33 @@ def _find_check_payload(source_ctx: dict, kind: str) -> dict | None:
     return None
 
 
+def _parse_review_result(source_result: object) -> dict | list | None:
+    """Turn a reviewer's stored result into a dict/list for the verdict
+    classifier, or None when it is not parseable.
+
+    A dict/list passes through. A string is fence-unwrapped then json.loads'd;
+    on failure it falls back to ``ast.literal_eval`` — a Python-repr verdict
+    (single-quoted ``str(dict)``, the m90 567426 shape) is a valid literal even
+    though it is not JSON, and must not be dropped as "no parseable verdict".
+    literal_eval only evaluates literals (no code execution). Anything else → None.
+    """
+    if isinstance(source_result, (dict, list)):
+        return source_result
+    if not isinstance(source_result, str) or not source_result.strip():
+        return None
+    from coulson.grounding import unwrap_fenced_artifact
+    candidate = unwrap_fenced_artifact(source_result) or source_result
+    try:
+        return json.loads(candidate)
+    except (ValueError, TypeError):
+        pass
+    try:
+        val = ast.literal_eval(candidate)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        return None
+    return val if isinstance(val, (dict, list)) else None
+
+
 def _posthook_agent_and_payload(
     a: RequestPostHook, source: dict, source_ctx: dict,
 ) -> tuple[str, dict]:
@@ -2264,17 +2292,7 @@ def _posthook_agent_and_payload(
         # classifies it `malformed` (→ retry the reviewer, not route to a
         # producer). A dict result is used directly.
         payload = _find_check_payload(source_ctx, a.kind) or {}
-        source_result = source.get("result")
-        parsed: object | None = None
-        if isinstance(source_result, (dict, list)):
-            parsed = source_result
-        elif isinstance(source_result, str) and source_result.strip():
-            from coulson.grounding import unwrap_fenced_artifact
-            candidate = unwrap_fenced_artifact(source_result) or source_result
-            try:
-                parsed = json.loads(candidate)
-            except (ValueError, TypeError):
-                parsed = None
+        parsed = _parse_review_result(source.get("result"))
         payload = {**payload, "action": a.kind, "review_result": parsed}
         return ("mechanical", {
             "source_task_id": a.source_task_id,

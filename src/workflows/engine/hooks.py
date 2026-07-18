@@ -478,6 +478,19 @@ def resolve_produces_artifact(source: dict, source_ctx: dict):
             return None
         if not (isinstance(disk, str) and disk.strip()):
             return None
+        # A canonical artifact that leads with YAML frontmatter already IS the
+        # materialized document; a fenced block inside it (e.g. a user_flow
+        # ```mermaid diagram, whose whole body is that fence) is the artifact
+        # BODY, not a narration wrapper. ``unwrap_fenced_artifact`` would return
+        # only the fence's inner text, discarding the frontmatter + fence and
+        # handing the grade chain a bare fragment it rejects as malformed —
+        # even though ``verify_*_shape`` PASSED the same on-disk file
+        # (m90 567452 user_flow: grade WELL_FORMED:FAIL vs shape-gate PASS on
+        # the identical ``.flow/user_flow.md``). Unwrap ONLY a narration-wrapped
+        # disk (no leading frontmatter → the real artifact is buried in a fence).
+        import re as _re
+        if _re.match(r"^---\s*\n.*?\n---\s*\n", disk.lstrip(chr(0xFEFF)), _re.DOTALL):
+            return disk
         u = unwrap_fenced_artifact(disk)
         return u if (isinstance(u, str) and u.strip()) else disk
     return None

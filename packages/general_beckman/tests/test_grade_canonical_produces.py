@@ -102,6 +102,65 @@ def test_resolve_produces_artifact_reads_disk_over_narration(tmp_path, monkeypat
     assert out != _NARRATION
 
 
+_USER_FLOW = """---
+mission_id: 90
+surfaces: [web]
+---
+
+```mermaid
+graph TD
+    Landing["Landing Page"] --> Auth["Sign In"]
+    Auth --> Dashboard["Dashboard"]
+```
+"""
+
+
+def test_resolve_keeps_frontmatter_led_artifact_with_fenced_body(tmp_path, monkeypatch):
+    """A canonical .md whose BODY is a fenced block (user_flow ```mermaid) must
+    survive the resolver verbatim — its own fence is the artifact, not a
+    narration wrapper. Unwrapping it strips the frontmatter + fence and hands
+    the grader a bare ``graph TD`` fragment → WELL_FORMED:FAIL, even though
+    verify_user_flow_shape PASSED the same disk file (m90 567452)."""
+    import src.tools.workspace as ws
+    from src.workflows.engine.hooks import resolve_produces_artifact
+
+    monkeypatch.setattr(ws, "WORKSPACE_DIR", str(tmp_path))
+    _write_disk(str(tmp_path), "mission_90/.flow/user_flow.md", _USER_FLOW)
+
+    source = {"id": 567452, "mission_id": 90, "result": "Wrote the user flow."}
+    source_ctx = {"produces": ["mission_90/.flow/user_flow.md"]}
+
+    out = resolve_produces_artifact(source, source_ctx)
+    assert isinstance(out, str)
+    assert out.lstrip().startswith("---"), f"frontmatter stripped: {out[:60]!r}"
+    assert "surfaces: [web]" in out, "surfaces frontmatter lost"
+    assert "```mermaid" in out, "mermaid fence stripped → grader sees bare graph"
+
+
+def test_resolve_unwraps_narration_wrapped_disk_without_frontmatter(tmp_path, monkeypatch):
+    """Guard the ORIGINAL rescue: a disk file with NO leading frontmatter that
+    buries the real artifact inside a fence (write-stripped step narration
+    materialized to disk) is still unwrapped — the discriminator is 'leads with
+    frontmatter', so this narration-wrapped case keeps its behavior."""
+    import src.tools.workspace as ws
+    from src.workflows.engine.hooks import resolve_produces_artifact
+
+    monkeypatch.setattr(ws, "WORKSPACE_DIR", str(tmp_path))
+    wrapped = (
+        "## Analysis\n\nI wrote the config below.\n\n"
+        "```json\n{\"name\": \"widget\", \"version\": 3}\n```\n"
+    )
+    _write_disk(str(tmp_path), "mission_7/.build/config.json", wrapped)
+
+    source = {"id": 2, "mission_id": 7, "result": "narration"}
+    source_ctx = {"produces": ["mission_7/.build/config.json"]}
+
+    out = resolve_produces_artifact(source, source_ctx)
+    assert isinstance(out, str)
+    assert out.strip().startswith("{"), f"narration not unwrapped: {out[:60]!r}"
+    assert "## Analysis" not in out
+
+
 def test_resolve_returns_none_for_non_produces(tmp_path, monkeypatch):
     import src.tools.workspace as ws
     from src.workflows.engine.hooks import resolve_produces_artifact

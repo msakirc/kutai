@@ -717,8 +717,24 @@ async def fetch_deps(profile, task: dict, max_tokens: int) -> str:
             form = "summary"
             value: str | None = None
             if _wants_full:
+                # A reviewer must never be handed a summary. When the step
+                # itself declares the summary FORM (``requirements_spec_summary``)
+                # fetching that name verbatim returns the lossy stub — the
+                # reviewer then hallucinates "missing" content that is present
+                # in the full doc (m90 567426: 836-char summary vs 9769-char
+                # full spec → halted a complete spec with bogus empty-table
+                # blockers). Strip a trailing ``_summary`` and fetch the bare
+                # full artifact; fall back to the declared name only if the
+                # bare artifact does not exist.
                 form = "full"
-                value = await _store.retrieve(_mid, art_name)
+                bare = (
+                    art_name[: -len("_summary")]
+                    if art_name.endswith("_summary")
+                    else art_name
+                )
+                value = await _store.retrieve(_mid, bare)
+                if value is None and bare != art_name:
+                    value = await _store.retrieve(_mid, art_name)
             # Prefer the summary form unless the caller already requested the summary directly.
             elif not art_name.endswith("_summary"):
                 value = await _store.retrieve(_mid, f"{art_name}_summary")

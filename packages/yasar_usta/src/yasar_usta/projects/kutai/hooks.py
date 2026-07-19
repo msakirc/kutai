@@ -56,33 +56,74 @@ def _kill_orphan_processes(exit_code: int) -> None:
             print(f"[Yasar Usta] {label} cleanup error: {e}")
 
 
-def _kill_stale_orchestrators() -> None:
-    """Kill any stale orchestrator (run.py) processes left from a previous crash."""
-    my_pid = os.getpid()
+def _norm(s: str) -> str:
+    """Normalize a path/cmdline for slash-direction- and case-insensitive match."""
+    return s.replace("\\", "/").lower()
+
+
+def _orchestrator_script_paths(project) -> set:
+    """The absolute run-script path(s) that identify THIS project's orchestrator,
+    taken from each target's command (the ``.py`` arg). Project-specific + path-
+    specific, so it never matches library run.py or another project."""
+    paths = set()
+    for tgt in getattr(project, "targets", []) or []:
+        for arg in getattr(tgt, "command", []) or []:
+            if isinstance(arg, str) and arg.lower().endswith(".py"):
+                paths.add(_norm(arg))
+    return paths
+
+
+def _stale_orchestrator_pids(script_paths, processes, my_pid) -> list:
+    """PIDs whose cmdline contains one of ``script_paths`` (excluding my_pid).
+    ``processes`` is an iterable of ``(pid, cmdline_str)``."""
+    out = []
+    for pid, cmdline in processes:
+        if pid == my_pid:
+            continue
+        cl = _norm(cmdline)
+        if any(sp in cl for sp in script_paths):
+            out.append(pid)
+    return out
+
+
+def _iter_python_processes():
+    """Yield (pid, cmdline) for every python process (psutil; no deprecated wmic)."""
+    import psutil
+    for p in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            if "python" not in (p.info.get("name") or "").lower():
+                continue
+            yield (p.info["pid"], " ".join(p.info.get("cmdline") or []))
+        except Exception:
+            continue
+
+
+def _kill_pid(pid) -> None:
     try:
-        raw = _sp.check_output(
-            ['wmic', 'process', 'where', "name='python.exe'",
-             'get', 'ProcessId,CommandLine'],
-            text=True, timeout=5,
-        )
-        for line in raw.strip().splitlines():
-            line = line.strip()
-            if not line or line.startswith("CommandLine"):
-                continue
-            if "run.py" not in line:
-                continue
-            pid_str = line.split()[-1]
-            try:
-                pid = int(pid_str)
-            except ValueError:
-                continue
-            if pid == my_pid:
-                continue
-            print(f"[Yasar Usta] Killing stale orchestrator PID {pid}")
-            _sp.run(['taskkill', '/F', '/PID', str(pid)],
-                    capture_output=True, timeout=5)
+        import psutil
+        psutil.Process(pid).kill()
     except Exception as e:
-        print(f"[Yasar Usta] Stale orchestrator cleanup error: {e}")
+        print(f"[Yasar Usta] kill {pid} failed: {e}")
+
+
+def _kill_stale_orchestrators(project, *, list_processes=None, kill=None) -> None:
+    """Kill orphaned orchestrator processes left by a previous hub crash, matched
+    by the target's ABSOLUTE run-script path — not a bare ``"run.py"`` substring
+    (which force-killed torch/pexpect/openai/watchfiles run.py and, once
+    multi-project, sibling projects' orchestrators). Fail-soft."""
+    list_processes = list_processes or _iter_python_processes
+    kill = kill or _kill_pid
+    script_paths = _orchestrator_script_paths(project)
+    if not script_paths:
+        return
+    try:
+        procs = list(list_processes())
+    except Exception as e:
+        print(f"[Yasar Usta] Stale orchestrator scan error: {e}")
+        return
+    for pid in _stale_orchestrator_pids(script_paths, procs, os.getpid()):
+        print(f"[Yasar Usta] Killing stale orchestrator PID {pid}")
+        kill(pid)
 
 
 def _reconcile_stray_llama() -> None:
@@ -116,7 +157,7 @@ def _reconcile_stray_llama() -> None:
 
 def pre_boot(project) -> None:
     """Runs once before KutAI's supervisor starts (was module-import cleanup)."""
-    _kill_stale_orchestrators()
+    _kill_stale_orchestrators(project)
     _reconcile_stray_llama()
 
 

@@ -228,3 +228,29 @@ async def test_send_dashboard_offloads_blocking_build(tmp_path, monkeypatch):
     monkeypatch.setattr(hubmod.asyncio, "to_thread", _tt)
     await hub._send_dashboard()
     assert used["to_thread"] == 1
+
+
+@pytest.mark.asyncio
+async def test_notify_retries_plain_on_markdown_fail(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    calls = []
+    async def _send(text, reply_markup=None, parse_mode="Markdown"):
+        calls.append(parse_mode)
+        return {"ok": False} if len(calls) == 1 else {"ok": True}
+    hub.telegram.send = _send
+    await hub._notify("boom ``` unbalanced")
+    assert calls == ["Markdown", None]  # retried as plain text
+
+
+@pytest.mark.asyncio
+async def test_sidecar_health_concurrent_and_no_double_http(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    class _SC:
+        def __init__(self, name): self.name = name; self.http = 0
+        async def http_alive(self): self.http += 1; return True
+        def pid_alive(self): return 111
+    sc = _SC("yazbunu")
+    hub.supervisors["kutai"].sidecars = {"yazbunu": sc}
+    hub.telegram.send = lambda *a, **k: asyncio.sleep(0)
+    await hub._send_dashboard()
+    assert sc.http == 1  # exactly one http check, no redundant is_alive() call

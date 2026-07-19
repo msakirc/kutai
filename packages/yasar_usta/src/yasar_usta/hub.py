@@ -56,7 +56,9 @@ class Hub:
                     rid, tgt, notify=self._notify, reply_keyboard=self._reply_kb)
 
     async def _notify(self, text: str, reply_markup: dict | None = None) -> None:
-        await self.telegram.send(text, reply_markup=reply_markup)
+        result = await self.telegram.send(text, reply_markup=reply_markup)
+        if result and not result.get("ok"):
+            await self.telegram.send(text, reply_markup=reply_markup, parse_mode=None)
 
     # ── Single-instance gate (never-duplicates authority) ────────────────
     def _acquire_singleton(self) -> None:
@@ -96,25 +98,27 @@ class Hub:
             return next(iter(self.supervisors.values()))
         return None
 
+    async def _sidecar_health(self, sc) -> dict:
+        http = await sc.http_alive()
+        pid = sc.pid_alive()
+        return {"name": sc.name, "http_alive": http, "pid": pid,
+                "alive": bool(http or pid)}
+
     # ── Dashboard ────────────────────────────────────────────────────────
     async def _send_dashboard(self, edit_message_id: int | None = None) -> None:
         # Gather sidecar health on the loop (aiohttp http_alive can't run in the
         # worker thread), THEN offload the blocking text render via to_thread.
-        states = []
-        for s in self.supervisors.values():
-            st = s.status()
-            st["sidecar_health"] = [
-                {"name": sc.name,
-                 "http_alive": await sc.http_alive(),
-                 "pid": sc.pid_alive(),
-                 "alive": await sc.is_alive()}
-                for sc in s.sidecars.values()
-            ]
-            states.append(st)
-        text = await asyncio.to_thread(
-            build_dashboard_text, self.cfg.name, states, self._guard_start_time)
-        kb = build_dashboard_keyboard(states)
         try:
+            states = []
+            for s in self.supervisors.values():
+                st = s.status()
+                st["sidecar_health"] = list(await asyncio.gather(
+                    *[self._sidecar_health(sc) for sc in s.sidecars.values()]
+                )) if s.sidecars else []
+                states.append(st)
+            text = await asyncio.to_thread(
+                build_dashboard_text, self.cfg.name, states, self._guard_start_time)
+            kb = build_dashboard_keyboard(states)
             if edit_message_id:
                 result = await self.telegram.edit(edit_message_id, text, reply_markup=kb)
                 if result and not result.get("ok"):
@@ -317,7 +321,7 @@ class Hub:
             parts = text.split()
             if len(parts) > 1:
                 try:
-                    n = min(int(parts[1]), 50)
+                    n = max(1, min(int(parts[1]), 50))
                 except ValueError:
                     pass
             sup = self._resolve_bare_target()

@@ -35,29 +35,43 @@ _ROUTE_RE = re.compile(r"\(`/[^`]*`\)")
 
 
 def _parse_frontmatter(text: str) -> dict[str, Any] | None:
-    """Minimal YAML-ish frontmatter parser sufficient for this artifact."""
+    """Parse the artifact's YAML frontmatter with a real YAML parser.
+
+    Accepts BOTH the flow-style ``chunks: [[...], [...]]`` inline list AND a
+    block-style YAML sequence::
+
+        chunks:
+          - ["Landing", "Auth", ...]
+          - ["Detail", "Settings", ...]
+
+    The prior hand-rolled regex only matched flow style, so a model that
+    emitted equally-valid block-style YAML got a false ``frontmatter missing
+    chunks`` reject → degenerate DLQ of a correct artifact (m90 567453).
+    ``yaml.safe_load`` is the codebase's frontmatter arbiter (verify_artifacts,
+    visual_review already use it). Returns ``None`` when no ``---`` block is
+    present or the block is not parseable YAML mapping.
+    """
     m = _FRONTMATTER_RE.match(text)
     if not m:
         return None
-    fm = m.group(1)
+    import yaml  # lazy; pyyaml is already a dependency
+
+    try:
+        data = yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict):
+        return None
+
     out: dict[str, Any] = {}
-
-    # total_screens / chunk_size — simple scalars.
     for key in ("total_screens", "chunk_size"):
-        km = re.search(rf"^\s*{key}:\s*(\d+)\s*$", fm, re.MULTILINE)
-        if km:
-            out[key] = int(km.group(1))
-
-    # chunks: nested list. Match `chunks: [` ... matching `]` (one-level).
-    cm = re.search(r"^\s*chunks:\s*\[(.*)\]\s*$", fm, re.MULTILINE | re.DOTALL)
-    if cm:
-        body = cm.group(1)
-        chunks: list[list[str]] = []
-        for inner in re.findall(r"\[(.*?)\]", body, re.DOTALL):
-            items = [x.strip().strip("\"'") for x in inner.split(",") if x.strip()]
-            chunks.append(items)
-        out["chunks"] = chunks
-
+        if isinstance(data.get(key), int):
+            out[key] = data[key]
+    chunks = data.get("chunks")
+    if isinstance(chunks, list):
+        out["chunks"] = [
+            [str(x) for x in c] if isinstance(c, list) else c for c in chunks
+        ]
     return out
 
 

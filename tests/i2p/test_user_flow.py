@@ -59,6 +59,33 @@ async def test_missing_file_fails(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_block_style_surfaces_yaml_passes(tmp_path):
+    """``surfaces`` emitted as a block-style YAML sequence (not flow ``[..]``)
+    must be accepted — the flow-only regex parser false-rejected valid block
+    YAML (same class as m90 567453 screen_inventory chunks). Caller passes no
+    surfaces (the production check payload), so frontmatter parsing is the sole
+    source of the declared surfaces."""
+    ws = tmp_path / "ws"
+    (ws / ".flow").mkdir(parents=True)
+    (ws / ".flow" / "user_flow.md").write_text(
+        "---\n"
+        "mission_id: 1\n"
+        "surfaces:\n"
+        "  - web\n"
+        "  - mobile\n"
+        "---\n\n"
+        "## Web\n```mermaid\ngraph TD\n  A --> B\n```\n\n"
+        "## Mobile\n```mermaid\ngraph TD\n  C --> D\n```\n",
+        encoding="utf-8",
+    )
+    res = await verify_user_flow_shape(
+        mission_id=1, path=".flow/user_flow.md", workspace_path=str(ws),
+    )
+    assert res["ok"], res
+    assert set(res["surfaces"]) == {"web", "mobile"}
+
+
+@pytest.mark.asyncio
 async def test_no_mermaid_blocks_fails(tmp_path):
     ws = tmp_path / "ws"
     (ws / ".flow").mkdir(parents=True)

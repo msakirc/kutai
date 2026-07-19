@@ -124,18 +124,36 @@ def normalize_user_flow(
 
 
 def _parse_frontmatter_surfaces(text: str) -> list[str] | None:
-    """Extract ``surfaces`` list from YAML frontmatter without yaml dep."""
+    """Extract ``surfaces`` from YAML frontmatter (flow OR block style).
+
+    Both ``surfaces: ["web", "mobile"]`` (flow) and a block-style sequence::
+
+        surfaces:
+          - web
+          - mobile
+
+    are valid YAML; the prior flow-only regex false-rejected block style
+    (same class as m90 567453 screen_inventory chunks). ``yaml.safe_load`` is
+    the codebase's frontmatter arbiter. Returns ``None`` when no ``---`` block
+    is present, the block is unparseable, or ``surfaces`` is absent.
+    """
     m = _FRONTMATTER_RE.match(text)
     if not m:
         return None
-    fm = m.group(1)
-    # Look for `surfaces: ["a", "b"]` or `surfaces: [a, b]`.
-    sm = re.search(r"^\s*surfaces:\s*\[(.*?)\]", fm, re.MULTILINE)
-    if not sm:
+    import yaml  # lazy; pyyaml is already a dependency
+
+    try:
+        data = yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
         return None
-    raw = sm.group(1)
-    items = [x.strip().strip("\"'") for x in raw.split(",") if x.strip()]
-    return items
+    if not isinstance(data, dict):
+        return None
+    surfaces = data.get("surfaces")
+    if isinstance(surfaces, list):
+        return [str(s) for s in surfaces]
+    if isinstance(surfaces, str) and surfaces.strip():
+        return [surfaces.strip()]
+    return None
 
 
 async def verify_user_flow_shape(

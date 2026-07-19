@@ -64,6 +64,38 @@ async def test_chunk_size_violation_fails(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_block_style_chunks_yaml_passes(tmp_path):
+    """A model may emit ``chunks`` as a block-style YAML sequence rather than
+    the flow-style ``chunks: [[...]]`` inline list (m90 567453, the real
+    on-disk artifact). Both are valid YAML; the shape gate must accept both.
+    The hand-rolled regex parser only matched flow-style → false-reject →
+    'frontmatter missing chunks' → degenerate DLQ of a correct artifact."""
+    ws = tmp_path / "ws"
+    (ws / ".flow").mkdir(parents=True)
+    (ws / ".flow" / "screen_inventory.md").write_text(
+        "---\n"
+        "total_screens: 8\n"
+        "chunk_size: 4\n"
+        "chunks:\n"
+        '  - ["Landing", "Authentication", "Onboarding", "Dashboard"]\n'
+        '  - ["Habit Detail", "Errand Tracker", "Settings", "Profile"]\n'
+        "mission_id: 90\n"
+        "---\n\n"
+        "## Web\n"
+        "- Landing (`/`)\n- Authentication (`/auth`)\n- Onboarding (`/onboarding`)\n"
+        "- Dashboard (`/dashboard`)\n- Habit Detail (`/habit/:id`)\n"
+        "- Errand Tracker (`/errands`)\n- Settings (`/settings`)\n- Profile (`/profile`)\n",
+        encoding="utf-8",
+    )
+    res = await verify_screen_inventory_shape(
+        mission_id=90, path=".flow/screen_inventory.md", workspace_path=str(ws),
+    )
+    assert res["ok"], res
+    assert res["total"] == 8
+    assert res["chunk_size"] == 4
+
+
+@pytest.mark.asyncio
 async def test_missing_frontmatter_fails(tmp_path):
     ws = tmp_path / "ws"
     (ws / ".flow").mkdir(parents=True)

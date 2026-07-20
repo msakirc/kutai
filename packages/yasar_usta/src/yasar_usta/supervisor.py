@@ -46,9 +46,13 @@ def _extract_traceback(lines) -> str:
 class TargetSupervisor:
     def __init__(self, project_id: str, config: GuardConfig,
                  notify: Callable[..., Awaitable[None]],
-                 reply_keyboard: dict | None = None):
+                 reply_keyboard: dict | None = None,
+                 display_name: str | None = None):
         self.project_id = project_id
         self.cfg = config
+        # Human label shown on the dashboard (project name, not the target id).
+        # Falls back to the target's config name for standalone use.
+        self.display_name = display_name or config.name
         self.msgs = config.messages
         self.notify = notify
         self.reply_keyboard = reply_keyboard
@@ -122,7 +126,7 @@ class TargetSupervisor:
     def status(self) -> dict:
         return {
             "project_id": self.project_id,
-            "name": self.cfg.name,
+            "name": self.display_name,
             "app_name": self.cfg.app_name,
             "running": self.subprocess.running,
             "heartbeat_age": self.subprocess.heartbeat_age(),

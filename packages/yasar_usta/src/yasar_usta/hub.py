@@ -51,9 +51,12 @@ class Hub:
             for tgt in proj.targets:
                 if hook is not None and hasattr(hook, "on_exit"):
                     tgt.on_exit = hook.on_exit
-                rid = proj.id if len(proj.targets) == 1 else f"{proj.id}:{tgt.name}"
+                single = len(proj.targets) == 1
+                rid = proj.id if single else f"{proj.id}:{tgt.name}"
+                display = proj.name if single else f"{proj.name} · {tgt.app_name}"
                 self.supervisors[rid] = TargetSupervisor(
-                    rid, tgt, notify=self._notify, reply_keyboard=self._reply_kb)
+                    rid, tgt, notify=self._notify, reply_keyboard=self._reply_kb,
+                    display_name=display)
 
     async def _notify(self, text: str, reply_markup: dict | None = None) -> None:
         result = await self.telegram.send(text, reply_markup=reply_markup)
@@ -140,7 +143,18 @@ class Hub:
             await self._send_dashboard(edit_message_id=cb_msg_id)
             return
         if cb_data == "restart_hub":
-            await self._notify("♻️ *Hub yeniden başlatılıyor...*")
+            # Downs every project → confirm first (never a mis-tap).
+            await self.telegram.send(
+                "🔁 *Hub yeniden başlatılsın mı?*\nTüm projeler kısa süre durur.",
+                reply_markup={"inline_keyboard": [[
+                    {"text": "✅ Evet", "callback_data": "confirm_restart_hub"},
+                    {"text": "❌ Vazgeç", "callback_data": "confirm_cancel"},
+                ]]})
+            return
+        if cb_data == "confirm_restart_hub":
+            if cb_msg_id:
+                await self.telegram.delete(cb_msg_id)
+            await self._notify("🔁 *Hub yeniden başlatılıyor...*")
             await self._do_restart_hub()
             return
         if cb_data == "confirm_cancel":

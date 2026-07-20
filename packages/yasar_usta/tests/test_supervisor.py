@@ -37,6 +37,21 @@ def test_status_snapshot_shape(tmp_path):
     assert "heartbeat_age" in s and "total_crashes" in s
 
 
+def test_status_name_uses_display_name_when_given(tmp_path):
+    # The dashboard label must be the human project name, not the target id.
+    cfg = GuardConfig(name="orchestrator", app_name="Kutay", command=["python"],
+                      log_dir=str(tmp_path / "logs"), backoff_steps=[1])
+    async def notify(text, reply_markup=None):
+        pass
+    sup = TargetSupervisor("kutai", cfg, notify=notify, display_name="Kutay")
+    assert sup.status()["name"] == "Kutay"
+
+
+def test_status_name_defaults_to_cfg_name_without_display(tmp_path):
+    sup, _ = _sup(tmp_path)  # constructed with no display_name
+    assert sup.status()["name"] == "web"
+
+
 def test_status_sidecars_is_snapshot_not_managers(tmp_path):
     sup, _ = _sup(tmp_path)
     # a supervisor with no sidecars → empty dict; values (if any) must be plain dicts

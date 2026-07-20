@@ -40,6 +40,54 @@ def test_hub_builds_one_supervisor_per_target(tmp_path):
     assert set(hub.supervisors.keys()) == {"kutai", "foo"}
 
 
+def test_single_target_display_name_is_project_name(tmp_path):
+    # _project sets ProjectConfig.name = pid.title(), cfg.name = pid.
+    hub = _hub(tmp_path, ["kutai"])
+    assert hub.supervisors["kutai"].display_name == "Kutai"
+
+
+def test_multi_target_display_name_includes_target(tmp_path):
+    cfg1 = GuardConfig(name="backend", app_name="Backend", command=["python"],
+                       log_dir=str(tmp_path / "l1"), backoff_steps=[1])
+    cfg2 = GuardConfig(name="bot", app_name="Bot", command=["python"],
+                       log_dir=str(tmp_path / "l2"), backoff_steps=[1])
+    proj = ProjectConfig(id="p2", name="MyApp", targets=[cfg1, cfg2])
+    hub_cfg = HubConfig(name="Hub", telegram_token="", telegram_chat_id="",
+                        log_dir=str(tmp_path / "h"))
+    hub = Hub(hub_cfg, [proj])
+    dn = {rid: s.display_name for rid, s in hub.supervisors.items()}
+    assert dn["p2:backend"] == "MyApp · Backend"
+    assert dn["p2:bot"] == "MyApp · Bot"
+
+
+@pytest.mark.asyncio
+async def test_hub_restart_button_asks_confirmation(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    sent = []
+    hub.telegram.send = lambda text, reply_markup=None: (
+        sent.append((text, reply_markup)) or asyncio.sleep(0))
+    ran = {"n": 0}
+    async def _do():
+        ran["n"] += 1
+    hub._do_restart_hub = _do
+    await hub._route_callback("restart_hub", cb_msg_id=None)
+    assert ran["n"] == 0  # a mis-tap must NOT restart the whole hub immediately
+    assert "confirm_restart_hub" in str(sent)
+
+
+@pytest.mark.asyncio
+async def test_confirm_restart_hub_executes(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    hub.telegram.delete = lambda *a, **k: asyncio.sleep(0)
+    hub._notify = lambda *a, **k: asyncio.sleep(0)
+    ran = {"n": 0}
+    async def _do():
+        ran["n"] += 1
+    hub._do_restart_hub = _do
+    await hub._route_callback("confirm_restart_hub", cb_msg_id=5)
+    assert ran["n"] == 1
+
+
 def test_singleton_gate_exits_zero_when_another_hub_owns_it(tmp_path):
     hub = _hub(tmp_path, ["kutai"])
     calls = []

@@ -13,12 +13,21 @@ def _norm(s: str) -> str:
 
 
 def _iter_python_processes():
+    """Yield (pid, cmdline) for python processes. Resilient to psutil races:
+    process_iter() is called WITHOUT an attrs list (so it never triggers the
+    batch as_dict that raises when a process vanishes mid-scan), and every
+    per-process attribute read is guarded — a dying process must never crash
+    pre_boot (which fails loud and would otherwise abort hub startup)."""
     import psutil
-    for p in psutil.process_iter(["pid", "name", "cmdline"]):
+    try:
+        procs = psutil.process_iter()
+    except Exception:
+        return
+    for p in procs:
         try:
-            if "python" not in (p.info.get("name") or "").lower():
+            if "python" not in (p.name() or "").lower():
                 continue
-            yield (p.info["pid"], " ".join(p.info.get("cmdline") or []))
+            yield (p.pid, " ".join(p.cmdline() or []))
         except Exception:
             continue
 

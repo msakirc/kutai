@@ -8,7 +8,7 @@
 KutAI is an autonomous AI agent system controlled via Telegram. It manages missions, tasks, shopping, todos, and workflows using local LLMs (llama-server/Ollama) and a modular agent architecture.
 
 ## Architecture
-- **Entry point**: `kutai_wrapper.py` → `packages/yasar_usta/` (Yaşar Usta) → `src/app/run.py` → `src/core/orchestrator.py`
+- **Entry point**: Yaşar Usta is now a **standalone sibling repo** at `../yasar_usta` (own git + own `.venv`), launched via `python -m yasar_usta --registry ../yasar_usta/registry.yaml` (or `start_kutai.bat` → the hub). The hub spawns KutAI's orchestrator (`src/app/run.py` → `src/core/orchestrator.py`) per the registry's `kutai` block. `kutai_wrapper.py` is **deleted** (dissolved into the declarative registry + generic entry). KutAI-specific process cleanup lives in `yasar_hooks.py` (repo root), run by the hub as a subprocess in kutay's venv. KutAI installs `yasar_usta` editable (`-e ../yasar_usta`) only for the `HeartbeatWriter` client.
 - **Telegram interface**: `src/app/telegram_bot.py` (TelegramInterface class, **~12.7k lines** — the largest god-file in the repo)
 - **Agents**: `src/agents/` — base.py (ReAct loop), specialized agents (coder, researcher, planner, etc.)
 - **Model selection**: `packages/fatih_hoca/` (Fatih Hoca) — 15-dimension scoring, task profiles, swap budget, failure adaptation
@@ -48,7 +48,7 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 ### Process Management
 - **NEVER use taskkill on llama-server** — it corrupts model state and VRAM
 - **NEVER force-kill KutAI** when Telegram is responsive — use `/restart` or `/stop` via Telegram, or exit code 42. However, if the bot is hung and `/restart` doesn't work, killing the **orchestrator process** (NOT llama-server) is acceptable — Yaşar Usta will auto-restart it.
-- **Yaşar Usta** (`packages/yasar_usta/`, entry point `kutai_wrapper.py`) is the process manager. It manages the orchestrator lifecycle, auto-restarts on crashes with escalating backoff (5→15→60→300s), detects hung orchestrators via heartbeat, and has its own dedicated Telegram bot (`YASAR_USTA_BOT_TOKEN`) for commands when KutAI is down.
+- **Yaşar Usta** (standalone sibling repo `../yasar_usta`, launched via `python -m yasar_usta --registry <path>`) is the shared, multi-project process manager. It manages the orchestrator lifecycle, auto-restarts on crashes with escalating backoff (5→15→60→300s), detects hung orchestrators via heartbeat, enforces a single-instance kernel mutex (`Global\YasarUstaHub`), and has its own dedicated Telegram bot (`YASAR_USTA_BOT_TOKEN`) for commands when KutAI is down. It runs from its OWN venv (`../yasar_usta/.venv`) and never imports KutAI packages in-process — KutAI-specific cleanup runs via `yasar_hooks.py` as a subprocess in kutay's venv.
 - Yaşar Usta uses a two-file lock: `logs/guard.lock` (PID, always readable) + `logs/guard.lk` (msvcrt exclusive lock sentinel). After power failures, the lock can become stale — the lock mechanism reads the PID and checks if it's alive before refusing to start.
 - **Interface naming**: The bot is displayed as "Kutay" in Telegram (user-facing name). The codebase uses "KutAI" internally. Never change internal module/class names, only Telegram-facing strings.
 
@@ -120,8 +120,9 @@ KutAI is an autonomous AI agent system controlled via Telegram. It manages missi
 ## Key Files
 | File | Purpose |
 |------|---------|
-| `kutai_wrapper.py` | Thin entry point → delegates to `packages/yasar_usta/` |
-| `packages/yasar_usta/` | **Yaşar Usta** — process manager, auto-restart, heartbeat watchdog, own Telegram bot when KutAI is down |
+| `../yasar_usta/` (sibling repo) | **Yaşar Usta** — shared multi-project process manager: singleton mutex, auto-restart, heartbeat watchdog, own Telegram bot. Own git + own `.venv`. Launch: `python -m yasar_usta --registry ../yasar_usta/registry.yaml` (or `start_kutai.bat`) |
+| `yasar_hooks.py` (repo root) | KutAI lifecycle hooks (stale-orchestrator + stray-llama + orphan-kill), run by the hub as a subprocess in kutay's venv |
+| `start_kutai.bat` | Launches the shared hub (points at `../yasar_usta`) |
 | `packages/fatih_hoca/` | **Fatih Hoca** — model selection: scoring, task profiles, swap budget, failure adaptation |
 | `packages/mr_roboto/` | **Mr. Roboto** — mechanical dispatcher: workspace snapshot + git auto-commit + clarify + notify_user (non-LLM executors) |
 | `packages/general_beckman/` | **General Beckman** — task master: queue selection, lifecycle (apply/retry/sweep/rewrite), quota look-ahead (Phase 2b Task 13) |

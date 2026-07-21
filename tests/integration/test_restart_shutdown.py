@@ -93,21 +93,12 @@ class TestExitCodeSentinels:
     EXIT_CODE_STOP = 0
 
     def test_restart_code_is_42(self):
-        """Exit code 42 is the restart sentinel (matches kutai_wrapper.py)."""
-        # Read the wrapper to confirm 42 is the restart code
-        wrapper_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "kutai_wrapper.py",
-        )
-        if not os.path.exists(wrapper_path):
-            pytest.skip("kutai_wrapper.py not found")
+        """Exit code 42 is the restart sentinel — canonical constant lives in the
+        Yaşar Usta package (heartbeat.EXIT_RESTART), read by both the orchestrator
+        and the hub. (Was asserted against the now-deleted kutai_wrapper.py.)"""
+        from yasar_usta.heartbeat import EXIT_RESTART
 
-        with open(wrapper_path, encoding="utf-8") as f:
-            content = f.read()
-
-        assert "42" in content, (
-            "kutai_wrapper.py should contain the magic restart code 42"
-        )
+        assert EXIT_RESTART == 42
 
     def test_orchestrator_has_requested_exit_code(self):
         """Orchestrator tracks requested_exit_code for restart/stop commands."""

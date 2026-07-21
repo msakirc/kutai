@@ -99,7 +99,7 @@ yazbunu @ git+https://github.com/msakirc/yazbunu.git
 # Local packages
 -e ./packages/db
 -e ./packages/vecihi
--e ./packages/yasar_usta
+-e ../yasar_usta
 -e ./packages/dallama
 -e ./packages/nerd_herd
 -e ./packages/kuleden_donen_var

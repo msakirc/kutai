@@ -72,32 +72,43 @@ def test_dashboard_button_uses_project_name_not_target_id():
     assert "orchestrator" not in flat and "orches" not in flat
 
 
-def test_dashboard_running_action_buttons_are_worded_turkish():
+def test_dashboard_running_row_is_icons_with_name_on_restart():
+    # Icons only (no action words). Name rides the restart button so the row
+    # is self-identifying. Kill must be ☠️ — NOT 🛑, which reads as 'stop' and
+    # collides with the graceful-stop button.
     kb = build_dashboard_keyboard([
         {"project_id": "kutai", "name": "Kutay", "running": True}])
+    row = kb["inline_keyboard"][0]
+    by_cb = {b["callback_data"]: b["text"] for b in row}
+    assert by_cb["restart:kutai"] == "♻️ Kutay"
+    assert by_cb["stop:kutai"] == "⏹️"
+    assert by_cb["kill:kutai"] == "☠️"
+    assert by_cb["logs:kutai"] == "📋"
     flat = str(kb)
-    assert "Durdur" in flat   # stop
-    assert "Öldür" in flat    # kill
-    assert "Log" in flat      # logs
+    assert "🛑" not in flat  # old kill glyph gone (read as 'stop')
+    assert "Durdur" not in flat and "Öldür" not in flat
 
 
-def test_dashboard_stopped_row_has_start_word_and_name():
+def test_dashboard_stopped_row_leads_with_name_icon_only():
     kb = build_dashboard_keyboard([
         {"project_id": "foo", "name": "Foo", "running": False}])
-    flat = str(kb)
-    assert "Başlat" in flat
-    assert "Foo" in flat
+    row = kb["inline_keyboard"][0]
+    by_cb = {b["callback_data"]: b["text"] for b in row}
+    assert by_cb["start:foo"] == "▶️ Foo"
+    assert by_cb["logs:foo"] == "📋"
+    assert "Başlat" not in str(kb)
 
 
-def test_hub_restart_is_own_worded_row_separate_from_refresh():
-    kb = build_dashboard_keyboard([
-        {"project_id": "kutai", "name": "Kutay", "running": True}])
+def test_hub_restart_row_uses_hub_name_own_row():
+    kb = build_dashboard_keyboard(
+        [{"project_id": "kutai", "name": "Kutay", "running": True}],
+        hub_name="Yaşar Usta")
     rows = kb["inline_keyboard"]
     hub_rows = [r for r in rows
                 if any(b.get("callback_data") == "restart_hub" for b in r)]
     assert len(hub_rows) == 1
     hub_row = hub_rows[0]
-    # Own row: alone, no refresh sharing it, and clearly worded as the hub.
+    # Own row, alone; labelled with the hub's own name (not generic "Hub").
     assert len(hub_row) == 1
-    assert "Hub" in hub_row[0]["text"]
+    assert "Yaşar Usta" in hub_row[0]["text"]
     assert not any(b.get("callback_data") == "dashboard_refresh" for b in hub_row)

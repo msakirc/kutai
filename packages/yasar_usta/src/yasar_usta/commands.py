@@ -48,16 +48,20 @@ def build_status_inline_keyboard(messages: Messages, name: str,
     return {"inline_keyboard": buttons}
 
 
-def build_dashboard_keyboard(projects: list[dict]) -> dict:
+def build_dashboard_keyboard(projects: list[dict],
+                             hub_name: str = "Yaşar Usta") -> dict:
     """Inline keyboard: per-project control rows + hub controls.
 
-    Each per-project row leads with the project name so the row is
-    self-identifying (Telegram inline keyboards have no row labels); action
-    buttons carry Turkish words, not bare icons. restart/stop emit
+    Icon-only action buttons — each per-project row LEADS with the project
+    name on its restart button, so the row is self-identifying (Telegram
+    inline keyboards have no row labels). Icons by purpose:
+      ♻️ restart · ⏹️ graceful stop · ☠️ force-kill (hung proc) · 📋 logs.
+    ☠️ (not 🛑) marks kill because a stop-sign glyph reads as 'stop' and
+    collides with the graceful-stop button. restart/stop emit
     restart:{pid}/stop:{pid} which the Hub turns into a Yes/Cancel confirm
-    (review finding #5 — no immediate destructive action). 🛑 Öldür is the
-    hung-app fast path. The Hub restart sits on its OWN worded row with its
-    own confirm — it downs every project, so it must not be a mis-tap."""
+    (review finding #5 — no immediate destructive action). The whole-hub
+    restart sits on its OWN row, labelled with the hub's name and routed
+    through its own confirm — it downs every project, so never a mis-tap."""
     rows = []
     for p in projects:
         pid = p["project_id"]
@@ -65,14 +69,14 @@ def build_dashboard_keyboard(projects: list[dict]) -> dict:
         if p.get("running"):
             rows.append([
                 {"text": f"♻️ {label}", "callback_data": f"restart:{pid}"},
-                {"text": "⏹ Durdur", "callback_data": f"stop:{pid}"},
-                {"text": "🛑 Öldür", "callback_data": f"kill:{pid}"},
-                {"text": "📋 Log", "callback_data": f"logs:{pid}"},
+                {"text": "⏹️", "callback_data": f"stop:{pid}"},
+                {"text": "☠️", "callback_data": f"kill:{pid}"},
+                {"text": "📋", "callback_data": f"logs:{pid}"},
             ])
         else:
             rows.append([
-                {"text": f"▶️ {label} Başlat", "callback_data": f"start:{pid}"},
-                {"text": "📋 Log", "callback_data": f"logs:{pid}"},
+                {"text": f"▶️ {label}", "callback_data": f"start:{pid}"},
+                {"text": "📋", "callback_data": f"logs:{pid}"},
             ])
         scs = p.get("sidecar_health", [])
         if scs:
@@ -81,8 +85,7 @@ def build_dashboard_keyboard(projects: list[dict]) -> dict:
                 for sc in scs
             ])
     rows.append([{"text": "🔄 Yenile", "callback_data": "dashboard_refresh"}])
-    rows.append([{"text": "🔁 Hub'ı Yeniden Başlat (tümü)",
-                  "callback_data": "restart_hub"}])
+    rows.append([{"text": f"🔁 {hub_name}", "callback_data": "restart_hub"}])
     return {"inline_keyboard": rows}
 
 

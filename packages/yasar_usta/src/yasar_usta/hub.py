@@ -126,7 +126,7 @@ class Hub:
                 states.append(st)
             text = await asyncio.to_thread(
                 build_dashboard_text, self.cfg.name, states, self._guard_start_time)
-            kb = build_dashboard_keyboard(states)
+            kb = build_dashboard_keyboard(states, hub_name=self.cfg.name)
             if edit_message_id:
                 result = await self.telegram.edit(edit_message_id, text, reply_markup=kb)
                 if result and not result.get("ok"):
@@ -150,7 +150,8 @@ class Hub:
         if cb_data == "restart_hub":
             # Downs every project → confirm first (never a mis-tap).
             await self.telegram.send(
-                "🔁 *Hub yeniden başlatılsın mı?*\nTüm projeler kısa süre durur.",
+                f"🔁 *{self.cfg.name} yeniden başlatılsın mı?*\n"
+                "Tüm projeler kısa süre durur.",
                 reply_markup={"inline_keyboard": [[
                     {"text": "✅ Evet", "callback_data": "confirm_restart_hub"},
                     {"text": "❌ Vazgeç", "callback_data": "confirm_cancel"},
@@ -159,7 +160,7 @@ class Hub:
         if cb_data == "confirm_restart_hub":
             if cb_msg_id:
                 await self.telegram.delete(cb_msg_id)
-            await self._notify("🔁 *Hub yeniden başlatılıyor...*")
+            await self._notify(f"🔁 *{self.cfg.name} yeniden başlatılıyor...*")
             await self._do_restart_hub()
             return
         if cb_data == "confirm_cancel":

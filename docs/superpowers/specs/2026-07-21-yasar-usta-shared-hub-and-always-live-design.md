@@ -82,10 +82,14 @@ Workspaces/
 
 The move preserves history via `git subtree split` of `packages/yasar_usta` into the new repo (fallback: plain copy if subtree is fiddly on Windows).
 
+`guard.py` (legacy `TargetSupervisor` precursor, still exported by `__init__.py` and covered by `test_guard_*_characterization.py`) is **not dead** — the migration must explicitly decide move-with-repo vs. delete-and-drop-its-tests. Default: move it (keeps history green), retire in a later cleanup.
+
 ### 4.3 Two roles, one package
 
 - **Hub venv** (`yasar_usta/.venv`): `pip install -e .` → runs the single daemon (`python -m yasar_usta --registry …`).
 - **Consumer venv** (e.g. `kutay/.venv`): keeps an editable install of `yasar_usta`, only for `HeartbeatWriter`/`write_heartbeat`. The path in `requirements.txt` changes from `-e ./packages/yasar_usta` to `-e ../yasar_usta`. `run.py`/`orchestrator.py` imports are unchanged (except heartbeat path, see §4.5).
+
+**Boot ordering (req-2 completeness).** `from yasar_usta import HeartbeatWriter` fires at orchestrator start (`run.py:378`, `orchestrator.py:468`); if the sibling repo has not been editable-installed into the consumer venv, that import raises and the child never boots. Therefore: (a) the sibling repo must exist and be `pip install -e ../yasar_usta`'d into **both** the hub venv and each consumer venv **before** first managed launch; (b) at reboot this must hold before Task Scheduler starts the hub. Guard it: `__main__` (hub) asserts `import yasar_usta` resolves for each project's `venv_python` at boot (cheap subprocess `-c "import yasar_usta"` per project) and fails loud with a clear "run pip install -e ../yasar_usta in <venv>" message rather than a late ImportError inside a managed child.
 
 ### 4.4 Decoupling: subprocess hooks
 
@@ -102,6 +106,8 @@ The shared `hooks.py` changes from in-process `importlib` dispatch to **subproce
 - Result via exit code (+ stdout for logging). `pre_boot` failure is surfaced (must stay visible, per the existing hook contract); `on_exit` is fail-soft.
 
 Consequences: the hub venv never carries `dallama`/`psutil`-for-project; **M6's** precise absolute-path orphan-kill (psutil, no `wmic`) is preserved verbatim inside `yasar_hooks.py`.
+
+**Windows arg-passing:** the `--context` JSON carries backslash Windows paths (from `_orchestrator_script_paths`). The hub must build the subprocess as an **argv list** (`subprocess.Popen([venv_python, "yasar_hooks.py", phase, "--context", json_str])`), never a shell string — a shell string mangles backslashes/quotes. The in-process hook never had this concern; the subprocess boundary introduces it.
 
 ### 4.5 Split-brain heartbeat fix (mandatory with §4.1)
 
@@ -129,6 +135,7 @@ This is the single highest-blast-radius change; it gets its own live-verify (con
 - Generic entry: `python -m yasar_usta --registry <path> [--no-auto-restart]` (the signal handling + `hub.run()` currently in `kutai_wrapper.main`). Optional `console_scripts: yasar-usta`.
 - `hub.py::_do_restart_hub` self-fork changes from `[sys.executable, sys.argv[0]] + argv[1:]` to `[sys.executable, "-m", "yasar_usta"] + registry_args` — running `__main__.py` as a bare script would break package-relative imports.
 - `install_yasar_autostart.ps1` main task action → `-Execute <hub_venv_python> -Argument "-m yasar_usta --registry <path>"`; the watchdog task's `--alive` points at `%LOCALAPPDATA%\YasarUsta\hub\hub.alive`. (The watchdog task already invokes `-m yasar_usta.watchdog`.)
+- **[BLOCKER] Watchdog process matcher.** `watchdog.py::find_hub_pids` (`:54`) hardcodes `"kutai_wrapper.py" in cmdline`. Deleting the wrapper + launching `-m yasar_usta` makes it return `[]` forever → the M4b watchdog **never fires** → always-lives silently defeated (same bug-class as M6's bare-substring match). Repoint the matcher to the new invocation (match the resolved `yasar_usta/__main__.py` path and/or a stable `-m yasar_usta` marker on the cmdline) and fix its docstring. `status.py`'s duplicate-detection already takes `guard_script` as a **parameter** (generic) — only its **caller** must now pass the new script basename instead of `"kutai_wrapper.py"`.
 - **"Never stack two relaunchers"** is preserved: hub self-restart is a clean mutex-release→spawn→exit(0); Task Scheduler restart-on-failure only fires on nonzero exit. (Optional later cleanup: `os._exit(42)` so Task Scheduler becomes the sole relauncher — deferred, the Popen bridge works.)
 
 ### 4.8 Always-live carryover (unchanged by relocation)
@@ -139,6 +146,7 @@ This is the single highest-blast-radius change; it gets its own live-verify (con
   2. `hub.stopped` gate: kill only if stale AND no `hub.stopped` AND pid alive; write `hub.stopped` on any deliberate hub-down.
   3. kill-death verification: confirm the mutex-holding real interpreter actually died; log/alert on failure (else silent zero-effective-hub).
   These marker/gate files live in `%LOCALAPPDATA%\YasarUsta\hub\`.
+  **Two relocation caveats on M4b:** (a) finding #3 was written against the `kutai_wrapper.py` process tree (launcher stub + real interpreter, both matched by `find_hub_pids`); under `-m yasar_usta` from the hub venv the tree may differ, so the phase-3 TDD for #3 must assert against the **actual `-m yasar_usta` process shape**, not the wrapper's. (b) The grace window (`~360s`) is exactly two watchdog ticks (`DEFAULT_INTERVAL=180s`); if hub boot (venv import + `_reconcile_stray_llama`) ever exceeds one tick, the margin is thin — size the grace with headroom (≥3 ticks) or make it boot-completion-signalled rather than time-only.
 - **M3 auto-start** — installer rewritten now (§4.7); **running it stays user-gated** (elevation + `netplwiz` auto-logon + reboot test).
 
 ## 5. New-project onboarding (the payoff)
@@ -149,7 +157,7 @@ This is the single highest-blast-radius change; it gets its own live-verify (con
 
 ## 6. Phased delivery (each phase independently live-verified)
 
-1. **Relocate + decouple.** `git subtree` move; delete `projects/kutai/`; subprocess-hook dispatch + `kutay/yasar_hooks.py` (with M6); generic `__main__` entry; dissolve `_apply_runtime_values` into declarative registry + `${env:}` loader; delete `kutai_wrapper.py`; update `requirements.txt`, `.claude/settings.local.json`, `CLAUDE.md`. **State still `${project_root}/logs`** — no state change, so this phase's live-verify is a clean regression check (hub still manages KutAI from its own venv/new location).
+1. **Relocate + decouple + re-point the entry.** `git subtree` move; delete `projects/kutai/`; subprocess-hook dispatch + `kutay/yasar_hooks.py` (with M6); generic `__main__` entry; dissolve `_apply_runtime_values` into declarative registry + `${env:}` loader; delete `kutai_wrapper.py`. **State is neutral this phase (`${project_root}/logs`), but the entry point is NOT — deleting the wrapper is blast-radius-wide.** Enumerate and update *every* launch-command consumer, or one is silently orphaned: `.claude/settings.local.json` (×6 — lines ~196/197/216/220/236/238/240), `install_yasar_autostart.ps1`, `hub.py::_do_restart_hub` self-fork, **`watchdog.py::find_hub_pids` matcher (blocker — §4.7)**, the `status.py` caller's `guard_script` basename, `requirements.txt`, `CLAUDE.md`. Live-verify = clean regression: hub still manages KutAI from its own venv/new location **and** a manually hung hub is still found+killed by the watchdog (proves the matcher repoint).
 2. **State-dir / M5 + split-brain fix.** Introduce `${state_dir}` (LOCALAPPDATA, hub + per-project) and `YASAR_USTA_STATE_DIR`; make `run.py`/`orchestrator.py` read the heartbeat path from env. Dedicated live-verify: hub does not false-kill a healthy orchestrator; state files appear under LOCALAPPDATA, none churn Dropbox.
 3. **Watchdog M4b + installer rewrite.** The three must-fixes (TDD) + repoint `install_yasar_autostart.ps1` at the generic entry and LOCALAPPDATA alive-path.
 4. **User activation (gated).** Run the installer elevated + auto-logon + reboot test; push branch; merge to `main`.
@@ -159,13 +167,15 @@ This is the single highest-blast-radius change; it gets its own live-verify (con
 - Generic tests move to the new repo. Subprocess hook-dispatch gets new tests (fake project + fake venv python, assert argv/context/exit-code handling).
 - `test_kutai_hooks.py` / `test_migration_kutai.py` move to **kutay** (they now test kutay code).
 - Split-brain: a test asserting hub and child resolve the identical heartbeat path from `YASAR_USTA_STATE_DIR`.
-- Watchdog M4b: TDD for grace marker, `hub.stopped` gate, kill-death verification (all three from the handoff's adversarial pass).
+- Watchdog matcher: a test asserting `find_hub_pids` matches a `-m yasar_usta` cmdline and does **not** depend on `"kutai_wrapper.py"` (regression guard for the blocker).
+- Watchdog M4b: TDD for grace marker, `hub.stopped` gate, kill-death verification (all three from the handoff's adversarial pass); finding-#3 test asserts against the `-m yasar_usta` process shape.
 - Windows gotchas honored: targeted pytest, foreground, with timeout; kill only own hung processes; never taskkill llama-server.
 
 ## 8. Risks
 
 - **Split-brain (§4.5)** — highest. Mitigation: env-passed path + a dedicated test + phase-2 live-verify before proceeding.
-- **Deleting `kutai_wrapper.py`** touches the documented entry point + always-live launch/self-restart. Mitigation: all three consumers (installer, self-fork, docs) updated in phase 1; regression live-verify.
+- **Deleting `kutai_wrapper.py`** touches the documented entry point + always-live launch/self-restart. **Highest-miss risk: `watchdog.py::find_hub_pids` hardcodes the wrapper name (`:54`)** — if missed, the watchdog silently never fires (blocker, §4.7). Mitigation: enumerate all launch-command consumers in phase 1 (§6) — installer, self-fork, watchdog matcher, `status.py` caller, settings.local.json ×6, docs; live-verify includes a deliberate hung-hub kill.
+- **Consumer editable-install boot ordering** — `from yasar_usta import HeartbeatWriter` at `run.py:378` raises if `-e ../yasar_usta` isn't installed in the consumer venv before first managed launch (critical at reboot). Mitigation: hub `__main__` boot-asserts `import yasar_usta` resolves per project `venv_python` and fails loud (§4.3).
 - **`git subtree` history preservation on Windows** — fallback to plain copy if it misbehaves; history is nice-to-have, not blocking.
 - **Editable-install path change** in `kutay/requirements.txt` (`./packages/yasar_usta` → `../yasar_usta`) — re-run the editable install into kutay's venv; verify `HeartbeatWriter` still imports.
 

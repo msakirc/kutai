@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import pytest
 from yasar_usta.config import GuardConfig, HubConfig, ProjectConfig
 from yasar_usta.hub import Hub
@@ -105,6 +106,30 @@ def test_singleton_gate_proceeds_when_owned(tmp_path):
     hub._acquire_singleton()
     assert calls == []  # we own it → run
     assert hub._create_mutex.calls == ["Global\\YasarUstaHub"]
+
+
+def test_hub_alive_path_under_log_dir(tmp_path):
+    hub = _hub(tmp_path, ["kutai"])
+    ap = hub._hub_alive_path()
+    assert ap.endswith("hub.alive")
+    assert "hublogs" in ap  # cfg.log_dir = tmp_path/hublogs
+
+
+@pytest.mark.asyncio
+async def test_run_writes_hub_alive(tmp_path):
+    """run() must write hub.alive (the watchdog's liveness signal) from a task
+    decoupled from the crash/backoff loop."""
+    hub = _hub(tmp_path, ["kutai"])
+    hub._acquire_singleton = lambda: None
+
+    async def _boom():
+        raise RuntimeError("stop")
+
+    for sup in hub.supervisors.values():
+        sup.run = _boom
+    hub._stop_poller = lambda: asyncio.sleep(0)
+    await asyncio.wait_for(hub.run(), timeout=5)
+    assert (Path(hub.cfg.log_dir) / "hub.alive").exists()
 
 
 def test_tests_never_touch_the_real_global_mutex(tmp_path):

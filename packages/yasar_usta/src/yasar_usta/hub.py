@@ -13,6 +13,7 @@ from pathlib import Path
 from .commands import (build_dashboard_keyboard, build_hub_reply_keyboard,
                        format_log_entries)
 from .config import HubConfig, ProjectConfig
+from .heartbeat import HeartbeatWriter
 from .hooks import load_hook, run_pre_boot
 from .lock import acquire_lock, release_lock
 from .singleton import (_win32_create_mutex, enforce_singleton,
@@ -62,6 +63,10 @@ class Hub:
         result = await self.telegram.send(text, reply_markup=reply_markup)
         if result and not result.get("ok"):
             await self.telegram.send(text, reply_markup=reply_markup, parse_mode=None)
+
+    def _hub_alive_path(self) -> str:
+        """The hub self-liveness file the outer watchdog reads (§7)."""
+        return str(Path(self.cfg.log_dir) / "hub.alive")
 
     # ── Single-instance gate (never-duplicates authority) ────────────────
     def _acquire_singleton(self) -> None:
@@ -392,6 +397,12 @@ class Hub:
         if self.telegram.enabled:
             self._telegram_poller = asyncio.create_task(self._poll_loop(offset))
 
+        # Hub self-liveness for the outer watchdog — a dedicated cadence task,
+        # decoupled from the crash/backoff loop so a 300s backoff sleep never
+        # reads as a hang (§7).
+        alive_writer = asyncio.create_task(
+            HeartbeatWriter(self._hub_alive_path(), interval=60).run())
+
         sup_tasks = [asyncio.create_task(s.run()) for s in self.supervisors.values()]
         watcher = asyncio.create_task(self._shutdown_watcher())
         try:
@@ -403,8 +414,13 @@ class Hub:
                     logger.error("supervisor task crashed: %r", r)
         finally:
             watcher.cancel()
+            alive_writer.cancel()
             try:
                 await watcher
+            except asyncio.CancelledError:
+                pass
+            try:
+                await alive_writer
             except asyncio.CancelledError:
                 pass
             for t in list(self._bg_tasks):

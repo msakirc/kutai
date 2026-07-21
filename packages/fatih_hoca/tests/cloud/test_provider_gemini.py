@@ -115,6 +115,19 @@ def test_gemini_quota_for_pattern_fallback_tier_locks_paid_families():
     assert _quota_for("gemini-deep-research-special") == (0, 0, 0)
 
 
+def test_gemini_robotics_er_models_are_tier_locked():
+    """The real gemini-robotics-er-1.5/1.6-preview ids are embodied-reasoning
+    models, NOT text chat — they fail at call time (1.5 -> NotFoundError,
+    1.6 -> unmapped in litellm) and must never be text candidates (m90 567453:
+    "All models failed for 'analyst': litellm.NotFoundError: GeminiException").
+    Their explicit table entries carried live free-tier quota, preempting the
+    `robotics` pattern that already tier-locks the family (regression against
+    test_gemini_quota_for_pattern_fallback's robotics-er-3.0 assertion)."""
+    from fatih_hoca.cloud.providers.gemini import _quota_for
+    assert _quota_for("gemini-robotics-er-1.5-preview") == (0, 0, 0)
+    assert _quota_for("gemini-robotics-er-1.6-preview") == (0, 0, 0)
+
+
 def test_gemini_quota_for_falls_back_to_conservative_only_when_truly_unknown():
     """Genuinely-unknown id (no explicit match, no pattern match) gets
     conservative defaults. Lock so we don't accidentally make pattern

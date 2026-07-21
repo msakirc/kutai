@@ -63,9 +63,14 @@ _FREE_TIER_QUOTAS: dict[str, tuple[int, int, int]] = {
     "gemma-3n-e4b-it":                 (30, 15_000, 14_400),
     "gemma-4-26b-a4b-it":              (15, 1_000_000, 1_500),
     "gemma-4-31b-it":                  (15, 1_000_000, 1_500),
-    # Robotics / agents
-    "gemini-robotics-er-1.5-preview":  (10, 250_000, 20),
-    "gemini-robotics-er-1.6-preview":  (5, 250_000, 20),
+    # Robotics / agents — embodied-reasoning + agent models, NOT text chat.
+    # They accept generateContent per /v1beta/models but fail at call time
+    # (robotics-er-1.5 -> NotFoundError, 1.6 -> unmapped in litellm), so they
+    # must never be text candidates (m90 567453 exhausted the analyst pool on
+    # "litellm.NotFoundError: GeminiException"). Tier-lock like computer-use /
+    # deep-research; the `robotics` pattern in _quota_for already agrees.
+    "gemini-robotics-er-1.5-preview":  (0, 0, 0),
+    "gemini-robotics-er-1.6-preview":  (0, 0, 0),
     "gemini-2.5-computer-use-preview": (0, 0, 0),
     "deep-research-preview":           (0, 0, 0),
     "deep-research-pro-preview":       (0, 0, 0),

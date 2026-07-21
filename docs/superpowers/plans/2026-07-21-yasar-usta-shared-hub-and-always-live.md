@@ -94,7 +94,16 @@ cd /c/Users/sakir/Dropbox/Workspaces/yasar_usta && git init && git add -A && git
 Run: `ls /c/Users/sakir/Dropbox/Workspaces/yasar_usta/src/yasar_usta/`
 Expected: `hub.py config.py registry.py hooks.py watchdog.py singleton.py heartbeat.py guard.py … projects/` present.
 
-- [ ] **Step 4: Clean the export branch**
+- [ ] **Step 4: Carry the installer (it lives OUTSIDE the package — subtree won't take it)**
+
+`install_yasar_autostart.ps1` is at `KUTAY/scripts/`, **not** in `packages/yasar_usta/`, so neither the subtree split nor the fallback copy carries it. Bring it over:
+```bash
+mkdir -p /c/Users/sakir/Dropbox/Workspaces/yasar_usta/scripts
+cp /c/Users/sakir/Dropbox/Workspaces/kutay/scripts/install_yasar_autostart.ps1 /c/Users/sakir/Dropbox/Workspaces/yasar_usta/scripts/
+```
+Expected: `HUB/scripts/install_yasar_autostart.ps1` exists (it gets rewritten in Task 3.4; deleted from KUTAY in Task 1.14).
+
+- [ ] **Step 5: Clean the export branch**
 
 Run (in `KUTAY`): `git branch -D yasar-usta-export`
 Expected: branch deleted. (Do NOT delete `packages/yasar_usta` yet — that happens in Task 1.14 after verification.)
@@ -115,7 +124,10 @@ name = "yasar-usta"
 version = "0.2.0"
 description = "Multi-project Telegram-controlled process hub with singleton mutex, heartbeat watchdog, and auto-restart"
 requires-python = ">=3.10"
-dependencies = ["aiohttp>=3.9.0", "pyyaml>=6.0", "python-dotenv>=1.0.0"]
+dependencies = ["aiohttp>=3.9.0", "pyyaml>=6.0", "python-dotenv>=1.0.0", "psutil>=5.9"]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-timeout>=2.1"]
 
 [project.scripts]
 yasar-usta = "yasar_usta.__main__:main_cli"
@@ -123,7 +135,7 @@ yasar-usta = "yasar_usta.__main__:main_cli"
 [tool.setuptools.packages.find]
 where = ["src"]
 ```
-(`main_cli` is defined in Task 1.9.)
+(`main_cli` is defined in Task 1.9.) **`psutil` is mandatory** — `watchdog.py` imports it (`find_hub_pids`, `is_pid_alive`); without it the standalone-venv watchdog dies with `ModuleNotFoundError` and always-live is silently defeated.
 
 - [ ] **Step 2: Commit**
 
@@ -146,12 +158,12 @@ Run:
 cd /c/Users/sakir/Dropbox/Workspaces/yasar_usta
 py -3.10 -m venv .venv
 ```
-Expected: `.venv/Scripts/python.exe` exists.
+Expected: `.venv/Scripts/python.exe` exists. If the `py` launcher is absent, fall back to the explicit interpreter: `C:/Python310/python.exe -m venv .venv` (the box's system Python is Python310 per kutay CLAUDE.md).
 
-- [ ] **Step 2: Editable install**
+- [ ] **Step 2: Editable install (with the test extra — pytest is NOT otherwise present in this fresh venv)**
 
-Run: `.venv/Scripts/python.exe -m pip install -e .`
-Expected: installs `yasar-usta 0.2.0` + `aiohttp`, `pyyaml`, `python-dotenv`.
+Run: `.venv/Scripts/python.exe -m pip install -e ".[test]"`
+Expected: installs `yasar-usta 0.2.0` + `aiohttp`, `pyyaml`, `python-dotenv`, `psutil`, `pytest`, `pytest-timeout`. **Every test task below runs `-m pytest` in this venv — without this, Task 1.4 Step 2 errors with `No module named pytest`.**
 
 - [ ] **Step 3: Verify import**
 
@@ -572,19 +584,30 @@ def run_pre_boot(project) -> None:
 Run: `.venv/Scripts/python.exe -m pytest tests/test_hooks_subprocess.py -v`
 Expected: 3 passed.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Remediate the OLD hooks test (it imports the deleted API)**
+
+The moved `tests/test_hooks.py` imports `load_hook` and calls `run_pre_boot(hook, proj)` (2-arg) + loads `yasar_usta.projects.kutai.hooks` — all deleted now. It will poison the whole `pytest` run (Task 1.15) with import/arity errors. **Delete it** (its behavior is replaced by `test_hooks_subprocess.py`):
+```bash
+rm tests/test_hooks.py
+```
+Confirm nothing else imports `load_hook`: `grep -rn "load_hook\|projects.kutai" tests/ src/` → expect no hits.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/yasar_usta/hooks.py tests/test_hooks_subprocess.py
-git commit -m "feat(hooks): subprocess dispatch in project venv (replaces in-process import)"
+git rm tests/test_hooks.py
+git commit -m "feat(hooks): subprocess dispatch in project venv (replaces in-process import + old test)"
 ```
 
 ---
 
-### Task 1.8: Wire hub to subprocess hooks + delete `projects/` subpackage
+### Task 1.8: Wire hub to subprocess hooks (pre_boot AND on_exit) + delete `projects/` subpackage
 
 **Repo/CWD:** `HUB`
 **Files:** Modify: `src/yasar_usta/hub.py` · Delete: `src/yasar_usta/projects/` · Test: `tests/test_hub_hook_wiring.py`
+
+> **CRITICAL — do not lose `on_exit`.** The real `__init__` loop (`hub.py:49-60`) does THREE things at once: (a) `load_hook`, (b) `tgt.on_exit = hook.on_exit`, (c) builds `self.supervisors[rid] = TargetSupervisor(...)`. `on_exit` fires at `supervisor.py:331-332` (`if self.cfg.on_exit: self.cfg.on_exit(exit_code)`) and is what runs KutAI's llama-server/Ollama orphan-kill on a non-clean exit. If you delete the loop you MUST keep (c) and re-wire (b) to the subprocess hook — otherwise GPU processes leak on every crash. Only (a) `load_hook` goes away.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -594,36 +617,74 @@ from yasar_usta.hub import Hub
 from yasar_usta.config import HubConfig, ProjectConfig, GuardConfig
 
 
-def test_hub_calls_subprocess_pre_boot(monkeypatch):
-    called = []
-    monkeypatch.setattr("yasar_usta.hub.run_pre_boot", lambda project: called.append(project.id))
+def _hub_with_project():
     proj = ProjectConfig(id="kutai", name="K", venv_python="py", hook_path="h.py",
                          targets=[GuardConfig(name="o", command=["run.py"])])
-    hub = Hub(HubConfig(name="T"), [proj])
-    # exercise only the pre_boot loop
+    return Hub(HubConfig(name="T"), [proj]), proj
+
+
+def test_pre_boot_dispatches_subprocess(monkeypatch):
+    called = []
+    monkeypatch.setattr("yasar_usta.hub.run_pre_boot", lambda project: called.append(project.id))
+    hub, _ = _hub_with_project()
+    from yasar_usta.hub import run_pre_boot
     for p in hub.projects:
-        from yasar_usta.hub import run_pre_boot
         run_pre_boot(p)
     assert called == ["kutai"]
 
 
-def test_hub_init_has_no_load_hook(monkeypatch):
-    # __init__ must no longer importlib project hook modules
+def test_on_exit_is_wired_to_subprocess(monkeypatch):
+    seen = {}
+    monkeypatch.setattr("yasar_usta.hub.run_hook_subprocess",
+                        lambda project, phase, extra: seen.update(id=project.id, phase=phase, extra=extra))
+    hub, proj = _hub_with_project()
+    tgt = proj.targets[0]
+    assert tgt.on_exit is not None            # must be wired, not None
+    tgt.on_exit(42)                           # the supervisor calls this on child exit
+    assert seen == {"id": "kutai", "phase": "on_exit", "extra": {"exit_code": 42}}
+
+
+def test_supervisors_still_built():
+    hub, _ = _hub_with_project()
+    assert "kutai" in hub.supervisors
+
+
+def test_hub_init_has_no_load_hook():
     import yasar_usta.hub as hubmod
-    assert not hasattr(hubmod, "load_hook") or "load_hook" not in dir(hubmod)
+    assert "load_hook" not in dir(hubmod)
 ```
 
 - [ ] **Step 2: Run — verify fail**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_hub_hook_wiring.py -v`
-Expected: FAIL (hub still imports `load_hook`, `run_pre_boot(hook, project)` old signature).
+Expected: FAIL (`run_hook_subprocess` not imported in hub; `on_exit` still set from `hook.on_exit`).
 
 - [ ] **Step 3: Edit hub.py**
 
-- Change the import at `hub.py:17` from `from .hooks import load_hook, run_pre_boot` to `from .hooks import run_pre_boot`.
-- In `__init__` remove the `self._hooks` build (the `load_hook(proj.hook_module)` loop around `:50`). Delete `self._hooks = {...}`.
-- At the pre_boot call site (`~:388`) change `run_pre_boot(self._hooks.get(proj.id), proj)` to `run_pre_boot(proj)`.
-- Ensure `self.projects = projects` exists (used by the test); if the attribute is named differently, use the existing name and update the test accordingly.
+- Import at `hub.py:17`: change `from .hooks import load_hook, run_pre_boot` → `from .hooks import run_pre_boot, run_hook_subprocess`.
+- Rewrite the `__init__` loop (`:48-60`) — drop `load_hook`/`self._hooks`, keep supervisor building, re-wire `on_exit` to the subprocess dispatch:
+```python
+        for proj in projects:
+            for tgt in proj.targets:
+                tgt.on_exit = self._make_on_exit(proj)
+                single = len(proj.targets) == 1
+                rid = proj.id if single else f"{proj.id}:{tgt.name}"
+                display = proj.name if single else f"{proj.name} · {tgt.app_name}"
+                self.supervisors[rid] = TargetSupervisor(
+                    rid, tgt, notify=self._notify, reply_keyboard=self._reply_kb,
+                    display_name=display)
+```
+- Add the factory (closure binds `proj` by default-arg so it isn't late-bound):
+```python
+    @staticmethod
+    def _make_on_exit(proj):
+        def _on_exit(exit_code, _proj=proj):
+            run_hook_subprocess(_proj, "on_exit", {"exit_code": exit_code})
+        return _on_exit
+```
+  (`run_hook_subprocess` is blocking `subprocess.run`; `supervisor.py:331` already calls `on_exit` synchronously — matches the old blocking `_kill_orphan_processes` contract, no event-loop regression.)
+- Delete the `self._hooks: dict = {}` initializer line above the loop.
+- At the pre_boot call site (`~:388`) change `run_pre_boot(self._hooks.get(proj.id), proj)` → `run_pre_boot(proj)`.
 
 - [ ] **Step 4: Delete the projects subpackage**
 
@@ -632,12 +693,12 @@ Run: `rm -rf /c/Users/sakir/Dropbox/Workspaces/yasar_usta/src/yasar_usta/project
 - [ ] **Step 5: Run — verify pass**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_hub_hook_wiring.py tests/test_hub.py -v`
-Expected: pass (test_hub.py may need the `load_hook` monkeypatch removed — fix any stragglers).
+Expected: pass. If `test_hub.py` monkeypatches `load_hook` or asserts on `self._hooks`, update those stragglers (grep `_hooks`/`load_hook` in `tests/test_hub.py`).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add -A && git commit -m "feat(hub): subprocess pre_boot; drop in-process projects/kutai subpackage"
+git add -A && git commit -m "feat(hub): subprocess pre_boot + on_exit; keep supervisors; drop projects/kutai"
 ```
 
 ---
@@ -856,14 +917,23 @@ Add to `hub.py`:
 def build_restart_command(registry_args: list) -> list:
     return [sys.executable, "-m", "yasar_usta"] + list(registry_args)
 ```
-In `_do_restart_hub`, replace the `script = str(Path(sys.argv[0]).resolve())` + `Popen([sys.executable, script] + sys.argv[1:], …)` block with:
+The real block (`hub.py:248` + `:259-260`) is:
 ```python
-        # sys.argv is ["-m"? no] — under `python -m yasar_usta --registry X`,
-        # sys.argv[0] is __main__.py's path and sys.argv[1:] are our flags.
-        _sp.Popen(build_restart_command(sys.argv[1:]), close_fds=True,
-                  creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0))
+        script = str(Path(sys.argv[0]).resolve())
+        ...
+        _sp.Popen([sys.executable, script] + sys.argv[1:], close_fds=True,
+                  cwd=str(Path(script).parent), **kwargs)
+        os._exit(0)
 ```
-(Keep the surrounding mutex/lock release + `os._exit` unchanged.)
+Change ONLY the command and the `cwd` — **keep `**kwargs`** (it carries the detach/no-window creationflags) and keep `os._exit(0)` and the `release_singleton()`/`release_lock()` above it:
+```python
+        # Restart via `-m yasar_usta` (package imports resolve); pin CWD to the
+        # hub repo root so __main__.load_dotenv() finds the hub .env on restart.
+        _hub_root = str(Path(__file__).resolve().parents[2])  # src/yasar_usta/hub.py -> repo root
+        _sp.Popen(build_restart_command(sys.argv[1:]), close_fds=True,
+                  cwd=_hub_root, **kwargs)
+```
+Delete the now-unused `script = ...` line only if nothing else in the function uses it (grep within the function first). **Do NOT drop `**kwargs`** — dropping it removes DETACHED_PROCESS/CREATE_NO_WINDOW and the restarted hub gets a stray console / wrong process group.
 
 - [ ] **Step 4: Run — verify pass**
 
@@ -1247,25 +1317,26 @@ cd /d "C:\Users\sakir\Dropbox\Workspaces\yasar_usta"
 .venv\Scripts\python.exe -m yasar_usta --registry "C:\Users\sakir\Dropbox\Workspaces\yasar_usta\registry.yaml"
 ```
 
-- [ ] **Step 3: Move the two kutai-specific package tests to kutay**
+- [ ] **Step 3: Retire the two kutai-specific PACKAGE tests (they assert the deleted in-process API)**
 
+`test_kutai_hooks.py:11` imports `yasar_usta.projects.kutai.hooks`; `test_migration_kutai.py:26` asserts `hook_module == "yasar_usta.projects.kutai.hooks"`. Both test the OLD in-process contract that no longer exists (hooks are now a subprocess CLI, `hook:` is a path not a module). They are **replaced** by `tests/yasar/test_yasar_hooks_cli.py` (Task 1.12), which tests the real new behavior. Delete them (they go away with the package in Step 5) — do **not** try to repoint them, the API changed shape:
 ```bash
-mkdir -p tests/yasar
-git mv packages/yasar_usta/tests/test_kutai_hooks.py tests/yasar/test_kutai_hooks.py 2>/dev/null || cp packages/yasar_usta/tests/test_kutai_hooks.py tests/yasar/
-git mv packages/yasar_usta/tests/test_migration_kutai.py tests/yasar/test_migration_kutai.py 2>/dev/null || cp packages/yasar_usta/tests/test_migration_kutai.py tests/yasar/
+# nothing to move — Task 1.12 already created the replacement CLI test.
+# these die with packages/yasar_usta in Step 5; note the replacement in the commit.
+grep -rn "projects.kutai\|projects/kutai" tests/ src/ packages/ 2>/dev/null   # expect: none outside the doomed package dir
 ```
-Then adapt them to target `yasar_hooks.py` (the new CLI) instead of the deleted `projects/kutai/hooks.py`. If a test is now meaningless (tests the old in-process import), delete it and note why in the commit.
 
 - [ ] **Step 4: Rewrite wrapper-referencing tests**
 
 - `tests/integration/test_restart_shutdown.py:96-109`: it asserts `kutai_wrapper.py` contains exit-code 42. Repoint to assert `../yasar_usta/src/yasar_usta/heartbeat.py` defines `EXIT_RESTART = 42` (the canonical constant), or delete if redundant.
 - `tests/test_wrapper_logs.py:8,14`: opens `kutai_wrapper.py`. Repoint to the new entry or delete if it only tested wrapper log lines that no longer exist.
 
-- [ ] **Step 5: Delete the wrapper + the in-repo package**
+- [ ] **Step 5: Delete the wrapper + the in-repo package + the KUTAY installer copy (now carried to HUB)**
 
 ```bash
 rm kutai_wrapper.py
 rm -rf packages/yasar_usta
+rm scripts/install_yasar_autostart.ps1   # relocated to HUB/scripts in Task 1.1 Step 4
 ```
 
 - [ ] **Step 6: Refresh docs + perms**
@@ -1878,8 +1949,18 @@ Expected: all pass.
 - **Placeholder scan:** no TBD/TODO left except the intentional `hub.stopped`-create deferral (T3.2 note, tied to a future `/shutdown-hub` command — flagged, not silent).
 - **Type consistency:** `heartbeat_paths()` used identically in run.py + orchestrator.py + tests; `cmdline_is_hub`/`build_restart_command`/`build_hook_command`/`run_hook_subprocess`/`assert_consumer_imports`/`assert_hub_credentials`/`build_child_env`/`assert_state_dir_absolute` each defined once and referenced consistently; `run_once` param names (`marker_path`,`grace`,`stopped_path`,`is_alive`,`alert`) stable across T3.1-3.3.
 
+## Plan-review (2nd adversarial pass) — blockers folded
+Verified against real code; the following were caught pre-execution and fixed in-plan:
+- **B1 on_exit orphaned** → T1.8 rewritten: keep supervisor-building, re-wire `tgt.on_exit` to `run_hook_subprocess(proj,"on_exit",…)` (else llama-server orphan-kill dies; `supervisor.py:331` seam preserved).
+- **B2 psutil missing** → added to T1.2 deps (watchdog imports it).
+- **B3 installer outside package** → T1.1 Step 4 copies `scripts/install_yasar_autostart.ps1` into HUB; T1.14 deletes the KUTAY copy.
+- **B4 pre-existing tests break** → T1.7 deletes `test_hooks.py`; T1.14 retires `test_kutai_hooks.py`/`test_migration_kutai.py` (replaced by T1.12 CLI test).
+- **pytest not in hub venv** → T1.3 installs `.[test]`.
+- **self-restart dropped cwd/flags** → T1.10 pins `cwd=<hub repo root>` + keeps `**kwargs` (so `.env` loads on `/restart`).
+- Confirmed sound by review: `Hub(hub_cfg, projects)`+`self.projects` (hub.py:32); registry per-project token refactor; `_norm(None)` safe; Phase-1 hub-state-in-LOCALAPPDATA vs child-heartbeat-in-logs is coherent (no early split-brain); `claude_cmd`/`db_path` declarative migration loses nothing; `status.py guard_script` correctly left alone.
+
 ## Known assumptions to validate during execution
-- `Hub` exposes `self.projects` (used by asserts + tests). If the attribute differs, use the real name and update tests.
-- `supervisor.py` child-env construction site exists as assumed (T2.2) — confirm the exact function before extracting `build_child_env`.
-- `orchestrator.py:487-488` `HeartbeatWriter(...)` keeps `state_path`/`state_provider` args — preserve them when swapping the path arg.
+- `supervisor.py` child-env construction site (T2.2) — reviewer confirmed it merges `os.environ` + `tgt.env`; confirm the exact function name before extracting `build_child_env`.
+- `orchestrator.py:487-488` `HeartbeatWriter(...)` keeps `state_path`/`state_provider`/`interval` args — preserve them when swapping the path arg.
 - Real `.env` token values copied into `HUB/.env` (T1.13 step 3) — the hub will refuse to boot without them (by design, T1.9).
+- `test_hub.py` may reference `self._hooks`/`load_hook` — grep + fix stragglers in T1.8 Step 5.

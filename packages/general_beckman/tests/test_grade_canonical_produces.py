@@ -161,6 +161,35 @@ def test_resolve_unwraps_narration_wrapped_disk_without_frontmatter(tmp_path, mo
     assert "## Analysis" not in out
 
 
+def test_resolve_concats_multi_produces_disk_over_narration(tmp_path, monkeypatch):
+    """A MULTI-produces step (e.g. 5.0d screen_inventory_and_shell → both
+    screen_inventory.md + shared_shell.md) is NOT single-produces, so the
+    canonical pull previously returned None → grade fell back to tasks.result =
+    the agent's narration ("## Analysis / ### Artifacts Produced") → the LLM
+    grader read a report instead of the deliverables and returned COMPLETE:NO
+    across every model (m90 567453). Resolve must concat the on-disk artifacts
+    so the grade judges the real files, not the narration."""
+    import src.tools.workspace as ws
+    from src.workflows.engine.hooks import resolve_produces_artifact
+
+    monkeypatch.setattr(ws, "WORKSPACE_DIR", str(tmp_path))
+    _write_disk(str(tmp_path), "mission_9/.flow/screen_inventory.md",
+                "---\ntotal_screens: 2\n---\n\n## Web\n- Home (`/`)\n- Settings (`/s`)\n")
+    _write_disk(str(tmp_path), "mission_9/.flow/shared_shell.md",
+                "---\napplicable_to_surfaces: [web]\n---\n\n## Header\nNav bar.\n")
+
+    source = {"id": 567453, "mission_id": 9, "result": _NARRATION}
+    source_ctx = {"produces": [
+        "mission_9/.flow/screen_inventory.md",
+        "mission_9/.flow/shared_shell.md",
+    ]}
+    out = resolve_produces_artifact(source, source_ctx)
+    assert isinstance(out, str)
+    assert out != _NARRATION
+    assert "Home (`/`)" in out           # screen_inventory body present
+    assert "Nav bar." in out             # shared_shell body present
+
+
 def test_resolve_returns_none_for_non_produces(tmp_path, monkeypatch):
     import src.tools.workspace as ws
     from src.workflows.engine.hooks import resolve_produces_artifact
@@ -168,7 +197,7 @@ def test_resolve_returns_none_for_non_produces(tmp_path, monkeypatch):
     monkeypatch.setattr(ws, "WORKSPACE_DIR", str(tmp_path))
     source = {"id": 1, "mission_id": 7, "result": _NARRATION}
     assert resolve_produces_artifact(source, {"produces": []}) is None
-    # Multi-produces is materialized per-file; output_value can't stand in.
+    # Multi-produces whose disk files are all absent → keep tasks.result.
     assert resolve_produces_artifact(
         source, {"produces": ["a.md", "b.md"]}
     ) is None

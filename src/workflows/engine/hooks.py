@@ -454,46 +454,71 @@ def resolve_produces_artifact(source: dict, source_ctx: dict):
     ``##`` sections, result was a 570-char narration → "missing all 5 sections"
     → degenerate-repeat DLQ).
 
-    Returns the fence-unwrapped disk content for a SINGLE-``produces`` step, or
-    ``None`` when the step is not single-produces or the disk file is absent /
-    empty (caller keeps ``source['result']``). Pull, not push: every reader
-    resolves the one materialized source rather than relying on a fragile
-    canonical→``tasks.result`` back-write surviving every persistence path.
+    Returns the fence-unwrapped disk content for a SINGLE-``produces`` step; for
+    a MULTI-``produces`` step returns the resolved disk artifacts concatenated
+    under ``### <path>`` headers (so the grade judges every deliverable, not the
+    agent's narration final_answer — m90 567453 [5.0d] screen_inventory_and_shell
+    wrote both files correctly but tasks.result held a "## Analysis / ### Artifacts
+    Produced" report → 5 graders returned COMPLETE:NO). Returns ``None`` when the
+    step declares no ``.md``/``.json`` produces or none of the disk files exist /
+    are non-empty (caller keeps ``source['result']``). Pull, not push: every reader
+    resolves the materialized source rather than a fragile canonical→``tasks.result``
+    back-write surviving every persistence path.
     """
     produces = source_ctx.get("produces") or []
-    if not _single_produces(produces):
+    md_json = [
+        e for e in produces
+        if isinstance(e, str) and e.endswith((".md", ".json"))
+    ]
+    if not md_json:
         return None
     mission_id = source.get("mission_id") or source_ctx.get("mission_id")
+    resolved = [
+        (entry, body)
+        for entry in md_json
+        if (body := _resolve_one_produces_disk(entry, mission_id)) is not None
+    ]
+    if not resolved:
+        return None
+    if len(md_json) == 1:
+        return resolved[0][1]
+    # Multi-produces: concat every resolved deliverable so the grade sees all
+    # of them (single canonical string can't be one file when the step made N).
+    return "\n\n".join(f"### {entry}\n\n{body}" for entry, body in resolved)
+
+
+def _resolve_one_produces_disk(entry: str, mission_id):
+    """Read + canonicalize ONE produces path's on-disk artifact.
+
+    Returns the disk content (frontmatter-led artifacts verbatim; otherwise the
+    fence-unwrapped body) or ``None`` when the file is absent / empty.
+    """
     import src.tools.workspace as _ws
     from coulson.grounding import unwrap_fenced_artifact
-    for entry in produces:
-        if not (isinstance(entry, str) and entry.endswith((".md", ".json"))):
-            continue
-        rel = entry.replace("{mission_id}", str(mission_id)) if mission_id is not None else entry
-        abs_path = rel if os.path.isabs(rel) else os.path.join(_ws.WORKSPACE_DIR, rel)
-        try:
-            with open(abs_path, encoding="utf-8") as fh:
-                disk = fh.read()
-        except OSError:
-            return None
-        if not (isinstance(disk, str) and disk.strip()):
-            return None
-        # A canonical artifact that leads with YAML frontmatter already IS the
-        # materialized document; a fenced block inside it (e.g. a user_flow
-        # ```mermaid diagram, whose whole body is that fence) is the artifact
-        # BODY, not a narration wrapper. ``unwrap_fenced_artifact`` would return
-        # only the fence's inner text, discarding the frontmatter + fence and
-        # handing the grade chain a bare fragment it rejects as malformed —
-        # even though ``verify_*_shape`` PASSED the same on-disk file
-        # (m90 567452 user_flow: grade WELL_FORMED:FAIL vs shape-gate PASS on
-        # the identical ``.flow/user_flow.md``). Unwrap ONLY a narration-wrapped
-        # disk (no leading frontmatter → the real artifact is buried in a fence).
-        import re as _re
-        if _re.match(r"^---\s*\n.*?\n---\s*\n", disk.lstrip(chr(0xFEFF)), _re.DOTALL):
-            return disk
-        u = unwrap_fenced_artifact(disk)
-        return u if (isinstance(u, str) and u.strip()) else disk
-    return None
+    rel = entry.replace("{mission_id}", str(mission_id)) if mission_id is not None else entry
+    abs_path = rel if os.path.isabs(rel) else os.path.join(_ws.WORKSPACE_DIR, rel)
+    try:
+        with open(abs_path, encoding="utf-8") as fh:
+            disk = fh.read()
+    except OSError:
+        return None
+    if not (isinstance(disk, str) and disk.strip()):
+        return None
+    # A canonical artifact that leads with YAML frontmatter already IS the
+    # materialized document; a fenced block inside it (e.g. a user_flow
+    # ```mermaid diagram, whose whole body is that fence) is the artifact BODY,
+    # not a narration wrapper. ``unwrap_fenced_artifact`` would return only the
+    # fence's inner text, discarding the frontmatter + fence and handing the
+    # grade chain a bare fragment it rejects as malformed — even though
+    # ``verify_*_shape`` PASSED the same on-disk file (m90 567452 user_flow:
+    # grade WELL_FORMED:FAIL vs shape-gate PASS on the identical file). Unwrap
+    # ONLY a narration-wrapped disk (no leading frontmatter → real artifact
+    # buried in a fence).
+    import re as _re
+    if _re.match(r"^---\s*\n.*?\n---\s*\n", disk.lstrip(chr(0xFEFF)), _re.DOTALL):
+        return disk
+    u = unwrap_fenced_artifact(disk)
+    return u if (isinstance(u, str) and u.strip()) else disk
 
 
 def _top_level_required_field_names(rule: dict) -> list[str]:

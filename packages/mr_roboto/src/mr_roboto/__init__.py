@@ -1227,6 +1227,28 @@ async def _run_dispatch(task: dict) -> Action:
                     "id_pattern": s.get("id_pattern") or "",
                 })
             res = _verify_rc(produced_text=produced_text, sources=sources)
+            # Observability: a vacuous PASS (no ids found) while paths WERE
+            # declared is almost always a wiring bug — a path typo, an
+            # unmaterialized artifact, or an unsubstituted {mission_id} — that
+            # silently disables the gate. It passes (safe direction: never a
+            # false re-pend) but must be surfaced (mission_90: the unsubstituted
+            # {mission_id} vacuous pass went unnoticed until the result was
+            # inspected by hand). Flag it and log a WARNING.
+            _declared = bool(payload.get("produced_paths")) or bool(payload.get("sources"))
+            if _declared and (res.get("empty") or not (produced_text or "").strip()):
+                res["wiring_suspect"] = True
+                try:
+                    from yazbunu import get_logger as _gl
+                    _gl("mr_roboto.conservation").warning(
+                        "verify_requirement_conservation vacuous pass — declared "
+                        "paths resolved to no requirement ids (path typo / "
+                        "unmaterialized artifact / unsubstituted {mission_id}?): "
+                        "task=%s produced_bytes=%d sources=%s",
+                        task.get("id"), len(produced_text or ""),
+                        [s.get("label") for s in sources],
+                    )
+                except Exception:
+                    pass
             if not res.get("ok"):
                 drops = "; ".join(
                     f"{m['label']} dropped {m['missing_ids']}"

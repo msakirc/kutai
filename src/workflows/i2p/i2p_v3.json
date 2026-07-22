@@ -3302,7 +3302,9 @@
         "3.1",
         "3.2",
         "3.3",
-        "3.4"
+        "3.4",
+        "3.7",
+        "3.8"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -3408,7 +3410,9 @@
         "3.1",
         "3.2",
         "3.3",
-        "3.4"
+        "3.4",
+        "3.7",
+        "3.8"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -3500,7 +3504,7 @@
       "context": {
         "estimated_output_tokens": 12000
       },
-      "instruction": "Merge requirements_spec_part1 with non-functional requirements (performance, availability, security) and the traceability matrix into the final Requirements Specification Document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Functional Requirements\nCarry forward EVERY functional requirement from requirements_spec_part1 VERBATIM — list every FR id (FR-001 .. FR-0NN); do NOT summarize, merge, drop, or renumber any requirement.\n\n## Non-Functional Requirements\nPerformance + availability + scalability bullets from nfr_performance and nfr_availability.\n\n## Security Requirements\nSecurity controls from security_requirements.\n\n## User Stories\nList user-story IDs covered by these requirements.\n\n## Traceability Matrix\nTable mapping each requirement id to user-story ids and back.",
+      "instruction": "Merge requirements_spec_part1 with non-functional requirements (performance, availability, security) and the traceability matrix into the final Requirements Specification Document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Functional Requirements\nCarry forward EVERY functional requirement from requirements_spec_part1 VERBATIM — list every FR id (FR-001 .. FR-0NN); do NOT summarize, merge, drop, or renumber any requirement.\n\n## Non-Functional Requirements\nPerformance + availability + scalability bullets from nfr_performance and nfr_availability.\n\n## Security Requirements\nSecurity controls from security_requirements.\n\n## User Stories\nList EVERY user-story ID from requirements_spec_part1 (US-001 .. US-0NN) — do not drop any.\n\n## Traceability Matrix\nTable mapping each requirement id to user-story ids AND business-rule ids. Include EVERY business-rule id (BR-001 .. BR-0NN) from requirements_spec_part1 — do not drop, merge, or renumber any.",
       "done_when": "requirements_spec is a Markdown document with `## Functional Requirements`, `## Non-Functional Requirements`, `## Security Requirements`, `## User Stories`, `## Traceability Matrix` headings present.",
       "artifact_schema": {
         "requirements_spec": {
@@ -3525,11 +3529,25 @@
             ],
             "sources": [
               {
-                "label": "requirements_spec_part1",
+                "label": "requirements_spec_part1_fr",
                 "source_paths": [
                   "mission_{mission_id}/requirements_spec_part1.md"
                 ],
                 "id_pattern": "FR-\\d+"
+              },
+              {
+                "label": "requirements_spec_part1_us",
+                "source_paths": [
+                  "mission_{mission_id}/requirements_spec_part1.md"
+                ],
+                "id_pattern": "US-\\d+"
+              },
+              {
+                "label": "requirements_spec_part1_br",
+                "source_paths": [
+                  "mission_{mission_id}/requirements_spec_part1.md"
+                ],
+                "id_pattern": "BR-\\d+"
               }
             ]
           }

@@ -141,6 +141,27 @@ async def test_dispatch_passes_when_all_conserved(tmp_path, monkeypatch):
     assert res.result["ok"] is True
 
 
+@pytest.mark.asyncio
+async def test_dispatch_flags_vacuous_pass_when_paths_unresolved(tmp_path, monkeypatch):
+    # Declared paths that resolve to nothing (typo / unmaterialized artifact /
+    # unsubstituted {mission_id}) → no ids read → empty vacuous PASS. Safe
+    # direction (no false re-pend) but it silently disables the gate — the
+    # dispatch must FLAG it (wiring_suspect) so the foot-gun is observable
+    # (mission_90: unsubstituted {mission_id} went unnoticed exactly this way).
+    import mr_roboto
+    monkeypatch.setattr(mr_roboto, "_resolve_path_list", lambda paths: [])
+    task = {"id": 1, "mission_id": 90, "payload": {
+        "action": "verify_requirement_conservation",
+        "produced_paths": ["mission_90/requirements_spec.md"],
+        "sources": [{"label": "functional_requirements",
+                     "source_paths": ["mission_90/functional_requirements.md"],
+                     "id_pattern": r"FR-\d+"}],
+    }}
+    res = await mr_roboto._run_dispatch(task)
+    assert res.status == "completed"          # safe direction
+    assert res.result.get("wiring_suspect") is True
+
+
 def test_verify_requirement_conservation_is_full_reversibility():
     from mr_roboto.reversibility import get_reversibility
     assert get_reversibility("verify_requirement_conservation") == "full"

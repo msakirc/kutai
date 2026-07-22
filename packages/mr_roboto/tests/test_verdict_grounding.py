@@ -182,3 +182,65 @@ def test_unresolvable_artifact_kept():
 
 def test_empty_problem_kept():
     assert classify_issue_grounding("", COMPETITIVE_POSITIONING) == "keep_unverifiable"
+
+
+# ── Rule C · false "missing falsification triple" (m90 567426) ───────────────
+# The reviewer (3.11) re-derives triple PRESENCE from prose and confabulates
+# "missing" for requirements that provably carry all three fields. Presence is
+# a mechanical fact already hard-gated on the producers (verify_falsification_
+# present on 3.1/3.2/3.3/3.7); Rule C grounds the reviewer's absence claim
+# against the requirements_spec.md table and drops it when the triple columns
+# are populated. Quality axes (vague critical validation, contradictions) are
+# untouched — only the false ABSENCE claim is dropped.
+
+REQ_SPEC_FULL = """## Functional Requirements
+
+| ID | Title | Description | Priority | Category | Risk | Validation Method | Falsification Signal |
+|-----|-------|-------------|----------|----------|------|-------------------|----------------------|
+| FR-001 | Core Habit Tracking | Users track habits | High | Core | medium | Manual testing of habit CRUD operations | Habits not saving correctly |
+| FR-003 | Task Management | Users manage tasks | Medium | Core | high | Integration tests of task lifecycle | Unable to create or manage tasks |
+| FR-008 | Upsell Prompts | Power-user upsell | Low | Growth | low | Analytics verification of upsell triggers | Upsell not shown to power users |
+"""
+
+
+def test_ruleC_drops_false_missing_triple_when_columns_populated():
+    problem = ("Missing falsification triples (risk_if_wrong, validation_method, "
+               "falsification_signal) for multiple requirements (FR-003, FR-008).")
+    assert classify_issue_grounding(problem, REQ_SPEC_FULL) == "drop"
+
+
+def test_ruleC_drops_false_empty_table_claim_when_rows_present():
+    problem = ("Functional Requirements table is empty (no rows). All FRs are "
+               "missing the falsification triple.")
+    assert classify_issue_grounding(problem, REQ_SPEC_FULL) == "drop"
+
+
+def test_ruleC_keeps_when_a_triple_cell_is_genuinely_empty():
+    spec = REQ_SPEC_FULL.replace(
+        "| Integration tests of task lifecycle |", "|  |")
+    problem = "Missing falsification triple (validation_method) for FR-003."
+    assert classify_issue_grounding(problem, spec) != "drop"
+
+
+def test_ruleC_does_not_fire_without_a_triple_table():
+    # A falsification-absence claim against an artifact that has no requirement
+    # triple table → no mechanical proof of presence → must NOT drop.
+    problem = "Missing falsification triples for the requirements."
+    assert classify_issue_grounding(problem, COMPETITIVE_POSITIONING) != "drop"
+
+
+def test_ruleC_does_not_drop_specificity_quality_claim():
+    # "lack SPECIFIC falsification signals" judges QUALITY (specificity), not
+    # presence — a legit reviewer axis. Rule C must not drop it even though the
+    # signals are present (m90 567426 finding [4] over-drop regression).
+    problem = ("Falsification signals for the requirements lack specific, "
+               "measurable thresholds to be adequately testable.")
+    assert classify_issue_grounding(problem, REQ_SPEC_FULL) != "drop"
+
+
+def test_ruleC_leaves_non_falsification_findings_to_other_rules():
+    # A vague-critical-validation QUALITY finding is not an absence claim about
+    # presence → Rule C must not touch it (other rules / Tier-2 handle it).
+    problem = ("Validation method for FR-003 is too generic to test a "
+               "critical-risk requirement adequately.")
+    assert classify_issue_grounding(problem, REQ_SPEC_FULL) != "drop"

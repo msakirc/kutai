@@ -224,6 +224,123 @@ def _enumerated_sections(problem: str) -> list[str]:
     return names
 
 
+# Rule C — falsification-triple absence claims. The reviewer names the triple
+# fields / says "triple(s)" / "falsification". Paired with an absence marker,
+# this is a presence claim the mechanical verifier owns.
+_FALSIFICATION_MARKERS = re.compile(
+    r"falsification|risk_if_wrong|validation_method|falsification_signal|"
+    r"\btriples?\b",
+    re.IGNORECASE,
+)
+
+# Quality/adequacy qualifiers. When present, the finding is judging the triple's
+# QUALITY (is it specific / observable / testable?) — a legitimate reviewer axis
+# Rule C must NOT touch — not its PRESENCE. Keeps Rule C to the confabulated
+# "missing / empty" class only (m90 567426 finding [4]: "lack SPECIFIC
+# falsification signals" is a specificity judgment, not an absence claim).
+_QUALITY_QUALIFIERS = re.compile(
+    r"\b(vague|specific|specificity|observable|measurable|testable|generic|"
+    r"non-observable|unobservable|insufficient|not sufficient|too broad|"
+    r"quantif\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _split_table_row(line: str) -> list[str] | None:
+    """A markdown table row's cells (``| a | b |`` → ``['a','b']``), else None."""
+    s = line.strip()
+    if not (s.startswith("|") and s.count("|") >= 2):
+        return None
+    return [c.strip() for c in s.strip("|").split("|")]
+
+
+def _is_table_separator(line: str) -> bool:
+    s = line.strip()
+    return bool(s) and "-" in s and bool(re.match(r"^\|?[\s:|-]+\|?$", s))
+
+
+def _triple_column_index(header_cells: list[str]) -> dict[str, int] | None:
+    """Map a requirement table's triple columns to indices, or None.
+
+    Requires all three of risk / validation / falsification-signal columns.
+    Also records an id column when present (first ``id``/``req``-ish column)."""
+    norm = [_norm_phrase(c) for c in header_cells]
+    idx: dict[str, int] = {}
+    wanted = (
+        ("risk_if_wrong", ("risk",)),
+        ("validation_method", ("validation",)),
+        ("falsification_signal", ("falsification",)),
+    )
+    for field, keys in wanted:
+        for ci, name in enumerate(norm):
+            if any(k in name for k in keys):
+                idx[field] = ci
+                break
+    if not all(f in idx for f in ("risk_if_wrong", "validation_method", "falsification_signal")):
+        return None
+    for ci, name in enumerate(norm):
+        if name == "id" or name.endswith(" id") or "req" in name:
+            idx["id"] = ci
+            break
+    return idx
+
+
+def _parse_spec_requirement_triples(content: str) -> list[dict]:
+    """Parse markdown requirement tables into triple-bearing item dicts.
+
+    Returns one dict (``req_id`` + the three triple fields) per data row of any
+    table whose header names the risk / validation / falsification-signal
+    columns — the shape ``verify_falsification_present`` validates. Empty list
+    when no such table exists (caller then cannot prove presence → keeps)."""
+    items: list[dict] = []
+    lines = content.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        header = _split_table_row(lines[i])
+        if header and i + 1 < n and _is_table_separator(lines[i + 1]):
+            idx = _triple_column_index(header)
+            if idx:
+                j = i + 2
+                while j < n:
+                    row = _split_table_row(lines[j])
+                    if row is None:
+                        break
+                    if _is_table_separator(lines[j]):
+                        j += 1
+                        continue
+                    item: dict = {}
+                    if idx.get("id") is not None and idx["id"] < len(row):
+                        item["req_id"] = row[idx["id"]]
+                    for f in ("risk_if_wrong", "validation_method", "falsification_signal"):
+                        ci = idx[f]
+                        item[f] = row[ci] if ci < len(row) else ""
+                    items.append(item)
+                    j += 1
+                i = j
+                continue
+        i += 1
+    return items
+
+
+def _falsification_presence_proven(artifact_content: str) -> bool:
+    """True iff the spec's requirement tables populate every triple column.
+
+    Deterministic proof that a reviewer 'missing triple / empty table' claim is
+    confabulated: parse the tables and run the SAME mechanical checker the
+    producers hard-gate on. ``missing`` empty AND not ``empty`` = presence
+    proven. Ignores ``critical_underspecified`` — that is a QUALITY axis (a real
+    reviewer finding), not a presence claim, so it must not block the drop."""
+    items = _parse_spec_requirement_triples(artifact_content)
+    if not items:
+        return False
+    try:
+        from mr_roboto.verify_falsification_present import verify_falsification_present
+        res = verify_falsification_present(artifacts={"spec": items})
+    except Exception:  # noqa: BLE001 — grounding must never crash the gate
+        return False
+    return not res.get("missing") and not res.get("empty")
+
+
 def classify_issue_grounding(problem: str, artifact_content: str | None) -> str:
     """Deterministically ground one reviewer finding against its artifact.
 
@@ -252,6 +369,23 @@ def classify_issue_grounding(problem: str, artifact_content: str | None) -> str:
         sections = _enumerated_sections(problem)
         if has_absence and len(sections) >= 3:
             if all(_present_as_section_or_field(artifact_content, s) for s in sections):
+                return "drop"
+
+        # Rule C — false falsification-triple absence: the finding claims a
+        # requirement's triple is missing / the requirement table is empty, but
+        # the requirements_spec table populates the risk_if_wrong /
+        # validation_method / falsification_signal columns for every row.
+        # Presence is a mechanical fact the producers already hard-gate
+        # (verify_falsification_present on 3.1/3.2/3.3/3.7); Rule A can't see it
+        # because the fields are nested table CELLS, not headers/JSON keys
+        # (m90 567426). Quality axes (vague critical validation) are separate
+        # findings and untouched — only the confabulated ABSENCE claim is dropped.
+        if (
+            has_absence
+            and _FALSIFICATION_MARKERS.search(problem)
+            and not _QUALITY_QUALIFIERS.search(problem)
+        ):
+            if _falsification_presence_proven(artifact_content):
                 return "drop"
 
         # Rule B — fabricated quote: the finding embeds distinctive evidence

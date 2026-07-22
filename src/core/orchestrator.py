@@ -484,11 +484,12 @@ class Orchestrator:
                 inflight = "(unavailable)"
             return {"aux_active": aux, "in_flight": inflight}
 
+        from src.app.hb_paths import heartbeat_paths, state_snapshot_path
+        _hbp = heartbeat_paths()
         await HeartbeatWriter(
-            "logs/orchestrator.heartbeat",
-            "logs/heartbeat",
+            *_hbp,
             interval=15.0,
-            state_path="logs/orchestrator.state.json",
+            state_path=state_snapshot_path(),
             state_provider=_state_provider,
         ).run()
 

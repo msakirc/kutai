@@ -376,7 +376,8 @@ async def main():
     # instance.  Startup (docker, health checks, model load) can take
     # 60-120s — without periodic heartbeats the wrapper kills us.
     from yasar_usta import HeartbeatWriter, write_heartbeat
-    _hb_paths = ("logs/orchestrator.heartbeat", "logs/heartbeat")
+    from src.app.hb_paths import heartbeat_paths
+    _hb_paths = heartbeat_paths()
     write_heartbeat(*_hb_paths)
     _hb_writer = HeartbeatWriter(*_hb_paths, interval=15.0)
     _hb_task = asyncio.create_task(_hb_writer.run())

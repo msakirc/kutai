@@ -474,6 +474,20 @@ async def _refresh_workflow_step_config(task: dict, task_ctx: dict) -> None:
         if not _step:
             return
 
+        # Mirror the expander's mission-level template pass (expander.py
+        # _substitute_payload): the raw workflow JSON carries `{mission_id}` in
+        # check-payload paths (and produces/done_when). Without substituting it
+        # here, live-reloaded checks reference an unresolvable `mission_{mission_id}/…`
+        # path → the mechanical verifier reads nothing → vacuous empty PASS
+        # (m90 3.10b: the conservation gate ran with checked=0/empty=True and
+        # missed the FR-012..015 drop). Best-effort; leaves the step as-is on any
+        # import/format error so a template typo never breaks dispatch.
+        try:
+            from src.workflows.engine.expander import _substitute_payload
+            _step = _substitute_payload(_step, {"mission_id": str(_mid)})
+        except Exception:
+            pass
+
         _changed_fields: list[str] = []
 
         _live_instr = _step.get("instruction")

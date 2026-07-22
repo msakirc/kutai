@@ -69,6 +69,32 @@ def test_newly_declared_check_is_synced_onto_frozen_task():
     assert json.loads(captured["context"])["checks"] == _CONS
 
 
+def test_refreshed_check_substitutes_mission_id():
+    # The check payload paths carry the `{mission_id}` template (as declared in
+    # i2p_v3.json). The expander str.format's it at expansion; the live-reload
+    # must do the same or the post-hook reads an unresolvable path → vacuous
+    # empty pass (m90: gate ran with checked=0, empty=True, missed the FR drop).
+    templated = [{
+        "kind": "verify_requirement_conservation",
+        "payload": {
+            "action": "verify_requirement_conservation",
+            "produced_paths": ["mission_{mission_id}/requirements_spec.md"],
+            "sources": [{
+                "label": "requirements_spec_part1",
+                "source_paths": ["mission_{mission_id}/requirements_spec_part1.md"],
+                "id_pattern": r"FR-\d+",
+            }],
+        },
+    }]
+    task = {"id": 5, "mission_id": 90, "description": "assemble spec"}
+    task_ctx = {"workflow_step_id": "3.10b"}
+    _run_refresh(task, task_ctx,
+                 {"instruction": "assemble spec", "checks": templated})
+    pl = task_ctx["checks"][0]["payload"]
+    assert pl["produced_paths"] == ["mission_90/requirements_spec.md"]
+    assert pl["sources"][0]["source_paths"] == ["mission_90/requirements_spec_part1.md"]
+
+
 def test_checks_unchanged_no_spurious_write():
     task = {"id": 4, "mission_id": 90, "description": "assemble spec"}
     task_ctx = {"workflow_step_id": "3.10b", "checks": _CONS}

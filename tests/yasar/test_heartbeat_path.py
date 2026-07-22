@@ -39,3 +39,20 @@ def test_writer_path_equals_state_dir_join_exact(monkeypatch):
     from src.app.hb_paths import heartbeat_paths, state_snapshot_path
     assert heartbeat_paths()[0] == os.path.join(sd, "orchestrator.heartbeat")
     assert state_snapshot_path() == os.path.join(sd, "orchestrator.state.json")
+
+
+def test_call_sites_use_helper_not_hardcoded_literal():
+    """REGRESSION GUARD. run.py + orchestrator.py must derive heartbeat/state
+    paths from hb_paths (env-aware), never a hardcoded 'logs/...' literal — a
+    revert would silently re-introduce the split-brain false-kill while every
+    other test stayed green (the exact gap the reviewer flagged)."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]  # kutay repo root
+    for rel in ("src/app/run.py", "src/core/orchestrator.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "logs/orchestrator.heartbeat" not in text, \
+            f"{rel} hardcodes the heartbeat path — must use hb_paths.heartbeat_paths()"
+        assert "logs/orchestrator.state.json" not in text, \
+            f"{rel} hardcodes the state path — must use hb_paths.state_snapshot_path()"
+        assert "heartbeat_paths" in text, \
+            f"{rel} must derive the heartbeat path via hb_paths.heartbeat_paths()"

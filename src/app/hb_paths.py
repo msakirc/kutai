@@ -5,8 +5,13 @@ legacy relative path for a non-hub launch."""
 import os
 
 
+def _state_dir() -> str | None:
+    """Yaşar Usta-supplied absolute state dir, or None for a non-hub launch."""
+    return os.environ.get("YASAR_USTA_STATE_DIR") or None
+
+
 def heartbeat_paths() -> tuple:
-    sd = os.environ.get("YASAR_USTA_STATE_DIR")
+    sd = _state_dir()
     if sd:
         return (os.path.join(sd, "orchestrator.heartbeat"),
                 os.path.join(sd, "heartbeat"))
@@ -14,7 +19,7 @@ def heartbeat_paths() -> tuple:
 
 
 def state_snapshot_path() -> str:
-    sd = os.environ.get("YASAR_USTA_STATE_DIR")
+    sd = _state_dir()
     if sd:
         return os.path.join(sd, "orchestrator.state.json")
     return "logs/orchestrator.state.json"

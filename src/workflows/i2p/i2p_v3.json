@@ -5142,7 +5142,10 @@
         {
           "kind": "verify_screen_plan_shape",
           "payload": {
-            "action": "verify_screen_plan_shape"
+            "action": "verify_screen_plan_shape",
+            "plan_paths": [
+              "mission_{mission_id}/.screens/"
+            ]
           }
         }
       ]
@@ -5196,7 +5199,10 @@
         {
           "kind": "verify_screen_plan_shape",
           "payload": {
-            "action": "verify_screen_plan_shape"
+            "action": "verify_screen_plan_shape",
+            "plan_paths": [
+              "mission_{mission_id}/.screens/"
+            ]
           }
         },
         {
@@ -5257,7 +5263,10 @@
         {
           "kind": "verify_html_prototype_shape",
           "payload": {
-            "action": "verify_html_prototype_shape"
+            "action": "verify_html_prototype_shape",
+            "html_paths": [
+              "mission_{mission_id}/.web/"
+            ]
           }
         }
       ]
@@ -5311,7 +5320,10 @@
         {
           "kind": "verify_html_prototype_shape",
           "payload": {
-            "action": "verify_html_prototype_shape"
+            "action": "verify_html_prototype_shape",
+            "html_paths": [
+              "mission_{mission_id}/.web/"
+            ]
           }
         }
       ]

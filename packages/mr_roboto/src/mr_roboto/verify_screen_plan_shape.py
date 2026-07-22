@@ -210,9 +210,35 @@ def verify_screen_plan_shape(
             "per_file": [],
         }
 
+    # Per-screen plans are authored under a runtime directory
+    # (mission_<id>/.screens/) whose individual filenames are unknown at
+    # workflow-author time, so the `checks` payload points at the DIRECTORY.
+    # Expand any directory entry to its contained .md files (sorted for
+    # determinism) — mirrors verify_screen_consistency. Without this the
+    # verifier open()s a directory and the gate reports the uninformative
+    # `problems=[]` that DLQ'd m90 task 567454.
+    import os
+    import glob as _glob
+    # Production writes `.screens/<slug>/screen_plan.md` (one subdir per screen),
+    # so the expansion RECURSES (also matches a flat `.screens/<slug>.md`).
+    expanded: list[str] = []
+    for p in plan_paths:
+        if isinstance(p, str) and os.path.isdir(p):
+            expanded.extend(
+                sorted(_glob.glob(os.path.join(p, "**", "*.md"), recursive=True))
+            )
+        else:
+            expanded.append(p)
+    if not expanded:
+        return {
+            "ok": False,
+            "error": "no per-screen .md plans found under the produces directory",
+            "per_file": [],
+        }
+
     per_file: list[dict[str, Any]] = []
     all_ok = True
-    for p in plan_paths:
+    for p in expanded:
         try:
             with open(p, encoding="utf-8") as fh:
                 md = fh.read()

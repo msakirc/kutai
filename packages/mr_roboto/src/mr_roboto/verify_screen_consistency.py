@@ -96,10 +96,14 @@ def verify_screen_consistency(
         # workflow-author time, so a `checks` entry points at the DIRECTORY.
         # Expand any directory entry to its contained .md files (sorted for
         # determinism); plain file entries are read directly as before.
+        # RECURSE — production nests one subdir per screen
+        # (`.screens/<slug>/screen_plan.md`); a flat `*.md` glob missed them.
         expanded: list[str] = []
         for p in screen_plan_paths:
             if os.path.isdir(p):
-                expanded.extend(sorted(_glob.glob(os.path.join(p, "*.md"))))
+                expanded.extend(
+                    sorted(_glob.glob(os.path.join(p, "**", "*.md"), recursive=True))
+                )
             else:
                 expanded.append(p)
         for p in expanded:

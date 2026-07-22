@@ -197,3 +197,64 @@ def test_write_file_already_present_is_idempotent():
     ctx = {"produces": ["mission_90/.flow/user_flow.md"]}
     _ensure_write_tools_for_markdown_produces(prof, ctx)
     assert prof.allowed_tools.count("write_file") == 1
+
+
+# ── DIRECTORY produces authors N files → write_file is MANDATORY, never stripped ──
+# m90 5.20a/5.20b (.screens/) + 5.30a/5.30b (.web/): the agent authors a whole
+# DIRECTORY of files (one .md per screen / one .html per prototype). The produces
+# path is the bare directory (`mission_90/.screens/`), so `_produces_has_markdown`
+# (which keys off a `.md` suffix) returns False, and the object schema then stripped
+# write_file. There is NO single-result materializer that can fan a `{chunk, plans}`
+# object into N files, so the agent MUST use write_file itself — stripping it left
+# the directory empty and every model (13 distinct, incl. gemini-2.5-flash) DLQ'd
+# with grounding `written=[]` (m90 task 567454). A directory produces keeps write
+# tools regardless of schema type, and the structured-return exception (which lets
+# a single mechanical .md materialize stay write-stripped) does NOT apply to a
+# directory of N files.
+
+
+def test_dir_produces_object_schema_keeps_write_file():
+    """m90 5.20a per-screen plans — object schema validates each file's shape, but
+    the artifact is a DIRECTORY of .md files the analyst authors via write_file."""
+    prof = _prof(["write_file", "read_file"])
+    ctx = {
+        "artifact_schema": {"per_screen_plans_chunk_a": {"type": "object",
+                            "required_fields": ["chunk", "plans"]}},
+        "produces": ["mission_90/.screens/"],
+    }
+    _apply_auto_strip(prof, ctx)
+    assert "write_file" in prof.allowed_tools
+
+
+def test_dir_produces_object_schema_restores_write_file_after_empty_tools_hint():
+    """5.20a/5.30a — a directory produces under an object schema must RESTORE
+    write_file (the structured-return-to-.md exception must not swallow it, because
+    a directory of N files can't be mechanically materialized from one result)."""
+    prof = _prof([])                       # what _apply_tools_hint([]) leaves
+    ctx = {"produces": ["mission_90/.screens/"],
+           "artifact_schema": {"per_screen_plans_chunk_a": {"type": "object"}}}
+    _ensure_write_tools_for_markdown_produces(prof, ctx)
+    assert "write_file" in prof.allowed_tools
+
+
+def test_web_dir_produces_object_schema_keeps_write_file():
+    """m90 5.30a html prototypes (.web/) — same directory-authoring class."""
+    prof = _prof(["write_file", "read_file"])
+    ctx = {
+        "artifact_schema": {"html_prototype_chunk": {"type": "object"}},
+        "produces": ["mission_90/.web/"],
+    }
+    _apply_auto_strip(prof, ctx)
+    assert "write_file" in prof.allowed_tools
+
+
+def test_json_produces_still_strips_despite_dir_lookalike_json_file():
+    """Regression guard: a `.json` FILE produces (not a directory) still strips —
+    only a trailing-slash directory path flips to agent-authored."""
+    prof = _prof(["write_file", "read_file"])
+    ctx = {
+        "artifact_schema": {"draft": {"type": "object"}},
+        "produces": ["mission_90/.intake/draft.json"],
+    }
+    _apply_auto_strip(prof, ctx)
+    assert "write_file" not in prof.allowed_tools

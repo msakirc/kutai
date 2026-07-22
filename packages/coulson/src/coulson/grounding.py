@@ -101,6 +101,12 @@ def _match_single(pattern: str, written: set[str]) -> bool:
     norm = _normalize(pattern)
     if not norm:
         return False
+    # A trailing-slash pattern is a DIRECTORY slot (5.20a `.screens/`, 5.30a
+    # `.web/` author an unknown number of files): satisfied when at least one
+    # written path lives under it. The kept trailing slash makes this a
+    # boundary-respecting prefix — `.screens/` is not matched by `.screens2/…`.
+    if norm.endswith("/"):
+        return any(w.startswith(norm) for w in written)
     if _is_glob(norm):
         return any(fnmatch.fnmatch(p, norm) for p in written)
     return norm in written

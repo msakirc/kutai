@@ -103,14 +103,34 @@ def _produces_has_markdown(produces) -> bool:
     )
 
 
+def _produces_has_directory(produces) -> bool:
+    """A trailing-slash produces path (``mission_90/.screens/``) declares a
+    DIRECTORY of agent-authored files, NOT a single result artifact.
+
+    Steps like 5.20a/5.20b (per-screen ``.md`` plans) and 5.30a/5.30b (per-screen
+    ``.html`` prototypes) emit an unknown number of files, one write_file call
+    each. There is no single-result materializer that can fan a ``{chunk, plans}``
+    object into N files, so write_file is MANDATORY — a directory produces keeps
+    write tools regardless of schema ``type``, and (unlike a single ``.md``
+    produces) is never a structured-RETURN step the engine writes on the agent's
+    behalf. Keying the write-tool decision off the ``.md`` suffix alone stripped
+    write_file on all four directory steps, leaving the directory empty; every
+    model (13 distinct, incl. gemini-2.5-flash) DLQ'd with grounding
+    ``written=[]`` (m90 task 567454)."""
+    return isinstance(produces, (list, tuple)) and any(
+        isinstance(p, str) and p.rstrip().endswith("/") for p in produces
+    )
+
+
 def _write_tools_redundant(schema: dict, produces=None) -> bool:
     """True when the final_answer ``result`` IS the clean artifact and write
-    tools are safely stripped: a structured-only schema AND no free-form (``.md``)
-    produces path. A markdown produces always keeps write tools (the agent authors
-    the file), even under an object/array schema. Sole predicate shared by
-    ``_apply_auto_strip`` and ``materialize_produces.write_stripped`` so the two
-    never drift (the materializer's candidate order depends on it)."""
-    if _produces_has_markdown(produces):
+    tools are safely stripped: a structured-only schema AND no agent-authored
+    produces path. A markdown (``.md``) produces or a DIRECTORY (trailing-slash)
+    produces always keeps write tools (the agent authors the file(s)), even under
+    an object/array schema. Sole predicate shared by ``_apply_auto_strip`` and
+    ``materialize_produces.write_stripped`` so the two never drift (the
+    materializer's candidate order depends on it)."""
+    if _produces_has_markdown(produces) or _produces_has_directory(produces):
         return False
     return _schema_is_structured_only(schema)
 
@@ -412,11 +432,20 @@ def _ensure_write_tools_for_markdown_produces(profile, task_ctx: dict) -> None:
     ``register.md`` is rebuilt from the returned ADR JSON; its instruction says
     "do NOT write any files yourself"). Such steps must stay write-stripped — the
     engine, not the agent, writes the file. Only markdown/string/no-schema ``.md``
-    steps (the agent authors the doc) get write_file restored."""
-    if not _produces_has_markdown(task_ctx.get("produces")):
+    steps (the agent authors the doc) get write_file restored.
+
+    A DIRECTORY (trailing-slash) produce ALWAYS restores write_file — even under
+    an object/array schema — because the agent authors N files itself and no
+    single-result materialize exists (5.20a/5.20b ``.screens/``, 5.30a/5.30b
+    ``.web/``). The structured-return exception below is scoped to single ``.md``
+    produces only; it must NOT swallow a directory of files (m90 task 567454)."""
+    _produces = task_ctx.get("produces")
+    _is_dir = _produces_has_directory(_produces)
+    if not _produces_has_markdown(_produces) and not _is_dir:
         return
     _sch = task_ctx.get("artifact_schema")
-    if isinstance(_sch, dict) and _sch and _schema_is_structured_only(_sch):
+    if (not _is_dir
+            and isinstance(_sch, dict) and _sch and _schema_is_structured_only(_sch)):
         return  # structured-return-to-.md (mechanical materialize); do not author
     tools = profile.allowed_tools
     if tools is None or "write_file" in tools:

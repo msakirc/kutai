@@ -138,3 +138,29 @@ def test_path_mode(tmp_path: Path):
     )
     assert res["ok"] is True
     assert len(res["per_file"]) == 1
+
+
+# ── directory produces: 5.30a/5.30b declare `.web/`; the checks payload points at
+# the DIRECTORY. The verifier must self-expand to its `*.html` files, else it
+# open()s a directory and reports the uninformative `problems=[]`. ──
+
+
+def test_dir_path_mode_expands_to_html_files(tmp_path: Path):
+    fx = _load("good_html_prototype")
+    web = tmp_path / ".web"
+    web.mkdir()
+    (web / "home.html").write_text(fx["html_text"], encoding="utf-8")
+    (web / "settings.html").write_text(fx["html_text"], encoding="utf-8")
+    res = verify_html_prototype_shape(
+        html_paths=[str(web) + "/"], design_tokens=fx["design_tokens"]
+    )
+    assert res["ok"] is True, res
+    assert len(res["per_file"]) == 2
+    assert all(pf["ok"] for pf in res["per_file"])
+
+
+def test_dir_path_mode_empty_dir_fails(tmp_path: Path):
+    web = tmp_path / ".web"
+    web.mkdir()
+    res = verify_html_prototype_shape(html_paths=[str(web) + "/"])
+    assert res["ok"] is False

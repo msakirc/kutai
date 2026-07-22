@@ -211,9 +211,33 @@ def verify_html_prototype_shape(
             "per_file": [],
         }
 
+    # Per-screen HTML prototypes are authored under a runtime directory
+    # (mission_<id>/.web/) whose filenames are unknown at workflow-author time,
+    # so the `checks` payload points at the DIRECTORY. Expand any directory entry
+    # to its contained .html files (sorted) — mirrors verify_screen_plan_shape /
+    # verify_screen_consistency. Without this the verifier open()s a directory
+    # and the gate reports the uninformative `problems=[]`.
+    import os
+    import glob as _glob
+    # Recurse so both a flat `.web/<slug>.html` and any nested layout match.
+    expanded: list[str] = []
+    for p in html_paths:
+        if isinstance(p, str) and os.path.isdir(p):
+            expanded.extend(
+                sorted(_glob.glob(os.path.join(p, "**", "*.html"), recursive=True))
+            )
+        else:
+            expanded.append(p)
+    if not expanded:
+        return {
+            "ok": False,
+            "error": "no per-screen .html prototypes found under the produces directory",
+            "per_file": [],
+        }
+
     per_file: list[dict[str, Any]] = []
     all_ok = True
-    for p in html_paths:
+    for p in expanded:
         try:
             with open(p, encoding="utf-8") as fh:
                 html = fh.read()

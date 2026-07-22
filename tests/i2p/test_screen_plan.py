@@ -124,3 +124,58 @@ def test_path_mode(tmp_path: Path):
     assert len(res["per_file"]) == 2
     assert res["per_file"][0]["ok"] is True
     assert res["per_file"][1]["ok"] is False
+
+
+# ── directory produces: 5.20a/5.20b declare `.screens/` (the individual
+# filenames are unknown at workflow-author time), so the checks payload points
+# at the DIRECTORY. The verifier must self-expand it to its `*.md` files —
+# mirroring verify_screen_consistency — else it `open()`s a directory and the
+# gate reports the uninformative `problems=[]` that DLQ'd m90 task 567454.
+
+
+def test_dir_path_mode_expands_to_md_files(tmp_path: Path):
+    fx_good = _load("good_screen_plan")
+    screens = tmp_path / ".screens"
+    screens.mkdir()
+    (screens / "home.md").write_text(fx_good["screen_plan_md"], encoding="utf-8")
+    (screens / "settings.md").write_text(fx_good["screen_plan_md"], encoding="utf-8")
+    res = verify_screen_plan_shape(plan_paths=[str(screens) + "/"])
+    assert res["ok"] is True, res
+    assert len(res["per_file"]) == 2
+    assert all(pf["ok"] for pf in res["per_file"])
+
+
+def test_dir_path_mode_empty_dir_fails(tmp_path: Path):
+    """An empty `.screens/` is not a vacuous pass — nothing was authored."""
+    screens = tmp_path / ".screens"
+    screens.mkdir()
+    res = verify_screen_plan_shape(plan_paths=[str(screens) + "/"])
+    assert res["ok"] is False
+
+
+def test_dir_path_mode_finds_nested_per_screen_files(tmp_path: Path):
+    """PRODUCTION layout: the step writes `.screens/<slug>/screen_plan.md`
+    (one subdir per screen), so directory expansion must recurse."""
+    fx_good = _load("good_screen_plan")
+    screens = tmp_path / ".screens"
+    (screens / "home").mkdir(parents=True)
+    (screens / "settings").mkdir(parents=True)
+    (screens / "home" / "screen_plan.md").write_text(
+        fx_good["screen_plan_md"], encoding="utf-8")
+    (screens / "settings" / "screen_plan.md").write_text(
+        fx_good["screen_plan_md"], encoding="utf-8")
+    res = verify_screen_plan_shape(plan_paths=[str(screens) + "/"])
+    assert res["ok"] is True, res
+    assert len(res["per_file"]) == 2
+
+
+def test_dir_path_mode_flags_a_bad_file_in_the_directory(tmp_path: Path):
+    fx_good = _load("good_screen_plan")
+    fx_bad = _load("bad_screen_plan")
+    screens = tmp_path / ".screens"
+    screens.mkdir()
+    (screens / "home.md").write_text(fx_good["screen_plan_md"], encoding="utf-8")
+    (screens / "search.md").write_text(fx_bad["screen_plan_md"], encoding="utf-8")
+    res = verify_screen_plan_shape(plan_paths=[str(screens) + "/"])
+    assert res["ok"] is False
+    assert len(res["per_file"]) == 2

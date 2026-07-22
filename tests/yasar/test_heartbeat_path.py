@@ -23,3 +23,19 @@ def test_state_snapshot_path_fallback(monkeypatch):
     monkeypatch.delenv("YASAR_USTA_STATE_DIR", raising=False)
     from src.app.hb_paths import state_snapshot_path
     assert state_snapshot_path().replace("\\", "/").endswith("logs/orchestrator.state.json")
+
+
+def test_writer_path_equals_state_dir_join_exact(monkeypatch):
+    """COUPLING GUARD (split-brain regression). The orchestrator WRITES its
+    heartbeat here; the Yaşar Usta hub READS it from the registry's
+    ``${state_dir}/orchestrator.heartbeat``. These MUST be the identical path
+    or the hub false-kills a healthy orchestrator. If this filename changes,
+    the hub counterpart in
+    yasar_usta/tests/test_registry_statedir.py::test_reader_writer_filenames_match
+    must change in lockstep."""
+    import os
+    sd = r"C:\some\state\kutai"
+    monkeypatch.setenv("YASAR_USTA_STATE_DIR", sd)
+    from src.app.hb_paths import heartbeat_paths, state_snapshot_path
+    assert heartbeat_paths()[0] == os.path.join(sd, "orchestrator.heartbeat")
+    assert state_snapshot_path() == os.path.join(sd, "orchestrator.state.json")

@@ -492,6 +492,12 @@ async def _refresh_workflow_step_config(task: dict, task_ctx: dict) -> None:
             "artifact_schema",
             "tools_hint",
             "difficulty",
+            # `checks` (parameterized mechanical verifiers) freeze at expansion
+            # like the rest; a workflow edit that ADDS a check (e.g. the
+            # requirement-conservation gate) must reach already-expanded rows,
+            # else the gate stays inert on in-flight missions. determine_posthooks
+            # reads task_ctx["checks"] at completion, so syncing it here is enough.
+            "checks",
         )
         for _f in _CTX_FIELDS:
             _live_val = _step.get(_f)

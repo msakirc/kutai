@@ -24,6 +24,41 @@ from src.workflows.engine.hooks import (
 )
 
 
+def test_whole_string_double_escaped_json_object_recovered():
+    # Some models emit the artifact as an escaped JSON STRING BODY missing its
+    # outer quotes: `{\n  \"adr_id\": ...}` with literal \n and \". json.loads
+    # fails on it (keys aren't real strings), so the raw escaped text lands on
+    # disk and every downstream json parse breaks — mission_90 4.1
+    # architecture_pattern_decision.json DLQ'd "adr_id=None missing=[all]" and
+    # degenerate-repeated. The materializer must decode it to clean JSON.
+    obj = {"adr_id": "ADR-1", "title": "T", "status": "accepted",
+           "options_considered": [{"id": "o1"}]}
+    pretty = json.dumps(obj, indent=2)          # real newlines + real quotes
+    corrupt = json.dumps(pretty)[1:-1]          # escaped body, outer quotes stripped
+    assert corrupt.startswith("{\\n")           # sanity: literal backslash-n
+    out = _unwrap_envelope(corrupt)
+    assert json.loads(out) == obj
+
+
+def test_escaped_json_array_body_recovered():
+    arr = [{"id": "x"}, {"id": "y"}]
+    corrupt = json.dumps(json.dumps(arr, indent=2))[1:-1]
+    out = _unwrap_envelope(corrupt)
+    assert json.loads(out) == arr
+
+
+def test_clean_json_object_untouched():
+    clean = '{"adr_id": "ADR-1", "status": "accepted"}'
+    assert json.loads(_unwrap_envelope(clean)) == json.loads(clean)
+
+
+def test_plain_markdown_with_escaped_quote_not_mangled():
+    # A markdown doc that merely contains a \" must not be treated as escaped
+    # JSON and destroyed. Not object/array-leading → left alone.
+    md = '# Title\nHe said \\"hi\\" to me.'
+    assert _unwrap_envelope(md) == md
+
+
 class TestCanonicalizeForRetry:
     """Structural fix for Qwen JSON over-escape (deferred item 5).
 

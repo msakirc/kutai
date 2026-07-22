@@ -295,6 +295,28 @@ def _unwrap_envelope(text) -> str:
     except (json.JSONDecodeError, TypeError):
         pass
 
+    # ── Whole-string double-escaped JSON recovery ──
+    # Some models emit the artifact as an escaped JSON string BODY missing its
+    # outer quotes: ``{\n  \"adr_id\": ...}`` with literal ``\n`` and ``\"``.
+    # ``json.loads`` above fails (the keys aren't real strings), so the raw
+    # escaped text would land on disk and every downstream json parse breaks
+    # (mission_90 4.1 architecture_pattern_decision.json: verify_adr_shape read
+    # ``adr_id=None missing=[all]`` → degenerate-repeat DLQ, and consumers of the
+    # artifact would read the same corruption). Re-add the enclosing quotes so it
+    # parses as a JSON string, decode it, and keep the result IFF it is itself a
+    # JSON object/array. The ``{``/``[`` lead + ``\"``-near-start guard + the
+    # object/array probe leave plain prose (and clean JSON, which parsed above)
+    # untouched.
+    if stripped[:1] in ("{", "[") and '\\"' in stripped[:80]:
+        try:
+            _decoded = json.loads('"' + stripped + '"')
+            if isinstance(_decoded, str):
+                _probe = json.loads(_decoded.strip())
+                if isinstance(_probe, (dict, list)):
+                    stripped = _decoded.strip()
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
     # ── Fallback for broken / truncated JSON ──
     # The structural extractor walks the string char-by-char respecting
     # JSON escape rules and returns the partial body when truncated.

@@ -245,6 +245,21 @@ _QUALITY_QUALIFIERS = re.compile(
     re.IGNORECASE,
 )
 
+# Requirement identifiers a finding cites (FR-003, NFR-1, BR-2, SQ-4, US-1, DR-1).
+_REQ_ID_RE = re.compile(r"\b(?:FR|NFR|BR|SQA?|US|DR)-\d+\b", re.IGNORECASE)
+
+# The absence marker binds DIRECTLY to a triple token (the finding's object IS a
+# triple, not some other section that merely sits near the word "falsification").
+# Guards D2: "missing a traceability matrix; falsification signals could be
+# stronger" must NOT match — "missing" binds to "traceability", not a triple.
+_TRIPLE_ABSENCE_CLAUSE = re.compile(
+    r"\b(?:missing|lacks?|without|absent|no|empty)\s+"
+    r"(?:(?:the|a|an|any|all|complete|their|its|proper|valid|required)\s+)*"
+    r"(?:falsification\s+)?"
+    r"(?:triples?|falsification|risk_if_wrong|validation_method|falsification_signal)\b",
+    re.IGNORECASE,
+)
+
 
 def _split_table_row(line: str) -> list[str] | None:
     """A markdown table row's cells (``| a | b |`` → ``['a','b']``), else None."""
@@ -322,15 +337,11 @@ def _parse_spec_requirement_triples(content: str) -> list[dict]:
     return items
 
 
-def _falsification_presence_proven(artifact_content: str) -> bool:
-    """True iff the spec's requirement tables populate every triple column.
+def _triples_present(items: list[dict]) -> bool:
+    """Run the producers' checker over parsed rows; True = all triples present.
 
-    Deterministic proof that a reviewer 'missing triple / empty table' claim is
-    confabulated: parse the tables and run the SAME mechanical checker the
-    producers hard-gate on. ``missing`` empty AND not ``empty`` = presence
-    proven. Ignores ``critical_underspecified`` — that is a QUALITY axis (a real
+    Ignores ``critical_underspecified`` — that is a QUALITY axis (a legitimate
     reviewer finding), not a presence claim, so it must not block the drop."""
-    items = _parse_spec_requirement_triples(artifact_content)
     if not items:
         return False
     try:
@@ -339,6 +350,34 @@ def _falsification_presence_proven(artifact_content: str) -> bool:
     except Exception:  # noqa: BLE001 — grounding must never crash the gate
         return False
     return not res.get("missing") and not res.get("empty")
+
+
+def _falsification_absence_refuted(problem: str, artifact_content: str) -> bool:
+    """True iff a triple-absence claim is DETERMINISTICALLY refuted by the spec.
+
+    ANCHORED to the finding's own target (high precision — never override a real
+    finding about a section the spec table doesn't cover):
+
+    * The finding NAMES requirement IDs (FR-003, NFR-1…): drop only when EVERY
+      named id appears in the parsed triple-table AND its row carries the full
+      triple. An id absent from the table (e.g. NFRs rendered as prose, not a
+      triple-column table) → cannot prove → KEEP (guards D1: the FR table is not
+      evidence about NFRs).
+    * The finding names NO id: drop only when the absence marker binds DIRECTLY
+      to a triple token (``_TRIPLE_ABSENCE_CLAUSE``) AND the whole parsed table
+      is populated (guards D2: an absence claim about a different section that
+      merely mentions "falsification" nearby is not refuted).
+    """
+    items = _parse_spec_requirement_triples(artifact_content)
+    if not items:
+        return False
+    named = {m.group(0).upper() for m in _REQ_ID_RE.finditer(problem)}
+    if named:
+        by_id = {str(it.get("req_id", "")).upper(): it for it in items if it.get("req_id")}
+        if not named.issubset(by_id.keys()):
+            return False  # names a requirement the triple-table doesn't cover
+        return _triples_present([by_id[i] for i in named])
+    return bool(_TRIPLE_ABSENCE_CLAUSE.search(problem)) and _triples_present(items)
 
 
 def classify_issue_grounding(problem: str, artifact_content: str | None) -> str:
@@ -385,7 +424,7 @@ def classify_issue_grounding(problem: str, artifact_content: str | None) -> str:
             and _FALSIFICATION_MARKERS.search(problem)
             and not _QUALITY_QUALIFIERS.search(problem)
         ):
-            if _falsification_presence_proven(artifact_content):
+            if _falsification_absence_refuted(problem, artifact_content):
                 return "drop"
 
         # Rule B — fabricated quote: the finding embeds distinctive evidence

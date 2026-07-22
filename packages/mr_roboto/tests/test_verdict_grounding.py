@@ -222,6 +222,26 @@ def test_ruleC_keeps_when_a_triple_cell_is_genuinely_empty():
     assert classify_issue_grounding(problem, spec) != "drop"
 
 
+def test_ruleC_keeps_nfr_finding_when_only_fr_table_parsed():
+    # D1: NFRs render as prose (no triple table); the FR table proving out is
+    # NOT evidence about NFRs. A finding naming NFR IDs absent from the parsed
+    # table must NOT be dropped.
+    problem = ("Non-functional requirements (NFR-001, NFR-002) are missing the "
+               "falsification triple (risk_if_wrong, validation_method, falsification_signal).")
+    assert classify_issue_grounding(problem, REQ_SPEC_FULL) != "drop"
+
+
+def test_ruleC_keeps_unrelated_absence_with_incidental_falsification_word():
+    # D2: the absence marker binds to a DIFFERENT section; the falsification
+    # word is incidental. Must NOT drop.
+    p1 = ("Missing a traceability matrix section; several falsification signals "
+          "could also be stronger.")
+    p2 = ("The spec is missing a revision-history section. Falsification triples "
+          "themselves look complete.")
+    assert classify_issue_grounding(p1, REQ_SPEC_FULL) != "drop"
+    assert classify_issue_grounding(p2, REQ_SPEC_FULL) != "drop"
+
+
 def test_ruleC_does_not_fire_without_a_triple_table():
     # A falsification-absence claim against an artifact that has no requirement
     # triple table → no mechanical proof of presence → must NOT drop.

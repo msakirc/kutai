@@ -501,6 +501,10 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
     ),
     "verify_reverse_pitch_shape": _shape_check_spec(
         "verify_reverse_pitch_shape", "Reverse-pitch doc shape."),
+    "verify_requirement_conservation": _shape_check_spec(
+        "verify_requirement_conservation",
+        "Assembly fidelity — every requirement id in the source artifact(s) "
+        "must survive into the assembled artifact (no silent FR/US/BR drop)."),
     "verify_charter_shape": _shape_check_spec(
         "verify_charter_shape", "Product-charter doc shape (solutions, brand keywords)."),
     "verify_contains_product_name": _shape_check_spec(

@@ -17,6 +17,7 @@ from mr_roboto.verify_schema_version import verify_schema_version
 from mr_roboto.verify_charter_shape import verify_charter_shape
 from mr_roboto.verify_reverse_pitch_shape import verify_reverse_pitch_shape
 from mr_roboto.verify_falsification_present import verify_falsification_present
+from mr_roboto.verify_requirement_conservation import verify_requirement_conservation
 from mr_roboto.verify_non_goals_shape import verify_non_goals_shape
 from mr_roboto.check_against_non_goals import check_against_non_goals
 from mr_roboto.verify_screen_plan_shape import verify_screen_plan_shape
@@ -137,6 +138,7 @@ __all__ = [
     "verify_charter_shape",
     "verify_reverse_pitch_shape",
     "verify_falsification_present",
+    "verify_requirement_conservation",
     "verify_non_goals_shape",
     "check_against_non_goals",
     "verify_screen_plan_shape",
@@ -1187,6 +1189,57 @@ async def _run_dispatch(task: dict) -> Action:
                         f"verify_reverse_pitch_shape: missing={res.get('missing_sections')} "
                         f"placeholders={res.get('placeholders')} "
                         f"ack={res.get('acknowledged_no_users')}"
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_requirement_conservation":
+        # Assembly-fidelity gate — assert the assembled artifact carries EVERY
+        # requirement id present in its upstream source artifact(s). The
+        # easy/medium-tier assembly steps (3.9a/3.10a/3.10b) silently compress
+        # long requirement lists; this re-pends the producer naming the drops.
+        from mr_roboto.verify_requirement_conservation import (
+            verify_requirement_conservation as _verify_rc,
+        )
+
+        def _read_texts(paths) -> str:
+            texts: list[str] = []
+            for _p in (_resolve_path_list(paths) or []):
+                try:
+                    with open(_p, "r", encoding="utf-8") as _fh:
+                        texts.append(_fh.read())
+                except Exception:
+                    continue
+            return "\n".join(texts)
+
+        try:
+            produced_text = _read_texts(payload.get("produced_paths"))
+            sources = []
+            for s in (payload.get("sources") or []):
+                if not isinstance(s, dict):
+                    continue
+                sources.append({
+                    "label": s.get("label"),
+                    "source_text": _read_texts(s.get("source_paths")),
+                    "id_pattern": s.get("id_pattern") or "",
+                })
+            res = _verify_rc(produced_text=produced_text, sources=sources)
+            if not res.get("ok"):
+                drops = "; ".join(
+                    f"{m['label']} dropped {m['missing_ids']}"
+                    for m in (res.get("missing") or [])
+                )
+                return Action(
+                    status="failed",
+                    error=(
+                        "verify_requirement_conservation: the assembled artifact "
+                        f"is missing requirement ids present upstream — {drops}. "
+                        "Re-emit the artifact carrying EVERY requirement id from "
+                        "the source artifact(s); do not merge, drop, renumber, or "
+                        "summarize away any requirement."
                     ),
                     result=res,
                 )

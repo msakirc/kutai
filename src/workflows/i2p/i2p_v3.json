@@ -3314,8 +3314,8 @@
       "output_artifacts": [
         "traceability_matrix"
       ],
-      "instruction": "Build traceability matrix: map every functional requirement to user stories and business rules. Identify any requirement without a user story or business rule.",
-      "done_when": "traceability_matrix exists with all requirements cross-referenced and orphans flagged.",
+      "instruction": "Build the traceability matrix: map EVERY functional requirement to its user stories and business rules. The matrix MUST contain one row per FR id present in functional_requirements (all FR-001 .. FR-0NN) and reference EVERY user-story id from user_stories_refined — do not omit, merge, or renumber any id. Identify any requirement without a user story or business rule as an orphan (do not silently drop it).",
+      "done_when": "traceability_matrix exists referencing EVERY FR id from functional_requirements and every user-story id, with orphans flagged.",
       "artifact_schema": {
         "traceability_matrix": {
           "type": "object",
@@ -3327,6 +3327,33 @@
         }
       },
       "context": {},
+      "checks": [
+        {
+          "kind": "verify_requirement_conservation",
+          "payload": {
+            "action": "verify_requirement_conservation",
+            "produced_paths": [
+              "mission_{mission_id}/traceability_matrix.md"
+            ],
+            "sources": [
+              {
+                "label": "functional_requirements",
+                "source_paths": [
+                  "mission_{mission_id}/functional_requirements.md"
+                ],
+                "id_pattern": "FR-\\d+"
+              },
+              {
+                "label": "user_stories_refined",
+                "source_paths": [
+                  "mission_{mission_id}/user_stories_refined.md"
+                ],
+                "id_pattern": "US-\\d+"
+              }
+            ]
+          }
+        }
+      ],
       "reversibility": "full"
     },
     {
@@ -3393,8 +3420,8 @@
       "output_artifacts": [
         "requirements_spec_part1"
       ],
-      "instruction": "Compile Part 1 of Requirements Specification: Functional Requirements, User Stories, Business Rules, Data Requirements. Format as structured document.",
-      "done_when": "requirements_spec_part1 exists as a structured document covering functional requirements.",
+      "instruction": "Compile Part 1 of the Requirements Specification: Functional Requirements, User Stories, Business Rules, Data Requirements. Format as a structured document. THIS IS A FAITHFUL ASSEMBLY, NOT A SUMMARY: carry forward EVERY item from the source artifacts with its exact id — if functional_requirements defines N functional requirements (FR-001 .. FR-0NN) your output MUST list all N with the same ids, titles, priorities, and tiers. Do NOT merge, drop, renumber, or paraphrase away any requirement. Apply the same completeness to every user story (user_stories_refined), business rule (business_rules), and data requirement (data_requirements).",
+      "done_when": "requirements_spec_part1 exists as a structured document containing EVERY functional requirement id from functional_requirements plus all user stories, business rules, and data requirements.",
       "artifact_schema": {
         "requirements_spec_part1": {
           "type": "markdown",
@@ -3410,6 +3437,40 @@
       "context": {
         "estimated_output_tokens": 10000
       },
+      "checks": [
+        {
+          "kind": "verify_requirement_conservation",
+          "payload": {
+            "action": "verify_requirement_conservation",
+            "produced_paths": [
+              "mission_{mission_id}/requirements_spec_part1.md"
+            ],
+            "sources": [
+              {
+                "label": "functional_requirements",
+                "source_paths": [
+                  "mission_{mission_id}/functional_requirements.md"
+                ],
+                "id_pattern": "FR-\\d+"
+              },
+              {
+                "label": "user_stories_refined",
+                "source_paths": [
+                  "mission_{mission_id}/user_stories_refined.md"
+                ],
+                "id_pattern": "US-\\d+"
+              },
+              {
+                "label": "business_rules",
+                "source_paths": [
+                  "mission_{mission_id}/business_rules.md"
+                ],
+                "id_pattern": "BR-\\d+"
+              }
+            ]
+          }
+        }
+      ],
       "reversibility": "full"
     },
     {
@@ -3439,7 +3500,7 @@
       "context": {
         "estimated_output_tokens": 12000
       },
-      "instruction": "Merge requirements_spec_part1 with non-functional requirements (performance, availability, security) and the traceability matrix into the final Requirements Specification Document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Functional Requirements\nCarry forward functional requirement summaries from requirements_spec_part1.\n\n## Non-Functional Requirements\nPerformance + availability + scalability bullets from nfr_performance and nfr_availability.\n\n## Security Requirements\nSecurity controls from security_requirements.\n\n## User Stories\nList user-story IDs covered by these requirements.\n\n## Traceability Matrix\nTable mapping each requirement id to user-story ids and back.",
+      "instruction": "Merge requirements_spec_part1 with non-functional requirements (performance, availability, security) and the traceability matrix into the final Requirements Specification Document.\n\nOUTPUT FORMAT: Return ONLY the Markdown content directly in `result` (no JSON wrapping, no `final_answer` envelope, no `Wrote ...` summary). The Markdown MUST contain these top-level sections in order, each as a `##` heading:\n\n## Functional Requirements\nCarry forward EVERY functional requirement from requirements_spec_part1 VERBATIM — list every FR id (FR-001 .. FR-0NN); do NOT summarize, merge, drop, or renumber any requirement.\n\n## Non-Functional Requirements\nPerformance + availability + scalability bullets from nfr_performance and nfr_availability.\n\n## Security Requirements\nSecurity controls from security_requirements.\n\n## User Stories\nList user-story IDs covered by these requirements.\n\n## Traceability Matrix\nTable mapping each requirement id to user-story ids and back.",
       "done_when": "requirements_spec is a Markdown document with `## Functional Requirements`, `## Non-Functional Requirements`, `## Security Requirements`, `## User Stories`, `## Traceability Matrix` headings present.",
       "artifact_schema": {
         "requirements_spec": {
@@ -3454,6 +3515,26 @@
           "_schema_version": "1"
         }
       },
+      "checks": [
+        {
+          "kind": "verify_requirement_conservation",
+          "payload": {
+            "action": "verify_requirement_conservation",
+            "produced_paths": [
+              "mission_{mission_id}/requirements_spec.md"
+            ],
+            "sources": [
+              {
+                "label": "requirements_spec_part1",
+                "source_paths": [
+                  "mission_{mission_id}/requirements_spec_part1.md"
+                ],
+                "id_pattern": "FR-\\d+"
+              }
+            ]
+          }
+        }
+      ],
       "reversibility": "full"
     },
     {

@@ -40,6 +40,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "verify_reverse_pitch_shape": "full",
     "verify_contains_product_name": "full",  # read-only presence check
     "verify_falsification_present": "full",
+    "verify_requirement_conservation": "full",  # read-only subset check
     "verify_non_goals_shape": "full",
     "check_against_non_goals": "full",
     "verify_adr_shape": "full",

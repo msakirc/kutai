@@ -81,6 +81,73 @@ def _parse_frontmatter(md: str) -> tuple[dict[str, str] | None, str]:
     return out, body
 
 
+_MISSION_ID_RE = re.compile(r"mission_(\d+)")
+
+
+def _extract_mission_id(path: str) -> str | None:
+    """Pull the mission id out of a workspace path (``…/mission_90/.screens/…``)."""
+    if not isinstance(path, str):
+        return None
+    m = _MISSION_ID_RE.search(path.replace("\\", "/"))
+    return m.group(1) if m else None
+
+
+def _modal_inherits_shell(texts) -> str:
+    """The chunk-canonical ``inherits_shell`` raw value across sibling plans.
+
+    The contract is "same list across the whole chunk", so the most common
+    non-empty declared value is the correct default for a plan that dropped the
+    key. Falls back to ``[]`` when no sibling declares a non-empty list (``[]``
+    still satisfies the presence-only frontmatter check and keeps the chunk
+    consistent). Never invents shell components.
+    """
+    from collections import Counter
+    vals: list[str] = []
+    for t in texts:
+        if not isinstance(t, str):
+            continue
+        fm, _ = _parse_frontmatter(t)
+        v = (fm or {}).get("inherits_shell")
+        if isinstance(v, str):
+            v = v.strip()
+            if v and v != "[]":
+                vals.append(v)
+    if vals:
+        return Counter(vals).most_common(1)[0][0]
+    return "[]"
+
+
+def normalize_screen_plan(
+    md: str, mission_id: str | None = None, inherits_shell: str | None = None
+) -> tuple[str, bool]:
+    """Deterministically inject the MECHANICAL frontmatter keys a plan dropped.
+
+    Mirrors ``normalize_user_flow``: the analyst authors the screen's SEMANTIC
+    content (sections, States); ``mission_id`` (a mission constant, derivable
+    from the path) and ``inherits_shell`` (the chunk contract, derivable from the
+    modal of sibling plans) are shell the engine guarantees regardless of model
+    compliance (m90 5.20b task 567455 dropped both on 5 screens → degenerate
+    repeat). Injects ONLY the missing mechanical keys into the existing ``---``
+    block; never fabricates body content, and no-ops when there is no frontmatter
+    block (a plan with none is a genuine failure the model must fix). Returns
+    ``(text, changed)``.
+    """
+    m = _FRONTMATTER_RE.match(md)
+    if not m:
+        return md, False
+    fm, _ = _parse_frontmatter(md)
+    fm = fm or {}
+    inject: list[str] = []
+    if mission_id is not None and not fm.get("mission_id"):
+        inject.append(f"mission_id: {mission_id}")
+    if inherits_shell is not None and "inherits_shell" not in fm:
+        inject.append(f"inherits_shell: {inherits_shell}")
+    if not inject:
+        return md, False
+    new_block = m.group(1) + "\n" + "\n".join(inject)
+    return f"---\n{new_block}\n---\n" + md[m.end():], True
+
+
 def _verify_one(md: str) -> dict[str, Any]:
     problems: list[str] = []
 
@@ -222,8 +289,10 @@ def verify_screen_plan_shape(
     # Production writes `.screens/<slug>/screen_plan.md` (one subdir per screen),
     # so the expansion RECURSES (also matches a flat `.screens/<slug>.md`).
     expanded: list[str] = []
+    _had_dir = False
     for p in plan_paths:
         if isinstance(p, str) and os.path.isdir(p):
+            _had_dir = True
             expanded.extend(
                 sorted(_glob.glob(os.path.join(p, "**", "*.md"), recursive=True))
             )
@@ -235,6 +304,36 @@ def verify_screen_plan_shape(
             "error": "no per-screen .md plans found under the produces directory",
             "per_file": [],
         }
+
+    # ── Deterministic frontmatter repair (before validation) ──
+    # For a DIRECTORY of chunk-authored plans, inject the MECHANICAL keys a model
+    # may have dropped: mission_id (from the path) and inherits_shell (the chunk
+    # modal from sibling plans). Repair + write back, then validate the repaired
+    # files. Scoped to the directory case (chunk authoring); explicit single-file
+    # callers are left untouched. (m90 5.20b task 567455.)
+    if _had_dir:
+        _texts: dict[str, str | None] = {}
+        for p in expanded:
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    _texts[p] = fh.read()
+            except OSError:
+                _texts[p] = None
+        _mid = _extract_mission_id(expanded[0])
+        _modal = _modal_inherits_shell([t for t in _texts.values() if t])
+        for p in expanded:
+            t = _texts.get(p)
+            if t is None:
+                continue
+            repaired, changed = normalize_screen_plan(
+                t, mission_id=_mid, inherits_shell=_modal
+            )
+            if changed:
+                try:
+                    with open(p, "w", encoding="utf-8") as fh:
+                        fh.write(repaired)
+                except OSError:
+                    pass
 
     per_file: list[dict[str, Any]] = []
     all_ok = True

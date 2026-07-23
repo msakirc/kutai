@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from mr_roboto.verify_screen_plan_shape import verify_screen_plan_shape
+from mr_roboto.verify_screen_plan_shape import (
+    verify_screen_plan_shape,
+    normalize_screen_plan,
+)
 from mr_roboto import run as mr_roboto_run
 
 
@@ -151,6 +155,78 @@ def test_dir_path_mode_empty_dir_fails(tmp_path: Path):
     screens.mkdir()
     res = verify_screen_plan_shape(plan_paths=[str(screens) + "/"])
     assert res["ok"] is False
+
+
+# ── deterministic frontmatter repair (mirrors normalize_user_flow) ──────────
+# The analyst authors the screen's SEMANTIC content (sections, states); the
+# MECHANICAL frontmatter keys `mission_id` (a mission constant, derivable from
+# the path) and `inherits_shell` (the chunk contract "same across the chunk",
+# derivable from the modal of sibling plans) are shell the engine guarantees
+# regardless of model compliance. m90 5.20b (task 567455): the chunk-b analyst
+# dropped both keys on 5 screens → degenerate-repeat DLQ. normalize_screen_plan
+# injects only the MISSING mechanical keys; it never fabricates body content.
+
+
+def _plan_missing(keys_to_drop):
+    base = (
+        "---\n_schema_version: \"1\"\nmission_id: 90\nscreen_id: errands\n"
+        "route: /errands\nsurface: web\ninherits_shell: [\"Header\"]\n---\n\n"
+        "# Errands\n\nA description.\n\n## Content\n- x\n\n"
+        "## States\n\n### Default\nx\n\n### Empty\nx\n\n### Loading\nx\n\n### Error\nx\n"
+    )
+    for k in keys_to_drop:
+        base = re.sub(rf"^{k}:.*\n", "", base, flags=re.M)
+    return base
+
+
+def test_normalize_injects_missing_mission_id():
+    md = _plan_missing(["mission_id"])
+    out, changed = normalize_screen_plan(md, mission_id="90", inherits_shell='["Header"]')
+    assert changed is True
+    fm, _ = __import__("mr_roboto.verify_screen_plan_shape",
+                       fromlist=["_parse_frontmatter"])._parse_frontmatter(out)
+    assert fm.get("mission_id") == "90"
+
+
+def test_normalize_injects_missing_inherits_shell():
+    md = _plan_missing(["inherits_shell"])
+    out, changed = normalize_screen_plan(md, mission_id="90", inherits_shell='["Header"]')
+    assert changed is True
+    assert "inherits_shell:" in out.split("---", 2)[1]
+
+
+def test_normalize_noop_when_all_present():
+    md = _plan_missing([])
+    out, changed = normalize_screen_plan(md, mission_id="90", inherits_shell='["Header"]')
+    assert changed is False
+    assert out == md
+
+
+def test_normalize_no_frontmatter_is_noop():
+    md = "# Errands\n\nNo frontmatter here.\n"
+    out, changed = normalize_screen_plan(md, mission_id="90", inherits_shell='["Header"]')
+    assert changed is False and out == md
+
+
+def test_dir_repair_makes_missing_keys_pass_and_writes_back(tmp_path: Path):
+    """The m90 567455 scenario: one plan lacks mission_id + inherits_shell; a
+    sibling declares inherits_shell. Directory verification must repair the
+    incomplete plan (mission_id from path, inherits_shell from the modal) and
+    PASS — then persist the repair to disk."""
+    screens = tmp_path / "mission_90" / ".screens"
+    (screens / "dashboard").mkdir(parents=True)
+    (screens / "errands").mkdir(parents=True)
+    good = _plan_missing([]).replace("screen_id: errands", "screen_id: dashboard")
+    (screens / "dashboard" / "screen_plan.md").write_text(good, encoding="utf-8")
+    bad = _plan_missing(["mission_id", "inherits_shell"])
+    bad_path = screens / "errands" / "screen_plan.md"
+    bad_path.write_text(bad, encoding="utf-8")
+    res = verify_screen_plan_shape(plan_paths=[str(screens) + "/"])
+    assert res["ok"] is True, res
+    # repair persisted to disk
+    repaired = bad_path.read_text(encoding="utf-8")
+    assert "mission_id: 90" in repaired
+    assert "inherits_shell:" in repaired.split("---", 2)[1]
 
 
 def test_dir_path_mode_finds_nested_per_screen_files(tmp_path: Path):

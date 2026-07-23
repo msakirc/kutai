@@ -9,6 +9,11 @@ REM
 REM The task is registered by scripts\install_yasar_autostart.ps1 (in the hub
 REM repo, run elevated once). If the hub is already up, /Run is a safe no-op
 REM (the task's IgnoreNew + the singleton mutex prevent a second instance).
+REM
+REM Clear any deliberate-stop marker first: /shutdown_hub leaves a hub.stopped
+REM file that makes the hub refuse to start (even under the keep-alive trigger).
+REM Running THIS launcher is the explicit "start" that un-stops it.
+del "%LOCALAPPDATA%\YasarUsta\hub\hub.stopped" 2>nul
 schtasks /Run /TN "YasarUsta"
 if %ERRORLEVEL%==0 (
   echo Hub start requested via Task Scheduler ^(detached, background^).

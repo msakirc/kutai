@@ -3644,6 +3644,9 @@
       "artifact_schema": {
         "architecture_pattern_decision": {
           "type": "object",
+          "nullable": [
+            "supersedes_adr_id"
+          ],
           "required_fields": [
             "adr_id",
             "title",
@@ -3712,6 +3715,9 @@
       "artifact_schema": {
         "tech_stack_decision": {
           "type": "object",
+          "nullable": [
+            "supersedes_adr_id"
+          ],
           "required_fields": [
             "adr_id",
             "title",
@@ -3840,6 +3846,9 @@
         },
         "database_schema_decision": {
           "type": "object",
+          "nullable": [
+            "supersedes_adr_id"
+          ],
           "required_fields": [
             "adr_id",
             "title",
@@ -4033,6 +4042,9 @@
         },
         "auth_design_decision": {
           "type": "object",
+          "nullable": [
+            "supersedes_adr_id"
+          ],
           "required_fields": [
             "adr_id",
             "title",
@@ -4179,6 +4191,9 @@
         },
         "third_party_selections_decision": {
           "type": "object",
+          "nullable": [
+            "supersedes_adr_id"
+          ],
           "required_fields": [
             "adr_id",
             "title",
@@ -4279,6 +4294,9 @@
         },
         "infrastructure_designs_decision": {
           "type": "object",
+          "nullable": [
+            "supersedes_adr_id"
+          ],
           "required_fields": [
             "adr_id",
             "title",
@@ -4375,6 +4393,9 @@
         },
         "communication_designs_decision": {
           "type": "object",
+          "nullable": [
+            "supersedes_adr_id"
+          ],
           "required_fields": [
             "adr_id",
             "title",
@@ -11653,6 +11674,9 @@
       "artifact_schema": {
         "component_library_decision": {
           "type": "object",
+          "nullable": [
+            "supersedes_adr_id"
+          ],
           "required_fields": [
             "adr_id",
             "title",

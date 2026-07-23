@@ -71,18 +71,27 @@ def _normalize_rule(rule: Any) -> Any:
         legacy = rule.get("required_fields")
         if isinstance(legacy, list):
             must_true = set(rule.get("must_be_true") or [])
+            # ``nullable`` — like ``must_be_true``, a per-field modifier on the
+            # legacy list: these fields are required-PRESENT but their value may
+            # be JSON null (e.g. ADR ``supersedes_adr_id`` = "null or a prior
+            # ADR-id"). Without it the ``is_empty_required_value`` guard rejects
+            # the honest null with "empty placeholder value" — an unsatisfiable
+            # contract for the first/non-superseding ADR.
+            nullable = set(rule.get("nullable") or [])
             normalized = {
                 k: v for k, v in rule.items()
-                if k not in ("required_fields", "must_be_true")
+                if k not in ("required_fields", "must_be_true", "nullable")
             }
             built: dict[str, dict] = {}
             for f in legacy:
                 if not isinstance(f, str):
                     continue
-                built[f] = (
-                    {"type": "boolean", "equals": True}
-                    if f in must_true else {}
-                )
+                if f in must_true:
+                    built[f] = {"type": "boolean", "equals": True}
+                elif f in nullable:
+                    built[f] = {"nullable": True}
+                else:
+                    built[f] = {}
             normalized["fields"] = built
             return normalized
         return rule
@@ -246,6 +255,8 @@ def validate_value(
                 return f"{field_path}: missing required field"
             fvalue = value[fname]
             if is_empty_required_value(fvalue):
+                if frule.get("nullable") and fvalue is None:
+                    continue  # nullable field: JSON null is an honest value
                 if _empty_exemption_granted(frule, inputs):
                     continue  # upstream scope is empty → empty value is valid
                 return f"{field_path}: empty placeholder value"

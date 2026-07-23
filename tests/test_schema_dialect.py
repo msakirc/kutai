@@ -133,6 +133,74 @@ class TestValidate:
         }}
         assert validate_value(rule, {"a": "x"}) is None
 
+    # ── nullable: required-PRESENT, value may be JSON null ───────────────
+    #
+    # `is_empty_required_value(None)` is True — the mission-46 guard that bans
+    # a constrained decoder from emitting null/{}/"" just to satisfy presence.
+    # But some required fields are legitimately nullable: an ADR's
+    # `supersedes_adr_id` is "null OR a prior ADR-id" — for the FIRST ADR (the
+    # common case) null is the honest value, and there is no other value that
+    # passes (an empty string is junk; a fake id is a lie). `optional` is wrong
+    # (the field must be PRESENT); the field needs "present, value may be null".
+    # `nullable` grants exactly that: JSON null is accepted, but other empties
+    # ("", [], {}, "...") stay rejected (still junk, not an honest null).
+
+    def test_nullable_field_accepts_json_null(self):
+        rule = {"type": "object", "fields": {
+            "supersedes_adr_id": {"nullable": True},
+        }}
+        assert validate_value(rule, {"supersedes_adr_id": None}) is None
+
+    def test_nullable_field_accepts_real_value(self):
+        rule = {"type": "object", "fields": {
+            "supersedes_adr_id": {"nullable": True},
+        }}
+        assert validate_value(
+            rule, {"supersedes_adr_id": "ADR-2026-07-23-001"}
+        ) is None
+
+    def test_nullable_field_still_requires_presence(self):
+        rule = {"type": "object", "fields": {
+            "supersedes_adr_id": {"nullable": True},
+        }}
+        err = validate_value(rule, {})
+        assert err and "missing required field" in err
+
+    def test_nullable_field_still_rejects_empty_string(self):
+        # "" is neither null nor a valid id — still a junk placeholder.
+        rule = {"type": "object", "fields": {
+            "supersedes_adr_id": {"nullable": True},
+        }}
+        err = validate_value(rule, {"supersedes_adr_id": ""})
+        assert err and "empty placeholder" in err
+
+    def test_non_nullable_required_still_rejects_null(self):
+        # Regression: the mission-46 anti-fabrication guard stays intact for
+        # every field NOT explicitly marked nullable.
+        rule = {"type": "object", "fields": {"x": {}}}
+        err = validate_value(rule, {"x": None})
+        assert err and "empty placeholder" in err
+
+    def test_nullable_from_required_fields_list_normalizes(self):
+        rule = {"type": "object", "required_fields": ["a", "b"],
+                "nullable": ["a"]}
+        out = _normalize_rule(rule)
+        assert out == {"type": "object",
+                       "fields": {"a": {"nullable": True}, "b": {}}}
+
+    def test_nullable_legacy_null_passes_end_to_end(self):
+        # The exact ADR shape: legacy required_fields + nullable list, value null.
+        rule = {"type": "object",
+                "required_fields": ["adr_id", "supersedes_adr_id"],
+                "nullable": ["supersedes_adr_id"]}
+        assert validate_value(
+            rule, {"adr_id": "ADR-1", "supersedes_adr_id": None}
+        ) is None
+
+    def test_canonical_nullable_field_passthrough(self):
+        rule = {"type": "object", "fields": {"a": {"nullable": True}}}
+        assert _normalize_rule(rule) == rule
+
     def test_array_min_items(self):
         rule = {"type": "array", "min_items": 2}
         err = validate_value(rule, ["one"])

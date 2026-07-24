@@ -356,14 +356,18 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Workspace/git init: {e}")
 
-        shutdown_signal = Path("logs") / "shutdown.signal"
+        from src.app.hb_paths import shutdown_signal_paths
+        # env-aware: state_dir/logs under the hub, legacy CWD 'logs/' fallback
+        # during the migration window (see hb_paths.shutdown_signal_paths).
+        shutdown_signals = [Path(p) for p in shutdown_signal_paths()]
         import general_beckman
 
         while self.running and not self.shutdown_event.is_set():
             try:
-                if shutdown_signal.exists():
-                    intent = shutdown_signal.read_text().strip()
-                    shutdown_signal.unlink()
+                hit = next((p for p in shutdown_signals if p.exists()), None)
+                if hit is not None:
+                    intent = hit.read_text().strip()
+                    hit.unlink()
                     logger.info("External shutdown signal: %s", intent)
                     self.requested_exit_code = 42 if intent == "restart" else 0
                     self.shutdown_event.set()

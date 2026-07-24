@@ -5143,7 +5143,7 @@
       "context": {
         "estimated_output_tokens": 9000
       },
-      "instruction": "Z1 Tier 3 (C3+A10+C14): generate paraflow-shape per-screen plans for the FIRST chunk of `screen_inventory.chunks` (B8 cohesion ceiling: 3-5 screens). For EVERY screen in this chunk, write a Markdown file to `mission_{mission_id}/.screens/<slug>/screen_plan.md` with this STRICT shape:\n\n1. YAML frontmatter delimited by `---` carrying:\n   - `_schema_version: \"1\"`\n   - `mission_id: <id>`\n   - `screen_id: <slug>`\n   - `route: \"/...\"`\n   - `surface: mobile|web|desktop` (from surfaces.md)\n   - `inherits_shell: [...]` (subset of components in shared_shell.md; same list across the whole chunk unless you also emit `<!-- inherits_shell_override: <reason> -->` in the body)\n2. `# <ScreenName>` H1 + one-line description paragraph (what this screen lets the user accomplish).\n3. At least one `## <Section>` H2 beyond `## States` describing the screen's content blocks (e.g. `## Search Bar`, `## Featured Content`, `## Quick Actions`, `## TabBar`). Bullet lists per section.\n4. `## States` H2 with EXACTLY four H3 sub-sections in order: `### Default`, `### Empty`, `### Loading`, `### Error`. Each describes the visual state with bullet details (skeleton hints for Loading; retry CTA for Error; hero illustration + CTA for Empty).\n\nOUTPUT FORMAT: emit ONE Markdown file per screen via `write_file` to the path above. Your final_answer payload is `per_screen_plans_chunk_a` JSON object listing the produced paths: `{\"_schema_version\": \"1\", \"chunk\": \"a\", \"plans\": [{\"screen_id\": \"home\", \"path\": \"mission_{mission_id}/.screens/home/screen_plan.md\"}, ...]}`. The mechanical post-hook `verify_screen_plan_shape` rejects each plan if the frontmatter / description / section / States contract is not met.",
+      "instruction": "Z1 Tier 3 (C3+A10+C14): generate paraflow-shape per-screen plans for the FIRST chunk of `screen_inventory.chunks` — i.e. `screen_inventory.chunks[0]`. CRITICAL: produce EXACTLY one plan per screen in that chunk, using each screen's declared name and `route` VERBATIM from screen_inventory.md. Do NOT invent screens, rename or change routes, add screens, or drop any. The mechanical gate `verify_screen_plans_match_inventory` re-pends you if your plans' routes don't match chunk[0] exactly. For EVERY screen in this chunk, write a Markdown file to `mission_{mission_id}/.screens/<slug>/screen_plan.md` with this STRICT shape:\n\n1. YAML frontmatter delimited by `---` carrying:\n   - `_schema_version: \"1\"`\n   - `mission_id: <id>`\n   - `screen_id: <slug>`\n   - `route: \"/...\"`\n   - `surface: mobile|web|desktop` (from surfaces.md)\n   - `inherits_shell: [...]` (subset of components in shared_shell.md; same list across the whole chunk unless you also emit `<!-- inherits_shell_override: <reason> -->` in the body)\n2. `# <ScreenName>` H1 + one-line description paragraph (what this screen lets the user accomplish).\n3. At least one `## <Section>` H2 beyond `## States` describing the screen's content blocks (e.g. `## Search Bar`, `## Featured Content`, `## Quick Actions`, `## TabBar`). Bullet lists per section.\n4. `## States` H2 with EXACTLY four H3 sub-sections in order: `### Default`, `### Empty`, `### Loading`, `### Error`. Each describes the visual state with bullet details (skeleton hints for Loading; retry CTA for Error; hero illustration + CTA for Empty).\n\nOUTPUT FORMAT: emit ONE Markdown file per screen via `write_file` to the path above. Your final_answer payload is `per_screen_plans_chunk_a` JSON object listing the produced paths: `{\"_schema_version\": \"1\", \"chunk\": \"a\", \"plans\": [{\"screen_id\": \"home\", \"path\": \"mission_{mission_id}/.screens/home/screen_plan.md\"}, ...]}`. The mechanical post-hook `verify_screen_plan_shape` rejects each plan if the frontmatter / description / section / States contract is not met.",
       "done_when": "per_screen_plans_chunk_a JSON lists at least 1 produced plan path AND every listed file exists on disk.",
       "artifact_schema": {
         "per_screen_plans_chunk_a": {
@@ -5160,6 +5160,19 @@
       ],
       "reversibility": "full",
       "checks": [
+        {
+          "kind": "verify_screen_plans_match_inventory",
+          "payload": {
+            "action": "verify_screen_plans_match_inventory",
+            "plan_paths": [
+              "mission_{mission_id}/.screens/"
+            ],
+            "inventory_path": [
+              "mission_{mission_id}/.flow/screen_inventory.md"
+            ],
+            "chunk_index": 0
+          }
+        },
         {
           "kind": "verify_screen_plan_shape",
           "payload": {
@@ -5200,7 +5213,7 @@
       "context": {
         "estimated_output_tokens": 9000
       },
-      "instruction": "Z1 Tier 3 (C3+A10+C14): generate paraflow-shape per-screen plans for the SECOND chunk of `screen_inventory.chunks`. Same shape contract as 5.20a. Write each plan to `mission_{mission_id}/.screens/<slug>/screen_plan.md`. Inherit shared_shell decisions from chunk_a unless you have a screen-specific reason — emit `<!-- inherits_shell_override: <reason> -->` in the body when diverging. Final_answer is `per_screen_plans_chunk_b` JSON object listing produced paths. If `screen_inventory.chunks` has only one chunk, return `{\"_schema_version\": \"1\", \"chunk\": \"b\", \"plans\": []}`.",
+      "instruction": "Z1 Tier 3 (C3+A10+C14): generate paraflow-shape per-screen plans for the SECOND chunk of `screen_inventory.chunks` — i.e. `screen_inventory.chunks[1]`. CRITICAL: produce EXACTLY one plan per screen in that chunk, using each screen's declared name and `route` VERBATIM from screen_inventory.md — do NOT invent, rename routes, add, or drop screens. The mechanical gate `verify_screen_plans_match_inventory` re-pends you if your plans' routes don't match. Same shape contract as 5.20a. Write each plan to `mission_{mission_id}/.screens/<slug>/screen_plan.md`. Inherit shared_shell decisions from chunk_a unless you have a screen-specific reason — emit `<!-- inherits_shell_override: <reason> -->` in the body when diverging. Final_answer is `per_screen_plans_chunk_b` JSON object listing produced paths. If `screen_inventory.chunks` has only one chunk, return `{\"_schema_version\": \"1\", \"chunk\": \"b\", \"plans\": []}`.",
       "done_when": "per_screen_plans_chunk_b is a JSON object with `chunk` + `plans` keys.",
       "artifact_schema": {
         "per_screen_plans_chunk_b": {
@@ -5217,6 +5230,19 @@
       ],
       "reversibility": "full",
       "checks": [
+        {
+          "kind": "verify_screen_plans_match_inventory",
+          "payload": {
+            "action": "verify_screen_plans_match_inventory",
+            "plan_paths": [
+              "mission_{mission_id}/.screens/"
+            ],
+            "inventory_path": [
+              "mission_{mission_id}/.flow/screen_inventory.md"
+            ],
+            "chunk_index": 1
+          }
+        },
         {
           "kind": "verify_screen_plan_shape",
           "payload": {

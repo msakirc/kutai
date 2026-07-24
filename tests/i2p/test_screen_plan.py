@@ -181,52 +181,62 @@ def _plan_missing(keys_to_drop):
 
 def test_normalize_injects_missing_mission_id():
     md = _plan_missing(["mission_id"])
-    out, changed = normalize_screen_plan(md, mission_id="90", inherits_shell='["Header"]')
+    out, changed = normalize_screen_plan(md, mission_id="90")
     assert changed is True
     fm, _ = __import__("mr_roboto.verify_screen_plan_shape",
                        fromlist=["_parse_frontmatter"])._parse_frontmatter(out)
     assert fm.get("mission_id") == "90"
 
 
-def test_normalize_injects_missing_inherits_shell():
+def test_normalize_does_not_inject_inherits_shell():
+    """inherits_shell is a SEMANTIC choice grounded in shared_shell.md — never a
+    guess. A plan that drops it is a real failure the shape gate rejects (→
+    re-pend), NOT something the repair fabricates a value for."""
     md = _plan_missing(["inherits_shell"])
-    out, changed = normalize_screen_plan(md, mission_id="90", inherits_shell='["Header"]')
-    assert changed is True
-    assert "inherits_shell:" in out.split("---", 2)[1]
+    out, changed = normalize_screen_plan(md, mission_id="90")
+    assert changed is False
+    assert "inherits_shell:" not in out.split("---", 2)[1]
 
 
-def test_normalize_noop_when_all_present():
+def test_normalize_noop_when_mission_id_present():
     md = _plan_missing([])
-    out, changed = normalize_screen_plan(md, mission_id="90", inherits_shell='["Header"]')
+    out, changed = normalize_screen_plan(md, mission_id="90")
     assert changed is False
     assert out == md
 
 
 def test_normalize_no_frontmatter_is_noop():
     md = "# Errands\n\nNo frontmatter here.\n"
-    out, changed = normalize_screen_plan(md, mission_id="90", inherits_shell='["Header"]')
+    out, changed = normalize_screen_plan(md, mission_id="90")
     assert changed is False and out == md
 
 
-def test_dir_repair_makes_missing_keys_pass_and_writes_back(tmp_path: Path):
-    """The m90 567455 scenario: one plan lacks mission_id + inherits_shell; a
-    sibling declares inherits_shell. Directory verification must repair the
-    incomplete plan (mission_id from path, inherits_shell from the modal) and
-    PASS — then persist the repair to disk."""
+def test_dir_repair_stamps_mission_id_only(tmp_path: Path):
+    """The m90 567455 scenario, honest version: the mechanical stamp fills the
+    KNOWN mission_id (from the path) and persists it; inherits_shell is NOT
+    fabricated, so a plan that dropped it still fails the shape gate (the model
+    must supply it, grounded in shared_shell.md)."""
     screens = tmp_path / "mission_90" / ".screens"
-    (screens / "dashboard").mkdir(parents=True)
     (screens / "errands").mkdir(parents=True)
-    good = _plan_missing([]).replace("screen_id: errands", "screen_id: dashboard")
-    (screens / "dashboard" / "screen_plan.md").write_text(good, encoding="utf-8")
-    bad = _plan_missing(["mission_id", "inherits_shell"])
+    bad = _plan_missing(["mission_id"])                 # only mission_id dropped
     bad_path = screens / "errands" / "screen_plan.md"
     bad_path.write_text(bad, encoding="utf-8")
     res = verify_screen_plan_shape(plan_paths=[str(screens) + "/"])
     assert res["ok"] is True, res
-    # repair persisted to disk
+    assert "mission_id: 90" in bad_path.read_text(encoding="utf-8")
+
+
+def test_dir_repair_does_not_fabricate_inherits_shell(tmp_path: Path):
+    screens = tmp_path / "mission_90" / ".screens"
+    (screens / "errands").mkdir(parents=True)
+    bad = _plan_missing(["mission_id", "inherits_shell"])
+    bad_path = screens / "errands" / "screen_plan.md"
+    bad_path.write_text(bad, encoding="utf-8")
+    res = verify_screen_plan_shape(plan_paths=[str(screens) + "/"])
+    assert res["ok"] is False   # inherits_shell still missing → honest fail
     repaired = bad_path.read_text(encoding="utf-8")
-    assert "mission_id: 90" in repaired
-    assert "inherits_shell:" in repaired.split("---", 2)[1]
+    assert "mission_id: 90" in repaired                 # known constant stamped
+    assert "inherits_shell:" not in repaired.split("---", 2)[1]  # not fabricated
 
 
 def test_dir_path_mode_finds_nested_per_screen_files(tmp_path: Path):

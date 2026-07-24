@@ -21,6 +21,9 @@ from mr_roboto.verify_requirement_conservation import verify_requirement_conserv
 from mr_roboto.verify_non_goals_shape import verify_non_goals_shape
 from mr_roboto.check_against_non_goals import check_against_non_goals
 from mr_roboto.verify_screen_plan_shape import verify_screen_plan_shape
+from mr_roboto.verify_screen_plans_match_inventory import (
+    verify_screen_plans_match_inventory,
+)
 from mr_roboto.verify_html_prototype_shape import verify_html_prototype_shape
 from mr_roboto.verify_screen_consistency import verify_screen_consistency
 from mr_roboto.generate_intake_todo import generate_intake_todo
@@ -142,6 +145,7 @@ __all__ = [
     "verify_non_goals_shape",
     "check_against_non_goals",
     "verify_screen_plan_shape",
+    "verify_screen_plans_match_inventory",
     "verify_html_prototype_shape",
     "verify_screen_consistency",
     "generate_intake_todo",
@@ -1262,6 +1266,93 @@ async def _run_dispatch(task: dict) -> Action:
                         "Re-emit the artifact carrying EVERY requirement id from "
                         "the source artifact(s); do not merge, drop, renumber, or "
                         "summarize away any requirement."
+                    ),
+                    result=res,
+                )
+            return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "verify_screen_plans_match_inventory":
+        # Correspondence gate — assert the per-screen plans a chunk step produced
+        # are EXACTLY the screens declared for that chunk in screen_inventory.md
+        # (keyed on route). m90 5.20a/5.20b invented their own screen set and
+        # ignored the inventory; the shape gate never checked correspondence, so
+        # the drift passed silently. On mismatch, re-pend the producer naming the
+        # invented + dropped routes.
+        from mr_roboto.verify_screen_plans_match_inventory import (
+            verify_screen_plans_match_inventory as _verify_smi,
+        )
+        import os as _os
+        import glob as _glob
+
+        def _read_plan_texts(paths) -> list[str]:
+            texts: list[str] = []
+            for _p in (_resolve_path_list(paths) or []):
+                if isinstance(_p, str) and _os.path.isdir(_p):
+                    for _f in sorted(
+                        _glob.glob(_os.path.join(_p, "**", "*.md"), recursive=True)
+                    ):
+                        try:
+                            with open(_f, "r", encoding="utf-8") as _fh:
+                                texts.append(_fh.read())
+                        except Exception:
+                            continue
+                else:
+                    try:
+                        with open(_p, "r", encoding="utf-8") as _fh:
+                            texts.append(_fh.read())
+                    except Exception:
+                        continue
+            return texts
+
+        def _read_one(paths) -> str:
+            for _p in (_resolve_path_list(paths) or []):
+                try:
+                    with open(_p, "r", encoding="utf-8") as _fh:
+                        return _fh.read()
+                except Exception:
+                    continue
+            return ""
+
+        try:
+            plan_texts = _read_plan_texts(payload.get("plan_paths"))
+            inventory_text = _read_one(payload.get("inventory_path"))
+            res = _verify_smi(
+                plan_texts=plan_texts,
+                inventory_text=inventory_text,
+                chunk_index=int(payload.get("chunk_index") or 0),
+                cumulative=payload.get("cumulative", True),
+            )
+            # Observability: a vacuous PASS (no expected routes) while an
+            # inventory path WAS declared is almost always a wiring bug — a path
+            # typo, an unmaterialized inventory, or an unsubstituted {mission_id}
+            # that silently disables the gate (mirror the conservation gate).
+            _declared = bool(payload.get("inventory_path"))
+            if _declared and (res.get("empty") or not inventory_text.strip()):
+                res["wiring_suspect"] = True
+                try:
+                    from yazbunu import get_logger as _gl
+                    _gl("mr_roboto.screen_inventory_match").warning(
+                        "verify_screen_plans_match_inventory vacuous pass — the "
+                        "inventory resolved to no chunk routes (path typo / "
+                        "unmaterialized artifact / unsubstituted {mission_id}?): "
+                        "task=%s inventory_bytes=%d plans=%d",
+                        task.get("id"), len(inventory_text), len(plan_texts),
+                    )
+                except Exception:
+                    pass
+            if not res.get("ok"):
+                return Action(
+                    status="failed",
+                    error=(
+                        "verify_screen_plans_match_inventory: the produced screen "
+                        f"plans do not match screen_inventory chunk {payload.get('chunk_index') or 0}. "
+                        f"Invented (not in the inventory / wrong chunk): {res.get('extra')}. "
+                        f"Missing (declared but not planned): {res.get('missing')}. "
+                        "Produce EXACTLY one screen_plan per screen in this chunk of "
+                        "screen_inventory.md, using each screen's declared route — do "
+                        "not invent, rename the route, drop, or add screens."
                     ),
                     result=res,
                 )

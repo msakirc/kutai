@@ -528,6 +528,10 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         "verify_shared_shell_shape", "shared_shell.md shape."),
     "verify_screen_plan_shape": _shape_check_spec(
         "verify_screen_plan_shape", "Per-screen plan shape."),
+    "verify_screen_plans_match_inventory": _shape_check_spec(
+        "verify_screen_plans_match_inventory",
+        "Screen-plan ⇄ inventory correspondence — the produced plans' routes must "
+        "be exactly the inventory chunk's screens (no invented / dropped screen)."),
     "verify_html_prototype_shape": _shape_check_spec(
         "verify_html_prototype_shape", "HTML prototype shape."),
     "verify_premortem_shape": _shape_check_spec(

@@ -56,8 +56,7 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     "verify_screen_inventory_shape": "full",
     "verify_shared_shell_shape": "full",
     "verify_screen_plan_shape": "full",
-    "verify_screen_plans_match_inventory": "full",  # read-only correspondence check
-    "materialize_screen_plans_from_inventory": "full",  # rewrites .screens/ from inventory (git-snapshotted)
+    "verify_screen_plans_match_inventory": "full",  # materializes .screens/ from inventory then verifies (git-snapshotted)
     "verify_html_prototype_shape": "full",
     "verify_screen_consistency": "full",
     "verify_premortem_shape": "full",

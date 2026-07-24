@@ -5161,19 +5161,6 @@
       "reversibility": "full",
       "checks": [
         {
-          "kind": "materialize_screen_plans_from_inventory",
-          "payload": {
-            "action": "materialize_screen_plans_from_inventory",
-            "plan_paths": [
-              "mission_{mission_id}/.screens/"
-            ],
-            "inventory_path": [
-              "mission_{mission_id}/.flow/screen_inventory.md"
-            ],
-            "chunk_index": 0
-          }
-        },
-        {
           "kind": "verify_screen_plans_match_inventory",
           "payload": {
             "action": "verify_screen_plans_match_inventory",
@@ -5243,19 +5230,6 @@
       ],
       "reversibility": "full",
       "checks": [
-        {
-          "kind": "materialize_screen_plans_from_inventory",
-          "payload": {
-            "action": "materialize_screen_plans_from_inventory",
-            "plan_paths": [
-              "mission_{mission_id}/.screens/"
-            ],
-            "inventory_path": [
-              "mission_{mission_id}/.flow/screen_inventory.md"
-            ],
-            "chunk_index": 1
-          }
-        },
         {
           "kind": "verify_screen_plans_match_inventory",
           "payload": {

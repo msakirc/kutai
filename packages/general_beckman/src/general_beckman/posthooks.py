@@ -530,13 +530,10 @@ POST_HOOK_REGISTRY: dict[str, PostHookSpec] = {
         "verify_screen_plan_shape", "Per-screen plan shape."),
     "verify_screen_plans_match_inventory": _shape_check_spec(
         "verify_screen_plans_match_inventory",
-        "Screen-plan ⇄ inventory correspondence — the produced plans' routes must "
-        "be exactly the inventory chunk's screens (no invented / dropped screen)."),
-    "materialize_screen_plans_from_inventory": _shape_check_spec(
-        "materialize_screen_plans_from_inventory",
-        "Scaffold-then-fill — rewrite each inventory-chunk screen's plan with "
-        "authoritative frontmatter (screen_id/route/mission_id from the inventory) "
-        "+ the model's body; drop invented files. Runs before the shape gate."),
+        "Scaffold-then-fill correspondence gate — materializes each inventory-chunk "
+        "screen's plan with authoritative frontmatter (screen_id/route/mission_id) "
+        "+ the model's body and drops invented files, then asserts the routes match "
+        "the inventory chunk exactly (no invented / dropped screen)."),
     "verify_html_prototype_shape": _shape_check_spec(
         "verify_html_prototype_shape", "HTML prototype shape."),
     "verify_premortem_shape": _shape_check_spec(

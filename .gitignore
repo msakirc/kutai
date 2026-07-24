@@ -48,3 +48,9 @@ backend_5.0.0/
 /tsconfig.json
 /src/app/layout.tsx
 /src/app/page.tsx
+
+# Scratch / session debris (never commit) — bash crash dumps, temp captures,
+# and a stale third-party "claire" worktree dir. Cleaned 2026-07-24.
+*.stackdump
+temp*.txt
+/.claire/

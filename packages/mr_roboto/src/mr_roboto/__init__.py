@@ -24,6 +24,7 @@ from mr_roboto.verify_screen_plan_shape import verify_screen_plan_shape
 from mr_roboto.verify_screen_plans_match_inventory import (
     verify_screen_plans_match_inventory,
 )
+from mr_roboto.scaffold_screen_plans import build_screen_plan_files
 from mr_roboto.verify_html_prototype_shape import verify_html_prototype_shape
 from mr_roboto.verify_screen_consistency import verify_screen_consistency
 from mr_roboto.generate_intake_todo import generate_intake_todo
@@ -146,6 +147,7 @@ __all__ = [
     "check_against_non_goals",
     "verify_screen_plan_shape",
     "verify_screen_plans_match_inventory",
+    "build_screen_plan_files",
     "verify_html_prototype_shape",
     "verify_screen_consistency",
     "generate_intake_todo",
@@ -1270,6 +1272,100 @@ async def _run_dispatch(task: dict) -> Action:
                     result=res,
                 )
             return Action(status="completed", result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
+    if action == "materialize_screen_plans_from_inventory":
+        # Scaffold-then-fill — the DEEPEST root for chunk-step drift. Rewrite each
+        # inventory-chunk screen's plan with AUTHORITATIVE frontmatter (screen_id/
+        # route/mission_id from screen_inventory.md) + the model's authored BODY,
+        # and DROP invented files. Wired as the FIRST check on 5.20a/b so the
+        # correspondence + shape gates that follow validate a guaranteed-faithful
+        # set. The model authors only the semantic body (a screen's route is
+        # DECLARED in the inventory — not a model choice — so drift + routeless /
+        # renamed frontmatter become structurally impossible). m90 5.20b task 567455.
+        from mr_roboto.scaffold_screen_plans import (
+            build_screen_plan_files as _build_scaffold,
+        )
+        import os as _os
+        import glob as _glob
+
+        def _read_one_text(paths) -> str:
+            for _p in (_resolve_path_list(paths) or []):
+                try:
+                    with open(_p, "r", encoding="utf-8") as _fh:
+                        return _fh.read()
+                except Exception:
+                    continue
+            return ""
+
+        def _read_model_files(paths):
+            out = []
+            for _p in (_resolve_path_list(paths) or []):
+                if isinstance(_p, str) and _os.path.isdir(_p):
+                    for _f in sorted(
+                        _glob.glob(_os.path.join(_p, "**", "*.md"), recursive=True)
+                    ):
+                        try:
+                            with open(_f, "r", encoding="utf-8") as _fh:
+                                out.append({"path": _f, "text": _fh.read()})
+                        except Exception:
+                            continue
+            return out
+
+        try:
+            from src.tools.workspace import WORKSPACE_DIR as _WSD
+            inv = _read_one_text(payload.get("inventory_path"))
+            model_files = _read_model_files(payload.get("plan_paths"))
+            mid = str(task.get("mission_id") or "")
+            surface = payload.get("surface") or "web"
+            plan = _build_scaffold(
+                inventory_text=inv,
+                chunk_index=int(payload.get("chunk_index") or 0),
+                mission_id=mid,
+                surface=surface,
+                model_files=model_files,
+            )
+            # Safety: an unparseable / chunk-less inventory yields no targets —
+            # never wipe the model's work on a wiring bug (path typo /
+            # unsubstituted {mission_id}). Pass through, flag suspect.
+            if not plan["targets"]:
+                if inv.strip():
+                    try:
+                        from yazbunu import get_logger as _gl
+                        _gl("mr_roboto.screen_scaffold").warning(
+                            "materialize_screen_plans_from_inventory: inventory "
+                            "resolved to no chunk screens — pass-through (wiring?): "
+                            "task=%s inv_bytes=%d", task.get("id"), len(inv),
+                        )
+                    except Exception:
+                        pass
+                return Action(status="completed",
+                              result={"ok": True, "wiring_suspect": True,
+                                      "materialized": 0})
+            written = 0
+            for t in plan["targets"]:
+                ap = t["path"] if _os.path.isabs(t["path"]) \
+                    else _os.path.join(_WSD, t["path"])
+                _os.makedirs(_os.path.dirname(ap), exist_ok=True)
+                with open(ap, "w", encoding="utf-8") as _fh:
+                    _fh.write(t["content"])
+                written += 1
+            removed = []
+            for p in plan["invented"]:
+                ap = p if _os.path.isabs(p) else _os.path.join(_WSD, p)
+                try:
+                    d = _os.path.dirname(ap)
+                    if _os.path.isfile(ap):
+                        _os.remove(ap)
+                    if _os.path.isdir(d) and not _os.listdir(d):
+                        _os.rmdir(d)
+                    removed.append(p)
+                except Exception:
+                    pass
+            return Action(status="completed",
+                          result={"ok": True, "materialized": written,
+                                  "removed": removed})
         except Exception as e:
             return Action(status="failed", error=str(e))
 

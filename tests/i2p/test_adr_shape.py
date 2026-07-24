@@ -45,6 +45,35 @@ def test_verify_adr_shape_accepts_good_adr_set():
         assert res["ok"], (adr["adr_id"], res)
 
 
+def test_verify_adr_shape_unwraps_artifact_name_envelope():
+    """m90 4.6/4.9: the model returned a valid ADR NESTED under the artifact-name
+    key alongside domain fields — `{mission_id, caching_strategy, ...,
+    infrastructure_designs_decision: {<ADR>}}`. verify_adr_shape must unwrap the
+    envelope (the ADR is present, just one level down) instead of rejecting it as
+    'missing all fields'."""
+    fx = _load("good_adr_set.json")
+    good = fx["adrs"][0]
+    wrapped = {
+        "mission_id": 90,
+        "caching_strategy": {"technology": "Redis"},
+        "background_job_design": {"queue": "SQS"},
+        "infrastructure_designs_decision": good,
+    }
+    res = verify_adr_shape(adr_obj=wrapped, expected_schema_version="1")
+    assert res["ok"], res
+    assert res["adr_id"] == good["adr_id"]
+
+
+def test_verify_adr_shape_still_rejects_when_no_adr_anywhere():
+    """Regression: a domain-only object with NO nested ADR still fails."""
+    res = verify_adr_shape(
+        adr_obj={"mission_id": 90, "caching_strategy": {"technology": "Redis"}},
+        expected_schema_version="1",
+    )
+    assert res["ok"] is False
+    assert res["adr_id"] is None
+
+
 @pytest.mark.parametrize(
     "field",
     [

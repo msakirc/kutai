@@ -141,6 +141,26 @@ def _gather_adr(
     return None
 
 
+def _unwrap_adr_envelope(adr):
+    """Unwrap a model that returned the ADR NESTED under a key instead of flat.
+
+    Cloud LLMs frequently wrap the artifact under its own name (or a domain
+    structure): ``{mission_id, caching_strategy, …, <artifact_name>: {<ADR>}}``
+    (m90 4.6/4.9). When the top level carries no ``adr_id`` but a nested dict
+    value does, return that nested ADR (the one with the most required fields).
+    A domain-only object with no nested ADR is returned unchanged (still fails).
+    """
+    if not isinstance(adr, dict) or adr.get("adr_id"):
+        return adr
+    best, best_n = None, 0
+    for v in adr.values():
+        if isinstance(v, dict) and v.get("adr_id"):
+            n = sum(1 for f in REQUIRED_FIELDS if f in v)
+            if n > best_n:
+                best, best_n = v, n
+    return best if best is not None else adr
+
+
 def verify_adr_shape(
     *,
     adr_text: str | None = None,
@@ -154,6 +174,7 @@ def verify_adr_shape(
     See module docstring for output schema.
     """
     adr = _gather_adr(adr_text, adr_obj, adr_paths)
+    adr = _unwrap_adr_envelope(adr)
     if adr is None:
         return {
             "ok": False,

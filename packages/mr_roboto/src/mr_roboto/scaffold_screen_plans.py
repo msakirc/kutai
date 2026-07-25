@@ -164,7 +164,6 @@ def build_screen_plan_files(
     targets: list[dict[str, Any]] = []
     matched_paths: set[str] = set()
     chunk_slugs = {s["slug"] for s in screens}
-    chunk_routes = {s["route"] for s in screens}
 
     for s in screens:
         slug, route, name = s["slug"], s["route"], s["name"]
@@ -189,12 +188,14 @@ def build_screen_plan_files(
         path = str(mf.get("path") or "").replace("\\", "/")
         parts = [p for p in path.split("/") if p]
         slug = parts[-2] if len(parts) >= 2 and parts[-1].endswith(".md") else ""
-        fm = _FRONTMATTER_RE.match(mf.get("text") or "")
-        route = ""
-        if fm:
-            rk = _ROUTE_KEY_RE.search(fm.group(1))
-            route = _norm_route(rk.group(1)) if rk else ""
-        if slug and slug not in chunk_slugs and route not in chunk_routes:
+        # Any model file NOT at a canonical chunk slug is removable — a fully
+        # invented screen OR a leftover DUPLICATE slug for a valid route (m90:
+        # `habits`/`errands` vs canonical `habit-list`/`errands-list`). Its body
+        # is already grafted into the canonical target by route match; keeping
+        # the stale dir only pollutes the recursive shape glob. Requiring the
+        # route to ALSO be foreign (old predicate) let duplicate-slug leftovers
+        # survive across retries → shape DLQ on files missing _schema_version.
+        if slug and slug not in chunk_slugs:
             invented.append(str(mf.get("path")))
 
     return {"targets": targets, "invented": invented}

@@ -70,6 +70,26 @@ def test_scaffold_only_files_pass_shape_gate():
         assert res["ok"] is True, (t["path"], res.get("problems"))
 
 
+def test_duplicate_slug_for_valid_route_is_dropped():
+    """m90 open-item #4: a leftover dir at a NON-canonical slug for a VALID
+    inventory route (`habits` vs canonical `habit-list`; `errands` vs
+    `errands-list`) survived prior runs. The invented check required slug AND
+    route to be foreign, so a duplicate slug for a valid route slipped through,
+    persisted across retries, and polluted the recursive shape glob
+    (verify_screen_plan_shape saw stale files missing _schema_version -> DLQ).
+    The authoritative set is EXACTLY the canonical chunk slugs; any other dir is
+    removable."""
+    dup = {"path": "mission_90/.screens/habits/screen_plan.md",
+           "text": "---\nroute: /habits\n---\n# Habits\nstale body\n"}
+    out = build_screen_plan_files(
+        inventory_text=_INVENTORY, chunk_index=1, mission_id="90",
+        surface="web", model_files=[dup])
+    slugs = {t["path"].split("/.screens/")[1].split("/")[0] for t in out["targets"]}
+    assert "habit-list" in slugs                 # canonical target created
+    assert "habits" not in slugs                 # duplicate slug not a target
+    assert "mission_90/.screens/habits/screen_plan.md" in out["invented"]  # flagged for removal
+
+
 def test_scaffold_dir_passes_correspondence_gate():
     out = build_screen_plan_files(
         inventory_text=_INVENTORY, chunk_index=0, mission_id="90",

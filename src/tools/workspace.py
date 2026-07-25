@@ -274,6 +274,54 @@ async def write_file(
     if not (final_real == workspace_real or final_real.startswith(workspace_real + os.sep)):
         return "❌ Access denied: resolved path is outside workspace."
 
+    # ── produces-sandbox ──
+    # When the executing task declares ``produces`` (an i2p workflow step), a
+    # step may write ONLY its declared outputs — never another step's artifact.
+    # Root: m90 5.20b (task 567455) — the analyst (produces = .screens/) wrote
+    # its READ-ONLY input .flow/screen_inventory.md, corrupting the gated YAML
+    # inventory → the scaffold read 0 chunk routes → shape-gate DLQ. No produces
+    # (ad-hoc /task) => unrestricted. Opt out: KUTAI_WRITE_SANDBOX=off.
+    if os.environ.get("KUTAI_WRITE_SANDBOX", "on").strip().lower() != "off":
+        try:
+            from src.core.heartbeat import current_task_produces as _ctp
+            _produces = _ctp.get()
+        except Exception:
+            _produces = None
+        # Scope to the MISSION ARTIFACT namespace (mission_<id>/.<domain>/…),
+        # where each artifact is single-owner and must not be clobbered. The
+        # shared codebase (backend/, frontend/, migrations/, …) is built
+        # collaboratively across many code steps that legitimately write files
+        # beyond a rigid produces list (an implementer writes models + services
+        # AND an __init__ / a route registration) — enforcing there would
+        # false-reject the whole build phase. Enforce only when EVERY declared
+        # produces path lives under a mission_ workspace.
+        _prod_paths = [p for p in (_produces or []) if isinstance(p, str) and p.strip()]
+        _artifact_scoped = bool(_prod_paths) and all(
+            p.replace("\\", "/").lstrip("./").startswith("mission_")
+            for p in _prod_paths
+        )
+        if _prod_paths and _artifact_scoped:
+            allowed = [
+                os.path.realpath(
+                    p if os.path.isabs(p) else os.path.join(workspace_real, p)
+                )
+                for p in _prod_paths
+            ]
+            if allowed and not any(
+                final_real == root or final_real.startswith(root + os.sep)
+                for root in allowed
+            ):
+                logger.warning(
+                    "write_file sandbox blocked out-of-produces write: %s "
+                    "(produces=%s)", filepath, _produces,
+                )
+                return (
+                    f"❌ Access denied: '{filepath}' is outside this step's "
+                    f"declared outputs. Write ONLY to your produces path(s): "
+                    f"{_produces}. Your input artifacts are read-only — do not "
+                    f"rewrite them."
+                )
+
     try:
         os.makedirs(parent_abs, exist_ok=True)
 

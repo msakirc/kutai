@@ -271,6 +271,15 @@ class Orchestrator:
             from src.core import heartbeat as _hb
             _hb.current_task_id.set(int(task_id) if task_id else None)
             _hb.current_mission_id.set(task.get("mission_id"))
+            # Sandbox write_file to this step's declared outputs (heartbeat
+            # contextvar propagates into the agent's tool calls). No produces
+            # (ad-hoc /task) => unrestricted. See src/tools/workspace.write_file.
+            try:
+                _hb.current_task_produces.set(
+                    list((parse_context(task) or {}).get("produces") or [])
+                )
+            except Exception:
+                _hb.current_task_produces.set(None)
             _hb.bump(task_id)  # initial heartbeat — task is alive
             runner_task = asyncio.create_task(_run_with_audit())
 

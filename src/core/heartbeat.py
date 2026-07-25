@@ -22,6 +22,14 @@ from contextvars import ContextVar
 
 current_task_id: ContextVar[int | None] = ContextVar("current_task_id", default=None)
 current_mission_id: ContextVar[int | None] = ContextVar("current_mission_id", default=None)
+# The declared ``produces`` paths of the task currently executing. When
+# non-empty, ``write_file`` sandboxes the agent to these prefixes so a step
+# cannot clobber another step's artifact (m90 5.20b: the analyst overwrote its
+# read-only input screen_inventory.md). Empty/None => no restriction (ad-hoc
+# /task steps declare no produces).
+current_task_produces: ContextVar[list[str] | None] = ContextVar(
+    "current_task_produces", default=None
+)
 
 _HEARTBEATS: dict[int, float] = {}
 

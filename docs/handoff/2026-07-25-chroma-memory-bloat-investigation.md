@@ -102,9 +102,16 @@ con = sqlite3.connect(uri, uri=True)
   `COLLECTIONS`; `run_decay_cycle` consumers.
 - `src/memory/rag.py`, `src/memory/skills.py` — read + auto-capture paths.
 
-## Sibling work (already in flight, do not redo)
-- **Boot fix** (originating session): lazy/background chroma init + gapless heartbeat so a large
-  cold load never blocks boot or starves the heartbeat again.
-- **One-time prune** (originating session): shrink episodic/semantic now so the store cold-loads
-  quickly. This handoff is the **durable prevention** that must follow, so we never rebuild the
-  same 9.6 GB.
+## Sibling work (already done — do not redo)
+- **Boot fix** (originating session, committed): lazy/background chroma warmup + gapless startup
+  heartbeat so a large cold load never blocks boot or starves the heartbeat again.
+- **One-time prune** (originating session, DONE 2026-07-25): rebuilt the store keeping only rows
+  whose metadata type is NOT `task_result`/`user_feedback` (the two auto-captured junk types).
+  **1,773,084 → 2,255 rows; 9.6 GB → 23 MB; cold-open minutes → 0.84 s.** Kept: semantic 1,508
+  (memory/user_preference/cross_agent_insight/skill), episodic 1, web_knowledge 648, shopping 65,
+  support_docs_en/tr 33. The pre-prune live store is preserved at
+  `data/chroma.preprune.20260725-1844/` (9.6 GB, gitignored, delete after KutAI is verified up);
+  the 2026-07-24 16:34 snapshot for forensics is at
+  `C:\Users\sakir\kutai_chroma_forensics\chroma_snapshot_20260724-163413\`.
+  **This handoff is the durable prevention that must follow** — make `run_decay_cycle` actually
+  run + gate writes — so we never rebuild the same 9.6 GB.

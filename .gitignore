@@ -14,6 +14,8 @@ logs/
 .vscode/
 data/chroma/
 data/chroma.bak.*/
+data/chroma.preprune.*/
+data/chroma_pruned/
 data/*.db
 data/*.db-shm
 data/*.db-wal

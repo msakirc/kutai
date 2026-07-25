@@ -298,6 +298,64 @@ async def test_md_produces_object_schema_prefers_clean_disk_over_narration(tmp_p
     assert "## Analysis" not in out              # returned == on-disk (gate parity)
 
 
+_ENVELOPED_ADR = {
+    "mission_id": 90,
+    "caching_strategy": {"technology": "redis"},
+    "background_job_design": {"technology": "bullmq"},
+    "infrastructure_designs_decision": {
+        "adr_id": "ADR-2026-07-25-004", "title": "Infra subsystems",
+        "status": "accepted", "context": "c", "decision": "d",
+        "consequences": "trade-offs", "chosen_option_id": "OPT-A",
+        "options_considered": [{"id": "OPT-A", "name": "Redis"}],
+        "falsification_signal": "if p95 > 200ms by week 4",
+        "reversal_cost": "low", "supersedes_adr_id": None,
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_adr_envelope_flattened_at_materialize(tmp_path, monkeypatch):
+    """m90 4.6/4.9 (567433/567436): cloud LLMs return the ADR NESTED under the
+    artifact-name/domain envelope ``{mission_id, caching_strategy, …,
+    <artifact_name>: {adr_id, …}}``. verify_adr_shape unwraps in-gate, but
+    verify_cost_curve_present (and any other ADR gate) reads the flat top and
+    sees ``adr_id=None`` → false reject. Flatten ONCE at the materialize seam so
+    EVERY downstream gate reads a canonical flat ADR (no per-gate drift)."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    rel = "mission_90/.adr/infrastructure_designs_decision.json"
+    schema = {"infrastructure_designs_decision": {"type": "object", "required": ["adr_id"]}}
+    ctx = _ctx([rel], schema)
+    task = {"mission_id": 90, "agent_type": "architect"}
+    enveloped = json.dumps(_ENVELOPED_ADR)
+
+    out = await materialize_produces(ctx, task, {"result": enveloped}, enveloped)
+
+    disk = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+    assert disk.get("adr_id") == "ADR-2026-07-25-004"          # flattened to top
+    assert "infrastructure_designs_decision" not in disk        # envelope removed
+    assert disk.get("falsification_signal")                     # nested ADR body kept
+    assert json.loads(out).get("adr_id") == "ADR-2026-07-25-004"  # gate parity
+
+
+@pytest.mark.asyncio
+async def test_flat_adr_untouched_at_materialize(tmp_path, monkeypatch):
+    """A model that already returned a FLAT ADR (adr_id at top) must pass
+    through the seam unchanged — the flatten only triggers on the envelope."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    rel = "mission_90/.adr/architecture_pattern_decision.json"
+    schema = {"architecture_pattern_decision": {"type": "object", "required": ["adr_id"]}}
+    flat = dict(_ENVELOPED_ADR["infrastructure_designs_decision"])
+    flat["adr_id"] = "ADR-2026-07-25-001"
+    body = json.dumps(flat)
+    out = await materialize_produces(_ctx([rel], schema),
+                                     {"mission_id": 90, "agent_type": "architect"},
+                                     {"result": body}, body)
+    disk = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+    assert disk.get("adr_id") == "ADR-2026-07-25-001"
+    assert disk.get("chosen_option_id") == "OPT-A"
+    assert json.loads(out).get("adr_id") == "ADR-2026-07-25-001"
+
+
 @pytest.mark.asyncio
 async def test_mission81_289715_regression(tmp_path, monkeypatch):
     """The real failure: agent wrote a narration report to the produces path

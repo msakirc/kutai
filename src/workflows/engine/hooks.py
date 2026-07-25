@@ -348,6 +348,42 @@ def _single_produces(produces) -> bool:
                 if isinstance(e, str) and e.endswith((".md", ".json"))]) == 1
 
 
+def _is_adr_produces(entry: str) -> bool:
+    """True when a produces path targets an ADR json (lives under ``.adr/``)."""
+    return isinstance(entry, str) and ".adr/" in entry.replace("\\", "/")
+
+
+def _flatten_adr_envelope_json(text: str) -> str:
+    """Flatten a nested ADR envelope to a canonical FLAT ADR at write time.
+
+    Cloud LLMs frequently return the ADR NESTED under its artifact-name/domain
+    key: ``{mission_id, caching_strategy, …, <artifact_name>: {adr_id, …}}``
+    (m90 4.6/4.9). ``verify_adr_shape`` unwraps this in-gate, but sibling gates
+    (``verify_cost_curve_present`` and any future ADR gate) read the flat top
+    and see ``adr_id=None`` → false reject (567433). Flatten ONCE here, at the
+    sole materialize seam, so EVERY downstream reader gets a flat ADR — no
+    per-gate unwrap drift. Reuses ``verify_adr_shape``'s envelope picker so the
+    two never diverge. Fail-soft: any parse problem returns the text unchanged.
+    """
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if not isinstance(obj, dict):
+        return text
+    try:
+        from mr_roboto.verify_adr_shape import _unwrap_adr_envelope
+    except Exception:
+        return text
+    flat = _unwrap_adr_envelope(obj)
+    if flat is obj or not isinstance(flat, dict):
+        return text  # already flat (has adr_id) or no nested ADR — leave it
+    try:
+        return json.dumps(flat, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        return text
+
+
 async def materialize_produces(ctx: dict, task: dict, result, output_value):
     """Sole writer of declared ``produces`` paths.
 
@@ -443,6 +479,10 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
         if not isinstance(chosen, str):
             continue
         kind = "json" if entry.endswith(".json") else "md"
+        # Canonical-seam ADR flatten: unwrap the artifact-name envelope BEFORE
+        # stamping so the on-disk ADR is flat for every gate (see helper).
+        if kind == "json" and _is_adr_produces(entry):
+            chosen = _flatten_adr_envelope_json(chosen)
         chosen = stamp_front_matter(chosen, int(mission_id), kind)
         try:
             os.makedirs(os.path.dirname(abs_path), exist_ok=True)

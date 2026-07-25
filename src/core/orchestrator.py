@@ -33,6 +33,21 @@ logger = get_logger("core.orchestrator")
 # behind a still-running budget.
 
 
+def _handoff_heartbeat(predecessor) -> None:
+    """Cancel the boot-time startup heartbeat once the orchestrator's own
+    heartbeat task is running.
+
+    Called from ``start()`` right after the ``_heartbeat_loop`` task is
+    created, so there is never a window during boot with no heartbeat writer
+    (the 2026-07-25 cold-boot fix: a slow vector-store load used to run with
+    the startup heartbeat already cancelled and the orchestrator's not yet
+    started, letting Yaşar Usta read a stale heartbeat and kill-restart-loop).
+    Tolerates a missing or already-finished predecessor.
+    """
+    if predecessor is not None and not predecessor.done():
+        predecessor.cancel()
+
+
 def _dispatch_exc_to_result(exc: BaseException, task: dict) -> dict:
     """Build a failure result dict from a dispatch exception.
 
@@ -91,11 +106,15 @@ def _mech_action_to_result(action) -> dict:
 
 
 class Orchestrator:
-    def __init__(self, shutdown_event=None):
+    def __init__(self, shutdown_event=None, startup_heartbeat_task=None):
         self.telegram = TelegramInterface(self)
         self.running = False
         self._shutting_down = False
         self.shutdown_event = shutdown_event or asyncio.Event()
+        # Boot-time heartbeat writer (from run.py). Kept alive until this
+        # orchestrator's own _heartbeat_loop task exists, then handed off in
+        # start() — never a heartbeat gap during boot (2026-07-25 cold-boot fix).
+        self._startup_heartbeat_task = startup_heartbeat_task
         self.requested_exit_code: int | None = None
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
@@ -535,6 +554,10 @@ class Orchestrator:
             asyncio.create_task(manager.run_health_watchdog()),
             asyncio.create_task(self._heartbeat_loop()),
         ]
+        # Our own heartbeat task now exists; retire the boot-time startup
+        # heartbeat. No gap — the startup writer ran continuously up to here.
+        _handoff_heartbeat(self._startup_heartbeat_task)
+        self._startup_heartbeat_task = None
 
         # Auto-seed at boot was removed 2026-04-25. The DB row IS the source
         # of truth for agent prompts; the hardcoded `get_system_prompt` in

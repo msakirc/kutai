@@ -355,6 +355,10 @@ async def list_mission_chroma_collections(mission_id: int) -> list[str]:
 _client = None
 _collections: dict = {}
 _initialized = False
+# Serializes init_store() so a background warmup and a racing RAG query can't
+# both construct a PersistentClient against the same on-disk store. Created
+# lazily on first use to bind to the running event loop (not import time).
+_init_lock = None
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -571,13 +575,30 @@ async def init_store(persist_dir: str | None = None, embed_fn=None, dimension_fn
     """
     Initialize the ChromaDB client and create collections.
 
-    ChromaDB is a required dependency. Raises ImportError if not installed.
+    Idempotent and concurrency-safe: concurrent callers serialize on
+    ``_init_lock`` so a background warmup and a racing RAG query never both
+    open the same on-disk store. ChromaDB is a required dependency.
     Returns True on success, False on other errors.
     """
-    global _client, _collections, _initialized, _embed_fn, _dimension_fn
+    global _init_lock
 
     if _initialized:
         return True
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    async with _init_lock:
+        # Re-check inside the lock: a concurrent caller may have finished
+        # init while we were queued.
+        if _initialized:
+            return True
+        return await _init_store_locked(persist_dir, embed_fn, dimension_fn)
+
+
+async def _init_store_locked(
+    persist_dir: str | None = None, embed_fn=None, dimension_fn=None
+) -> bool:
+    """Open the ChromaDB client and create collections. Caller holds _init_lock."""
+    global _client, _collections, _initialized, _embed_fn, _dimension_fn
 
     if embed_fn is not None:
         _embed_fn = embed_fn

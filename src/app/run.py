@@ -694,35 +694,48 @@ async def main():
             _snapshot_refresh_loop(), name="snapshot_refresh"
         )
 
-    # Cancel startup heartbeat — the orchestrator's own _heartbeat_loop
-    # takes over once start() creates its background tasks.
-    _hb_task.cancel()
+    # NOTE: the startup heartbeat (_hb_task) is deliberately NOT cancelled here.
+    # It stays alive through the rest of boot (vector warmup below +
+    # orch.start()'s init_db/startup_recovery). The orchestrator hands it off —
+    # cancels it — only once its own _heartbeat_loop task exists. Cancelling it
+    # here (as we used to) left a slow vector-store load with no heartbeat
+    # writer, so Yaşar Usta read a stale heartbeat and kill-restart-looped
+    # (2026-07-25 cold-boot fix).
 
-    # Vector store pre-flight + background maintenance.
-    # ChromaDB's HNSW segments occasionally end up half-written after a crash
-    # or disk hiccup, surfacing as "Error in compaction: Failed to apply logs
-    # to the metadata segment" on every subsequent op. The sync chroma calls
-    # then block the event loop > 120s, tripping Yaşar Usta's heartbeat
-    # watchdog and causing kill-restart loops (2026-04-27 incident).
-    # Pre-flight probe heals corrupt collections BEFORE serving traffic.
-    # WAL-checkpoint + daily snapshot are now cron-seeded mechanical tasks
-    # routed through mr_roboto vector_maint_wal / vector_maint_snapshot executors
-    # (wrapped in run_in_executor so they never block the event loop).
-    try:
-        from src.memory.vector_store import (
-            init_store as _vs_init,
-            integrity_probe as _vs_probe,
-        )
-        if await _vs_init():
-            _probe = await _vs_probe()
-            healed = [n for n, s in _probe.items() if s == "healed"]
-            if healed:
-                _log.warning(f"Vector store pre-flight healed: {healed}")
-            else:
-                _log.info("Vector store pre-flight ok",
-                          collections=len(_probe))
-    except Exception as _exc:
-        _log.warning(f"Vector store pre-flight skipped: {_exc!r}")
+    # Vector store warmup — moved OFF the boot critical path (2026-07-25).
+    # A cold ChromaDB open of a large store (multi-GB / >1M embeddings) takes
+    # minutes; awaiting it here blocked boot from ever reaching orch.start().
+    # Warm it in the background instead: the orchestrator comes up and serves
+    # Telegram immediately, RAG degrades gracefully (empty) until the store is
+    # ready, and a racing RAG query serializes on init_store()'s _init_lock
+    # instead of double-opening the store. The integrity heal (corrupt-segment
+    # rescue, 2026-04-27 incident) still runs, just in the background. chroma's
+    # sync calls already run in to_thread, so this never blocks the event loop.
+    async def _vector_store_warmup() -> None:
+        import time as _t
+        _t0 = _t.time()
+        try:
+            from src.memory.vector_store import (
+                init_store as _vs_init,
+                integrity_probe as _vs_probe,
+            )
+            if await _vs_init():
+                _probe = await _vs_probe()
+                healed = [n for n, s in _probe.items() if s == "healed"]
+                if healed:
+                    _log.warning(f"Vector store warmup healed: {healed}")
+                else:
+                    _log.info("Vector store warm",
+                              collections=len(_probe),
+                              seconds=f"{_t.time() - _t0:.1f}")
+        except Exception as _exc:
+            _log.warning(f"Vector store warmup failed: {_exc!r}")
+
+    _vs_warmup_task = asyncio.create_task(
+        _vector_store_warmup(), name="vector_store_warmup"
+    )
+    # Keep a reference so asyncio doesn't GC the task mid-warmup.
+    main._vs_warmup_task = _vs_warmup_task  # type: ignore[attr-defined]
 
     # Sandbox bind-mount validation. Container's mount source can drift
     # from WORKSPACE_DIR if .env changes between sessions; the stale
@@ -738,7 +751,10 @@ async def main():
     except Exception as _exc:
         logger.warning(f"sandbox validation skipped: {_exc!r}")
 
-    orch = Orchestrator(shutdown_event=shutdown_event)
+    orch = Orchestrator(
+        shutdown_event=shutdown_event,
+        startup_heartbeat_task=_hb_task,
+    )
     try:
         await orch.start()
     finally:

@@ -164,3 +164,25 @@ def test_dir_path_mode_empty_dir_fails(tmp_path: Path):
     web.mkdir()
     res = verify_html_prototype_shape(html_paths=[str(web) + "/"])
     assert res["ok"] is False
+
+
+# ── 5.30c wiring: annotate_html_oids is mechanical — the engine passes no LLM
+# output, so the STEP payload must wire the `.web/` directory itself. When it
+# doesn't, the executor starves with 'must supply html_text or html_paths'
+# (the 567458 DLQ). This locks the contract that a valid on-disk `.web/` is
+# always reachable by the annotator. ──
+
+
+def test_5_30c_wires_html_paths_at_web_dir():
+    root = Path(__file__).resolve().parents[2]
+    wf = json.loads(
+        (root / "src" / "workflows" / "i2p" / "i2p_v3.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    step = next(s for s in wf["steps"] if s.get("id") == "5.30c")
+    assert step["executor"] == "annotate_html_oids"
+    paths = step["payload"].get("html_paths")
+    assert paths, "5.30c payload must wire html_paths or the executor starves"
+    assert any(".web/" in p for p in paths), paths
+    assert any("{mission_id}" in p for p in paths), "path must be mission-scoped"

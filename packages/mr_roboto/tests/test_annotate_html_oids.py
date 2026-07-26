@@ -79,6 +79,33 @@ def test_path_in_place_rewrite(tmp_path: Path):
     assert res["per_file"][0]["annotated_count"] >= 5
 
 
+def test_html_paths_directory_self_expands(tmp_path: Path):
+    """A directory in html_paths expands recursively to its *.html files.
+
+    The 5.30c step wires the `.web/` DIRECTORY (per-screen filenames are
+    unknown at workflow-author time), mirroring verify_html_prototype_shape.
+    Without dir self-expansion the executor open()s a directory and fails
+    with IsADirectoryError / PermissionError — the 567458 DLQ class.
+    """
+    web = tmp_path / ".web"
+    web.mkdir()
+    (web / "dashboard.html").write_text(_HTML_BASIC, encoding="utf-8")
+    nested = web / "flow"
+    nested.mkdir()
+    (nested / "detail.html").write_text(_HTML_BASIC, encoding="utf-8")
+
+    res = annotate_html_oids(html_paths=[str(web)])
+
+    assert res["ok"] is True
+    paths = {pf["path"] for pf in res["per_file"]}
+    assert any(p.endswith("dashboard.html") for p in paths)
+    assert any(p.endswith("detail.html") for p in paths)  # recursive
+    # slug defaults to the file stem in path mode
+    assert 'data-oid="dashboard:header"' in (
+        web / "dashboard.html"
+    ).read_text(encoding="utf-8")
+
+
 def test_run_dispatch_routes_to_annotate(tmp_path: Path):
     """The mr_roboto.run dispatcher must route action='annotate_html_oids'."""
     from mr_roboto import run as mr_run

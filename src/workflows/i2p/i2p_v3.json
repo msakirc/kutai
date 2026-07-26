@@ -5386,7 +5386,10 @@
       ],
       "executor": "annotate_html_oids",
       "payload": {
-        "action": "annotate_html_oids"
+        "action": "annotate_html_oids",
+        "html_paths": [
+          "mission_{mission_id}/.web/"
+        ]
       },
       "context": {
         "estimated_output_tokens": 0

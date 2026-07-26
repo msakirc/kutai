@@ -29,6 +29,8 @@ Existing ``data-oid`` attributes are preserved; this is idempotent.
 """
 from __future__ import annotations
 
+import glob as _glob
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -147,9 +149,25 @@ def annotate_html_oids(
             "annotated_html": str(soup),
         }
 
+    # Per-screen HTML prototypes live under a runtime directory
+    # (mission_<id>/.web/) whose filenames are unknown at workflow-author
+    # time, so the 5.30c step wires the DIRECTORY. Expand any directory
+    # entry to its contained .html files (sorted, recursive) — mirrors
+    # verify_html_prototype_shape. Without this we open() a directory and
+    # fail with IsADirectoryError / PermissionError (the 567458 DLQ class).
+    expanded: list[str] = []
+    for raw in (html_paths or []):
+        rp = str(raw)
+        if os.path.isdir(rp):
+            expanded.extend(
+                sorted(_glob.glob(os.path.join(rp, "**", "*.html"), recursive=True))
+            )
+        else:
+            expanded.append(rp)
+
     per_file: list[dict[str, Any]] = []
     total = 0
-    for raw in (html_paths or []):
+    for raw in expanded:
         p = Path(raw)
         try:
             text = p.read_text(encoding="utf-8")

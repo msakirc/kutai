@@ -362,30 +362,6 @@ async def start_docker_services():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-# ChromaDB lazily imports this on first real query; it pulls in the heavyweight
-# opentelemetry OTLP-gRPC exporter (grpc + protobuf + otel SDK). Named as a
-# constant so a test can assert the path still resolves if ChromaDB restructures.
-_CHROMADB_OTEL_MODULE = "chromadb.telemetry.opentelemetry"
-
-
-async def _prewarm_chromadb_otel() -> bool:
-    """Import ChromaDB's OpenTelemetry exporter in a worker thread so a cold
-    first-query import can't GIL-starve the event-loop heartbeat. Returns True
-    if the module is loaded."""
-    import sys as _sys
-    import time as _t
-    _t0 = _t.time()
-    try:
-        await asyncio.to_thread(__import__, _CHROMADB_OTEL_MODULE)
-        ok = _CHROMADB_OTEL_MODULE in _sys.modules
-        _log.info("chromadb otel pre-warmed",
-                  seconds=f"{_t.time() - _t0:.1f}", ok=ok)
-        return ok
-    except Exception as exc:
-        _log.warning("chromadb otel pre-warm skipped", error=str(exc))
-        return False
-
-
 async def main():
     import platform
     _log.info(
@@ -395,30 +371,26 @@ async def main():
         cwd=os.getcwd(),
     )
 
-    # Write heartbeat immediately and keep it alive during startup.
-    # The old heartbeat file may be >120s stale from a previous hung
-    # instance.  Startup (docker, health checks, model load) can take
-    # 60-120s — without periodic heartbeats the wrapper kills us.
-    from yasar_usta import HeartbeatWriter, write_heartbeat
+    # Liveness heartbeat is written by a DAEMON THREAD, not an asyncio task, so
+    # a legitimately-blocked event loop can't starve it. The first agent task
+    # after a cold restart imports LiteLLM + grpc + protobuf + opentelemetry +
+    # tool modules whose .pyc files are cold on disk (~250s of disk-read +
+    # compile that hog the GIL + import lock); a loop-based heartbeat couldn't
+    # write during that window, so Yaşar Usta read it stale and false-killed at
+    # the startup-grace boundary (observed 2026-07-27: "dondu" exactly 5min
+    # after every *manual* restart, the warm-cache auto-restart running clean).
+    # The loop bumps a tick via tick_loop(); the thread withholds the heartbeat
+    # only if the loop hasn't ticked within wedge_threshold, so a genuinely
+    # wedged loop is still restarted.
+    from src.core.threaded_heartbeat import ThreadedHeartbeat
     from src.app.hb_paths import heartbeat_paths
     _hb_paths = heartbeat_paths()
-    write_heartbeat(*_hb_paths)
-    _hb_writer = HeartbeatWriter(*_hb_paths, interval=15.0)
-    _hb_task = asyncio.create_task(_hb_writer.run())
-
-    # Pre-warm ChromaDB's lazy OpenTelemetry OTLP-gRPC exporter import BEFORE
-    # the orchestrator's heartbeat exists and before any agent RAG can trigger
-    # it. ChromaDB imports opentelemetry.exporter.otlp.proto.grpc (grpc +
-    # protobuf + otel SDK) on first real query; cold (post-restart, .pyc
-    # evicted from the OS cache) that import runs minutes of disk-read +
-    # bytecode-compile that hog the GIL and starve the event-loop heartbeat →
-    # Yaşar Usta reads it stale and false-kills at the 300s grace boundary
-    # (observed 2026-07-27: dondu exactly 5min after every *manual* restart,
-    # the auto-restart 5s later hitting a warm cache and running clean).
-    # Warm it here: the startup heartbeat above (cheap file writes, no state
-    # snapshot) keeps ticking in the import's disk-wait GIL windows and boot
-    # grace covers the rest; every later chroma op then finds it cached (~1s).
-    await _prewarm_chromadb_otel()
+    _hb = ThreadedHeartbeat(_hb_paths, interval=15.0)
+    _hb.start_thread()
+    _hb_tick_task = asyncio.create_task(_hb.tick_loop(), name="heartbeat_tick")
+    # Keep refs so asyncio/GC don't drop the tick task or the writer.
+    main._hb = _hb  # type: ignore[attr-defined]
+    main._hb_tick_task = _hb_tick_task  # type: ignore[attr-defined]
 
     _log.info("Running check_env...")
     check_env()
@@ -732,13 +704,8 @@ async def main():
             _snapshot_refresh_loop(), name="snapshot_refresh"
         )
 
-    # NOTE: the startup heartbeat (_hb_task) is deliberately NOT cancelled here.
-    # It stays alive through the rest of boot (vector warmup below +
-    # orch.start()'s init_db/startup_recovery). The orchestrator hands it off —
-    # cancels it — only once its own _heartbeat_loop task exists. Cancelling it
-    # here (as we used to) left a slow vector-store load with no heartbeat
-    # writer, so Yaşar Usta read a stale heartbeat and kill-restart-looped
-    # (2026-07-25 cold-boot fix).
+    # (Liveness heartbeat is the daemon-thread ThreadedHeartbeat started above;
+    # it keeps writing through the whole of boot regardless of loop blocks.)
 
     # Vector store warmup — moved OFF the boot critical path (2026-07-25).
     # A cold ChromaDB open of a large store (multi-GB / >1M embeddings) takes
@@ -791,7 +758,7 @@ async def main():
 
     orch = Orchestrator(
         shutdown_event=shutdown_event,
-        startup_heartbeat_task=_hb_task,
+        heartbeat=_hb,
     )
     try:
         await orch.start()

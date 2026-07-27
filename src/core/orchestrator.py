@@ -36,21 +36,6 @@ logger = get_logger("core.orchestrator")
 # behind a still-running budget.
 
 
-def _handoff_heartbeat(predecessor) -> None:
-    """Cancel the boot-time startup heartbeat once the orchestrator's own
-    heartbeat task is running.
-
-    Called from ``start()`` right after the ``_heartbeat_loop`` task is
-    created, so there is never a window during boot with no heartbeat writer
-    (the 2026-07-25 cold-boot fix: a slow vector-store load used to run with
-    the startup heartbeat already cancelled and the orchestrator's not yet
-    started, letting Yaşar Usta read a stale heartbeat and kill-restart-loop).
-    Tolerates a missing or already-finished predecessor.
-    """
-    if predecessor is not None and not predecessor.done():
-        predecessor.cancel()
-
-
 def _dispatch_exc_to_result(exc: BaseException, task: dict) -> dict:
     """Build a failure result dict from a dispatch exception.
 
@@ -109,15 +94,16 @@ def _mech_action_to_result(action) -> dict:
 
 
 class Orchestrator:
-    def __init__(self, shutdown_event=None, startup_heartbeat_task=None):
+    def __init__(self, shutdown_event=None, heartbeat=None):
         self.telegram = TelegramInterface(self)
         self.running = False
         self._shutting_down = False
         self.shutdown_event = shutdown_event or asyncio.Event()
-        # Boot-time heartbeat writer (from run.py). Kept alive until this
-        # orchestrator's own _heartbeat_loop task exists, then handed off in
-        # start() — never a heartbeat gap during boot (2026-07-25 cold-boot fix).
-        self._startup_heartbeat_task = startup_heartbeat_task
+        # The daemon-thread ThreadedHeartbeat created in run.py. start() attaches
+        # the state-snapshot provider to it; its loop-liveness tick already runs
+        # from run.py. Written off the event loop so a blocked loop can't starve
+        # liveness (2026-07-27 false-hung fix).
+        self._heartbeat = heartbeat
         self.requested_exit_code: int | None = None
         self._current_task_future = None
         self._running_futures: list[asyncio.Task] = []
@@ -502,25 +488,34 @@ class Orchestrator:
                 f"mission_cron arm failed for mid={mission.id}: {e}"
             )
 
-    async def _heartbeat_loop(self):
-        """Run heartbeat + state-snapshot writer.
+    def _wire_heartbeat_state(self) -> None:
+        """Attach the state-snapshot provider to the daemon heartbeat.
 
-        State snapshot includes currently-active connect_aux blocks and
-        in-flight task IDs so that when Yaşar Usta detects a freeze and
-        kills the orchestrator, it can log WHAT was happening at the
-        moment of the last heartbeat.
+        The snapshot (active connect_aux blocks + in-flight task IDs) lets
+        Yaşar Usta log WHAT was happening at the last heartbeat if it ever does
+        detect a freeze. Deps are resolved ONCE here (on the loop); the provider
+        the daemon thread calls each beat only invokes them — it never imports,
+        so it can't block on the import lock the first-agent cold-import cascade
+        holds. No-op if no heartbeat was injected (e.g. tests).
         """
-        from yasar_usta import HeartbeatWriter
+        if self._heartbeat is None:
+            return
+        try:
+            from src.core.in_flight import in_flight_snapshot as _inflight
+        except Exception:
+            _inflight = None
+        try:
+            from src.infra.db import _aux_active_summary as _aux
+        except Exception:
+            _aux = None
 
         def _state_provider() -> dict:
             try:
-                from src.infra.db import _aux_active_summary
-                aux = _aux_active_summary()
+                aux = _aux() if _aux else "(unavailable)"
             except Exception:
                 aux = "(unavailable)"
             try:
-                from src.core.in_flight import in_flight_snapshot
-                snap = in_flight_snapshot()
+                snap = _inflight() if _inflight else []
                 inflight = [
                     f"task={getattr(e,'task_id','?')}|model={getattr(e,'model','?')}"
                     for e in snap[:8]
@@ -529,14 +524,9 @@ class Orchestrator:
                 inflight = "(unavailable)"
             return {"aux_active": aux, "in_flight": inflight}
 
-        from src.app.hb_paths import heartbeat_paths, state_snapshot_path
-        _hbp = heartbeat_paths()
-        await HeartbeatWriter(
-            *_hbp,
-            interval=15.0,
-            state_path=state_snapshot_path(),
-            state_provider=_state_provider,
-        ).run()
+        from src.app.hb_paths import state_snapshot_path
+        self._heartbeat.state_path = state_snapshot_path()
+        self._heartbeat.state_provider = _state_provider
 
     async def start(self):
         await init_db()
@@ -574,12 +564,11 @@ class Orchestrator:
         self._background_tasks: list[asyncio.Task] = [
             asyncio.create_task(manager.run_idle_unloader()),
             asyncio.create_task(manager.run_health_watchdog()),
-            asyncio.create_task(self._heartbeat_loop()),
         ]
-        # Our own heartbeat task now exists; retire the boot-time startup
-        # heartbeat. No gap — the startup writer ran continuously up to here.
-        _handoff_heartbeat(self._startup_heartbeat_task)
-        self._startup_heartbeat_task = None
+        # Liveness heartbeat runs on a daemon thread (started in run.py); its
+        # loop-liveness tick task also runs there. Just attach the state-snapshot
+        # provider now that in-flight/aux state exists.
+        self._wire_heartbeat_state()
 
         # Auto-seed at boot was removed 2026-04-25. The DB row IS the source
         # of truth for agent prompts; the hardcoded `get_system_prompt` in
@@ -625,6 +614,8 @@ class Orchestrator:
                 if self.shutdown_event.is_set():
                     self._shutting_down = True
                     self.running = False
+                    if self._heartbeat is not None:
+                        self._heartbeat.stop()
                     for t in self._background_tasks:
                         t.cancel()
                     active = [f for f in self._running_futures if f and not f.done()]

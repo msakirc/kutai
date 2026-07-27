@@ -15,7 +15,10 @@ from .context_injection import inject_chain_context
 from .startup_recovery import startup_recovery
 from .periodic_checks import PeriodicChecks
 from .dispatch_prep import bridge_self_reflection
-from ..workflows.engine.task_refresh import refresh_workflow_agent_type
+from ..workflows.engine.task_refresh import (
+    refresh_workflow_agent_type,
+    refresh_workflow_step_payload,
+)
 import mr_roboto
 import coulson
 from ..agents import get_agent
@@ -198,6 +201,16 @@ class Orchestrator:
                        or ctx.get("executor") == "mechanical"
                        or agent_type == "mechanical")
             if is_mech:
+                # Live-reload the mechanical step's payload from workflow JSON.
+                # Rows freeze payload at expansion; the LLM-path refresh
+                # (coulson._refresh_workflow_step_config) never runs for
+                # mechanical steps, so a JSON payload edit (e.g. wiring
+                # html_paths onto 5.30c annotate_html_oids) must reach existing
+                # rows HERE or the executor starves on the stale payload.
+                try:
+                    await refresh_workflow_step_payload(task, ctx)
+                except Exception as _e:
+                    logger.debug(f"payload refresh skipped #{task_id}: {_e}")
                 t = dict(task)
                 if "payload" not in t and "payload" in ctx:
                     t["payload"] = ctx["payload"]

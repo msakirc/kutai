@@ -26,7 +26,6 @@ async def push_metrics(task: dict, result: dict | None) -> None:
         _push_mission_cost,
         _push_episodic_memory,
         _push_metrics_counter,
-        _push_preference_feedback,
         _push_skill_injection,
     ):
         try:
@@ -152,6 +151,12 @@ async def _push_metrics_counter(task: dict, result: dict | None) -> None:
         pass
 
 
+# DEACTIVATED (smart-RAG Phase 1, 2026-07-27): the per-task implicit "accepted"
+# feedback was a ~886K-row vector firehose no filtered reader consumed
+# (handoff §4). Real ratings live in the SQLite task_feedback table. No longer
+# auto-dispatched. encode_policy also drops implicit-accepted writes defensively.
+# Explicit corrections (telegram_bot.py:8390, feedback_type="modified") are
+# unaffected and still stored.
 async def _push_preference_feedback(task: dict, result: dict | None) -> None:
     """Record implicit acceptance feedback for the completed task."""
     if result is None or result.get("status") != "completed":

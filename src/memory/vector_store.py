@@ -618,6 +618,34 @@ async def _init_store_locked(
 
     os.makedirs(db_dir, exist_ok=True)
 
+    # Smart-RAG Phase 2 (P4 loadability): boot-time on-disk size gate. Runs
+    # with the store CLOSED (before the client opens) so the orphaned-HNSW-
+    # segment GC + ``chroma vacuum`` are safe. Cheap under budget (one
+    # os.walk). Fail-OPEN: a maintenance error must never block the store from
+    # opening. Killswitch ``KUTAI_CHROMA_SIZE_GATE=off``; budget override
+    # ``KUTAI_CHROMA_MAX_BYTES``.
+    if os.getenv("KUTAI_CHROMA_SIZE_GATE", "on").strip().lower() != "off":
+        try:
+            from src.memory import chroma_maintenance as _cm
+
+            budget = int(
+                os.getenv("KUTAI_CHROMA_MAX_BYTES", str(_cm.DEFAULT_BUDGET_BYTES))
+            )
+            report = await asyncio.to_thread(
+                _cm.enforce_size_budget, db_dir, budget
+            )
+            if report.get("over_budget"):
+                logger.warning("Chroma size gate over budget: %s", report)
+                # Release WAL bloat left by the reclaim/vacuum pass.
+                await wal_checkpoint(os.path.join(db_dir, "chroma.sqlite3"))
+            else:
+                logger.info(
+                    "Chroma size gate: %d bytes (budget %d) ok",
+                    report.get("size_bytes", -1), budget,
+                )
+        except Exception as e:  # noqa: BLE001 — fail-open
+            logger.warning("Chroma size gate skipped (error): %s", e)
+
     try:
         _client = await asyncio.to_thread(
             lambda: chromadb.PersistentClient(

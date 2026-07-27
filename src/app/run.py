@@ -362,6 +362,30 @@ async def start_docker_services():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+# ChromaDB lazily imports this on first real query; it pulls in the heavyweight
+# opentelemetry OTLP-gRPC exporter (grpc + protobuf + otel SDK). Named as a
+# constant so a test can assert the path still resolves if ChromaDB restructures.
+_CHROMADB_OTEL_MODULE = "chromadb.telemetry.opentelemetry"
+
+
+async def _prewarm_chromadb_otel() -> bool:
+    """Import ChromaDB's OpenTelemetry exporter in a worker thread so a cold
+    first-query import can't GIL-starve the event-loop heartbeat. Returns True
+    if the module is loaded."""
+    import sys as _sys
+    import time as _t
+    _t0 = _t.time()
+    try:
+        await asyncio.to_thread(__import__, _CHROMADB_OTEL_MODULE)
+        ok = _CHROMADB_OTEL_MODULE in _sys.modules
+        _log.info("chromadb otel pre-warmed",
+                  seconds=f"{_t.time() - _t0:.1f}", ok=ok)
+        return ok
+    except Exception as exc:
+        _log.warning("chromadb otel pre-warm skipped", error=str(exc))
+        return False
+
+
 async def main():
     import platform
     _log.info(
@@ -381,6 +405,20 @@ async def main():
     write_heartbeat(*_hb_paths)
     _hb_writer = HeartbeatWriter(*_hb_paths, interval=15.0)
     _hb_task = asyncio.create_task(_hb_writer.run())
+
+    # Pre-warm ChromaDB's lazy OpenTelemetry OTLP-gRPC exporter import BEFORE
+    # the orchestrator's heartbeat exists and before any agent RAG can trigger
+    # it. ChromaDB imports opentelemetry.exporter.otlp.proto.grpc (grpc +
+    # protobuf + otel SDK) on first real query; cold (post-restart, .pyc
+    # evicted from the OS cache) that import runs minutes of disk-read +
+    # bytecode-compile that hog the GIL and starve the event-loop heartbeat →
+    # Yaşar Usta reads it stale and false-kills at the 300s grace boundary
+    # (observed 2026-07-27: dondu exactly 5min after every *manual* restart,
+    # the auto-restart 5s later hitting a warm cache and running clean).
+    # Warm it here: the startup heartbeat above (cheap file writes, no state
+    # snapshot) keeps ticking in the import's disk-wait GIL windows and boot
+    # grace covers the rest; every later chroma op then finds it cached (~1s).
+    await _prewarm_chromadb_otel()
 
     _log.info("Running check_env...")
     check_env()

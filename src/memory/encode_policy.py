@@ -7,9 +7,11 @@ policy with no per-caller change. Two Phase-1 duties:
        (never read via any filtered path; real ratings live in the SQLite
        ``task_feedback`` table). Explicit corrections (modified/rejected) are
        PRESERVED — they carry real user-correction text not mirrored elsewhere.
-  P1c  Quality-filter ONLY firehose/auto types (``task_result``): reject
-       degenerate / template-echo / too-short text before embedding. Curated
-       and user-authored types pass through untouched (handoff §4).
+  P1c  Length-floor ONLY firehose/auto types (``task_result``): drop too-short
+       text before embedding. Semantic degeneracy is handled upstream by
+       dogru_mu_samet at the sole task_result writer (episodic.store_task_result),
+       not re-checked here. Curated and user-authored types pass through
+       untouched (handoff §4).
 
 Novelty-merge (P1b) and TTL/supersession (P3) extend this seam in later phases.
 Killswitch: ``KUTAI_ENCODE_POLICY=off`` disables all gating.
@@ -44,15 +46,15 @@ def should_store(text: str, metadata: dict | None) -> tuple[bool, str]:
     if mem_type == "user_feedback" and metadata.get("feedback_type") == "accepted":
         return False, "killed_implicit_feedback"
 
-    # P1c — quality filter scoped to firehose/auto types only.
+    # P1c — length floor scoped to firehose/auto types only. Semantic
+    # degeneracy for task_result is already caught by dogru_mu_samet at the
+    # sole writer (episodic.store_task_result, episodic.py:59); the
+    # skill-description pollution regex was mis-fit for multi-line task prose
+    # (measured on the live DB: it dropped good YAML/markdown design artifacts),
+    # so it is deliberately NOT reused here.
     if mem_type in _QUALITY_FILTERED_TYPES:
         t = (text or "").strip()
         if len(t) < _MIN_LEN:
             return False, "too_short"
-        # Reuse the skills-system pollution regex (imported lazily to avoid a
-        # circular import; embed_and_store already imports this module lazily).
-        from src.memory.skills import _DESC_POLLUTION_RE
-        if _DESC_POLLUTION_RE.search(t):
-            return False, "pollution"
 
     return True, ""

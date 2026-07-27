@@ -41,13 +41,17 @@ def test_allows_normal_task_result(monkeypatch):
     assert reason == ""
 
 
-def test_rejects_pollution_in_firehose_type(monkeypatch):
+def test_pollution_regex_not_applied_to_task_result(monkeypatch):
+    """The skill-description pollution regex is mis-fit for multi-line task
+    prose and dropped good design artifacts on the live DB, so it must NOT be
+    applied to task_result. A keyword-y but long-enough body passes; semantic
+    degeneracy is dogru_mu_samet's job at the writer, not this gate's."""
     ep = _fresh(monkeypatch)
     allowed, reason = ep.should_store(
-        "STRATEGY: use api_call for weather lookups", {"type": "task_result"}
+        "Task: X\nResult:\n* STRATEGY: use api_call\nObservation: it worked", {"type": "task_result"}
     )
-    assert allowed is False
-    assert reason == "pollution"
+    assert allowed is True
+    assert reason == ""
 
 
 def test_rejects_too_short_firehose_type(monkeypatch):

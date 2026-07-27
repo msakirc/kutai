@@ -36,7 +36,12 @@ import os
 import re
 from typing import Any
 
-_ADR_ID_RE = re.compile(r"\bADR-\d{4}-\d{2}-\d{2}-\d{2,4}(?:-[A-Za-z0-9_-]+)?\b")
+# Loose ADR-reference matcher for the anti-stub count only. Deliberately
+# NOT the strict ``ADR-YYYY-MM-DD-NNN`` form: the register is LLM-authored,
+# so demanding an exact id format would re-introduce a false-reject on a
+# fully-covered mission whose model wrote a looser id. Any ``ADR-<token>``
+# counts as one indexed entry.
+_ADR_REF_RE = re.compile(r"\bADR-[A-Za-z0-9][\w-]*")
 
 # Canonical architecture-decision domains produced by i2p steps
 # 4.1/4.2/4.2a/4.4/4.6/4.8/4.9/4.10 — each writes ``.adr/<slug>_decision.json``.
@@ -83,12 +88,17 @@ def _domain_slug(filename: str) -> str:
 
 
 def _enumerate_on_disk(search_dirs: list[str]) -> list[str]:
-    """Collect domain slugs from ``*.json`` ADR docs across candidate dirs."""
+    """Collect domain slugs from ``<slug>_decision.json`` ADR docs.
+
+    Only ``*_decision.json`` files count — a bare ``<slug>.json`` must NOT
+    satisfy a required domain, or a stray/partial file could mask a
+    genuinely-missing decision doc (false-pass).
+    """
     seen: set[str] = set()
     for d in search_dirs:
         if d and os.path.isdir(d):
             for name in os.listdir(d):
-                if name.endswith(".json"):
+                if name.endswith("_decision.json"):
                     seen.add(_domain_slug(name))
     return sorted(seen)
 
@@ -138,7 +148,7 @@ def verify_adr_register(
     missing_domains = [d for d in required if d not in on_disk_set]
     orphan_domains = [d for d in on_disk if d not in required]
 
-    referenced = {m.group(0) for m in _ADR_ID_RE.finditer(text)}
+    referenced = {m.group(0) for m in _ADR_REF_RE.finditer(text)}
     register_adr_count = len(referenced)
 
     if not referenced and allow_empty_register:

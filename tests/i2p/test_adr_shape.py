@@ -280,6 +280,50 @@ def test_verify_adr_register_rejects_empty_register():
     assert res["ok"] is False
 
 
+def test_verify_adr_register_missing_doc_not_masked_by_bare_slug(tmp_path: Path):
+    """A stray non-``_decision`` json must NOT satisfy a required domain —
+    coverage is proven only by the real ``<slug>_decision.json`` file."""
+    adr_dir = tmp_path / ".adr"
+    adr_dir.mkdir()
+    # auth_design_decision.json is ABSENT; a bare auth_design.json is present.
+    (adr_dir / "auth_design.json").write_text("{}", encoding="utf-8")
+    _write_adr_docs(adr_dir, ["database_schema"])
+    register = adr_dir / "register.md"
+    register.write_text(
+        _register_md(["auth_design", "database_schema"]), encoding="utf-8"
+    )
+    res = verify_adr_register(
+        register_path=str(register),
+        required_domains=["auth_design", "database_schema"],
+    )
+    assert res["ok"] is False
+    assert "auth_design" in res["missing_domains"]
+
+
+def test_verify_adr_register_tolerates_nonstandard_adr_id_format(tmp_path: Path):
+    """Full disk coverage + a register whose ADR ids are not the mandated
+    date format must still PASS (the anti-stub count must not re-introduce a
+    false-reject on id-format variance)."""
+    adr_dir = tmp_path / ".adr"
+    adr_dir.mkdir()
+    slugs = ["auth_design", "database_schema", "tech_stack"]
+    _write_adr_docs(adr_dir, slugs)
+    rows = "\n".join(
+        f"| ADR-{i} | {s} decision | Accepted | {s} | - |"
+        for i, s in enumerate(slugs, start=1)
+    )
+    register = adr_dir / "register.md"
+    register.write_text(
+        "# Architecture Decision Register\n\n"
+        "| ADR ID | Title | Status | Decision Domain | Date |\n"
+        "|--------|-------|--------|-----------------|------|\n" + rows + "\n",
+        encoding="utf-8",
+    )
+    res = verify_adr_register(register_path=str(register), required_domains=slugs)
+    assert res["ok"], res
+    assert res["register_adr_count"] >= 3
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # verify_cost_curve_present — A8 cost-curve guard for stack ADRs
 # ────────────────────────────────────────────────────────────────────────────

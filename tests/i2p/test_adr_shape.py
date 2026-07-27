@@ -16,7 +16,10 @@ import pytest
 
 from mr_roboto import run as mr_roboto_run
 from mr_roboto.verify_adr_shape import verify_adr_shape
-from mr_roboto.verify_adr_register import verify_adr_register
+from mr_roboto.verify_adr_register import (
+    REQUIRED_ADR_DOMAINS,
+    verify_adr_register,
+)
 from mr_roboto.verify_cost_curve_present import verify_cost_curve_present
 
 
@@ -191,55 +194,85 @@ def test_verify_adr_shape_via_markdown_fence():
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def test_verify_adr_register_accepts_consistent_register(tmp_path: Path):
+def _write_adr_docs(adr_dir: Path, slugs) -> None:
+    """Write real-pipeline-shaped ``<slug>_decision.json`` ADR files."""
+    for i, slug in enumerate(slugs, start=1):
+        (adr_dir / f"{slug}_decision.json").write_text(
+            f'{{"adr_id": "ADR-2025-{i:03d}", "title": "{slug}"}}',
+            encoding="utf-8",
+        )
+
+
+def _register_md(slugs) -> str:
+    """A non-empty register that indexes one ADR-id row per slug.
+
+    The register's ADR ids are deliberately DIFFERENT from the ids inside
+    the JSON docs — that mirrors production, where both are LLM-invented
+    and never reconcile. The gate must not depend on id equality.
+    """
+    rows = "\n".join(
+        f"| ADR-2099-01-{i:02d}-{i:03d} | {slug} decision | Accepted | {slug} | 2099-01-{i:02d} |"
+        for i, slug in enumerate(slugs, start=1)
+    )
+    return (
+        "# Architecture Decision Register\n\n"
+        "| ADR ID | Title | Status | Decision Domain | Date |\n"
+        "|--------|-------|--------|-----------------|------|\n" + rows + "\n"
+    )
+
+
+def test_verify_adr_register_accepts_full_domain_coverage(tmp_path: Path):
     adr_dir = tmp_path / ".adr"
     adr_dir.mkdir()
-    for aid in ("ADR-2026-05-10-001", "ADR-2026-05-10-002"):
-        (adr_dir / f"{aid}.json").write_text("{}", encoding="utf-8")
+    _write_adr_docs(adr_dir, REQUIRED_ADR_DOMAINS)
     register = adr_dir / "register.md"
-    register.write_text(
-        "# ADR Register\n\n"
-        "- ADR-2026-05-10-001 — A — status:accepted\n"
-        "- ADR-2026-05-10-002 — B — status:accepted\n",
-        encoding="utf-8",
-    )
+    register.write_text(_register_md(REQUIRED_ADR_DOMAINS), encoding="utf-8")
     res = verify_adr_register(register_path=str(register))
     assert res["ok"], res
-    assert sorted(res["referenced"]) == [
-        "ADR-2026-05-10-001",
-        "ADR-2026-05-10-002",
-    ]
+    assert res["missing_domains"] == []
 
 
-def test_verify_adr_register_rejects_when_referenced_file_missing(tmp_path: Path):
+def test_verify_adr_register_flags_a_missing_domain(tmp_path: Path):
     adr_dir = tmp_path / ".adr"
     adr_dir.mkdir()
-    # Note: only -001 written, register references -001 AND -002.
-    (adr_dir / "ADR-2026-05-10-001.json").write_text("{}", encoding="utf-8")
+    # Every required domain present EXCEPT database_schema.
+    present = [d for d in REQUIRED_ADR_DOMAINS if d != "database_schema"]
+    _write_adr_docs(adr_dir, present)
     register = adr_dir / "register.md"
-    register.write_text(
-        "- ADR-2026-05-10-001 — A — status:accepted\n"
-        "- ADR-2026-05-10-002 — B — status:accepted\n",
-        encoding="utf-8",
-    )
+    register.write_text(_register_md(present), encoding="utf-8")
     res = verify_adr_register(register_path=str(register))
     assert res["ok"] is False
-    assert res["missing_files"] == ["ADR-2026-05-10-002"]
+    assert "database_schema" in res["missing_domains"]
 
 
-def test_verify_adr_register_rejects_orphan_files(tmp_path: Path):
+def test_verify_adr_register_matches_by_domain_not_lottery_id(tmp_path: Path):
+    """The exact mission-90 shape: <slug>_decision.json files whose internal
+    adr_id differs from the register's ids. Must PASS (regression guard)."""
     adr_dir = tmp_path / ".adr"
     adr_dir.mkdir()
-    for aid in ("ADR-2026-05-10-001", "ADR-2026-05-10-002"):
-        (adr_dir / f"{aid}.json").write_text("{}", encoding="utf-8")
+    slugs = ["auth_design", "database_schema", "tech_stack"]
+    _write_adr_docs(adr_dir, slugs)
     register = adr_dir / "register.md"
-    register.write_text(
-        "- ADR-2026-05-10-001 — A — status:accepted\n",
-        encoding="utf-8",
+    register.write_text(_register_md(slugs), encoding="utf-8")
+    res = verify_adr_register(
+        register_path=str(register), required_domains=slugs
     )
-    res = verify_adr_register(register_path=str(register))
+    assert res["ok"], res
+
+
+def test_verify_adr_register_rejects_stub_register_missing_rows(tmp_path: Path):
+    """All docs on disk but the register indexes fewer ADRs than required —
+    a stub/lying register must not pass."""
+    adr_dir = tmp_path / ".adr"
+    adr_dir.mkdir()
+    slugs = ["auth_design", "database_schema", "tech_stack"]
+    _write_adr_docs(adr_dir, slugs)
+    register = adr_dir / "register.md"
+    register.write_text("# Architecture Decision Register\n\n(todo)\n", encoding="utf-8")
+    res = verify_adr_register(
+        register_path=str(register), required_domains=slugs
+    )
     assert res["ok"] is False
-    assert res["orphan_files"] == ["ADR-2026-05-10-002"]
 
 
 def test_verify_adr_register_rejects_empty_register():
@@ -340,10 +373,9 @@ def test_mr_roboto_dispatch_verify_adr_shape_reject():
 def test_mr_roboto_dispatch_verify_adr_register_accept(tmp_path: Path):
     adr_dir = tmp_path / ".adr"
     adr_dir.mkdir()
-    (adr_dir / "ADR-2026-05-10-001.json").write_text("{}", encoding="utf-8")
+    _write_adr_docs(adr_dir, REQUIRED_ADR_DOMAINS)
     (adr_dir / "register.md").write_text(
-        "- ADR-2026-05-10-001 — A — status:accepted\n",
-        encoding="utf-8",
+        _register_md(REQUIRED_ADR_DOMAINS), encoding="utf-8"
     )
     res = _run_mr(
         {
@@ -352,6 +384,48 @@ def test_mr_roboto_dispatch_verify_adr_register_accept(tmp_path: Path):
         }
     )
     assert res.status == "completed", (res.status, res.error)
+
+
+def test_mr_roboto_dispatch_verify_adr_register_resolves_relative_path(
+    tmp_path: Path, monkeypatch
+):
+    """Bug A repro: workspace-relative register_path must resolve against
+    WORKSPACE_DIR (not process CWD), matching every sibling verifier."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path))
+    adr_dir = tmp_path / "mission_90" / ".adr"
+    adr_dir.mkdir(parents=True)
+    _write_adr_docs(adr_dir, REQUIRED_ADR_DOMAINS)
+    (adr_dir / "register.md").write_text(
+        _register_md(REQUIRED_ADR_DOMAINS), encoding="utf-8"
+    )
+    res = _run_mr(
+        {
+            "action": "verify_adr_register",
+            "register_path": "mission_90/.adr/register.md",
+            "adr_dir": "mission_90/.adr",
+        }
+    )
+    assert res.status == "completed", (res.status, res.error)
+
+
+def test_mr_roboto_dispatch_verify_adr_register_reject_missing_domain(
+    tmp_path: Path,
+):
+    adr_dir = tmp_path / ".adr"
+    adr_dir.mkdir()
+    present = [d for d in REQUIRED_ADR_DOMAINS if d != "auth_design"]
+    _write_adr_docs(adr_dir, present)
+    (adr_dir / "register.md").write_text(
+        _register_md(present), encoding="utf-8"
+    )
+    res = _run_mr(
+        {
+            "action": "verify_adr_register",
+            "register_path": str(adr_dir / "register.md"),
+        }
+    )
+    assert res.status == "failed"
+    assert "auth_design" in (res.error or "")
 
 
 def test_mr_roboto_dispatch_verify_cost_curve_present_accept():

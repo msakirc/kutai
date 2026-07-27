@@ -1540,15 +1540,29 @@ async def _run_dispatch(task: dict) -> Action:
             return Action(status="failed", error=str(e))
 
     if action == "verify_adr_register":
-        # Z1 Tier 2 (P3) — register.md vs on-disk ADR JSON consistency.
+        # Z1 Tier 2 (P3) — register.md domain-coverage vs on-disk ADR docs.
         from mr_roboto.verify_adr_register import (
             verify_adr_register as _verify_register,
         )
         try:
+            # Bug A fix: resolve the workspace-relative register_path against
+            # WORKSPACE_DIR (every sibling verifier does this; this one used
+            # to open() against process CWD → "empty register" false-reject).
+            _reg = payload.get("register_path")
+            if _reg:
+                _resolved = _resolve_path_list([_reg])
+                if _resolved:
+                    _reg = _resolved[0]
+            try:
+                from src.tools.workspace import WORKSPACE_DIR as _wsd
+            except Exception:
+                _wsd = None
             res = _verify_register(
                 register_text=payload.get("register_text"),
-                register_path=payload.get("register_path"),
+                register_path=_reg,
                 adr_dir=payload.get("adr_dir"),
+                workspace_path=_wsd,
+                required_domains=payload.get("required_domains"),
                 allow_empty_register=bool(
                     payload.get("allow_empty_register", False)
                 ),
@@ -1557,8 +1571,9 @@ async def _run_dispatch(task: dict) -> Action:
                 return Action(
                     status="failed",
                     error=(
-                        f"verify_adr_register: missing_files={res.get('missing_files')} "
-                        f"orphan_files={res.get('orphan_files')}"
+                        f"verify_adr_register: missing_domains={res.get('missing_domains')} "
+                        f"register_adr_count={res.get('register_adr_count')} "
+                        f"required={len(res.get('required') or [])}"
                     ),
                     result=res,
                 )

@@ -495,7 +495,22 @@ async def materialize_produces(ctx: dict, task: dict, result, output_value):
         except OSError as e:
             logger.debug(f"[Workflow Hook] materialize write failed {abs_path}: {e}")
             continue
-        if single:
+        # Adopt the canonical single-file content as the new output_value ONLY
+        # when the step is truly single-artifact. A single produces path can
+        # coexist with a MULTI-artifact schema (m90 4.6 / 567433:
+        # produces=[.adr/auth_design_decision.json] but artifact_schema declares
+        # BOTH auth_design AND auth_design_decision). There the ADR flatten
+        # unwraps the whole bundle to the bare ADR — dropping the sibling
+        # auth_design — and collapsing output_value to it makes the 2-key schema
+        # gate report ``auth_design.authentication missing`` forever (the retry
+        # checklist, computed from that bare ADR, then mislabels every
+        # auth_design field missing while the model keeps re-emitting them →
+        # infinite retry loop). Keep the full output_value so the gate sees every
+        # artifact; the .adr file on disk stays the flat ADR for the ADR gates.
+        _schema_artifacts = len([
+            k for k, v in schema.items() if isinstance(v, dict)
+        ])
+        if single and _schema_artifacts <= 1:
             canonical_out = chosen
     return canonical_out
 

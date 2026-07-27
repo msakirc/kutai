@@ -338,6 +338,61 @@ async def test_adr_envelope_flattened_at_materialize(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_multi_artifact_adr_step_keeps_sibling_in_output_value(tmp_path, monkeypatch):
+    """m90 4.6 (567433): a MULTI-artifact step whose SINGLE produces path is an
+    ``.adr/`` json. The step emits BOTH ``auth_design`` (object) and
+    ``auth_design_decision`` (the ADR). The ADR-flatten seam unwraps the
+    artifact-name envelope for the on-disk ``.adr`` file — correct — but must NOT
+    let the bare flattened ADR become the returned ``output_value``: doing so
+    DROPS the sibling ``auth_design`` artifact, so the 2-key schema gate reports
+    ``auth_design.authentication missing`` forever even though the model supplied
+    it. The retry checklist (computed from that bare ADR) then mislabels all
+    ``auth_design`` fields missing while the model keeps re-emitting them →
+    infinite retry loop. Disk = flat ADR; returned output_value = full bundle."""
+    monkeypatch.setattr("src.tools.workspace.WORKSPACE_DIR", str(tmp_path), raising=False)
+    rel = "mission_90/.adr/auth_design_decision.json"
+    schema = {
+        "auth_design": {"type": "object",
+                        "required_fields": ["authentication", "authorization",
+                                            "roles", "permissions"]},
+        "auth_design_decision": {"type": "object", "required": ["adr_id"]},
+    }
+    ctx = _ctx([rel], schema)
+    task = {"mission_id": 90, "agent_type": "architect"}
+    bundle = {
+        "auth_design": {
+            "authentication": {"registration": "Email/password + OAuth"},
+            "authorization": {"model": "RBAC"},
+            "roles": ["user", "admin"],
+            "permissions": ["read", "write"],
+        },
+        "auth_design_decision": {
+            "adr_id": "ADR-2026-07-27-001", "title": "Auth0 + RBAC",
+            "status": "accepted", "context": "c", "decision": "d",
+            "consequences": "t", "chosen_option_id": "OPT-A",
+            "options_considered": [{"id": "OPT-A"}],
+            "falsification_signal": "if bill > $1500 before 150k MAU",
+            "reversal_cost": "medium", "supersedes_adr_id": None,
+        },
+    }
+    body = json.dumps(bundle)
+
+    out = await materialize_produces(ctx, task, {"result": body}, body)
+
+    # The on-disk .adr file is still the FLAT ADR (adr_id at top) — gate-ready.
+    disk = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+    assert disk.get("adr_id") == "ADR-2026-07-27-001"
+    assert "auth_design_decision" not in disk
+
+    # The RETURNED output_value must preserve BOTH artifacts so the 2-key schema
+    # gate sees auth_design (and its nested fields) — the sibling was dropped pre-fix.
+    out_obj = json.loads(out)
+    assert "auth_design" in out_obj, "sibling auth_design dropped from output_value"
+    assert out_obj["auth_design"]["authentication"]                # nested field kept
+    assert "auth_design_decision" in out_obj                       # ADR sibling kept too
+
+
+@pytest.mark.asyncio
 async def test_flat_adr_untouched_at_materialize(tmp_path, monkeypatch):
     """A model that already returned a FLAT ADR (adr_id at top) must pass
     through the seam unchanged — the flatten only triggers on the envelope."""

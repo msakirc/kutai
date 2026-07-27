@@ -197,6 +197,12 @@ async def embed_and_store_for_mission(
     if not text or not text.strip():
         return None
 
+    from src.memory.encode_policy import should_store
+    _allow, _why = should_store(text, metadata)
+    if not _allow:
+        logger.debug(f"encode_policy dropped mission write: {_why}")
+        return None
+
     embedding = await _get_embed_fn()(text, is_query=False)
     if embedding is None:
         logger.warning(
@@ -734,6 +740,14 @@ async def embed_and_store(
         return None
 
     if not text or not text.strip():
+        return None
+
+    # Phase 1 — selective encoding gate (drops dead-weight writes at the single
+    # choke point every writer funnels through, before embed compute).
+    from src.memory.encode_policy import should_store
+    _allow, _why = should_store(text, metadata)
+    if not _allow:
+        logger.debug(f"encode_policy dropped '{collection}' write: {_why}")
         return None
 
     # Get embedding (as passage, not query)

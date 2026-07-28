@@ -3071,12 +3071,13 @@
       "may_need_clarification": false,
       "input_artifacts": [
         "prd_final_summary",
-        "functional_requirements_summary"
+        "functional_requirements_summary",
+        "non_goals"
       ],
       "output_artifacts": [
         "integration_requirements"
       ],
-      "instruction": "Identify all third-party integrations needed. For each: integration_id, service_name, purpose, api_type, authentication_method, rate_limits, pricing, data_exchanged, latency_expectation, failure_mode, alternatives.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
+      "instruction": "Identify all third-party integrations needed. For each: integration_id, service_name, purpose, api_type, authentication_method, rate_limits, pricing, data_exchanged, latency_expectation, failure_mode, alternatives.\n\nHARD CONSTRAINT - NON-GOALS: The non_goals artifact lists capabilities the founder has explicitly excluded. NEVER propose an integration that a non-goal forbids. If a needed capability conflicts with a non-goal, OMIT that integration entirely (do not list it) - non-goals are binding founder constraints and win over convenience.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.",
       "done_when": "integration_requirements exists with every third-party service identified, evaluated, and failure modes documented.",
       "artifact_schema": {
         "integration_requirements": {
@@ -3368,7 +3369,8 @@
       "depends_on": [
         "3.9a",
         "3.7",
-        "3.8"
+        "3.8",
+        "3.5"
       ],
       "may_need_clarification": false,
       "input_artifacts": [
@@ -3376,12 +3378,15 @@
         "nfr_performance",
         "nfr_scalability",
         "nfr_availability",
-        "security_requirements"
+        "security_requirements",
+        "non_goals",
+        "integration_requirements",
+        "functional_requirements"
       ],
       "output_artifacts": [
         "conflict_resolutions"
       ],
-      "instruction": "Check for conflicts between functional requirements and NFRs. Identify where performance targets conflict with feature scope, where security constraints limit features, where scalability needs affect architecture. Document each conflict with resolution.",
+      "instruction": "Check for conflicts between functional requirements and NFRs. Identify where performance targets conflict with feature scope, where security constraints limit features, where scalability needs affect architecture. Document each conflict with resolution.\n\nALSO - REQUIREMENT vs NON-GOAL CONTRADICTIONS (critical): cross-check every functional requirement and every entry in integration_requirements against the non_goals. A requirement or integration that a non-goal explicitly FORBIDS is a hard contradiction - the 'required but impossible' case that otherwise halts the whole mission at the late architecture review. For each, emit a conflict with conflict_id prefixed 'NG-', requirement_ids naming the offending requirement/integration id, and resolution = REMOVE the offending requirement/integration (non-goals are the founder's binding constraints and WIN - charter authority). Catch these HERE at phase 3, cheaply, not 12 phases later.",
       "done_when": "conflict_resolutions exists with all conflicts identified and resolved.",
       "artifact_schema": {
         "conflict_resolutions": {
@@ -4021,7 +4026,8 @@
         "security_requirements",
         "integration_requirements",
         "functional_requirements",
-        "business_rules"
+        "business_rules",
+        "non_goals"
       ],
       "output_artifacts": [
         "auth_design",
@@ -4148,13 +4154,14 @@
       "may_need_clarification": true,
       "input_artifacts": [
         "integration_requirements",
-        "tech_stack_decision"
+        "tech_stack_decision",
+        "non_goals"
       ],
       "output_artifacts": [
         "third_party_selections",
         "third_party_selections_decision"
       ],
-      "instruction": "For each integration, recommend a vendor with pricing, setup complexity, SDK quality, lock-in risk. Calculate total monthly cost. Trigger needs_clarification if cost exceeds expectations.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.\n\nZ1 Tier 2 (P3+C7+A8): RETURN your decision as a universal-shape ADR JSON object in your `final_answer` result — do NOT write any files yourself; the workflow materializes your returned JSON to the step's declared ADR path and rebuilds the ADR register automatically. The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.\n\nA8 — STACK ADR cost curve: because this is a stack-related decision, EVERY option in `options_considered` MUST also include `monthly_cost_curve: {at_mvp: \"$X\", at_1k_users: \"$Y\", at_100k_users: \"$Z\"}` AND the ADR top level MUST include `cost_at_target_users_usd` (number — picked from the curve based on z0's `expected_user_scale`) and `cost_mitigation_plan` (string or null when the curve fits z0's `cost_ceiling_monthly_usd`). The mechanical post-hook `verify_cost_curve_present` rejects missing curves; the reviewer at 4.16 rejects when `cost_at_target_users_usd > cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.",
+      "instruction": "HARD CONSTRAINT - NON-GOALS: never select or recommend a third-party service/integration that the non_goals artifact forbids. If integration_requirements lists an integration a non-goal excludes, DROP it (do not carry it into your selections and do not treat it as required) - non-goals are binding founder constraints and win.\n\nFor each integration, recommend a vendor with pricing, setup complexity, SDK quality, lock-in risk. Calculate total monthly cost. Trigger needs_clarification if cost exceeds expectations.\n\nIMPORTANT: After using tools (max 2-3 calls), produce your answer as structured text or JSON in your final response. Your response IS the artifact.\n\nZ1 Tier 2 (P3+C7+A8): RETURN your decision as a universal-shape ADR JSON object in your `final_answer` result — do NOT write any files yourself; the workflow materializes your returned JSON to the step's declared ADR path and rebuilds the ADR register automatically. The ADR JSON MUST contain ALL of these top-level fields:\n- `_schema_version`: \"1\"\n- `adr_id`: e.g. `ADR-{date}-{seq3}` (date = today YYYY-MM-DD, seq3 = zero-padded 3-digit sequence per mission)\n- `title`: one-line decision name\n- `status`: one of `proposed | accepted | deprecated | superseded`\n- `context`: problem/situation paragraph\n- `decision`: chosen option, prose\n- `consequences`: trade-offs incurred (positive + negative)\n- `options_considered`: list of >=2 options. EACH option has `id` (e.g. OPT-A), `name`, `rationale_for`, `rationale_against`, `tech_maturity_score` (0-10 heuristic), `novelty_benefit` (str), `reversal_cost` (low|medium|high)\n- `chosen_option_id`: MUST resolve to one of the option ids above\n- `falsification_signal`: when would we revisit this? measurable (e.g. \"if active SKU > 200 by week 4\")\n- `reversal_cost`: low|medium|high (overall ADR-level)\n- `supersedes_adr_id`: null or a prior `ADR-…` id\n\nThe mechanical post-hook `verify_adr_shape` will reject the ADR if any field is missing, `chosen_option_id` is orphan, `falsification_signal` is empty, or `reversal_cost` is outside the allowed enum.\n\nA8 — STACK ADR cost curve: because this is a stack-related decision, EVERY option in `options_considered` MUST also include `monthly_cost_curve: {at_mvp: \"$X\", at_1k_users: \"$Y\", at_100k_users: \"$Z\"}` AND the ADR top level MUST include `cost_at_target_users_usd` (number — picked from the curve based on z0's `expected_user_scale`) and `cost_mitigation_plan` (string or null when the curve fits z0's `cost_ceiling_monthly_usd`). The mechanical post-hook `verify_cost_curve_present` rejects missing curves; the reviewer at 4.16 rejects when `cost_at_target_users_usd > cost_ceiling_monthly_usd` AND `cost_mitigation_plan` is null.",
       "done_when": "third_party_selections exists with vendor recommendations and total cost.",
       "artifact_schema": {
         "third_party_selections": {
@@ -4254,7 +4261,8 @@
         "api_resource_model",
         "openapi_spec",
         "nfr_performance",
-        "functional_requirements"
+        "functional_requirements",
+        "non_goals"
       ],
       "output_artifacts": [
         "caching_strategy",
@@ -4355,7 +4363,8 @@
       "input_artifacts": [
         "system_architecture",
         "third_party_selections",
-        "functional_requirements"
+        "functional_requirements",
+        "non_goals"
       ],
       "output_artifacts": [
         "email_system_design",

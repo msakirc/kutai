@@ -5850,7 +5850,8 @@
         {
           "kind": "verify_premortem_shape",
           "payload": {
-            "action": "verify_premortem_shape"
+            "action": "verify_premortem_shape",
+            "premortem_path": "mission_{mission_id}/premortem.md"
           }
         }
       ]

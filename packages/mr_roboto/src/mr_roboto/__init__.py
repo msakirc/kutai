@@ -3221,10 +3221,18 @@ async def _run_dispatch(task: dict) -> Action:
             verify_premortem_shape as _verify_premortem,
         )
         try:
+            # Resolve premortem_path to WORKSPACE_DIR (the verifier open()s it;
+            # a workspace-relative path would otherwise miss against CWD — the
+            # same Bug-A class as verify_adr_register).
+            _pm = payload.get("premortem_path")
+            if _pm:
+                _resolved = _resolve_path_list([_pm])
+                if _resolved:
+                    _pm = _resolved[0]
             res = _verify_premortem(
                 premortem=payload.get("premortem"),
                 premortem_text=payload.get("premortem_text"),
-                premortem_path=payload.get("premortem_path"),
+                premortem_path=_pm,
             )
             if not res.get("ok"):
                 return Action(

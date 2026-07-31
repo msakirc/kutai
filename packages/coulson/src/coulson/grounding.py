@@ -108,8 +108,18 @@ def _match_single(pattern: str, written: set[str]) -> bool:
     if norm.endswith("/"):
         return any(w.startswith(norm) for w in written)
     if _is_glob(norm):
-        return any(fnmatch.fnmatch(p, norm) for p in written)
-    return norm in written
+        # Match the glob at root, OR as a boundary-respecting suffix — coders
+        # scaffold generic slots under a project subdir (backend/ frontend/),
+        # so `*.config.js` / `migrations/*.py` land at `backend/…/…`.
+        return any(
+            fnmatch.fnmatch(p, norm) or fnmatch.fnmatch(p, "*/" + norm)
+            for p in written
+        )
+    # Exact slot: the declared path, OR any written path that ends with it at a
+    # '/' segment boundary. m90 7.4: slot `prisma/schema.prisma` is satisfied by
+    # the coder's `backend/prisma/schema.prisma`. The leading '/' keeps it
+    # boundary-safe (`prisma/…` is NOT matched by `xprisma/…`).
+    return norm in written or any(w.endswith("/" + norm) for w in written)
 
 
 def match_produces_entry(entry, written: set[str]) -> bool:

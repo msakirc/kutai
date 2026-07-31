@@ -39,6 +39,33 @@ def test_dir_slot_not_satisfied_by_sibling_directory_prefix():
     assert match_produces_entry("mission_90/.screens/", written) is False
 
 
+def test_exact_slot_satisfied_by_scaffold_prefixed_path():
+    """A generic slot (prisma/schema.prisma) is satisfied by the coder's
+    scaffold-prefixed write (backend/prisma/schema.prisma) — the file IS the
+    declared artifact, just under the project subdir. m90 7.4 cycled forever
+    because grounding required an exact root-relative match the coder never
+    writes (it scaffolds under backend/ or frontend/)."""
+    assert match_produces_entry("prisma/schema.prisma",
+                                {"backend/prisma/schema.prisma"}) is True
+    assert match_produces_entry("scripts/seed.ts",
+                                {"frontend/src/scripts/seed.ts"}) is True
+
+
+def test_exact_slot_boundary_safe_no_partial_segment_match():
+    """Suffix match must respect the path-segment boundary: a slot is only
+    satisfied when the '/'-prefixed slot is a real suffix, so 'xprisma/...'
+    does NOT satisfy 'prisma/...'."""
+    assert match_produces_entry("prisma/schema.prisma",
+                                {"backend/xprisma/schema.prisma"}) is False
+    assert match_produces_entry("schema.prisma",
+                                {"backend/myschema.prisma"}) is False
+
+
+def test_exact_slot_still_matches_root_relative_write():
+    assert match_produces_entry("prisma/schema.prisma",
+                                {"prisma/schema.prisma"}) is True
+
+
 def test_literal_file_slot_still_requires_exact_match():
     """Regression guard: a non-directory literal must NOT gain prefix semantics —
     `foo/bar.md` is not satisfied by `foo/bar.md.bak`."""

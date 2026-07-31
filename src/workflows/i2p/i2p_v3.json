@@ -6263,18 +6263,14 @@
         "seed_script"
       ],
       "produces": [
-        [
-          "migrations/**/*.py",
-          "prisma/schema.prisma",
-          "drizzle.config.ts",
-          "drizzle.config.js"
-        ],
-        [
-          "scripts/seed.py",
-          "scripts/seed.ts",
-          "prisma/seed.ts",
-          "backend/seed.py"
-        ]
+        "migrations/**/*.py",
+        "prisma/schema.prisma",
+        "drizzle.config.ts",
+        "drizzle.config.js",
+        "scripts/seed.py",
+        "scripts/seed.ts",
+        "prisma/seed.ts",
+        "backend/seed.py"
       ],
       "post_hooks": [
         "verify_artifacts"
@@ -6464,21 +6460,17 @@
         "frontend_test_config"
       ],
       "produces": [
-        [
-          "backend/tests/conftest.py",
-          "backend/pytest.ini",
-          "backend/pyproject.toml",
-          "backend/jest.config.js",
-          "backend/jest.config.ts",
-          "backend/vitest.config.js",
-          "backend/vitest.config.ts"
-        ],
-        [
-          "frontend/vitest.config.ts",
-          "frontend/vitest.config.js",
-          "frontend/jest.config.ts",
-          "frontend/jest.config.js"
-        ]
+        "backend/tests/conftest.py",
+        "backend/pytest.ini",
+        "backend/pyproject.toml",
+        "backend/jest.config.js",
+        "backend/jest.config.ts",
+        "backend/vitest.config.js",
+        "backend/vitest.config.ts",
+        "frontend/vitest.config.ts",
+        "frontend/vitest.config.js",
+        "frontend/jest.config.ts",
+        "frontend/jest.config.js"
       ],
       "post_hooks": [
         "verify_artifacts"

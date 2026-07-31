@@ -112,8 +112,11 @@ async def scaffold_project(stack: str, project_name: str, output_dir: str = "") 
         full_path = os.path.join(output_dir, rel_path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
-        # Replace template variables
-        rendered = content.replace("{project_name}", project_name)
+        # Render template: templates are written format-style (literal braces
+        # doubled as {{ }}, placeholder {project_name}). .format() un-escapes the
+        # doubled braces AND substitutes the name; a plain .replace() left every
+        # scaffolded brace doubled, producing uncompilable JS/TS and unparseable JSON.
+        rendered = content.format(project_name=project_name)
 
         with open(full_path, "w", encoding="utf-8") as f:
             f.write(rendered)

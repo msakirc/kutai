@@ -6133,7 +6133,7 @@
       "post_hooks": [
         "verify_artifacts"
       ],
-      "instruction": "Set up code formatting (Prettier/Black/rustfmt), linting (ESLint/Pylint/clippy), and pre-commit hooks (husky/pre-commit). Configure all tools with project-appropriate rules. Set up editor configuration files (.vscode/settings.json, .editorconfig). Ensure pre-commit hooks run formatter and linter.",
+      "instruction": "Set up code formatting (Prettier/Black/rustfmt), linting (ESLint/Pylint/clippy), and pre-commit hooks (husky/pre-commit). Configure all tools with project-appropriate rules. Set up editor configuration files (.vscode/settings.json, .editorconfig). Ensure pre-commit hooks run formatter and linter.\n\nOUTPUT FORMAT: after creating the config files, return ONLY a JSON object (no prose summary) with EXACTLY these keys: {\"linter_config\": {\"tool\": \"<eslint|pylint|clippy>\", \"config_file\": \"<e.g. .eslintrc.json>\"}, \"formatter_config\": {\"tool\": \"<prettier|black|rustfmt>\", \"config_file\": \"<e.g. .prettierrc>\"}, \"precommit_config\": {\"hooks\": [\"<hook id>\", \"...\"]}}. Every object MUST carry its required fields (linter/formatter: both 'tool' and 'config_file'; precommit: 'hooks'). A prose-only summary will be REJECTED by the schema gate.",
       "done_when": "linter_config, formatter_config, and precommit_config exist and pre-commit hooks run correctly.",
       "artifact_schema": {
         "linter_config": {

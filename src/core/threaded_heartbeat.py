@@ -110,6 +110,10 @@ class ThreadedHeartbeat:
             target=self._run, name="heartbeat", daemon=True
         )
         self._thread.start()
+        logger.debug(
+            "threaded heartbeat armed (interval=%ss wedge=%ss)",
+            self.interval, self.wedge_threshold,
+        )
 
     async def tick_loop(self) -> None:
         """Bump the loop-liveness tick on a cadence. Run as an asyncio task."""

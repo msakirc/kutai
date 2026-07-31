@@ -788,13 +788,41 @@ async def main():
         except Exception as _exc:
             logger.debug(f"kdv final flush raised: {_exc!r}")
 
-    # Propagate exit code to wrapper (EXIT_RESTART=42, EXIT_STOP=0).
-    # Use sys.exit() so that atexit handlers (llama-server cleanup) still run.
-    # The orchestrator's finally block has already stopped llama-server by this
-    # point, but atexit provides a second safety net.
+    # Propagate exit code to wrapper (EXIT_RESTART=42, EXIT_STOP=0). Raised as
+    # SystemExit and turned into a hard os._exit by the entry point below — see
+    # there for why a normal (join-the-threads) exit hangs.
     if orch.requested_exit_code is not None:
         sys.exit(orch.requested_exit_code)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Run main() on a manual loop and HARD-exit. Rationale (2026-07-31): the
+    # first embedding-model load runs `from sentence_transformers import ...`
+    # inside an asyncio.to_thread worker; cold, that `transformers` import takes
+    # minutes. That worker is a NON-DAEMON ThreadPoolExecutor thread, so BOTH
+    # asyncio.run's `loop.shutdown_default_executor(wait=True)` AND the
+    # interpreter's `threading._shutdown()` JOIN it on the way out — the process
+    # can't terminate until the import finishes. On a restart that stranded the
+    # process mid-exit for minutes with its heartbeat stopped, so Yaşar Usta
+    # read it stale and false-killed it ("dondu") ~300s later; the warm-cache
+    # auto-restart then imported instantly and ran clean. The orchestrator has
+    # already run its own teardown (start()'s finally) by the time main()
+    # returns, so os._exit here is safe and skips the doomed thread-join.
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
+    _code = 0
+    try:
+        _loop.run_until_complete(main())
+    except SystemExit as _e:
+        _code = _e.code if isinstance(_e.code, int) else 0
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+        _code = 1
+    finally:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(_code if isinstance(_code, int) else 0)

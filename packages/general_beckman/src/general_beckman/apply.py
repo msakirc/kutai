@@ -2278,6 +2278,26 @@ def _parse_review_result(source_result: object) -> dict | list | None:
     return val if isinstance(val, (dict, list)) else None
 
 
+def _flatten_produces(produces: list) -> list:
+    """Flatten any_of produces slots (nested lists) into a flat path list.
+
+    ``produces`` slots may be strings or nested lists — nested lists are
+    ANY_OF groups (see check_grounding). File-bounds posthook executors
+    (check_imports / run_tests / run_semgrep / security_review) iterate
+    ``target_files`` expecting plain path strings, so a nested slot must be
+    flattened before it reaches them (else ``Path([...])`` /
+    ``[...].endswith`` -> TypeError). Grounding keeps the nested structure;
+    only ``target_files`` is flattened.
+    """
+    flat: list = []
+    for slot in produces or []:
+        if isinstance(slot, list):
+            flat.extend(str(p) for p in slot)
+        else:
+            flat.append(str(slot))
+    return flat
+
+
 def _posthook_agent_and_payload(
     a: RequestPostHook, source: dict, source_ctx: dict,
 ) -> tuple[str, dict]:
@@ -2362,7 +2382,7 @@ def _posthook_agent_and_payload(
             "executor": "mechanical",
             "payload": {
                 "action": "check_imports",
-                "target_files": produces,
+                "target_files": _flatten_produces(produces),
                 "workspace_path": workspace_path,
             },
         })
@@ -2374,7 +2394,7 @@ def _posthook_agent_and_payload(
             "executor": "mechanical",
             "payload": {
                 "action": "run_tests",
-                "target_files": produces,
+                "target_files": _flatten_produces(produces),
                 "stack_hint": source_ctx.get("stack_hint") or "",
             },
         })
@@ -2390,7 +2410,7 @@ def _posthook_agent_and_payload(
             "executor": "mechanical",
             "payload": {
                 "action": "run_semgrep",
-                "target_files": produces,
+                "target_files": _flatten_produces(produces),
                 "rule_pack_path": rule_pack,
             },
         })
@@ -2410,7 +2430,7 @@ def _posthook_agent_and_payload(
                 "action": "run_semgrep_layer_filtered",
                 "rule_pack_path": "forbidden_in_domain.yml",
                 "required_layer": "domain",
-                "target_files": produces,
+                "target_files": _flatten_produces(produces),
                 "workspace_path": workspace_path,
                 "mission_id": mission_id,
             },
@@ -2473,7 +2493,7 @@ def _posthook_agent_and_payload(
             "executor": "mechanical",
             "payload": {
                 "action": "run_semgrep",
-                "target_files": produces,
+                "target_files": _flatten_produces(produces),
                 "rule_pack_path": rule_pack,
             },
         })
@@ -2489,7 +2509,7 @@ def _posthook_agent_and_payload(
             "executor": "mechanical",
             "payload": {
                 "action": "apply_migration",
-                "target_files": produces,
+                "target_files": _flatten_produces(produces),
                 "workspace_path": workspace_path,
                 "stack_hint": stack_hint,
                 "enable_testcontainers": enable_tc,
@@ -2756,7 +2776,7 @@ def _posthook_agent_and_payload(
             "executor": "mechanical",
             "payload": {
                 "action": "security_review",
-                "target_files": produces,
+                "target_files": _flatten_produces(produces),
                 "workspace_path": workspace_path,
             },
         })

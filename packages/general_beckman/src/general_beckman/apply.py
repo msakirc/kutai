@@ -1911,10 +1911,51 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                     _sg_md = bool(_sg_produces) and all(
                         isinstance(p, str) and p.endswith(".md") for p in _sg_produces
                     )
+                    # Evidence backfill: a weak model often DOES the work
+                    # (write_file / migrate — files on disk) but returns a
+                    # malformed final artifact (raw file content, or JSON missing
+                    # a *_path field it just wrote), then loops on the identical
+                    # schema reject. Fill derivable NON-must_be_true fields
+                    # (schema_path, initial_migration, tool, …) from the concrete
+                    # evidence so the loop converges. connection_verified and
+                    # other must_be_true verification claims are NEVER derived.
+                    _gate_value = _draft
+                    _enr_changed = False
+                    try:
+                        from src.workflows.engine.hooks import (
+                            backfill_artifact_fields as _backfill,
+                            disk_paths_for_produces as _disk_for,
+                        )
+                        _tc_ev = source_ctx.get("tool_calls") or []
+                        _has_wr = any(
+                            isinstance(c, dict) and c.get("ok")
+                            and (c.get("name") or c.get("tool")) in (
+                                "write_file", "edit_file", "patch_file",
+                                "apply_diff", "create_file")
+                            for c in _tc_ev
+                        )
+                        _disk_ev = ([] if _has_wr
+                                    else _disk_for(_sg_produces, source.get("mission_id")))
+                        _enr, _enr_changed = _backfill(
+                            _draft, _art_schema, _tc_ev, _sg_produces, _disk_ev)
+                        if _enr_changed:
+                            _gate_value = _enr
+                    except Exception:  # noqa: BLE001 — backfill must never break grade
+                        _enr_changed = False
                     _sg = _schema_gate(
-                        output_value=_draft, schema=_art_schema, inputs=_gate_inputs,
+                        output_value=_gate_value, schema=_art_schema, inputs=_gate_inputs,
                         produces_markdown=_sg_md,
                     )
+                    if _enr_changed and _sg.get("passed"):
+                        # Persist the enriched artifact so the LLM grade (next) and
+                        # any downstream consumer see the complete value, not the
+                        # coder's malformed draft.
+                        source["result"] = _gate_value
+                        try:
+                            from dabidabi import update_task as _upd_task
+                            await _upd_task(source_id, result=_gate_value)
+                        except Exception:  # noqa: BLE001
+                            pass
                 except Exception:  # noqa: BLE001 — never let the gate crash grade
                     _sg = {"passed": True, "error": ""}
                 if not _sg.get("passed"):

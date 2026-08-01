@@ -971,6 +971,164 @@ async def resolve_dynamic_constraints(
     return resolved
 
 
+_TOOL_KEYWORDS = (
+    "prisma", "alembic", "drizzle", "sequelize", "typeorm",
+    "knex", "django", "sqlalchemy", "flyway", "liquibase",
+)
+_FIELD_PATH_HINTS = {
+    "schema": ("schema", "models", "model"),
+    "client": ("prisma", "client", "db", "database", "session"),
+    "seed": ("seed",),
+    "migration": ("migration",),
+    "config": ("config",),
+    "project": ("",),  # any produces-satisfying path
+}
+
+
+def _derive_field_value(field: str, cand_paths: list, shell_cmds: str):
+    """Return an evidence-backed value for *field*, or None if none applies.
+
+    Path-shaped fields resolve to a produces-satisfying written/on-disk path
+    (keyword-disambiguated when several writes exist). A field literally named
+    ``tool`` resolves to a migration-tool keyword actually present in the ran
+    shell commands. NEVER invents a value with no matching evidence.
+    """
+    fl = field.lower()
+    is_path = (
+        fl.endswith("_path") or fl.endswith("path")
+        or fl.endswith("_file") or fl.endswith("file")
+        or fl.endswith("_dir") or fl.endswith("migration")
+    )
+    if is_path and cand_paths:
+        for key, words in _FIELD_PATH_HINTS.items():
+            if key in fl:
+                for p in cand_paths:
+                    if any(w and w in p.lower() for w in words):
+                        return p
+        if len(cand_paths) == 1:
+            return cand_paths[0]
+        return cand_paths[0]  # produces-satisfying; best available
+    if fl == "tool" and shell_cmds:
+        for t in _TOOL_KEYWORDS:
+            if t in shell_cmds:
+                return t
+    return None
+
+
+def disk_paths_for_produces(produces, mission_id, max_files: int = 300) -> list:
+    """Workspace-relative files under each ``produces`` entry's directory.
+
+    Evidence source for shell-created files (e.g. ``prisma migrate`` writes a
+    migration with a timestamped name no write_file call recorded). Globs each
+    produces entry's directory (or a file entry's parent), excludes
+    ``node_modules``/``.git``, caps the result, and returns paths relative to
+    WORKSPACE_DIR (so they share the coder's ``mission_<id>/…`` convention).
+    """
+    import os
+    try:
+        from src.tools.workspace import WORKSPACE_DIR as _WSD
+    except Exception:  # noqa: BLE001
+        return []
+    prod = produces if isinstance(produces, list) else []
+    out: list = []
+    seen: set = set()
+    for entry in prod:
+        if not isinstance(entry, str) or not entry:
+            continue
+        rel = entry.rstrip("/")
+        base = os.path.join(_WSD, rel)
+        d = base if os.path.isdir(base) else os.path.dirname(base)
+        if not d or not os.path.isdir(d):
+            continue
+        stop = False
+        for root, dirs, files in os.walk(d):
+            # Prune heavy/irrelevant trees BEFORE descending (cap bounds output,
+            # not the walk — an eager glob would list all of node_modules first).
+            dirs[:] = [x for x in dirs if x not in ("node_modules", ".git")]
+            for fn in files:
+                if len(out) >= max_files:
+                    stop = True
+                    break
+                r = os.path.relpath(os.path.join(root, fn), _WSD).replace("\\", "/")
+                if r not in seen:
+                    seen.add(r)
+                    out.append(r)
+            if stop:
+                break
+    return out
+
+
+def backfill_artifact_fields(
+    output_value, schema: dict, tool_calls: list | None,
+    produces: list | None, disk_paths: list | None = None,
+) -> tuple[object, bool]:
+    """Fill required, NON-``must_be_true`` descriptive fields of a structured
+    artifact from concrete evidence when the coder did the work but omitted the
+    field in its final answer (the identical-failure loop: 7.4a wrote
+    ``schema.prisma`` then looped on ``schema_path`` missing; 7.4c ran the
+    migration then returned the lock-file content instead of the JSON).
+
+    Evidence = successful ``write_file`` paths (from ``tool_calls``) that satisfy
+    the step's ``produces``, plus any ``disk_paths`` the caller globbed under the
+    produces dir, plus the ran shell commands (for a ``tool`` field). Only
+    path-shaped fields and a literal ``tool`` field are derived — and ONLY from
+    real matching evidence, so a truly-empty (no-work) artifact still fails.
+
+    ``must_be_true`` fields (``connection_verified`` etc.) are NEVER touched —
+    those are genuine verification claims the coder must make; evidence that a
+    file exists does not prove a connection works.
+
+    Returns ``(enriched_output_value_json_str, changed)`` or ``(output_value,
+    False)`` when nothing was derived.
+    """
+    if not isinstance(schema, dict) or not schema:
+        return output_value, False
+    try:
+        from coulson.grounding import extract_written_paths, match_produces_entry
+    except Exception:  # noqa: BLE001 — never break validation on import trouble
+        return output_value, False
+
+    written = extract_written_paths(tool_calls or [])
+    evidence = set(written) | {
+        p.replace("\\", "/") for p in (disk_paths or []) if isinstance(p, str)
+    }
+    prod = produces if isinstance(produces, list) else []
+    cand = [p for p in sorted(evidence)
+            if any(match_produces_entry(e, {p}) for e in prod)] or sorted(evidence)
+    shell_cmds = " ".join(
+        (c.get("args") or {}).get("command", "")
+        for c in (tool_calls or [])
+        if isinstance(c, dict)
+        and (c.get("name") or c.get("tool")) == "shell"
+        and c.get("ok") is not False
+    ).lower()
+
+    changed = False
+    enriched: dict = {}
+    for aname, rules in schema.items():
+        if not isinstance(rules, dict) or rules.get("type") != "object":
+            continue
+        art = _extract_artifact_value(output_value, aname, "object")
+        art = dict(art) if isinstance(art, dict) else {}
+        required = rules.get("required_fields") or []
+        mustbe = set(rules.get("must_be_true") or [])
+        for f in required:
+            if f in mustbe:
+                continue
+            v = art.get(f)
+            if v not in (None, "", [], {}):
+                continue
+            filled = _derive_field_value(f, cand, shell_cmds)
+            if filled is not None:
+                art[f] = filled
+                changed = True
+        if art:
+            enriched[aname] = art
+    if not changed:
+        return output_value, False
+    return json.dumps(enriched), True
+
+
 def validate_artifact_schema(
     output_value: str, schema: dict, inputs: dict | None = None,
     *, produces_markdown: bool = False,

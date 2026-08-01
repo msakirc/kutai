@@ -6238,16 +6238,15 @@
       "reversibility": "full"
     },
     {
-      "id": "7.4",
+      "id": "7.4a",
       "phase": "phase_7",
-      "name": "database_setup",
+      "name": "db_schema_author",
       "agent": "coder",
-      "difficulty": "medium",
+      "difficulty": "easy",
       "tools_hint": [
-        "shell",
         "write_file",
         "read_file",
-        "git_commit"
+        "shell"
       ],
       "depends_on": [
         "7.3"
@@ -6258,32 +6257,58 @@
         "database_schema"
       ],
       "output_artifacts": [
-        "db_client",
-        "migration_system",
-        "seed_script"
+        "schema_authored"
       ],
       "produces": [
-        [
-          "migrations/**/*.py",
-          "prisma/schema.prisma",
-          "drizzle.config.ts",
-          "drizzle.config.js"
-        ],
-        [
-          "scripts/seed.py",
-          "scripts/seed.ts",
-          "prisma/seed.ts",
-          "backend/seed.py"
-        ]
+        "mission_{mission_id}/backend/prisma/"
       ],
-      "post_hooks": [
-        "verify_artifacts"
-      ],
+      "post_hooks": [],
       "context": {
-        "estimated_output_tokens": 6000
+        "estimated_output_tokens": 4000
       },
-      "instruction": "Set up database client/ORM with connection pooling and configuration. Set up migration system with initial migration matching database_schema. Create seed data script with development data based on user_personas and business_rules. Verify migrations run forward and backward. Verify seed script populates data correctly.\n\nENV + DB SETUP (do this, don't give up): (0) FILE WRITES: to CREATE or OVERWRITE any file (schema.prisma, .env, seed scripts, config) use the write_file tool with the full content as a string. Do NOT use shell heredoc (`cat <<'EOF' > file`) or `echo >`/`>>` redirection to write multi-line files — this sandbox's shell does NOT support heredoc and such writes silently FAIL, leaving the file unchanged or corrupt (single-quote-wrapped lines). write_file is the only reliable writer; pass the same relative path you used to read the file. (1) The shell runs each command as a FRESH process — env vars do NOT persist across shell calls. To use DATABASE_URL you MUST either write it into the project's .env (e.g. `DATABASE_URL=\"file:./dev.db\"` for a sqlite datasource) OR inline it in every command (`DATABASE_URL=\"file:./dev.db\" npx prisma migrate deploy`). (2) FIRST validate the schema (`npx prisma validate`). If it is malformed/unparseable, REWRITE it cleanly from database_schema (via the write_file tool, NOT shell heredoc) before proceeding — a broken schema is a fixable blocker, not a reason to stop. (3) A sqlite datasource is a local FILE (no server needed), so connection IS verifiable: actually run the migration + a query, and set connection_verified=true only when it truly succeeds. If a real server-backed DB genuinely cannot be reached, fail loudly with the exact error — do not narrate uncertainty.\n\nAFTER the setup work is done, RETURN a JSON object directly in `result` (no envelope, no markdown, no \"Wrote ...\" summary):\n\n{\n  \"db_client\": {\n    \"client_path\": \"<path to db client/ORM module>\",\n    \"connection_verified\": true,\n    \"orm\": \"<library + version>\",\n    \"pool_config\": \"<short description>\"\n  },\n  \"migration_system\": {\n    \"tool\": \"<alembic|prisma|drizzle|...>\",\n    \"initial_migration\": \"<path or id of the first migration>\",\n    \"forward_verified\": true,\n    \"backward_verified\": true\n  },\n  \"seed_script\": {\n    \"script_path\": \"<path to seed script>\",\n    \"data_summary\": \"<one line: what was seeded>\",\n    \"populates_verified\": true\n  }\n}\n\nSet boolean fields to true ONLY when actually verified. If a verification couldn't run (tool unavailable), still emit the field as false with a `notes` sibling explaining why.",
-      "done_when": "db_client, migration_system, and seed_script exist and work correctly.",
+      "instruction": "Author ONLY the ORM/database SCHEMA. ONE deliverable: the schema file.\n\nYour FIRST tool call MUST be write_file for the schema file — do NOT `ls`, `cat`, or `validate` first.\n\nSTEPS: (1) write_file the schema file for the ORM chosen in `tech_stack_decision`, encoding EVERY entity/field/relation from the `database_schema` artifact (Prisma → `backend/prisma/schema.prisma`; Drizzle → `backend/src/db/schema.ts`; SQLAlchemy → `backend/app/models.py`) — all under the backend/ dir 7.3 created. (2) write_file the project `.env` with the datasource URL (sqlite: `DATABASE_URL=\"file:./dev.db\"`). (3) THEN validate it parses (Prisma: `cd mission_<id>/backend && DATABASE_URL=\"file:./dev.db\" npx prisma validate`). If validation fails, REWRITE the schema cleanly with write_file and re-validate — a broken schema is a fixable blocker, not a reason to stop.\n\nFILE WRITES: use the write_file tool with the full file content as a string. write_file paths are relative to the workspace ROOT, so INCLUDE your mission directory prefix exactly like the existing files do (e.g. `mission_<id>/backend/...`, the same backend/ tree step 7.3 scaffolded). Do NOT use shell heredoc (`cat <<'EOF' > f`) or `echo >`/`>>` — this sandbox's shell canNOT do heredoc and such writes silently FAIL/corrupt the file. The shell runs each command as a FRESH process — env vars do NOT persist across shell calls. For DATABASE_URL either write it into the project's .env (sqlite: `DATABASE_URL=\"file:./dev.db\"`) OR inline it in EVERY command (`DATABASE_URL=\"file:./dev.db\" npx prisma ...`). `cd` into the mission's backend dir each shell call (`cd mission_<id>/backend && ...`).\n\nRETURN JSON directly in `result` (no envelope, no markdown):\n{\n  \"schema_authored\": {\n    \"schema_path\": \"<path to the schema file you wrote>\",\n    \"datasource\": \"<sqlite|postgres|... + url>\",\n    \"orm\": \"<library + version>\",\n    \"validated\": true\n  }\n}\nSet validated=true ONLY if the schema tool actually parsed it; else false with a `notes` sibling.",
+      "done_when": "The ORM schema file exists under backend/ (all entities from database_schema) and .env carries the datasource URL.",
+      "artifact_schema": {
+        "schema_authored": {
+          "type": "object",
+          "required_fields": [
+            "schema_path",
+            "datasource"
+          ]
+        }
+      },
+      "reversibility": "full"
+    },
+    {
+      "id": "7.4b",
+      "phase": "phase_7",
+      "name": "db_client_module",
+      "agent": "coder",
+      "difficulty": "easy",
+      "tools_hint": [
+        "write_file",
+        "read_file",
+        "shell"
+      ],
+      "depends_on": [
+        "7.4a"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "tech_stack_decision"
+      ],
+      "output_artifacts": [
+        "db_client"
+      ],
+      "produces": [
+        "mission_{mission_id}/backend/"
+      ],
+      "post_hooks": [],
+      "context": {
+        "estimated_output_tokens": 3000
+      },
+      "instruction": "Write the DB CLIENT/connection module and PROVE it connects. ONE deliverable: the client module.\n\nYour FIRST tool call MUST be write_file for the client module (write it under `backend/src/` in your mission workspace).\n\nSTEPS: (1) write_file a small client module that instantiates the ORM client with connection pooling/config (Prisma → `backend/src/lib/prisma.ts` exporting a PrismaClient; Drizzle → a `db` export; SQLAlchemy → engine+Session in `backend/app/database.py`). For Prisma, run `cd mission_<id>/backend && DATABASE_URL=\"file:./dev.db\" npx prisma generate` first so the client type exists. (2) Actually OPEN a connection to the datasource and confirm it works (Prisma: a tiny script calling `prisma.$connect()` then `$disconnect()`; or `npx prisma db execute --stdin` with `SELECT 1`). A sqlite datasource is a local FILE, so this IS verifiable — run it.\n\nFILE WRITES: use the write_file tool with the full file content as a string. write_file paths are relative to the workspace ROOT, so INCLUDE your mission directory prefix exactly like the existing files do (e.g. `mission_<id>/backend/...`, the same backend/ tree step 7.3 scaffolded). Do NOT use shell heredoc (`cat <<'EOF' > f`) or `echo >`/`>>` — this sandbox's shell canNOT do heredoc and such writes silently FAIL/corrupt the file. The shell runs each command as a FRESH process — env vars do NOT persist across shell calls. For DATABASE_URL either write it into the project's .env (sqlite: `DATABASE_URL=\"file:./dev.db\"`) OR inline it in EVERY command (`DATABASE_URL=\"file:./dev.db\" npx prisma ...`). `cd` into the mission's backend dir each shell call (`cd mission_<id>/backend && ...`).\n\nRETURN JSON directly in `result`:\n{\n  \"db_client\": {\n    \"client_path\": \"<path to the client module>\",\n    \"connection_verified\": true,\n    \"orm\": \"<library + version>\",\n    \"pool_config\": \"<short description>\"\n  }\n}\nSet connection_verified=true ONLY when a real connection genuinely succeeded. If it cannot connect, fail loudly with the EXACT error — do not narrate uncertainty.",
+      "done_when": "A DB client module exists under backend/ and a real connection to the datasource succeeded (connection_verified=true).",
       "artifact_schema": {
         "db_client": {
           "type": "object",
@@ -6294,14 +6319,84 @@
           "must_be_true": [
             "connection_verified"
           ]
-        },
+        }
+      },
+      "reversibility": "full"
+    },
+    {
+      "id": "7.4c",
+      "phase": "phase_7",
+      "name": "db_migrations",
+      "agent": "coder",
+      "difficulty": "easy",
+      "tools_hint": [
+        "shell",
+        "read_file"
+      ],
+      "depends_on": [
+        "7.4a"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "tech_stack_decision",
+        "database_schema"
+      ],
+      "output_artifacts": [
+        "migration_system"
+      ],
+      "produces": [
+        "mission_{mission_id}/backend/prisma/migrations/migration_lock.toml"
+      ],
+      "post_hooks": [],
+      "context": {
+        "estimated_output_tokens": 2500
+      },
+      "instruction": "Generate and APPLY the initial DB migration matching `database_schema`. This step runs the ORM's migration CLI (shell) — it does NOT author files by hand.\n\nYour FIRST tool call MUST be the migration command (not exploration). Run the ORM's migration generator so it CREATES AND APPLIES the initial migration, inlining the datasource env each time (Prisma+sqlite: `cd mission_<id>/backend && DATABASE_URL=\"file:./dev.db\" npx prisma migrate dev --name init --skip-generate`; Drizzle: `drizzle-kit generate` then `migrate`; Alembic: `alembic revision --autogenerate -m init` then `alembic upgrade head`). Confirm the migration files were written under `backend/prisma/migrations/` and the migration APPLIED (the dev.db now has the tables — check with a quick query). If the schema is missing/broken, STOP and report the exact error — do not fabricate success.\n\nThe shell runs each command as a FRESH process — env vars do NOT persist across shell calls. For DATABASE_URL either write it into the project's .env (sqlite: `DATABASE_URL=\"file:./dev.db\"`) OR inline it in EVERY command (`DATABASE_URL=\"file:./dev.db\" npx prisma ...`). `cd` into the mission's backend dir each shell call (`cd mission_<id>/backend && ...`).\n\nRETURN JSON directly in `result`:\n{\n  \"migration_system\": {\n    \"tool\": \"<prisma|drizzle|alembic|...>\",\n    \"initial_migration\": \"<path or id of the first migration>\",\n    \"forward_verified\": true,\n    \"backward_verified\": true\n  }\n}\nSet forward_verified=true only if `migrate`/`upgrade` exited 0. Set backward_verified=true only if you actually ran a down/rollback; else false with a `notes` sibling.",
+      "done_when": "The initial migration was generated and applied; migration files exist under backend/prisma/migrations/.",
+      "artifact_schema": {
         "migration_system": {
           "type": "object",
           "required_fields": [
             "tool",
             "initial_migration"
           ]
-        },
+        }
+      },
+      "reversibility": "full"
+    },
+    {
+      "id": "7.4d",
+      "phase": "phase_7",
+      "name": "db_seed",
+      "agent": "coder",
+      "difficulty": "easy",
+      "tools_hint": [
+        "write_file",
+        "read_file",
+        "shell"
+      ],
+      "depends_on": [
+        "7.4b",
+        "7.4c"
+      ],
+      "may_need_clarification": false,
+      "input_artifacts": [
+        "tech_stack_decision",
+        "database_schema"
+      ],
+      "output_artifacts": [
+        "seed_script"
+      ],
+      "produces": [
+        "mission_{mission_id}/backend/prisma/"
+      ],
+      "post_hooks": [],
+      "context": {
+        "estimated_output_tokens": 4000
+      },
+      "instruction": "Write a SEED script with development data and RUN it. ONE deliverable: the seed script.\n\nYour FIRST tool call MUST be write_file for the seed script (write it at `backend/prisma/seed.ts` in your mission workspace).\n\nSTEPS: (1) write_file a seed script that inserts realistic development data consistent with `database_schema` (and user_personas/business_rules if available) via the DB client from 7.4b (Prisma → `backend/prisma/seed.ts`). (2) RUN it against the dev database, inlining the datasource env (Prisma: `cd mission_<id>/backend && DATABASE_URL=\"file:./dev.db\" npx tsx prisma/seed.ts` or `node prisma/seed.ts`). Confirm rows were inserted.\n\nFILE WRITES: use the write_file tool with the full file content as a string. write_file paths are relative to the workspace ROOT, so INCLUDE your mission directory prefix exactly like the existing files do (e.g. `mission_<id>/backend/...`, the same backend/ tree step 7.3 scaffolded). Do NOT use shell heredoc (`cat <<'EOF' > f`) or `echo >`/`>>` — this sandbox's shell canNOT do heredoc and such writes silently FAIL/corrupt the file. The shell runs each command as a FRESH process — env vars do NOT persist across shell calls. For DATABASE_URL either write it into the project's .env (sqlite: `DATABASE_URL=\"file:./dev.db\"`) OR inline it in EVERY command (`DATABASE_URL=\"file:./dev.db\" npx prisma ...`). `cd` into the mission's backend dir each shell call (`cd mission_<id>/backend && ...`).\n\nRETURN JSON directly in `result`:\n{\n  \"seed_script\": {\n    \"script_path\": \"<path to the seed script>\",\n    \"data_summary\": \"<one line: what was seeded>\",\n    \"populates_verified\": true\n  }\n}\nSet populates_verified=true ONLY if the seed script actually ran and inserted rows; else false with a `notes` sibling explaining why.",
+      "done_when": "A seed script exists under backend/ and ran successfully against the dev database.",
+      "artifact_schema": {
         "seed_script": {
           "type": "object",
           "required_fields": [
@@ -6526,7 +6621,9 @@
         "7.3",
         "7.5",
         "7.5m",
-        "7.4"
+        "7.4b",
+        "7.4c",
+        "7.4d"
       ],
       "may_need_clarification": false,
       "input_artifacts": [

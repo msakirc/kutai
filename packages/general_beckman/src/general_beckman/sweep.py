@@ -68,6 +68,71 @@ async def _resend_clarification(task_id: int) -> None:
     )
 
 
+def _producer_artifact_validity(ctx: dict, result, mission_id) -> tuple[bool, str]:
+    """Re-validate a stuck-ungraded PRODUCER's artifact against its own schema.
+
+    Returns ``(ok, error)``. ``ok=True`` when the task is NOT a schema-gated
+    producer (nothing to re-check — the safety net proceeds as before) OR its
+    stored artifact passes its ``artifact_schema``. ``ok=False`` with a reason
+    when a producer's artifact FAILS its own contract — the ungraded safety net
+    must then DLQ it (surface loudly), never silently promote it to
+    ``completed``.
+
+    Root: m90 4.4 (task 567430). A null ``database_schema`` stub
+    (``{tables: null, ...}``, a self-declared "Unable to produce JSON" failure)
+    was correctly rejected by every worker-path gate, got stranded in
+    ``ungraded`` with an empty ``_pending_posthooks``, and then rode the 30-min
+    safety net's raw ``UPDATE status='completed'`` — which never re-checked the
+    artifact — into ``completed``. That poisoned the whole phase-7 backend
+    build (7.4 db-setup can't build a DB with no tables). This re-asserts the
+    artifact contract at the exact seam (a non-worker completion) where it was
+    never enforced.
+
+    Mirrors the SYNC parts of the worker-path gate
+    (``hooks.py`` ``post_execute_workflow_step`` ~2006-2049): the
+    ``empty_ok_when_input_empty`` exemption is anchored to real upstream inputs
+    so a legitimately-empty scope is NOT false-DLQ'd; the async dynamic-
+    constraint resolution is skipped (its absence only RELAXES validation —
+    it can never turn a valid artifact into a false reject). Fails OPEN on a
+    tooling error (validator import/crash) — a bug in our re-check must not
+    wedge the queue — but fails CLOSED on an actual invalid artifact, which is
+    the hole being closed.
+    """
+    schema = ctx.get("artifact_schema")
+    if not isinstance(schema, dict) or not schema:
+        return True, ""
+    output_value = (
+        result if isinstance(result, str)
+        else (json.dumps(result, ensure_ascii=False) if result is not None else "")
+    )
+    if not output_value.strip():
+        return False, "empty artifact for a schema-gated producer step"
+    produces = ctx.get("produces") or []
+    produces_markdown = bool(produces) and all(
+        str(p).endswith(".md") for p in produces
+    )
+    try:
+        from src.workflows.engine.hooks import (
+            validate_artifact_schema, collect_empty_exemption_inputs,
+        )
+        gate_inputs = None
+        try:
+            gate_inputs = collect_empty_exemption_inputs(schema, mission_id)
+        except Exception:
+            gate_inputs = None
+        ok, err = validate_artifact_schema(
+            output_value, schema, inputs=gate_inputs,
+            produces_markdown=produces_markdown,
+        )
+        return bool(ok), ("" if ok else (err or "schema validation failed"))
+    except Exception as exc:
+        # Tooling failure (validator unavailable / raised) — do NOT block
+        # promotion on our own bug. Preserves the original safety-net behavior
+        # for the (rare) case the re-check itself can't run.
+        logger.debug(f"[Sweep] producer re-validation skipped (tooling): {exc}")
+        return True, ""
+
+
 async def sweep_queue() -> None:
     """Task-level recovery: stuck, ungraded, dep cascade, subtasks,
     overdue retry gates, waiting_human escalation, workflow timeouts."""
@@ -155,10 +220,18 @@ async def sweep_queue() -> None:
         await db.commit()
 
     # 2. Ungraded tasks stuck for > 30 min — safety net
-    #    Use worker_completed_at from context (set by base.py on entering ungraded).
-    #    Falls back to started_at if worker_completed_at is missing.
+    #    Clock: prefer context.worker_completed_at, else started_at. NOTE:
+    #    worker_completed_at currently has NO production writer (only a test
+    #    sets it), so the clock effectively anchors to started_at today — the
+    #    net can fire 30 min after a task STARTED rather than 30 min after it
+    #    entered 'ungraded'. That premature firing used to be dangerous because
+    #    the promotion below never re-checked the artifact; the fail-closed
+    #    producer re-validation added below neutralizes it (invalid → DLQ,
+    #    valid → complete). Writing worker_completed_at on the ungraded
+    #    transition remains a tracked follow-up to make the clock honest.
     cursor_ung = await db.execute(
-        "SELECT id, context, started_at FROM tasks WHERE status = 'ungraded'"
+        "SELECT id, context, started_at, result, mission_id, agent_type, "
+        "worker_attempts, failed_in_phase FROM tasks WHERE status = 'ungraded'"
     )
     all_ungraded = [dict(row) for row in await cursor_ung.fetchall()]
     stuck_ungraded = []
@@ -185,6 +258,26 @@ async def sweep_queue() -> None:
             logger.debug(
                 f"[Sweep] Stuck ungraded #{task['id']} has pending posthooks "
                 f"{ctx['_pending_posthooks']}; leaving for verdict path"
+            )
+            continue
+        # Fail-closed producer gate: NEVER let a producer whose stored artifact
+        # fails its own artifact_schema ride the safety net into 'completed'
+        # (m90 4.4 — a null database_schema stub did exactly that and poisoned
+        # phase 7). Re-assert the contract here, the one seam a non-worker
+        # completion currently skips. Invalid → DLQ (loud), not silent pass.
+        _ok, _verr = _producer_artifact_validity(
+            ctx, task.get("result"), task.get("mission_id")
+        )
+        if not _ok:
+            await _dlq_write(
+                task,
+                error=f"ungraded safety-net: producer artifact invalid — {_verr}",
+                category="quality",
+                attempts=int(task.get("worker_attempts") or 0),
+            )
+            logger.warning(
+                f"[Sweep] Stuck ungraded producer #{task['id']} FAILED "
+                f"re-validation → DLQ (not completed): {_verr}"
             )
             continue
         await db.execute(

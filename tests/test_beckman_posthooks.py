@@ -480,6 +480,144 @@ async def test_sweep_skips_ungraded_with_pending_posthooks(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_sweep_dlqs_ungraded_producer_with_invalid_artifact(tmp_path, monkeypatch):
+    """Safety net must NOT complete a producer whose artifact fails its schema.
+
+    Root: m90 4.4 (task 567430) — a null ``database_schema`` stub rode the
+    ungraded>30min safety net into ``completed``, silently poisoning phase 7.
+    A producer stranded ungraded with an invalid artifact must fail loudly
+    (DLQ / ``failed``), never complete.
+    """
+    from datetime import timedelta
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from src.infra import db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db, add_task, get_task, update_task
+    from dabidabi.times import utc_now, to_db
+    await init_db()
+
+    old_ts = to_db(utc_now() - timedelta(hours=2))
+    src_id = await add_task(
+        title="db schema", description="", agent_type="architect", mission_id=1,
+        context=json.dumps({
+            "is_workflow_step": True,
+            "workflow_step_id": "4.4",
+            "worker_completed_at": old_ts,
+            "artifact_schema": {
+                "database_schema": {
+                    "type": "object",
+                    "required_fields": ["tables", "relationships", "indexes"],
+                },
+            },
+            "produces": ["prisma/schema.prisma"],
+        }),
+    )
+    # Invalid stub — null tables (mirrors 4.4's real failure artifact).
+    await update_task(src_id, status="ungraded", result=json.dumps({
+        "database_schema": {"tables": None, "relationships": None, "indexes": None},
+    }))
+
+    from general_beckman.sweep import sweep_queue
+    await sweep_queue()
+
+    src = await get_task(src_id)
+    assert src["status"] != "completed", (
+        "invalid producer artifact must not ride the safety net into "
+        f"completed; got status={src['status']!r}"
+    )
+    assert src["status"] == "failed", (
+        f"expected loud failure (DLQ/failed), got status={src['status']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_completes_ungraded_producer_with_valid_artifact(tmp_path, monkeypatch):
+    """Safety net still rescues a genuinely-valid producer stuck ungraded."""
+    from datetime import timedelta
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from src.infra import db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db, add_task, get_task, update_task
+    from dabidabi.times import utc_now, to_db
+    await init_db()
+
+    old_ts = to_db(utc_now() - timedelta(hours=2))
+    src_id = await add_task(
+        title="db schema", description="", agent_type="architect", mission_id=1,
+        context=json.dumps({
+            "is_workflow_step": True,
+            "workflow_step_id": "4.4",
+            "worker_completed_at": old_ts,
+            "artifact_schema": {
+                "database_schema": {
+                    "type": "object",
+                    "required_fields": ["tables", "relationships", "indexes"],
+                },
+            },
+            "produces": ["prisma/schema.prisma"],
+        }),
+    )
+    await update_task(src_id, status="ungraded", result=json.dumps({
+        "database_schema": {
+            "tables": [{"name": "users", "columns": ["id", "email"]}],
+            "relationships": [{"from": "users", "to": "sessions"}],
+            "indexes": [{"table": "users", "column": "email"}],
+        },
+    }))
+
+    from general_beckman.sweep import sweep_queue
+    await sweep_queue()
+
+    src = await get_task(src_id)
+    assert src["status"] == "completed", (
+        f"valid producer must still be rescued by the safety net; "
+        f"got status={src['status']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_completes_ungraded_non_producer(tmp_path, monkeypatch):
+    """A stuck-ungraded task with NO artifact_schema completes as before."""
+    from datetime import timedelta
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from src.infra import db as _db_mod
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
+    if _db_mod._db_connection is not None:
+        await _db_mod._db_connection.close()
+        _db_mod._db_connection = None
+
+    from src.infra.db import init_db, add_task, get_task, update_task
+    from dabidabi.times import utc_now, to_db
+    await init_db()
+
+    old_ts = to_db(utc_now() - timedelta(hours=2))
+    src_id = await add_task(
+        title="plain", description="", agent_type="writer", mission_id=1,
+        context=json.dumps({"worker_completed_at": old_ts}),
+    )
+    await update_task(src_id, status="ungraded", result="some free text output")
+
+    from general_beckman.sweep import sweep_queue
+    await sweep_queue()
+
+    src = await get_task(src_id)
+    assert src["status"] == "completed", (
+        f"non-producer safety net unchanged; got status={src['status']!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_summarizer_task_does_not_emit_progress_ping(tmp_path, monkeypatch):
     # SP3: the summary post-hook child runs as a "summarizer" task; the
     # progress-ping suppression set now excludes summarizer (not

@@ -6260,7 +6260,7 @@
         "schema_authored"
       ],
       "produces": [
-        "mission_{mission_id}/backend/prisma/"
+        "mission_{mission_id}/backend/"
       ],
       "post_hooks": [],
       "context": {

@@ -1885,6 +1885,12 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         # grader then judges semantics only, on shape-valid artifacts.
         _art_schema = source_ctx.get("artifact_schema")
         _gate_inputs = None  # upstream input artifacts for empty_ok exemption
+        # Set True ONLY when the deterministic schema gate genuinely PASSED (never
+        # in the errored-to-passed catch-all). Residual #2 uses this below as the
+        # structural completeness proof for a structured-only SINGLE-FILE step
+        # that carries no verify_*_shape check (NOT the directory-produces
+        # 7.4a/b/d — see the residual-#2 note below for why those are excluded).
+        _schema_gate_verified = False
         if isinstance(_art_schema, dict) and _art_schema:
             _draft = source.get("result")
             if isinstance(_draft, str) and _draft.strip():
@@ -1946,6 +1952,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                         output_value=_gate_value, schema=_art_schema, inputs=_gate_inputs,
                         produces_markdown=_sg_md,
                     )
+                    _schema_gate_verified = bool(_sg.get("passed"))
                     if _enr_changed and _sg.get("passed"):
                         # Persist the enriched artifact so the LLM grade (next) and
                         # any downstream consumer see the complete value, not the
@@ -2041,6 +2048,7 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
         # mechanical index is not. Prose *_shape checks are never registry members,
         # so this cannot re-admit them.
         _shape_verify_passed = False
+        _structured_only = False
         try:
             from coulson import _write_tools_redundant as _artifact_is_structured_only
             _registry_authoritative = any(
@@ -2048,12 +2056,15 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 and str(c.get("kind", "")) in _GRADE_AUTHORITATIVE_NON_SHAPE_CHECKS
                 for c in (source_ctx.get("checks") or [])
             )
-            _override_eligible = _registry_authoritative or (
+            _structured_only = (
                 isinstance(_art_schema, dict) and bool(_art_schema)
                 and _artifact_is_structured_only(_art_schema, source_ctx.get("produces"))
             )
+            _override_eligible = _registry_authoritative or _structured_only
         except Exception:  # noqa: BLE001 — predicate must never break grade
             _override_eligible = False
+            _structured_only = False
+        _shape_check = None
         try:
             _shape_check = next(
                 (c for c in (source_ctx.get("checks") or [])
@@ -2073,6 +2084,28 @@ async def _enqueue_posthook_llm_child(kind: str, source: dict, source_ctx: dict,
                 _shape_verify_passed = getattr(_vaction, "status", None) == "completed"
         except Exception:  # noqa: BLE001 — never let the probe break grade
             _shape_verify_passed = False
+        # Residual #2: a structured-only SINGLE-FILE schema step (the returned
+        # value IS the whole artifact — a pure .json/.toml config/decision) that
+        # carries NO verify_*_shape check leaves _shape_verify_passed False, so
+        # the scope-blind grader can false-FAIL a schema-valid, on-disk artifact
+        # on COMPLETE and loop it to a degenerate-repeat DLQ (the design_tokens
+        # 5.0a confab class, but without the shape check that already rescues
+        # 5.0a). When there is no authoritative shape check AND the deterministic
+        # schema gate itself PASSED (incl. via evidence backfill), that gate is
+        # the structural completeness proof the absent verifier would provide.
+        # Tag the grade so the COMPLETE-only FAIL→PASS override fires.
+        #   Narrow by design — _structured_only (coulson._write_tools_redundant)
+        #   is True ONLY for a structured schema with NO .md AND NO DIRECTORY
+        #   produces. So a DIRECTORY-produces coder step (m90 7.4a/b/d: produces
+        #   mission_<id>/backend/…, where the returned JSON is NOT the whole
+        #   on-disk tree) is correctly EXCLUDED — its schema-gate pass is not a
+        #   full completeness proof. Prose (.md) is excluded too (depth-grading
+        #   untouched). A gate that ERRORED (catch-all) leaves the flag False; a
+        #   shape check that RAN and FAILED (_shape_check not None) stays
+        #   terminal — a real defect.
+        if (not _shape_verify_passed and _shape_check is None
+                and _structured_only and _schema_gate_verified):
+            _shape_verify_passed = True
         cont_state = {"source_task_id": source_id, "kind": "grade",
                       "attempt": attempt, "exclusions": excl, "mission_id": mission_id,
                       "shape_verify_passed": _shape_verify_passed}

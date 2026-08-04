@@ -287,40 +287,62 @@ async def write_file(
             _produces = _ctp.get()
         except Exception:
             _produces = None
-        # Scope to the MISSION ARTIFACT namespace (mission_<id>/.<domain>/…),
-        # where each artifact is single-owner and must not be clobbered. The
-        # shared codebase (backend/, frontend/, migrations/, …) is built
-        # collaboratively across many code steps that legitimately write files
-        # beyond a rigid produces list (an implementer writes models + services
-        # AND an __init__ / a route registration) — enforcing there would
-        # false-reject the whole build phase. Enforce only when EVERY declared
-        # produces path lives under a mission_ workspace.
-        _prod_paths = [p for p in (_produces or []) if isinstance(p, str) and p.strip()]
-        _artifact_scoped = bool(_prod_paths) and all(
-            p.replace("\\", "/").lstrip("./").startswith("mission_")
-            for p in _prod_paths
-        )
-        if _prod_paths and _artifact_scoped:
-            allowed = [
-                os.path.realpath(
-                    p if os.path.isabs(p) else os.path.join(workspace_real, p)
-                )
-                for p in _prod_paths
-            ]
-            if allowed and not any(
-                final_real == root or final_real.startswith(root + os.sep)
-                for root in allowed
-            ):
-                logger.warning(
-                    "write_file sandbox blocked out-of-produces write: %s "
-                    "(produces=%s)", filepath, _produces,
-                )
-                return (
-                    f"❌ Access denied: '{filepath}' is outside this step's "
-                    f"declared outputs. Write ONLY to your produces path(s): "
-                    f"{_produces}. Your input artifacts are read-only — do not "
-                    f"rewrite them."
-                )
+        # Produces-sandbox scope. A SINGLE-OWNER artifact lives at
+        # ``mission_<id>/.<domain>/…`` (a DOT-domain namespace: .screens/,
+        # .flow/, .adr/, .style/, …) — clobbering a sibling artifact is the
+        # m90 5.20b bug this guards against. The SHARED codebase
+        # (``mission_<id>/backend|frontend|migrations/…`` AND un-prefixed repo
+        # paths) is built collaboratively across many code steps that
+        # legitimately write files beyond a rigid produces list (an implementer
+        # writes models + services AND an __init__ / a route registration) —
+        # enforcing there false-rejects the whole build phase (m90 7.4a: a coder
+        # authoring backend/prisma/schema.prisma also needs the sibling
+        # backend/.env; scoping to the produces subtree blocked it and 7.4a had
+        # to widen its produces to dodge this). So enforce ONLY when EVERY
+        # declared produces path is a mission_ dot-domain namespace.
+        #   Trade-off 1: a mission-ROOT artifact FILE (e.g.
+        #     mission_<id>/premortem.md — part[1] has no leading dot) is also
+        #     left un-scoped. Acceptable: such a step writes its single named
+        #     file anyway, so the sandbox added little there.
+        #   Trade-off 2: all()-gating means a MIXED produces (one dot-domain +
+        #     one code path) disables scoping for the whole step. No live i2p
+        #     step mixes the two today; revisit (per-path enforcement) if one
+        #     ever does.
+        def _is_mission_artifact_ns(p: str) -> bool:
+            parts = p.replace("\\", "/").lstrip("./").split("/")
+            return (len(parts) >= 2 and parts[0].startswith("mission_")
+                    and parts[1].startswith("."))
+
+        try:
+            _prod_paths = [p for p in (_produces or [])
+                           if isinstance(p, str) and p.strip()]
+            _artifact_scoped = bool(_prod_paths) and all(
+                _is_mission_artifact_ns(p) for p in _prod_paths
+            )
+            if _prod_paths and _artifact_scoped:
+                allowed = [
+                    os.path.realpath(
+                        p if os.path.isabs(p) else os.path.join(workspace_real, p)
+                    )
+                    for p in _prod_paths
+                ]
+                if allowed and not any(
+                    final_real == root or final_real.startswith(root + os.sep)
+                    for root in allowed
+                ):
+                    logger.warning(
+                        "write_file sandbox blocked out-of-produces write: %s "
+                        "(produces=%s)", filepath, _produces,
+                    )
+                    return (
+                        f"❌ Access denied: '{filepath}' is outside this step's "
+                        f"declared outputs. Write ONLY to your produces path(s): "
+                        f"{_produces}. Your input artifacts are read-only — do not "
+                        f"rewrite them."
+                    )
+        except Exception:  # noqa: BLE001 — sandbox must never break a write; fail OPEN
+            logger.debug(
+                "write_file sandbox check errored; allowing write", exc_info=True)
 
     try:
         os.makedirs(parent_abs, exist_ok=True)

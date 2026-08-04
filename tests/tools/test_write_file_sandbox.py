@@ -84,6 +84,31 @@ async def test_code_phase_produces_are_not_sandboxed(ws, request):
 
 
 @pytest.mark.asyncio
+async def test_mission_prefixed_code_dir_is_not_sandboxed(ws, request):
+    """A code-build step often declares a mission_<id>/backend/... produces
+    (m90 7.4a). That is still the SHARED codebase, not a single-owner
+    .dot-domain artifact namespace — the sandbox must exempt it. Otherwise a
+    step that authors prisma/schema.prisma cannot also write the sibling
+    backend/.env it needs, and 7.4a had to widen its produces just to dodge the
+    scoping. Only mission_<id>/.<domain>/ paths are single-owner artifacts."""
+    _set_produces(request, ["mission_90/backend/prisma/"])
+    res = await workspace.write_file("mission_90/backend/.env", "DATABASE_URL=x\n")
+    assert res.startswith("✅")                         # sibling code write allowed
+    assert (ws / "mission_90/backend/.env").exists()
+
+
+@pytest.mark.asyncio
+async def test_mission_prefixed_dot_domain_still_sandboxed(ws, request):
+    """The dot-domain artifact protection is preserved: a step whose produces is
+    a mission_<id>/.<domain>/ namespace still cannot clobber a DIFFERENT
+    dot-domain artifact (the m90 5.20b root)."""
+    _set_produces(request, ["mission_90/.screens/"])
+    res = await workspace.write_file("mission_90/.flow/screen_inventory.md", "x\n")
+    assert res.startswith("❌")                         # cross-artifact write rejected
+    assert not (ws / "mission_90/.flow/screen_inventory.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_killswitch_disables_sandbox(ws, request, monkeypatch):
     monkeypatch.setenv("KUTAI_WRITE_SANDBOX", "off")
     _set_produces(request, ["mission_90/.screens/"])

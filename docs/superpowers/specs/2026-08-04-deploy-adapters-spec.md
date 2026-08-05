@@ -22,8 +22,11 @@ Postgres + Redis). This spec is **additive and mock-testable** — new declarati
   repo-link.
 - `mocked:true` tagging on every deploy/provision action's mock payload (feeds Spec 2's
   anti-fake guard, review H3).
-- Housekeeping: 7.13 `real_tool_kind` `vercel|railway|fly` → `vercel|render` (H9); add
-  render/neon/upstash to `AGENT_ALLOWLIST["executor"]` only if any inline path survives (H8).
+- Housekeeping: 7.13 `real_tool_kind` `vercel|railway|fly` → `vercel|render` (H9).
+  `AGENT_ALLOWLIST["executor"]` — **RESOLVED per review → SKIP.** Spec 2 makes 7.13 pure-mechanical
+  (routes through `mr_roboto`, not the `vendor_call_tool` that consumes the allowlist), so no
+  inline agent path survives for the deploy DAG. Add render/neon/upstash to the allowlist ONLY if
+  a separate inline researcher/implementer probe is later wanted.
 
 **Out (deferred to a later production-deploy phase):** Cloudflare Pages/Workers/R2, Resend,
 Supabase-auth, GitHub-Actions cron/keep-warm, DNS/CDN/WAF, monitoring adapters, and the
@@ -46,14 +49,19 @@ that tag.
 
 ## Adapter configs (concrete action tables)
 
+> ⚠️ **API-shape caveat (Opus review):** every external action table below is INDICATIVE and
+> MUST be re-verified against each provider's live API reference during the implementation plan.
+> The review caught concrete errors (Render `plan`/param-shape, Render env-var semantics,
+> Upstash field names) — do a live-doc pass per adapter before writing the config JSON.
+
 ### `render.json` (backend host — Render, `https://api.render.com/v1`, bearer)
 | action | method | path | required_params | notes |
 |---|---|---|---|---|
-| `create_service` | POST | `/services` | `[type, name, repo, branch, plan]` | `plan:"free"`; `repo`=connected git URL; returns `{service:{id}}` |
+| `create_service` | POST | `/services` | `[ownerId, type, name, repo, serviceDetails]` | **NO `plan:"free"`** — Render's `plan` enum excludes "free"; free is an *instance type* set inside `serviceDetails`. Body is **nested** (`serviceDetails.runtime` + `envSpecificDetails` build/start or Docker). `repo`=connected git URL. **Create auto-initiates the first deploy** — do NOT also call `trigger_deploy` for first boot. Returns `{service:{id}}`. Flat `required_params` can't express the nested body → the config/executor must build the nested payload explicitly. |
 | `get_service` | GET | `/services/{id}` | `[id]` | |
-| `trigger_deploy` | POST | `/services/{id}/deploys` | `[id]` | returns `{id, status:"created"}` |
+| `trigger_deploy` | POST | `/services/{id}/deploys` | `[id]` | **RE-deploys only** (e.g. after a post-boot env-var change), not first boot. Returns `{id, status:"created"}` |
 | `get_deploy` | GET | `/services/{id}/deploys/{deployId}` | `[id, deployId]` | poll target; status→`live`/`build_failed` |
-| `update_env_vars` | PUT | `/services/{id}/env-vars` | `[id, envVars]` | inject DATABASE_URL/REDIS_URL; **triggers redeploy** |
+| `update_env_vars` | PUT | `/services/{id}/env-vars` | `[id, envVars]` | inject DATABASE_URL/REDIS_URL. **Does NOT auto-deploy** — Render docs: *"Changes will not be deployed automatically… you must call the deploy API."* So after any post-boot env change, call `trigger_deploy`. Set env at create time (in `serviceDetails.envVars`) to avoid a second deploy. |
 
 ### `neon.json` (Postgres — Neon, `https://console.neon.tech/api/v2`, bearer)
 | action | method | path | required_params | notes |
@@ -70,17 +78,22 @@ that tag.
 ### `upstash.json` (Redis — Upstash Developer API, `https://api.upstash.com/v2`)
 | action | method | path | required_params | notes |
 |---|---|---|---|---|
-| `create_redis` | POST | `/redis/database` | `[name, region]` | returns `{endpoint, port, password, rest_token}` |
+| `create_redis` | POST | `/redis/database` | `[database_name, region, primary_region]` | field names per Upstash schema (`database_name`, `region`/`primary_region`, optional `plan`) — **NOT** `name`. Returns `{endpoint, port, password, rest_token}` |
 | `get_redis` | GET | `/redis/database/{id}` | `[id]` | |
 | `list_redis` | GET | `/redis/databases` | `[]` | idempotency check |
 
-> **Nuance (auth):** the Upstash **management** API uses **HTTP Basic auth (email : API key)**,
-> not bearer. `HttpIntegration` currently supports bearer/header/query only. Options: (a) add a
-> `basic` auth_type to `HttpIntegration` (small, clean engine change), or (b) store a pre-encoded
-> `Authorization: Basic <b64(email:key)>` and use `auth_type:"header"` with
-> `auth_token_field` pointing at the pre-encoded value. **Recommend (a)** — it's a 6-line
-> addition and reusable. (The research's "POST /start-redis, no signup" is the anonymous
-> quickstart, not the management API — do not rely on it for owned provisioning.)
+> **Nuance (auth) — corrected per review:** the Upstash **management** API uses **HTTP Basic auth
+> (email : API key)**, not bearer. `HttpIntegration` supports bearer/header/query/none/jwt_p8/
+> oauth_service_account — **no `basic` type** (verified across all 16 configs). Two options:
+> - **(b) DEFAULT, zero engine risk:** store a pre-encoded `Authorization: Basic <b64(email:key)>`
+>   as a credential field and use `auth_type:"header"` with `auth_token_field` → the header is set
+>   to the raw token value. **This works today unchanged** — `twilio.json` already uses exactly
+>   this `auth_type:"header"` + `auth_token_field` pattern. Ship Upstash on (b).
+> - **(a) OPTIONAL later:** add a `basic` auth_type to `HttpIntegration` (clean + reusable, but an
+>   engine change to a shared, SSRF-sensitive file) — defer unless another provider needs it.
+>
+> (The research's "POST /start-redis, no signup" is the anonymous quickstart, NOT the management
+> API — do not rely on it for owned provisioning.)
 
 ### `vercel.json` enrichment (frontend host)
 Add:
@@ -132,10 +145,13 @@ adapter-registered + credential-stored, blind to git state).
   founder-run.
 
 ## Open questions / decisions for the plan
-- Upstash auth: engine `basic` auth_type (recommended) vs pre-encoded header.
+- Upstash auth: **RESOLVED → option (b)** pre-encoded `Basic` header via `auth_type:"header"`
+  (twilio precedent, zero engine risk). Defer the `basic` auth_type engine change.
 - Repo push: shell `git push` (recommended) vs contents API.
 - Whether the git-prereq chain is new i2p steps vs a mechanical preflight inside Spec 2's
   executor — leaning new explicit steps for auditability.
+- Every external API action table needs a live-doc verification pass (Render/Neon/Upstash/Vercel)
+  before the config JSON is authored — the review found several indicative-but-wrong shapes.
 
 ## References
 - Research: `docs/research/2026-08-04-free-deploy-stack-research.md`

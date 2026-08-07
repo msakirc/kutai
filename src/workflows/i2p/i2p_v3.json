@@ -6950,7 +6950,7 @@
         "staging_environment",
         "staging_deployment_verified"
       ],
-      "instruction": "[NEEDS-REAL-TOOLS] Requires real deploy adapters (Vercel/Railway/Fly/Render/etc.) the agent does not currently have. Until those adapters land in mr_roboto, do NOT autonomously execute this step — surface a needs_clarification asking the human operator to provision and report back, then record their answer as the artifact. Provision staging environment and deploy the scaffolded application. Verify health checks pass, database migrations run, and the application is accessible. Test the CD pipeline by triggering a deployment.",
+      "instruction": "Mechanically deploy a $0 staging environment via the deploy_staging executor: provision Neon Postgres + Upstash Redis, deploy the NestJS backend to Render and the Next.js frontend to Vercel, run Prisma migrations against the provisioned DATABASE_URL, health-check the public URL, and write the staging_environment + staging_deployment_verified artifacts. This runs autonomously (no needs_clarification). A real deploy requires KUTAI_VENDOR_LIVE=1 plus stored render/neon/upstash/github credentials; without them the adapters run in mock mode and the anti-fake guard refuses to certify health_check_passed (mock_mode_active).",
       "done_when": "staging_environment and staging_deployment_verified exist.",
       "artifact_schema": {
         "staging_environment": {

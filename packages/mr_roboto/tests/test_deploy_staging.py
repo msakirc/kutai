@@ -35,6 +35,31 @@ async def test_provision_captures_conn_and_redis(monkeypatch):
     assert out["env"]["REDIS_URL"] and out["services"]["db"] and out["services"]["cache"]
 
 @pytest.mark.asyncio
+async def test_provision_through_real_registry_mock_mode():
+    """C3 — structural drift guard: exercise _provision through the REAL adapter.execute()
+    (mock mode), NOT a stubbed _call. This is the only test that would catch a caller↔config
+    required_params mismatch like C1 (upstash create_redis needs 'primary_region', not 'region').
+
+    Installs a mock-on registry AS the module singleton so deploy_staging._call resolves the
+    real HttpIntegration adapters. FAILS before the C1 fix (config guard returns
+    'Missing required params: [primary_region]' → upstash_provision_failed), passes after —
+    proving the config↔caller params align.
+    """
+    import src.integrations.registry as reg_mod
+    from src.integrations.registry import IntegrationRegistry
+    orig = reg_mod._registry
+    reg_mod._registry = IntegrationRegistry(auto_discover=True, mock_mode=True)
+    try:
+        out = await ds._provision(mission_id=90)
+        assert out["ok"] is True, out
+        assert out["env"]["DATABASE_URL"].startswith("postgresql://")
+        assert out["env"]["REDIS_URL"].startswith("rediss://")
+        assert out["mocked"] is True  # mock-mode adapters tag responses
+    finally:
+        reg_mod._registry = orig
+
+
+@pytest.mark.asyncio
 async def test_deploy_backend_sets_env_and_polls(monkeypatch):
     seen = {}
     async def fake_call(service, action, params):

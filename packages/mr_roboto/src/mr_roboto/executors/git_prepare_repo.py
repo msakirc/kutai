@@ -118,8 +118,26 @@ async def _git_push_scaffold(workspace: str, repo_url: str, token: str) -> dict[
     return {"ok": True}
 
 
+async def _persist_repo_url(mission_id: int, repo_url: str) -> None:
+    """Persist the pushed repo URL to ``missions.github_repo_url``.
+
+    deploy_staging (7.13) reads this column via ``_repo_from_mission`` to locate the
+    repo — without this write the live handoff is broken. Best-effort: a DB failure
+    is logged but does NOT fail the git action (the repo is already created+pushed).
+    Mirrors ``init_mission_github_repo._persist_repo_url``.
+    """
+    try:
+        from general_beckman import update_mission_fields as _umf
+        await _umf(int(mission_id), github_repo_url=repo_url)
+    except Exception as e:
+        logger.warning(f"github_repo_url DB persist failed for mission {mission_id}: "
+                       f"{type(e).__name__}: {e}")
+
+
 async def run(task: dict) -> dict[str, Any]:
     payload = (task.get("payload") or (task.get("context") or {}).get("payload") or {})
+    ctx = task.get("context") or {}
+    mission_id = ctx.get("mission_id") or payload.get("mission_id")
     repo_name = payload.get("repo_name")
     workspace = payload.get("workspace")
     if not repo_name or not workspace:
@@ -135,4 +153,7 @@ async def run(task: dict) -> dict[str, Any]:
     pushed = await _git_push_scaffold(workspace, created["repo_url"], token)
     if not pushed.get("ok"):
         return {"ok": False, "reason": pushed.get("reason"), "repo_url": created["repo_url"]}
+    # Persist the repo URL so deploy_staging (7.13) can resolve it from the mission row.
+    if mission_id is not None:
+        await _persist_repo_url(mission_id, created["repo_url"])
     return {"ok": True, "repo_url": created["repo_url"], "pushed": True, "existed": created.get("existed", False)}

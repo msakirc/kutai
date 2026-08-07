@@ -33,6 +33,74 @@ async def test_git_prepare_repo_creates_and_pushes(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_git_prepare_repo_persists_github_repo_url(monkeypatch, tmp_path):
+    """After a successful create+push, run() must persist missions.github_repo_url.
+
+    deploy_staging (7.13) reads that column to locate the repo — the live handoff
+    breaks without this write. Assert update_mission_fields is called with the
+    exact clone URL (best-effort persist, monkeypatched — no real DB).
+    """
+    from mr_roboto.executors import git_prepare_repo as gpr
+    import general_beckman
+
+    async def fake_create_repo(name, token):
+        return {"ok": True, "repo_url": f"https://github.com/kutay/{name}.git", "existed": False}
+
+    async def fake_git_push(workspace, repo_url, token):
+        return {"ok": True}
+
+    async def yes_token(_service="github"):
+        return "ghp_faketoken"
+
+    persisted = {}
+
+    async def fake_umf(mission_id, **fields):
+        persisted["mission_id"] = mission_id
+        persisted["fields"] = fields
+
+    monkeypatch.setattr(gpr, "_create_repo", fake_create_repo)
+    monkeypatch.setattr(gpr, "_git_push_scaffold", fake_git_push)
+    monkeypatch.setattr(gpr, "_get_github_token", yes_token)
+    monkeypatch.setattr(general_beckman, "update_mission_fields", fake_umf)
+
+    task = {"payload": {"action": "git_prepare_repo", "repo_name": "habithub",
+                        "workspace": str(tmp_path)}, "context": {"mission_id": 90}}
+    res = await gpr.run(task)
+    assert res["ok"] and res["pushed"]
+    assert persisted["mission_id"] == 90
+    assert persisted["fields"].get("github_repo_url") == "https://github.com/kutay/habithub.git"
+
+
+@pytest.mark.asyncio
+async def test_git_prepare_repo_persist_failure_is_best_effort(monkeypatch, tmp_path):
+    """A DB persist failure must NOT fail the whole action (repo is already created+pushed)."""
+    from mr_roboto.executors import git_prepare_repo as gpr
+    import general_beckman
+
+    async def fake_create_repo(name, token):
+        return {"ok": True, "repo_url": f"https://github.com/kutay/{name}.git", "existed": False}
+
+    async def fake_git_push(workspace, repo_url, token):
+        return {"ok": True}
+
+    async def yes_token(_service="github"):
+        return "ghp_faketoken"
+
+    async def boom_umf(mission_id, **fields):
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(gpr, "_create_repo", fake_create_repo)
+    monkeypatch.setattr(gpr, "_git_push_scaffold", fake_git_push)
+    monkeypatch.setattr(gpr, "_get_github_token", yes_token)
+    monkeypatch.setattr(general_beckman, "update_mission_fields", boom_umf)
+
+    task = {"payload": {"action": "git_prepare_repo", "repo_name": "habithub",
+                        "workspace": str(tmp_path)}, "context": {"mission_id": 90}}
+    res = await gpr.run(task)
+    assert res["ok"] and res["pushed"]  # persist failure swallowed, action still succeeds
+
+
+@pytest.mark.asyncio
 async def test_git_prepare_repo_requires_token(monkeypatch, tmp_path):
     from mr_roboto.executors import git_prepare_repo as gpr
     async def no_cred(_service="github"):

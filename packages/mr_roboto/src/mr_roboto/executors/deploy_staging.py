@@ -130,7 +130,12 @@ async def _provision(mission_id) -> dict:
     if not conn:
         return _fail("neon_no_connection_uri")
 
-    cache = await _call("upstash", "create_redis", {"database_name": name, "region": "us-east-1"})
+    # Upstash Developer API POST /v2/redis/database requires database_name + platform + primary_region
+    # (live docs: create_database_global — `region` is NOT a request field; the `region:"global"`
+    #  in the response is a region-TYPE). upstash.json required_params=[database_name, primary_region];
+    #  we pass primary_region (config guard) AND platform (real API) for a complete, valid body.
+    cache = await _call("upstash", "create_redis",
+                        {"database_name": name, "primary_region": "us-east-1", "platform": "aws"})
     if cache.get("status") != "ok":
         return _fail("upstash_provision_failed", detail=cache.get("error"))
     cd = cache.get("data", {})

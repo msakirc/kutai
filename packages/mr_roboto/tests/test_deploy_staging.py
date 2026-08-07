@@ -79,3 +79,18 @@ async def test_deploy_frontend_passes_backend_url_and_polls(monkeypatch):
     out = await ds._deploy_frontend(repo="https://github.com/k/h.git", backend_url="https://b.onrender.com")
     assert out["ok"] and out["url"].endswith("vercel.app")
     assert "b.onrender.com" in str(seen[("vercel", "deploy")])
+
+@pytest.mark.asyncio
+async def test_health_check_retries_cold_start_then_ok(monkeypatch):
+    seq = iter([502, 502, 200])  # cold-start 502s then healthy
+    async def fake_get(url): return {"status_code": next(seq)}
+    monkeypatch.setattr(ds, "_http_get", fake_get)
+    out = await ds._health_check("https://b.onrender.com", attempts=5, delay_s=0)
+    assert out["ok"] and out["passed"] is True
+
+@pytest.mark.asyncio
+async def test_health_check_fails_after_attempts(monkeypatch):
+    async def fake_get(url): return {"status_code": 500}
+    monkeypatch.setattr(ds, "_http_get", fake_get)
+    out = await ds._health_check("https://b.onrender.com", attempts=2, delay_s=0)
+    assert out["passed"] is False

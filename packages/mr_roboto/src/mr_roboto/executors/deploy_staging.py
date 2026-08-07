@@ -201,3 +201,29 @@ async def _deploy_frontend(repo: str, backend_url: str, *, max_wait_s: float = 6
     full = url if str(url).startswith("http") else f"https://{url}"
     return {"ok": True, "url": full, "mocked": _is_mocked(dep),
             "services": {"frontend": {"provider": "vercel", "url": full}}}
+
+
+async def _http_get(url: str) -> dict:
+    import httpx
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        r = await c.get(url)
+        return {"status_code": r.status_code}
+
+async def _health_check(url: str, *, attempts: int = 6, delay_s: float = 10) -> dict:
+    """GET the public URL; treat 502/503/timeout (cold-start-during-wake) as retryable.
+    Render free services spin down on idle — the first request after deploy can cold-start."""
+    import asyncio
+    last = None
+    for i in range(attempts):
+        try:
+            last = await _http_get(url)
+            code = last.get("status_code")
+            if 200 <= code < 400:
+                return {"ok": True, "passed": True, "status_code": code}
+            if code not in (502, 503, 504):   # non-retryable server/client error
+                return {"ok": True, "passed": False, "status_code": code}
+        except Exception as e:                  # incl. SSRF ValueError / timeout → retry as "not yet public"
+            last = {"error": str(e)}
+        if i < attempts - 1:
+            await asyncio.sleep(delay_s)
+    return {"ok": True, "passed": False, "last": last}

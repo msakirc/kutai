@@ -55,3 +55,18 @@ def test_new_credential_schemas_exist_and_shaped():
         assert s["service_name"] == name
         for field in required:
             assert field in s["required_fields"], f"{name} missing {field}"
+
+
+# --------------------------------------------------------------------------
+# Task 3 — render adapter config + mock (backend host)
+# --------------------------------------------------------------------------
+def test_render_config_actions_and_mock():
+    cfg = _load("render")
+    assert cfg["service_name"] == "render"
+    assert cfg["auth_type"] == "bearer"
+    for a in ("create_service", "get_service", "trigger_deploy", "get_deploy", "update_env_vars"):
+        assert a in cfg["actions"], f"missing action {a}"
+    # poll target must model a terminal 'live' state
+    assert cfg["mock_responses"]["get_deploy"]["status"] == "live"
+    # create mock returns a service id downstream needs
+    assert "id" in cfg["mock_responses"]["create_service"].get("service", {})

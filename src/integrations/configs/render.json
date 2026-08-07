@@ -1,0 +1,21 @@
+{
+  "service_name": "render",
+  "base_url": "https://api.render.com/v1",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "api_key",
+  "actions": {
+    "create_service":  { "method": "POST", "path": "/services", "required_params": ["ownerId", "type", "name"] },
+    "get_service":     { "method": "GET",  "path": "/services/{id}", "required_params": ["id"] },
+    "trigger_deploy":  { "method": "POST", "path": "/services/{id}/deploys", "required_params": ["id"] },
+    "get_deploy":      { "method": "GET",  "path": "/services/{id}/deploys/{deployId}", "required_params": ["id", "deployId"] },
+    "update_env_vars": { "method": "PUT",  "path": "/services/{id}/env-vars", "required_params": ["id", "envVars"] }
+  },
+  "mock_responses": {
+    "create_service": { "service": { "id": "srv_mock123", "name": "mock-backend", "url": "https://mock-backend.onrender.com" }, "deployId": "dep_mock123" },
+    "get_service":    { "id": "srv_mock123", "url": "https://mock-backend.onrender.com" },
+    "trigger_deploy": { "id": "dep_mock123", "status": "created" },
+    "get_deploy":     { "id": "dep_mock123", "status": "live" },
+    "update_env_vars": { "ok": true }
+  }
+}

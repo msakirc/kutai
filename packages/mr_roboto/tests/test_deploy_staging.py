@@ -33,3 +33,21 @@ async def test_provision_captures_conn_and_redis(monkeypatch):
     assert out["ok"]
     assert out["env"]["DATABASE_URL"].startswith("postgresql://")
     assert out["env"]["REDIS_URL"] and out["services"]["db"] and out["services"]["cache"]
+
+@pytest.mark.asyncio
+async def test_deploy_backend_sets_env_and_polls(monkeypatch):
+    seen = {}
+    async def fake_call(service, action, params):
+        seen[(service, action)] = params
+        if action == "create_service":
+            return {"status": "ok", "data": {"service": {"id": "srv1", "serviceDetails": {"url": "https://b.onrender.com"}}}}
+        if action == "get_deploy":
+            return {"status": "ok", "data": {"status": "live"}}
+        return {"status": "ok", "data": {}}
+    monkeypatch.setattr(ds, "_call", fake_call)
+    out = await ds._deploy_backend(repo="https://github.com/k/h.git",
+                                   env={"DATABASE_URL": "postgresql://x", "REDIS_URL": "rediss://y"})
+    assert out["ok"] and out["url"] == "https://b.onrender.com"
+    # env vars must be present in the create call (set before first boot)
+    create_params = seen[("render", "create_service")]
+    assert "DATABASE_URL" in str(create_params)

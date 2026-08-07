@@ -96,3 +96,43 @@ async def _provision(mission_id) -> dict:
         "services": {"db": {"provider": "neon"}, "cache": {"provider": "upstash"}},
         "mocked": _is_mocked(db) or _is_mocked(cache),
     }
+
+
+async def _deploy_backend(repo: str, env: dict, *, owner_id: str = "", max_wait_s: float = 900) -> dict:
+    """Create the Render web service with env vars at create time (auto-deploys once), then
+    poll get_deploy until 'live'. Render create auto-initiates the first deploy — no separate
+    trigger_deploy for first boot; env-var updates do NOT auto-deploy (handled only on change).
+    """
+    from mr_roboto.deploy_util import poll_until
+    env_vars = [{"key": k, "value": v} for k, v in env.items()]
+    create = await _call("render", "create_service", {
+        "ownerId": owner_id, "type": "web_service", "name": "kutay-backend", "repo": repo,
+        "serviceDetails": {"env": "node", "envVars": env_vars},  # free instance type per live docs
+    })
+    if create.get("status") != "ok":
+        return _fail("render_create_failed", detail=create.get("error"))
+    svc = create.get("data", {}).get("service", {})
+    sid = svc.get("id")
+    url = (svc.get("serviceDetails") or {}).get("url")
+
+    poll = await poll_until(
+        lambda: _latest_deploy_state(sid),
+        ready=lambda r: r.get("status") == "live",
+        fail=lambda r: r.get("status") in ("build_failed", "canceled", "deactivated"),
+        max_wait_s=max_wait_s,
+    )
+    if not poll["ok"]:
+        return _fail(f"backend_deploy_{poll['reason']}", service_id=sid)
+    return {"ok": True, "url": url, "service_id": sid,
+            "mocked": _is_mocked(create), "services": {"backend": {"provider": "render", "url": url}}}
+
+async def _latest_deploy_state(service_id: str) -> dict:
+    """Fetch the latest deploy's state for polling. Uses get_deploy on the newest deploy id."""
+    lst = await _call("render", "get_service", {"id": service_id})
+    # In mock mode the get_deploy mock returns {status:'live'} directly:
+    d = await _call("render", "get_deploy", {"id": service_id, "deployId": "latest"})
+    st = d.get("data", {})
+    # preserve mocked so the caller's guard can see it
+    if _is_mocked(d):
+        st = {**st, "mocked": True}
+    return st

@@ -43,3 +43,15 @@ def test_vercel_deploy_actions_have_mock_responses():
     assert "deploy" in mocks and "get_deployment" in mocks
     # get_deployment mock must model a READY terminal state for the poll loop
     assert mocks["get_deployment"].get("readyState") == "READY"
+
+
+# --------------------------------------------------------------------------
+# Task 2 — credential schemas for render / neon / upstash
+# --------------------------------------------------------------------------
+def test_new_credential_schemas_exist_and_shaped():
+    for name, required in [("render", ["api_key"]), ("neon", ["api_key"]),
+                           ("upstash", ["basic_auth_b64"])]:
+        s = _load_cred(name)
+        assert s["service_name"] == name
+        for field in required:
+            assert field in s["required_fields"], f"{name} missing {field}"

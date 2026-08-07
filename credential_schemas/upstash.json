@@ -1,0 +1,10 @@
+{
+  "service_name": "upstash",
+  "required_fields": ["basic_auth_b64"],
+  "optional_fields": ["email"],
+  "scopes": ["read_write"],
+  "default_scope": "read_write",
+  "rotation_recommended_days": 90,
+  "test_endpoint": null,
+  "docs_url": "https://upstash.com/docs/devops/developer-api"
+}

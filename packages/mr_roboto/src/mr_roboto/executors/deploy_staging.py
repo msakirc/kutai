@@ -8,6 +8,10 @@ from __future__ import annotations
 import asyncio, os, shutil, sys
 from typing import Any
 
+from yazbunu import get_logger
+
+logger = get_logger("mr_roboto.deploy_staging")
+
 def _is_mocked(envelope: dict) -> bool:
     """True when a registry response carries the mock tag."""
     return bool(isinstance(envelope, dict) and envelope.get("mocked") is True)
@@ -39,7 +43,6 @@ async def _repo_from_mission(mission_id) -> str | None:
 async def _resolve_workspace(mission_id, payload_ws) -> str | None:
     """Absolute mission workspace. A payload-relative 'mission_{id}/' would resolve against the
     process CWD (Opus review Bug 2) — re-root under WORKSPACE_DIR via get_mission_workspace."""
-    import os
     if payload_ws and os.path.isabs(payload_ws):
         return payload_ws
     if mission_id is not None:
@@ -72,12 +75,14 @@ async def run(task: dict) -> dict[str, Any]:
         return prov
     state["mocked_any"] |= prov.get("mocked", False)
     state["services"].update(prov["services"])
+    logger.info("deploy_staging: provision leg complete (mocked=%s)", prov.get("mocked", False))
 
     be = await _deploy_backend(repo=repo, env=prov["env"], owner_id=payload.get("owner_id", ""))
     if not be["ok"]:
         return {**be, "state": state}
     state["mocked_any"] |= be.get("mocked", False)
     state["services"].update(be["services"])
+    logger.info("deploy_staging: backend leg complete (mocked=%s)", be.get("mocked", False))
 
     mig = await _migrate(workspace=workspace, database_url=prov["env"]["DATABASE_URL"])
     if not mig["ok"]:
@@ -88,11 +93,14 @@ async def run(task: dict) -> dict[str, Any]:
         return {**fe, "state": state}
     state["mocked_any"] |= fe.get("mocked", False)
     state["services"].update(fe["services"])
+    logger.info("deploy_staging: frontend leg complete (mocked=%s)", fe.get("mocked", False))
 
-    hc = await _health_check(be["url"])
+    # Skip the real HTTP health check on a mock run — the result is discarded anyway.
+    hc = {} if state["mocked_any"] else await _health_check(be["url"])
 
     # Anti-fake guard: a mocked run can NEVER certify a live deploy.
     if state["mocked_any"]:
+        logger.warning("deploy_staging: anti-fake guard fired — mocked_any, refusing to certify")
         health_passed, reason = False, "mock_mode_active"
     else:
         health_passed, reason = bool(hc.get("passed")), (None if hc.get("passed") else "health_check_failed")
@@ -161,8 +169,9 @@ async def _deploy_backend(repo: str, env: dict, *, owner_id: str = "", max_wait_
     )
     if not poll["ok"]:
         return _fail(f"backend_deploy_{poll['reason']}", service_id=sid)
+    mocked = _is_mocked(create) or bool((poll.get("result") or {}).get("mocked"))
     return {"ok": True, "url": url, "service_id": sid,
-            "mocked": _is_mocked(create), "services": {"backend": {"provider": "render", "url": url}}}
+            "mocked": mocked, "services": {"backend": {"provider": "render", "url": url}}}
 
 async def _latest_deploy_state(service_id: str) -> dict:
     """Fetch the latest deploy's state for polling. Uses get_deploy on the newest deploy id."""
@@ -236,7 +245,8 @@ async def _deploy_frontend(repo: str, backend_url: str, *, max_wait_s: float = 6
         return _fail(f"frontend_deploy_{poll['reason']}", deployment_id=dep_id)
     url = poll["result"].get("url") or dep.get("data", {}).get("url")
     full = url if str(url).startswith("http") else f"https://{url}"
-    return {"ok": True, "url": full, "mocked": _is_mocked(dep),
+    mocked = _is_mocked(dep) or bool((poll.get("result") or {}).get("mocked"))
+    return {"ok": True, "url": full, "mocked": mocked,
             "services": {"frontend": {"provider": "vercel", "url": full}}}
 
 
@@ -249,7 +259,6 @@ async def _http_get(url: str) -> dict:
 async def _health_check(url: str, *, attempts: int = 6, delay_s: float = 10) -> dict:
     """GET the public URL; treat 502/503/timeout (cold-start-during-wake) as retryable.
     Render free services spin down on idle — the first request after deploy can cold-start."""
-    import asyncio
     last = None
     for i in range(attempts):
         try:

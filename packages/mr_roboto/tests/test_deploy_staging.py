@@ -113,6 +113,9 @@ async def test_full_mock_chain_forces_health_false(monkeypatch, tmp_path):
     monkeypatch.setattr(ds, "_call", fake_call)
     async def ok_migrate(**k): return {"ok": True}
     monkeypatch.setattr(ds, "_migrate", ok_migrate)
+    # hermetic: never touch the network — the guard skips the real health check on a mock run.
+    async def fake_get(url): return {"status_code": 200}
+    monkeypatch.setattr(ds, "_http_get", fake_get)
 
     task = {"payload": {"action": "deploy_staging", "backend_arch": "nestjs_render",
                         "repo": "https://github.com/k/h.git", "workspace": str(tmp_path)},

@@ -70,3 +70,16 @@ def test_render_config_actions_and_mock():
     assert cfg["mock_responses"]["get_deploy"]["status"] == "live"
     # create mock returns a service id downstream needs
     assert "id" in cfg["mock_responses"]["create_service"].get("service", {})
+
+
+# --------------------------------------------------------------------------
+# Task 4 — neon adapter config + mock (postgres)
+# --------------------------------------------------------------------------
+def test_neon_config_actions_and_mock():
+    cfg = _load("neon")
+    assert cfg["service_name"] == "neon"
+    for a in ("create_project", "get_project", "list_projects"):
+        assert a in cfg["actions"]
+    # create must surface the connection string downstream needs
+    conn = cfg["mock_responses"]["create_project"].get("connection_uris")
+    assert conn and conn[0].get("connection_uri", "").startswith("postgresql://")

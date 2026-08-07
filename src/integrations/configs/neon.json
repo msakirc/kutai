@@ -1,0 +1,17 @@
+{
+  "service_name": "neon",
+  "base_url": "https://console.neon.tech/api/v2",
+  "auth_type": "bearer",
+  "auth_header": "Authorization",
+  "auth_token_field": "api_key",
+  "actions": {
+    "create_project": { "method": "POST", "path": "/projects", "required_params": ["project"] },
+    "get_project":    { "method": "GET",  "path": "/projects/{project_id}", "required_params": ["project_id"] },
+    "list_projects":  { "method": "GET",  "path": "/projects", "required_params": [] }
+  },
+  "mock_responses": {
+    "create_project": { "project": { "id": "proj_mock123" }, "connection_uris": [ { "connection_uri": "postgresql://mockuser:mockpw@ep-mock.neon.tech/neondb" } ] },
+    "get_project":    { "project": { "id": "proj_mock123" } },
+    "list_projects":  { "projects": [] }
+  }
+}

@@ -6924,7 +6924,12 @@
       "name": "staging_environment",
       "needs_real_tools": true,
       "real_tool_kind": "vercel|render",
-      "agent": "executor",
+      "agent": "mechanical",
+      "payload": {
+        "action": "deploy_staging",
+        "backend_arch": "nestjs_render",
+        "confirm_policy": "irreversible_only"
+      },
       "difficulty": "medium",
       "tools_hint": [
         "shell",

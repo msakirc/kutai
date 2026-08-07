@@ -375,22 +375,34 @@ rtk git commit -m "feat(integrations): upstash adapter config + mock (redis, hea
 
 - [ ] **Step 1: Write the failing test**
 
+> ⚠️ **CORRECTED per Opus plan-review (empirically reproduced):** `HttpIntegration._maybe_mock`
+> (`http_integration.py:249`) consults the module **singleton** `get_integration_registry()`, NOT a
+> fresh `IntegrationRegistry(...)` instance, and `mock_mode` is resolved once at first singleton
+> creation and cached module-globally — `monkeypatch.setenv` can't change it after. So a naive
+> fresh-instance test is flaky (passes clean-process, FAILS if any earlier test froze the singleton
+> with `KUTAI_VENDOR_LIVE=1`). Install a mock-on registry AS the singleton (the canonical pattern in
+> `tests/test_integration_mock_mode.py:174-199`) and restore it:
+
 ```python
 import pytest
 
 @pytest.mark.asyncio
-async def test_registry_discovers_new_adapters_and_mocks_are_tagged(monkeypatch):
-    monkeypatch.setenv("KUTAI_ENV", "dev")          # mock mode ON
-    monkeypatch.delenv("KUTAI_VENDOR_LIVE", raising=False)
+async def test_registry_discovers_new_adapters_and_mocks_are_tagged():
+    import src.integrations.registry as reg_mod
     from src.integrations.registry import IntegrationRegistry
-    reg = IntegrationRegistry(auto_discover=True)   # fresh instance, not the singleton
-    for svc in ("render", "neon", "upstash", "vercel"):
-        assert reg.get(svc) is not None, f"{svc} not discovered"
-    # a mocked deploy/provision response must carry mocked:true (anti-fake guard depends on it)
-    render = reg.get("render")
-    res = await render.execute("get_deploy", {"id": "srv_mock123", "deployId": "dep_mock123"})
-    assert res.get("mocked") is True
-    assert res["data"]["status"] == "live"
+    orig = reg_mod._registry
+    reg_mod._registry = IntegrationRegistry(auto_discover=True, mock_mode=True)
+    try:
+        reg = reg_mod._registry
+        for svc in ("render", "neon", "upstash", "vercel"):
+            assert reg.get(svc) is not None, f"{svc} not discovered"
+        # a mocked deploy/provision response must carry mocked:true (anti-fake guard depends on it)
+        render = reg.get("render")
+        res = await render.execute("get_deploy", {"id": "srv_mock123", "deployId": "dep_mock123"})
+        assert res.get("mocked") is True
+        assert res["data"]["status"] == "live"
+    finally:
+        reg_mod._registry = orig
 ```
 
 - [ ] **Step 2: Run test to verify it fails, then passes**
@@ -413,29 +425,35 @@ rtk git commit -m "test(integrations): registry discovers deploy adapters + mock
 - Modify: `src/workflows/i2p/i2p_v3.json` (the `staging_environment` step, `real_tool_kind`)
 - Test: `tests/workflows/test_z6_w1_real_tool_kind.py` (existing test file for this field)
 
-- [ ] **Step 1: Locate the step**
+- [ ] **Step 1: Locate the step + the EXISTING test that pins the old value**
 
-Run: `python -m pytest tests/workflows/test_z6_w1_real_tool_kind.py -v` (baseline green), then grep the workflow for `"vercel|railway|fly"`.
+Run: `python -m pytest tests/workflows/test_z6_w1_real_tool_kind.py -v` (baseline green). Note:
+`tests/workflows/test_z6_w1_real_tool_kind.py:56` **hard-asserts** `by_id["7.13"]["real_tool_kind"]
+== "vercel|railway|fly"` — Task 7 MUST update that line too, or it breaks (Opus review).
 
-- [ ] **Step 2: Write/extend a test asserting the new value**
+- [ ] **Step 2: Write the new test (UTF-8 encoding is MANDATORY on Windows)**
 
 ```python
 def test_staging_env_real_tool_kind_targets_vercel_render():
     import json
-    with open("src/workflows/i2p/i2p_v3.json") as f:
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[2] / "src" / "workflows" / "i2p" / "i2p_v3.json"
+    with open(p, encoding="utf-8") as f:   # i2p_v3.json has non-cp1252 bytes → utf-8 required
         wf = json.load(f)
-    step = next(s for s in wf["steps"] if s.get("name") == "staging_environment"
-                or s.get("id", "").endswith("7.13"))
+    steps = wf.get("steps") or wf.get("workflow", {}).get("steps") or []
+    step = next(s for s in steps if s.get("id") == "7.13"
+                or s.get("name") == "staging_environment")
     assert step["real_tool_kind"] == "vercel|render"
 ```
 
-- [ ] **Step 3: Run to verify it fails**
+- [ ] **Step 3: Run to verify it fails** — Expected: FAIL (still `vercel|railway|fly`).
 
-Expected: FAIL (still `vercel|railway|fly`).
+- [ ] **Step 4: Edit `i2p_v3.json`** — change the 7.13 step's `real_tool_kind` to `"vercel|render"`.
 
-- [ ] **Step 4: Edit `i2p_v3.json`** — change that step's `real_tool_kind` to `"vercel|render"`.
+- [ ] **Step 5: Update the existing pin** — in `tests/workflows/test_z6_w1_real_tool_kind.py:56`
+change the assertion to `assert by_id["7.13"]["real_tool_kind"] == "vercel|render"`.
 
-- [ ] **Step 5: Run to verify it passes** (both the new test and `test_z6_w1_real_tool_kind.py`).
+- [ ] **Step 6: Run to verify BOTH pass** — `python -m pytest tests/workflows/test_z6_w1_real_tool_kind.py -v` and the new test.
 
 - [ ] **Step 6: Commit**
 
@@ -457,6 +475,11 @@ rtk git commit -m "fix(i2p): 7.13 real_tool_kind vercel|render (drop railway/fly
 > (`github_init_status.md = pending:gh_unauthenticated`). This executor creates the GitHub repo
 > and pushes the mission's `backend/`+`frontend/` trees using a PAT-authenticated `git push` via
 > the `shell` path. Idempotent (skip create if repo exists). Returns `{ok, repo_url, pushed}`.
+>
+> **NOTE (Opus review):** the repo already has `packages/mr_roboto/src/mr_roboto/init_mission_github_repo.py`
+> which does create+push via the **`gh` CLI**. We deliberately add a PAT-push variant here because
+> `gh` is unauthenticated on this host (`github_init_status.md`). Persist the resulting repo URL to
+> `missions.github_repo_url` (Plan 2 reads it) — mirror `init_mission_github_repo._persist_repo_url`.
 
 - [ ] **Step 1: Write the failing test (git ops stubbed — no network)**
 
@@ -516,6 +539,15 @@ async def _get_github_token(service: str = "github") -> str | None:
         return None
     return cred.get("token") or cred.get("api_key")
 
+async def _gh_login(token: str) -> str | None:
+    """Resolve the authenticated user's login (owner) for building an owner/name clone URL."""
+    import httpx
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        r = await c.get("https://api.github.com/user",
+                        headers={"Authorization": f"Bearer {token}",
+                                 "Accept": "application/vnd.github+json"})
+        return r.json().get("login") if r.status_code == 200 else None
+
 async def _create_repo(name: str, token: str) -> dict[str, Any]:
     """Create repo via the GitHub adapter; treat 'already exists' as success (idempotent)."""
     from src.integrations.registry import get_integration_registry
@@ -524,9 +556,13 @@ async def _create_repo(name: str, token: str) -> dict[str, Any]:
     if res.get("status") == "ok":
         data = res.get("data", {})
         return {"ok": True, "repo_url": data.get("clone_url") or data.get("html_url"), "existed": False}
-    # 422 = name already exists → idempotent success
+    # 422 = name already exists → idempotent: resolve the REAL owner/name clone URL
+    # (do NOT return a bare-name URL — https://github.com/{name}.git is unpushable). Opus review.
     if res.get("status_code") == 422:
-        return {"ok": True, "repo_url": f"https://github.com/{name}.git", "existed": True}
+        login = await _gh_login(token)
+        if not login:
+            return {"ok": False, "reason": "repo_exists_but_owner_unresolved"}
+        return {"ok": True, "repo_url": f"https://github.com/{login}/{name}.git", "existed": True}
     return {"ok": False, "reason": res.get("error", "create_repo failed")}
 
 async def _git_push_scaffold(workspace: str, repo_url: str, token: str) -> dict[str, Any]:
@@ -620,15 +656,24 @@ rtk git commit -m "feat(mr_roboto): git_prepare_repo executor (create repo + pus
 **Files:**
 - Read/Modify: `src/integrations/configs/github.json`
 
-- [ ] **Step 1:** Read `github.json`; confirm a `create_repo` action (`POST /user/repos`, `required_params:["name"]`). If absent, add it + a mock; if present, no-op. Add a config-guard assertion:
+- [ ] **Step 1:** Read `github.json`. Per Opus review, `create_repo` **already exists**
+(`POST /user/repos`, `required_params:["name"]`) — so the action is a no-op verify. But it has
+**no `mock_responses`**, so the git-prereq chain can't be mock-dry-run. Add a `mock_responses`
+block for `create_repo` (tagged like the others) so mock-mode runs return a clone URL:
+
+```json
+"mock_responses": { "create_repo": { "clone_url": "https://github.com/kutay/mock-repo.git", "html_url": "https://github.com/kutay/mock-repo" } }
+```
+Add a config-guard assertion:
 
 ```python
-def test_github_has_create_repo():
+def test_github_has_create_repo_and_mock():
     cfg = _load("github")
     assert "create_repo" in cfg["actions"]
+    assert "create_repo" in cfg.get("mock_responses", {})
 ```
 
-- [ ] **Step 2:** Run `python -m pytest tests/integrations/test_deploy_adapter_configs.py::test_github_has_create_repo -v`; make it pass (add the action only if missing).
+- [ ] **Step 2:** Run `python -m pytest tests/integrations/test_deploy_adapter_configs.py::test_github_has_create_repo_and_mock -v`; make it pass (add the mock block; add the action only if somehow missing).
 
 - [ ] **Step 3: Commit** (only if changed)
 

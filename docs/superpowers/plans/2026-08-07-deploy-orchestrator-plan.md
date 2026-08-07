@@ -176,17 +176,47 @@ async def _call(service: str, action: str, params: dict) -> dict:
 def _fail(reason: str, **extra) -> dict:
     return {"ok": False, "reason": reason, **extra}
 
+async def _repo_from_mission(mission_id) -> str | None:
+    """Read the pushed repo URL persisted by Plan-1 git_prepare_repo (missions.github_repo_url).
+    The payload's {git_repo_url} placeholder is NOT substituted at expansion (only {mission_id}
+    is) — Opus review Bug 1. Resolve from the mission row instead."""
+    try:
+        from dabidabi import get_db
+        db = await get_db()
+        cur = await db.execute("SELECT github_repo_url FROM missions WHERE id = ?", (mission_id,))
+        row = await cur.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+async def _resolve_workspace(mission_id, payload_ws) -> str | None:
+    """Absolute mission workspace. A payload-relative 'mission_{id}/' would resolve against the
+    process CWD (Opus review Bug 2) — re-root under WORKSPACE_DIR via get_mission_workspace."""
+    import os
+    if payload_ws and os.path.isabs(payload_ws):
+        return payload_ws
+    if mission_id is not None:
+        from src.tools.workspace import get_mission_workspace
+        return get_mission_workspace(int(mission_id))
+    return payload_ws
+
 async def run(task: dict) -> dict[str, Any]:
     payload = (task.get("payload") or (task.get("context") or {}).get("payload") or {})
-    repo = payload.get("repo")
-    workspace = payload.get("workspace")
     backend_arch = payload.get("backend_arch", "nestjs_render")
     if backend_arch != "nestjs_render":
         return _fail("serverless_not_yet_supported")
-    if not repo or not workspace:
-        return _fail("missing repo or workspace")
     ctx = task.get("context") or {}
     mission_id = ctx.get("mission_id") or payload.get("mission_id")
+
+    repo = payload.get("repo")
+    if (not repo or "{" in str(repo)) and mission_id is not None:
+        repo = await _repo_from_mission(mission_id)
+    if not repo or "{" in str(repo):
+        return _fail("missing repo (no github_repo_url on mission)")
+
+    workspace = await _resolve_workspace(mission_id, payload.get("workspace"))
+    if not workspace:
+        return _fail("missing workspace")
 
     state = {"mocked_any": False, "services": {}, "provisioned": []}
     # DAG steps 2-9 are added in later tasks; skeleton returns not-implemented for now.
@@ -409,11 +439,19 @@ Expected: FAIL
 - [ ] **Step 3: Implement `_migrate` + `_shell`**
 
 ```python
-import asyncio, os
+import asyncio, os, shutil, sys
+
+def _resolve_exe(name: str) -> str:
+    """Windows-safe exe resolution: create_subprocess_exec does NOT use the shell, so bare 'npx'
+    won't find 'npx.cmd' → FileNotFoundError on Windows (Opus review Bug 3). Resolve via
+    shutil.which, fall back to '<name>.cmd' on win32."""
+    found = shutil.which(name) or (shutil.which(f"{name}.cmd") if sys.platform == "win32" else None)
+    return found or (f"{name}.cmd" if sys.platform == "win32" else name)
 
 async def _shell(cmd: list[str], cwd: str, env: dict) -> dict:
+    exe = _resolve_exe(cmd[0])
     proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=cwd, env={**os.environ, **env},
+        exe, *cmd[1:], cwd=cwd, env={**os.environ, **env},
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     out, err = await proc.communicate()
     return {"returncode": proc.returncode,
@@ -422,8 +460,12 @@ async def _shell(cmd: list[str], cwd: str, env: dict) -> dict:
 async def _migrate(workspace: str, database_url: str) -> dict:
     """Run `npx prisma migrate deploy` in the backend dir against the provisioned DATABASE_URL.
 
-    (Alternative: run as a Render release command — chosen here as an explicit executor step so
-    the migration outcome is observable. Requires Node/npm + backend deps on the host.)
+    NOTE (Opus review): prefer reusing `mr_roboto.run_cmd` (see `expo_cli.py:121`/`eas_build.py:162`
+    for the call shape) — it centralizes workspace-rooting + missing-exe soft-skip; read its
+    signature before adopting. The self-contained `_shell` above is the fallback. **Prereq:** the
+    backend's `node_modules` (prisma CLI + generated client) must be installed on the host — add an
+    `npm ci` preflight or ensure the runbook installs deps, else the live run fails with
+    'prisma: not found'. (Alternative: run migrations as a Render release command.)
     """
     backend = os.path.join(workspace, "backend")
     if not os.path.isdir(backend):
@@ -707,6 +749,10 @@ rtk git commit -m "feat(mr_roboto): deploy_staging DAG + anti-fake guard + artif
 async def test_deploy_staging_dispatches(monkeypatch, tmp_path):
     import mr_roboto
     from mr_roboto.executors import deploy_staging as _ds
+    # hermetic: deploy_staging is irreversible; if a founder exported
+    # KUTAI_CONFIRM_POLICY=irreversible_only, run() would auto-arm confirmation and park
+    # (needs_clarification) → status != completed (Opus review). Unset it for the test.
+    monkeypatch.delenv("KUTAI_CONFIRM_POLICY", raising=False)
     async def ok_run(_t): return {"ok": True, "artifacts": {"staging_environment": {"url": "x"}}}
     monkeypatch.setattr(_ds, "run", ok_run)
     act = await mr_roboto.run({"payload": {"action": "deploy_staging"}, "context": {}})
@@ -719,7 +765,10 @@ def test_deploy_staging_reversibility_registered():
 
 - [ ] **Step 2: Run to verify it fails** — Expected: FAIL
 
-- [ ] **Step 3: Add the dispatch branch** in `__init__.py` (after the `git_prepare_repo` branch):
+- [ ] **Step 3: Add the dispatch branch** in `_run_dispatch` in `__init__.py`. Insert after the
+Plan-1 `git_prepare_repo` branch **if Plan 1 has landed**; otherwise insert after the
+`stripe_provision_products` branch (~line 2897). `Action` is already imported at module top
+(`__init__.py:6`) and in scope inside `_run_dispatch`.
 
 ```python
     if action == "deploy_staging":
@@ -772,13 +821,17 @@ def test_staging_env_is_mechanical_deploy_staging():
 "payload": {
   "action": "deploy_staging",
   "backend_arch": "nestjs_render",
-  "repo": "{git_repo_url}",
-  "workspace": "mission_{mission_id}/",
   "confirm_policy": "irreversible_only"
 }
 ```
 
-(`{git_repo_url}` and `{mission_id}` are substituted by `_substitute_payload` at expansion.)
+> **CORRECTED per Opus review Bug 1:** do NOT put `"repo": "{git_repo_url}"` in the payload —
+> `_substitute_payload` at expansion only substitutes `{mission_id}` (`expander.py:311-314`), so
+> `{git_repo_url}` would pass through **verbatim** as a literal string. Instead `run()` resolves the
+> repo from `missions.github_repo_url` (persisted by Plan-1 `git_prepare_repo`) and re-roots the
+> workspace absolutely via `get_mission_workspace(mission_id)` — no payload `repo`/`workspace`
+> needed. Also add a `depends_on` on the `git_prepare_repo` step so the repo URL is guaranteed
+> persisted before 7.13 runs (7.13 currently depends only on 7.7/7.8).
 
 - [ ] **Step 4: Run to verify it passes** — Expected: PASS
 

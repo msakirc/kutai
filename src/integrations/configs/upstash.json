@@ -1,0 +1,17 @@
+{
+  "service_name": "upstash",
+  "base_url": "https://api.upstash.com/v2",
+  "auth_type": "header",
+  "auth_header": "Authorization",
+  "auth_token_field": "basic_auth_b64",
+  "actions": {
+    "create_redis": { "method": "POST", "path": "/redis/database", "required_params": ["database_name", "primary_region"] },
+    "get_redis":    { "method": "GET",  "path": "/redis/database/{id}", "required_params": ["id"] },
+    "list_redis":   { "method": "GET",  "path": "/redis/databases", "required_params": [] }
+  },
+  "mock_responses": {
+    "create_redis": { "database_id": "db_mock123", "database_name": "mock-redis", "endpoint": "mock.upstash.io", "port": 6379, "password": "mockpw", "rest_token": "mocktoken", "state": "active" },
+    "get_redis":    { "database_id": "db_mock123", "endpoint": "mock.upstash.io", "state": "active" },
+    "list_redis":   []
+  }
+}

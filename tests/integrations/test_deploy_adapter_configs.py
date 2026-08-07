@@ -83,3 +83,19 @@ def test_neon_config_actions_and_mock():
     # create must surface the connection string downstream needs
     conn = cfg["mock_responses"]["create_project"].get("connection_uris")
     assert conn and conn[0].get("connection_uri", "").startswith("postgresql://")
+
+
+# --------------------------------------------------------------------------
+# Task 5 — upstash adapter config + mock (redis, header-basic auth)
+# --------------------------------------------------------------------------
+def test_upstash_config_uses_header_auth_and_has_mock():
+    cfg = _load("upstash")
+    assert cfg["service_name"] == "upstash"
+    # header auth carrying a pre-encoded "Basic <b64>" token — no engine change (twilio pattern)
+    assert cfg["auth_type"] == "header"
+    assert cfg["auth_header"] == "Authorization"
+    assert cfg["auth_token_field"] == "basic_auth_b64"
+    for a in ("create_redis", "get_redis", "list_redis"):
+        assert a in cfg["actions"]
+    m = cfg["mock_responses"]["create_redis"]
+    assert m.get("endpoint") and m.get("password")

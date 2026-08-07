@@ -51,3 +51,16 @@ async def test_deploy_backend_sets_env_and_polls(monkeypatch):
     # env vars must be present in the create call (set before first boot)
     create_params = seen[("render", "create_service")]
     assert "DATABASE_URL" in str(create_params)
+
+@pytest.mark.asyncio
+async def test_migrate_runs_prisma_deploy(monkeypatch, tmp_path):
+    (tmp_path / "backend").mkdir()
+    calls = {}
+    async def fake_shell(cmd, cwd, env):
+        calls["cmd"] = cmd; calls["env"] = env
+        return {"returncode": 0, "stdout": "migrations applied", "stderr": ""}
+    monkeypatch.setattr(ds, "_shell", fake_shell)
+    out = await ds._migrate(workspace=str(tmp_path), database_url="postgresql://u:p@h/db")
+    assert out["ok"]
+    assert "prisma" in " ".join(calls["cmd"]) and "migrate" in " ".join(calls["cmd"])
+    assert calls["env"]["DATABASE_URL"] == "postgresql://u:p@h/db"

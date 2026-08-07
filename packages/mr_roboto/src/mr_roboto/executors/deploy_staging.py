@@ -5,6 +5,7 @@ strips the ``mocked`` flag the anti-fake guard depends on). A mock response can 
 certify health_check_passed:true.
 """
 from __future__ import annotations
+import asyncio, os, shutil, sys
 from typing import Any
 
 def _is_mocked(envelope: dict) -> bool:
@@ -136,3 +137,39 @@ async def _latest_deploy_state(service_id: str) -> dict:
     if _is_mocked(d):
         st = {**st, "mocked": True}
     return st
+
+
+def _resolve_exe(name: str) -> str:
+    """Windows-safe exe resolution: create_subprocess_exec does NOT use the shell, so bare 'npx'
+    won't find 'npx.cmd' → FileNotFoundError on Windows (Opus review Bug 3). Resolve via
+    shutil.which, fall back to '<name>.cmd' on win32."""
+    found = shutil.which(name) or (shutil.which(f"{name}.cmd") if sys.platform == "win32" else None)
+    return found or (f"{name}.cmd" if sys.platform == "win32" else name)
+
+async def _shell(cmd: list[str], cwd: str, env: dict) -> dict:
+    exe = _resolve_exe(cmd[0])
+    proc = await asyncio.create_subprocess_exec(
+        exe, *cmd[1:], cwd=cwd, env={**os.environ, **env},
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate()
+    return {"returncode": proc.returncode,
+            "stdout": out.decode(errors="replace"), "stderr": err.decode(errors="replace")}
+
+async def _migrate(workspace: str, database_url: str) -> dict:
+    """Run `npx prisma migrate deploy` in the backend dir against the provisioned DATABASE_URL.
+
+    NOTE (Opus review): prefer reusing `mr_roboto.run_cmd` (see `expo_cli.py:121`/`eas_build.py:162`
+    for the call shape) — it centralizes workspace-rooting + missing-exe soft-skip; read its
+    signature before adopting. The self-contained `_shell` above is the fallback. **Prereq:** the
+    backend's `node_modules` (prisma CLI + generated client) must be installed on the host — add an
+    `npm ci` preflight or ensure the runbook installs deps, else the live run fails with
+    'prisma: not found'. (Alternative: run migrations as a Render release command.)
+    """
+    backend = os.path.join(workspace, "backend")
+    if not os.path.isdir(backend):
+        return _fail("backend_dir_missing", path=backend)
+    res = await _shell(["npx", "prisma", "migrate", "deploy"], cwd=backend,
+                       env={"DATABASE_URL": database_url})
+    if res["returncode"] != 0:
+        return _fail("migration_failed", detail=res["stderr"][:300])
+    return {"ok": True, "output": res["stdout"][:300]}

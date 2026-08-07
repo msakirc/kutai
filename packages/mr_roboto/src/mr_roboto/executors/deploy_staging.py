@@ -66,8 +66,45 @@ async def run(task: dict) -> dict[str, Any]:
         return _fail("missing workspace")
 
     state = {"mocked_any": False, "services": {}, "provisioned": []}
-    # DAG steps 2-9 are added in later tasks; skeleton returns not-implemented for now.
-    return _fail("dag_not_implemented", state=state)
+
+    prov = await _provision(mission_id)
+    if not prov["ok"]:
+        return prov
+    state["mocked_any"] |= prov.get("mocked", False)
+    state["services"].update(prov["services"])
+
+    be = await _deploy_backend(repo=repo, env=prov["env"], owner_id=payload.get("owner_id", ""))
+    if not be["ok"]:
+        return {**be, "state": state}
+    state["mocked_any"] |= be.get("mocked", False)
+    state["services"].update(be["services"])
+
+    mig = await _migrate(workspace=workspace, database_url=prov["env"]["DATABASE_URL"])
+    if not mig["ok"]:
+        return {**mig, "state": state}
+
+    fe = await _deploy_frontend(repo=repo, backend_url=be["url"])
+    if not fe["ok"]:
+        return {**fe, "state": state}
+    state["mocked_any"] |= fe.get("mocked", False)
+    state["services"].update(fe["services"])
+
+    hc = await _health_check(be["url"])
+
+    # Anti-fake guard: a mocked run can NEVER certify a live deploy.
+    if state["mocked_any"]:
+        health_passed, reason = False, "mock_mode_active"
+    else:
+        health_passed, reason = bool(hc.get("passed")), (None if hc.get("passed") else "health_check_failed")
+
+    artifacts = {
+        "staging_environment": {"url": fe["url"], "services": state["services"]},
+        "staging_deployment_verified": {"deployed": True, "health_check_passed": health_passed,
+                                        "reason": reason},
+    }
+    ok = health_passed
+    return {"ok": ok, "artifacts": artifacts, "state": state,
+            "reason": None if ok else reason}
 
 
 async def _provision(mission_id) -> dict:

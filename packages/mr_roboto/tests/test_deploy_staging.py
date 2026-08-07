@@ -94,3 +94,33 @@ async def test_health_check_fails_after_attempts(monkeypatch):
     monkeypatch.setattr(ds, "_http_get", fake_get)
     out = await ds._health_check("https://b.onrender.com", attempts=2, delay_s=0)
     assert out["passed"] is False
+
+@pytest.mark.asyncio
+async def test_full_mock_chain_forces_health_false(monkeypatch, tmp_path):
+    (tmp_path / "backend").mkdir()
+    # every adapter call returns a mocked:true envelope
+    async def fake_call(service, action, params):
+        base = {"status": "ok", "mocked": True}
+        data = {
+            ("neon", "create_project"): {"connection_uris": [{"connection_uri": "postgresql://u:p@h/db"}]},
+            ("upstash", "create_redis"): {"endpoint": "r.io", "port": 6379, "password": "pw", "rest_token": "t"},
+            ("render", "create_service"): {"service": {"id": "srv1", "serviceDetails": {"url": "https://b.onrender.com"}}},
+            ("render", "get_deploy"): {"status": "live"},
+            ("vercel", "deploy"): {"id": "dpl1", "url": "f.vercel.app", "readyState": "QUEUED"},
+            ("vercel", "get_deployment"): {"id": "dpl1", "url": "f.vercel.app", "readyState": "READY"},
+        }.get((service, action), {})
+        return {**base, "data": data}
+    monkeypatch.setattr(ds, "_call", fake_call)
+    async def ok_migrate(**k): return {"ok": True}
+    monkeypatch.setattr(ds, "_migrate", ok_migrate)
+
+    task = {"payload": {"action": "deploy_staging", "backend_arch": "nestjs_render",
+                        "repo": "https://github.com/k/h.git", "workspace": str(tmp_path)},
+            "context": {"mission_id": 90}}
+    res = await ds.run(task)
+    # DAG completes but the guard MUST refuse to certify a mocked deploy
+    arts = res["artifacts"]
+    assert arts["staging_deployment_verified"]["health_check_passed"] is False
+    assert arts["staging_deployment_verified"]["reason"] == "mock_mode_active"
+    assert res["ok"] is False
+    assert arts["staging_environment"]["url"]  # env artifact still populated

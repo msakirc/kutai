@@ -134,12 +134,29 @@ async def _persist_repo_url(mission_id: int, repo_url: str) -> None:
                        f"{type(e).__name__}: {e}")
 
 
+def _resolve_workspace(mission_id, payload_ws) -> str | None:
+    """Absolute mission workspace. A payload-relative 'mission_{id}/' would resolve against the
+    process CWD (mirrors deploy_staging._resolve_workspace) — re-root under WORKSPACE_DIR via
+    get_mission_workspace when the payload value is missing or not absolute."""
+    if payload_ws and os.path.isabs(payload_ws):
+        return payload_ws
+    if mission_id is not None:
+        from src.tools.workspace import get_mission_workspace
+        return get_mission_workspace(int(mission_id))
+    return payload_ws
+
+
 async def run(task: dict) -> dict[str, Any]:
     payload = (task.get("payload") or (task.get("context") or {}).get("payload") or {})
     ctx = task.get("context") or {}
     mission_id = ctx.get("mission_id") or payload.get("mission_id")
     repo_name = payload.get("repo_name")
-    workspace = payload.get("workspace")
+    if not repo_name and mission_id is not None:
+        repo_name = f"kutay-mission-{mission_id}"
+    # A workflow payload passes a workspace-relative 'mission_{mission_id}/' that only gets
+    # {mission_id} substituted → it resolves against the process CWD. Re-root it (or supply it
+    # from mission_id when absent) exactly like deploy_staging does.
+    workspace = _resolve_workspace(mission_id, payload.get("workspace"))
     if not repo_name or not workspace:
         return {"ok": False, "reason": "missing repo_name or workspace"}
     if not os.path.isdir(workspace):

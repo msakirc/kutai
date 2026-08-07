@@ -101,6 +101,52 @@ async def test_git_prepare_repo_persist_failure_is_best_effort(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_git_prepare_repo_reroots_relative_workspace_and_defaults_repo_name(monkeypatch, tmp_path):
+    """A workflow payload passes a relative 'mission_{id}/' workspace (only {mission_id} is
+    substituted) and may omit repo_name. run() must (a) re-root the workspace via
+    get_mission_workspace and (b) default repo_name to kutay-mission-<id>."""
+    from mr_roboto.executors import git_prepare_repo as gpr
+    from src.tools import workspace as ws_mod
+
+    # Monkeypatch the workspace resolver to point at a real dir (tmp_path).
+    def fake_get_mission_workspace(mid):
+        assert mid == 90
+        return str(tmp_path)
+    monkeypatch.setattr(ws_mod, "get_mission_workspace", fake_get_mission_workspace)
+
+    seen = {}
+
+    async def fake_create_repo(name, token):
+        seen["repo_name"] = name
+        return {"ok": True, "repo_url": f"https://github.com/kutay/{name}.git", "existed": False}
+
+    async def fake_git_push(workspace, repo_url, token):
+        seen["workspace"] = workspace
+        return {"ok": True}
+
+    async def yes_token(_service="github"):
+        return "ghp_faketoken"
+
+    async def noop_umf(mission_id, **fields):
+        return None
+
+    monkeypatch.setattr(gpr, "_create_repo", fake_create_repo)
+    monkeypatch.setattr(gpr, "_git_push_scaffold", fake_git_push)
+    monkeypatch.setattr(gpr, "_get_github_token", yes_token)
+    import general_beckman
+    monkeypatch.setattr(general_beckman, "update_mission_fields", noop_umf)
+
+    # Relative workspace + NO repo_name — both must be derived from mission_id.
+    task = {"payload": {"action": "git_prepare_repo", "workspace": "mission_90/"},
+            "context": {"mission_id": 90}}
+    res = await gpr.run(task)
+    assert res["ok"] and res["pushed"]
+    assert seen["workspace"] == str(tmp_path)          # re-rooted, not the CWD-relative 'mission_90/'
+    assert seen["repo_name"] == "kutay-mission-90"     # defaulted from mission_id
+    assert res["repo_url"].endswith("kutay-mission-90.git")
+
+
+@pytest.mark.asyncio
 async def test_git_prepare_repo_requires_token(monkeypatch, tmp_path):
     from mr_roboto.executors import git_prepare_repo as gpr
     async def no_cred(_service="github"):

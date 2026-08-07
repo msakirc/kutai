@@ -6919,6 +6919,29 @@
       "reversibility": "full"
     },
     {
+      "id": "7.12b",
+      "phase": "phase_7",
+      "name": "prepare_git_repo",
+      "agent": "mechanical",
+      "executor": "git_prepare_repo",
+      "payload": {
+        "action": "git_prepare_repo",
+        "repo_name": "kutay-mission-{mission_id}"
+      },
+      "depends_on": [
+        "7.7",
+        "7.8"
+      ],
+      "difficulty": "low",
+      "may_need_clarification": false,
+      "input_artifacts": [],
+      "output_artifacts": [],
+      "context": {},
+      "instruction": "Create the mission's GitHub repository and push the scaffolded workspace (backend/ + frontend/) via git_prepare_repo, persisting missions.github_repo_url for the downstream staging deploy. Requires a stored github PAT credential; no-op-fails cleanly without one.",
+      "done_when": "the github repo exists and missions.github_repo_url is persisted.",
+      "reversibility": "partial"
+    },
+    {
       "id": "7.13",
       "phase": "phase_7",
       "name": "staging_environment",
@@ -6939,7 +6962,8 @@
       ],
       "depends_on": [
         "7.7",
-        "7.8"
+        "7.8",
+        "7.12b"
       ],
       "may_need_clarification": false,
       "input_artifacts": [

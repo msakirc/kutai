@@ -173,3 +173,31 @@ async def _migrate(workspace: str, database_url: str) -> dict:
     if res["returncode"] != 0:
         return _fail("migration_failed", detail=res["stderr"][:300])
     return {"ok": True, "output": res["stdout"][:300]}
+
+
+async def _deploy_frontend(repo: str, backend_url: str, *, max_wait_s: float = 600) -> dict:
+    from mr_roboto.deploy_util import poll_until
+    dep = await _call("vercel", "deploy", {
+        "name": "kutay-frontend",
+        "gitSource": {"type": "github", "repo": repo},
+        "env": {"NEXT_PUBLIC_API_URL": backend_url},
+    })
+    if dep.get("status") != "ok":
+        return _fail("vercel_deploy_failed", detail=dep.get("error"))
+    dep_id = dep.get("data", {}).get("id")
+
+    async def fetch():
+        r = await _call("vercel", "get_deployment", {"id": dep_id})
+        d = r.get("data", {})
+        if _is_mocked(r):
+            d = {**d, "mocked": True}
+        return d
+    poll = await poll_until(fetch, ready=lambda r: r.get("readyState") == "READY",
+                            fail=lambda r: r.get("readyState") in ("ERROR", "CANCELED"),
+                            max_wait_s=max_wait_s)
+    if not poll["ok"]:
+        return _fail(f"frontend_deploy_{poll['reason']}", deployment_id=dep_id)
+    url = poll["result"].get("url") or dep.get("data", {}).get("url")
+    full = url if str(url).startswith("http") else f"https://{url}"
+    return {"ok": True, "url": full, "mocked": _is_mocked(dep),
+            "services": {"frontend": {"provider": "vercel", "url": full}}}

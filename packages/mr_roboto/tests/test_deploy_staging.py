@@ -64,3 +64,18 @@ async def test_migrate_runs_prisma_deploy(monkeypatch, tmp_path):
     assert out["ok"]
     assert "prisma" in " ".join(calls["cmd"]) and "migrate" in " ".join(calls["cmd"])
     assert calls["env"]["DATABASE_URL"] == "postgresql://u:p@h/db"
+
+@pytest.mark.asyncio
+async def test_deploy_frontend_passes_backend_url_and_polls(monkeypatch):
+    seen = {}
+    async def fake_call(service, action, params):
+        seen[(service, action)] = params
+        if action == "deploy":
+            return {"status": "ok", "data": {"id": "dpl1", "url": "f.vercel.app", "readyState": "QUEUED"}}
+        if action == "get_deployment":
+            return {"status": "ok", "data": {"id": "dpl1", "url": "f.vercel.app", "readyState": "READY"}}
+        return {"status": "ok", "data": {}}
+    monkeypatch.setattr(ds, "_call", fake_call)
+    out = await ds._deploy_frontend(repo="https://github.com/k/h.git", backend_url="https://b.onrender.com")
+    assert out["ok"] and out["url"].endswith("vercel.app")
+    assert "b.onrender.com" in str(seen[("vercel", "deploy")])

@@ -121,3 +121,12 @@ async def test_registry_discovers_new_adapters_and_mocks_are_tagged():
         assert res["data"]["status"] == "live"
     finally:
         reg_mod._registry = orig
+
+
+# --------------------------------------------------------------------------
+# Task 9 — github create_repo action + mock (deploy git-prereq)
+# --------------------------------------------------------------------------
+def test_github_has_create_repo_and_mock():
+    cfg = _load("github")
+    assert "create_repo" in cfg["actions"]
+    assert "create_repo" in cfg.get("mock_responses", {})

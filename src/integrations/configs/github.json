@@ -30,5 +30,8 @@
       "path": "/repos/{owner}/{repo}/issues",
       "required_params": ["owner", "repo"]
     }
+  },
+  "mock_responses": {
+    "create_repo": { "clone_url": "https://github.com/kutay/mock-repo.git", "html_url": "https://github.com/kutay/mock-repo" }
   }
 }

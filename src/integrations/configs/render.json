@@ -5,7 +5,7 @@
   "auth_header": "Authorization",
   "auth_token_field": "api_key",
   "actions": {
-    "create_service":  { "method": "POST", "path": "/services", "required_params": ["ownerId", "type", "name"] },
+    "create_service":  { "method": "POST", "path": "/services", "required_params": ["ownerId", "type", "name", "repo", "serviceDetails"] },
     "get_service":     { "method": "GET",  "path": "/services/{id}", "required_params": ["id"] },
     "trigger_deploy":  { "method": "POST", "path": "/services/{id}/deploys", "required_params": ["id"] },
     "get_deploy":      { "method": "GET",  "path": "/services/{id}/deploys/{deployId}", "required_params": ["id", "deployId"] },

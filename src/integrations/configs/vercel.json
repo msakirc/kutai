@@ -14,10 +14,19 @@
       "path": "/v13/deployments",
       "required_params": ["name", "gitSource"]
     },
+    "get_deployment": {
+      "method": "GET",
+      "path": "/v13/deployments/{id}",
+      "required_params": ["id"]
+    },
     "list_projects": {
       "method": "GET",
       "path": "/v9/projects",
       "required_params": []
     }
+  },
+  "mock_responses": {
+    "deploy": { "id": "dpl_mock123", "readyState": "QUEUED", "url": "mock-app.vercel.app" },
+    "get_deployment": { "id": "dpl_mock123", "readyState": "READY", "url": "mock-app.vercel.app" }
   }
 }

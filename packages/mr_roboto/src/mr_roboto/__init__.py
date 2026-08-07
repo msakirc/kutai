@@ -2907,6 +2907,18 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "deploy_staging":
+        # Mechanical deploy orchestrator — chains the deploy adapters into a
+        # $0 staging deploy and writes 7.13's two artifacts. Anti-fake guard:
+        # a mocked adapter response can never certify health_check_passed:true.
+        from mr_roboto.executors.deploy_staging import run as _deploy_run
+        try:
+            res = await _deploy_run(task)
+            return Action(status="completed" if res.get("ok") else "failed",
+                          error=None if res.get("ok") else res.get("reason"), result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "stripe_payment_flow_test":
         # Z6 T5C — exercise Stripe sandbox via vendor_call.
         from mr_roboto.executors.stripe_payment_flow_test import (

@@ -148,6 +148,10 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # via a PAT-authed git push. The remote repo + commit exist afterwards
     # (deletable, but a real side-effect) → partial.
     "git_prepare_repo": "partial",
+    # deploy_staging: provisions real DB+cache, deploys backend+frontend to
+    # live hosting, runs migrations. The staging env is publicly reachable —
+    # a visible, externally-observable side-effect → irreversible.
+    "deploy_staging": "irreversible",
     # ---- Z6 T3A vendor-call mechanical ---------------------------------
     "vendor_call": "partial",  # real-world API call; per-call adapter knows
     # ---- Z6 T5 Stripe family --------------------------------------------

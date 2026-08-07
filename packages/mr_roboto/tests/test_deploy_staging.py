@@ -124,3 +124,20 @@ async def test_full_mock_chain_forces_health_false(monkeypatch, tmp_path):
     assert arts["staging_deployment_verified"]["reason"] == "mock_mode_active"
     assert res["ok"] is False
     assert arts["staging_environment"]["url"]  # env artifact still populated
+
+@pytest.mark.asyncio
+async def test_deploy_staging_dispatches(monkeypatch, tmp_path):
+    import mr_roboto
+    from mr_roboto.executors import deploy_staging as _ds
+    # hermetic: deploy_staging is irreversible; if a founder exported
+    # KUTAI_CONFIRM_POLICY=irreversible_only, run() would auto-arm confirmation and park
+    # (needs_clarification) → status != completed (Opus review). Unset it for the test.
+    monkeypatch.delenv("KUTAI_CONFIRM_POLICY", raising=False)
+    async def ok_run(_t): return {"ok": True, "artifacts": {"staging_environment": {"url": "x"}}}
+    monkeypatch.setattr(_ds, "run", ok_run)
+    act = await mr_roboto.run({"payload": {"action": "deploy_staging"}, "context": {}})
+    assert act.status == "completed"
+
+def test_deploy_staging_reversibility_registered():
+    from mr_roboto.reversibility import get_reversibility
+    assert get_reversibility("deploy_staging") == "irreversible"

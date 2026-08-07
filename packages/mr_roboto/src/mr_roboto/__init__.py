@@ -2896,6 +2896,17 @@ async def _run_dispatch(task: dict) -> Action:
         except Exception as e:
             return Action(status="failed", error=str(e))
 
+    if action == "git_prepare_repo":
+        # Deploy git-prereq — create the mission's GitHub repo + push its
+        # backend/frontend scaffold via a PAT-authenticated git push.
+        from mr_roboto.executors.git_prepare_repo import run as _gpr_run
+        try:
+            res = await _gpr_run(task)
+            return Action(status="completed" if res.get("ok") else "failed",
+                          error=None if res.get("ok") else res.get("reason"), result=res)
+        except Exception as e:
+            return Action(status="failed", error=str(e))
+
     if action == "stripe_payment_flow_test":
         # Z6 T5C — exercise Stripe sandbox via vendor_call.
         from mr_roboto.executors.stripe_payment_flow_test import (

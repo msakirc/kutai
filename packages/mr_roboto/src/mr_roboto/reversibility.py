@@ -143,6 +143,11 @@ VERB_REVERSIBILITY: dict[str, Reversibility] = {
     # ---- Z2 T5C recipe instantiation ------------------------------------
     "instantiate_recipe": "partial",  # writes files to target_dir; git-reversible
     "instantiate_picked_recipes": "partial",  # batch wrapper for instantiate_recipe
+    # ---- Deploy git-prereq chain ----------------------------------------
+    # git_prepare_repo: creates a GitHub repo + pushes the mission scaffold
+    # via a PAT-authed git push. The remote repo + commit exist afterwards
+    # (deletable, but a real side-effect) → partial.
+    "git_prepare_repo": "partial",
     # ---- Z6 T3A vendor-call mechanical ---------------------------------
     "vendor_call": "partial",  # real-world API call; per-call adapter knows
     # ---- Z6 T5 Stripe family --------------------------------------------

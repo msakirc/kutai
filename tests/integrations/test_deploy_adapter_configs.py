@@ -99,3 +99,25 @@ def test_upstash_config_uses_header_auth_and_has_mock():
         assert a in cfg["actions"]
     m = cfg["mock_responses"]["create_redis"]
     assert m.get("endpoint") and m.get("password")
+
+
+# --------------------------------------------------------------------------
+# Task 6 — registry discovers new adapters + mock-mode returns tagged responses
+# --------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_registry_discovers_new_adapters_and_mocks_are_tagged():
+    import src.integrations.registry as reg_mod
+    from src.integrations.registry import IntegrationRegistry
+    orig = reg_mod._registry
+    reg_mod._registry = IntegrationRegistry(auto_discover=True, mock_mode=True)
+    try:
+        reg = reg_mod._registry
+        for svc in ("render", "neon", "upstash", "vercel"):
+            assert reg.get(svc) is not None, f"{svc} not discovered"
+        # a mocked deploy/provision response must carry mocked:true (anti-fake guard depends on it)
+        render = reg.get("render")
+        res = await render.execute("get_deploy", {"id": "srv_mock123", "deployId": "dep_mock123"})
+        assert res.get("mocked") is True
+        assert res["data"]["status"] == "live"
+    finally:
+        reg_mod._registry = orig

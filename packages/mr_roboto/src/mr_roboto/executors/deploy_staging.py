@@ -67,3 +67,32 @@ async def run(task: dict) -> dict[str, Any]:
     state = {"mocked_any": False, "services": {}, "provisioned": []}
     # DAG steps 2-9 are added in later tasks; skeleton returns not-implemented for now.
     return _fail("dag_not_implemented", state=state)
+
+
+async def _provision(mission_id) -> dict:
+    """Provision Neon Postgres + Upstash Redis; return env vars + service descriptors.
+
+    Idempotent: list-before-create keyed on a mission tag would go here (list_* returns []
+    in mock; real impl reuses a resource named kutay_mission_{id}). Returns
+    {ok, env:{DATABASE_URL,REDIS_URL}, services:{db,cache}, mocked}.
+    """
+    name = f"kutay_mission_{mission_id}"
+    db = await _call("neon", "create_project", {"project": {"name": name}})
+    if db.get("status") != "ok":
+        return _fail("neon_provision_failed", detail=db.get("error"))
+    conn = (db.get("data", {}).get("connection_uris") or [{}])[0].get("connection_uri")
+    if not conn:
+        return _fail("neon_no_connection_uri")
+
+    cache = await _call("upstash", "create_redis", {"database_name": name, "region": "us-east-1"})
+    if cache.get("status") != "ok":
+        return _fail("upstash_provision_failed", detail=cache.get("error"))
+    cd = cache.get("data", {})
+    redis_url = f"rediss://default:{cd.get('password')}@{cd.get('endpoint')}:{cd.get('port')}"
+
+    return {
+        "ok": True,
+        "env": {"DATABASE_URL": conn, "REDIS_URL": redis_url},
+        "services": {"db": {"provider": "neon"}, "cache": {"provider": "upstash"}},
+        "mocked": _is_mocked(db) or _is_mocked(cache),
+    }

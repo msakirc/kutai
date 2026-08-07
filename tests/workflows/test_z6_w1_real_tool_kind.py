@@ -53,7 +53,7 @@ def test_w1_specific_step_tags():
     wf = _load_workflow()
     by_id = {s.get("id"): s for s in wf["steps"]}
 
-    assert by_id["7.13"]["real_tool_kind"] == "vercel|railway|fly"
+    assert by_id["7.13"]["real_tool_kind"] == "vercel|render"
     assert by_id["13.1"]["real_tool_kind"] == "vercel|railway|supabase"
     assert by_id["13.3"]["real_tool_kind"] == "sentry|datadog|new_relic"
 
@@ -124,3 +124,15 @@ async def test_admission_resolver_matches_registered_adapter(monkeypatch):
     )
     picked = await resolve_real_tool("vercel|railway")
     assert picked is None
+
+
+def test_staging_env_real_tool_kind_targets_vercel_render():
+    import json
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[2] / "src" / "workflows" / "i2p" / "i2p_v3.json"
+    with open(p, encoding="utf-8") as f:   # i2p_v3.json has non-cp1252 bytes → utf-8 required
+        wf = json.load(f)
+    steps = wf.get("steps") or wf.get("workflow", {}).get("steps") or []
+    step = next(s for s in steps if s.get("id") == "7.13"
+                or s.get("name") == "staging_environment")
+    assert step["real_tool_kind"] == "vercel|render"

@@ -6923,7 +6923,7 @@
       "phase": "phase_7",
       "name": "staging_environment",
       "needs_real_tools": true,
-      "real_tool_kind": "vercel|railway|fly",
+      "real_tool_kind": "vercel|render",
       "agent": "executor",
       "difficulty": "medium",
       "tools_hint": [
